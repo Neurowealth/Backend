@@ -7,6 +7,11 @@ import { requestLogger } from './middleware/logger'
 import { rateLimiter } from './middleware/rateLimiter'
 import { logger } from './utils/logger'
 import healthRouter from './routes/health'
+import portfolioRouter from './routes/portfolio'
+import transactionsRouter from './routes/transactions'
+import protocolsRouter from './routes/protocols'
+import depositRouter from './routes/deposit'
+import withdrawRouter from './routes/withdraw'
 
 const app = express()
 
@@ -21,15 +26,22 @@ app.use(rateLimiter)
 
 // Routes
 app.use('/health', healthRouter)
+app.use('/api/portfolio', portfolioRouter)
+app.use('/api/transactions', transactionsRouter)
+app.use('/api/protocols', protocolsRouter)
+app.use('/api/deposit', depositRouter)
+app.use('/api/withdraw', withdrawRouter)
 
 // Global error handler — must always be last
 app.use(errorHandler)
 
-// Start server
-app.listen(config.port, () => {
-  logger.info(`NeuroWealth backend running on port ${config.port}`)
-  logger.info(`Environment: ${config.nodeEnv}`)
-  logger.info(`Network: ${config.stellar.network}`)
-})
+// Start server only when running directly.
+if (require.main === module) {
+  app.listen(config.port, () => {
+    logger.info(`NeuroWealth backend running on port ${config.port}`)
+    logger.info(`Environment: ${config.nodeEnv}`)
+    logger.info(`Network: ${config.stellar.network}`)
+  })
+}
 
 export default app
