@@ -1,0 +1,8 @@
+process.env.NODE_ENV = 'test'
+process.env.STELLAR_NETWORK = 'TESTNET'
+process.env.STELLAR_RPC_URL = 'https://rpc.example.com'
+process.env.AGENT_SECRET_KEY = 'SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+process.env.VAULT_CONTRACT_ID = 'CDUMMYVAULTCONTRACTID'
+process.env.USDC_TOKEN_ADDRESS = 'CDUMMYUSDC'
+process.env.ANTHROPIC_API_KEY = 'test-key'
+process.env.DATABASE_URL = 'postgresql://user:pass@localhost:5432/db'
