@@ -29,7 +29,7 @@ router.get('/rates', async (req: Request, res: Response) => {
     // Group by protocol and asset
     const protocolMap: Record<string, Array<{ name: string; asset: string; apy: string; tvl?: string }>> = {}
 
-    rates.forEach((rate) => {
+    rates.forEach((rate: any) => {
       const key = rate.protocolName
       if (!protocolMap[key]) {
         protocolMap[key] = []
@@ -94,7 +94,7 @@ router.get('/agent/status', async (req: Request, res: Response) => {
       take: 100
     })
 
-    const successCount = recentLogs.filter((log) => log.status === 'SUCCESS').length
+    const successCount = recentLogs.filter((log: any) => log.status === 'SUCCESS').length
     const successRate = ((successCount / recentLogs.length) * 100).toFixed(1)
 
     const statusData = {

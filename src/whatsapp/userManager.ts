@@ -140,7 +140,7 @@ export class UserManager {
     return db.user.findUnique({
       where: { id: userId },
       select: { walletSecret: true }
-    }).then(user => {
+    }).then((user: any) => {
       if (!user?.walletSecret) return null
       return this.decryptSecret(user.walletSecret)
     })

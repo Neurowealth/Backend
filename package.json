@@ -36,7 +36,8 @@
     "helmet": "^8.1.0",
     "twilio": "^5.12.2",
     "winston": "^3.19.0",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "decimal.js": "^10.4.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

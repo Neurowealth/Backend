@@ -4,7 +4,7 @@ import { db } from '../db'
 import { requireAuth } from '../middleware/auth'
 import { whatsappFormatters } from '../whatsapp/formatters'
 import { logger } from '../utils/logger'
-import { Decimal } from '@prisma/client/runtime/library'
+import { Decimal } from 'decimal.js'
 
 const router = Router()
 
@@ -52,7 +52,7 @@ router.get('/:userId', requireAuth, async (req: Request, res: Response) => {
     let totalBalance = new Decimal(0)
     let totalYield = new Decimal(0)
 
-    positions.forEach((pos) => {
+    positions.forEach((pos: any) => {
       totalBalance = totalBalance.plus(pos.currentValue)
       totalYield = totalYield.plus(pos.yieldEarned)
     })
@@ -62,7 +62,7 @@ router.get('/:userId', requireAuth, async (req: Request, res: Response) => {
       totalBalance: totalBalance.toString(),
       totalYield: totalYield.toString(),
       positionCount: positions.length,
-      positions: positions.map((pos) => ({
+      positions: positions.map((pos: any) => ({
         id: pos.id,
         protocolName: pos.protocolName,
         assetSymbol: pos.assetSymbol,
@@ -75,7 +75,7 @@ router.get('/:userId', requireAuth, async (req: Request, res: Response) => {
       whatsappReply: whatsappFormatters.formatPortfolio({
         totalBalance: totalBalance.toString(),
         totalYield: totalYield.toString(),
-        positions: positions.map((pos) => ({
+        positions: positions.map((pos: any) => ({
           protocolName: pos.protocolName,
           assetSymbol: pos.assetSymbol,
           amount: pos.depositedAmount.toString(),
@@ -145,7 +145,7 @@ router.get('/:userId/history', requireAuth, async (req: Request, res: Response) 
       startDate,
       endDate: now,
       snapshotCount: snapshots.length,
-      snapshots: snapshots.map((snap) => ({
+      snapshots: snapshots.map((snap: any) => ({
         date: snap.snapshotAt,
         protocol: snap.position.protocolName,
         asset: snap.position.assetSymbol,
@@ -210,7 +210,7 @@ router.get('/:userId/earnings', requireAuth, async (req: Request, res: Response)
     let totalPrincipal = new Decimal(0)
     const protocolBreakdown: Record<string, Decimal> = {}
 
-    positions.forEach((pos) => {
+    positions.forEach((pos: any) => {
       const yieldAmount = pos.yieldEarned
       totalEarned = totalEarned.plus(yieldAmount)
       totalPrincipal = totalPrincipal.plus(pos.depositedAmount)
@@ -224,7 +224,7 @@ router.get('/:userId/earnings', requireAuth, async (req: Request, res: Response)
     const averageApy =
       positions.length > 0
         ? positions
-            .reduce((sum, pos) => sum.plus(pos.yieldSnapshots[0]?.apy || new Decimal(0)), new Decimal(0))
+            .reduce((sum: any, pos: any) => sum.plus(pos.yieldSnapshots[0]?.apy || new Decimal(0)), new Decimal(0))
             .div(positions.length)
             .toString()
         : '0'

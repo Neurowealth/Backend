@@ -4,7 +4,7 @@ import { db } from '../db'
 import { requireAuth } from '../middleware/auth'
 import { whatsappFormatters } from '../whatsapp/formatters'
 import { logger } from '../utils/logger'
-import { Decimal } from '@prisma/client/runtime/library'
+import { Decimal } from 'decimal.js'
 
 const router = Router()
 

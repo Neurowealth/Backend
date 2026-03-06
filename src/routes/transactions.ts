@@ -72,7 +72,7 @@ router.get('/:userId', requireAuth, async (req: Request, res: Response) => {
       total,
       totalPages,
       hasMore: page < totalPages,
-      transactions: transactions.map((tx) => ({
+      transactions: transactions.map((tx: any) => ({
         id: tx.id,
         type: tx.type,
         assetSymbol: tx.assetSymbol,
@@ -85,7 +85,7 @@ router.get('/:userId', requireAuth, async (req: Request, res: Response) => {
         memo: tx.memo
       })),
       whatsappReply: whatsappFormatters.formatTransactionHistory({
-        transactions: transactions.map((tx) => ({
+        transactions: transactions.map((tx: any) => ({
           type: tx.type,
           assetSymbol: tx.assetSymbol,
           amount: tx.amount.toString(),

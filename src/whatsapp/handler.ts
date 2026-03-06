@@ -121,15 +121,15 @@ export class WhatsAppHandler {
         }
       })
 
-      const totalBalance = positions.reduce((sum, pos) =>
+      const totalBalance = positions.reduce((sum: any, pos: any) =>
         sum + Number(pos.currentValue), 0
       )
 
-      const totalYield = positions.reduce((sum, pos) =>
+      const totalYield = positions.reduce((sum: any, pos: any) =>
         sum + Number(pos.yieldEarned), 0
       )
 
-      const formattedPositions = positions.map(pos => ({
+      const formattedPositions = positions.map((pos: any) => ({
         protocolName: pos.protocolName,
         assetSymbol: pos.assetSymbol,
         amount: pos.depositedAmount.toString(),
@@ -214,7 +214,7 @@ export class WhatsAppHandler {
         }
       })
 
-      const totalBalance = positions.reduce((sum, pos) =>
+      const totalBalance = positions.reduce((sum: any, pos: any) =>
         sum + Number(pos.currentValue), 0
       )
 
