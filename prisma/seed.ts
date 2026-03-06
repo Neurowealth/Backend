@@ -16,6 +16,10 @@ async function main() {
       displayName: 'Alex Testnet',
       email: 'alex@neurowealth.dev',
       riskTolerance: 6,
+      phoneNumber: '+15551234567',
+      isActive: true,
+      walletSecretEncrypted: Buffer.from('SOMESECRET').toString('base64'),
+      // OTP fields left null since user is already active
     },
   })
   console.log(`✅ User: ${user.displayName} (${user.id})`)

@@ -41,9 +41,12 @@
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.3.0",
+    "@types/supertest": "^7.2.0",
+    "@types/twilio": "^3.19.2",
     "jest": "^30.2.0",
     "nodemon": "^3.1.14",
     "prisma": "^5.22.0",
+    "supertest": "^7.2.2",
     "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"

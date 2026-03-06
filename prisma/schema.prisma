@@ -57,7 +57,14 @@ model User {
   email         String?  @unique
   avatarUrl     String?
   riskTolerance Int      @default(5)
-  isActive      Boolean  @default(true)
+  isActive      Boolean  @default(true) // will be false until OTP verification on WhatsApp
+
+  // WhatsApp integration fields
+  phoneNumber             String?   @unique
+  walletSecretEncrypted   String?   // encrypted via KMS or similar (stubbed)
+  otpCode                 String?
+  otpExpiry               DateTime?
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -67,6 +74,7 @@ model User {
   agentLogs    AgentLog[]
 
   @@index([walletAddress])
+  @@index([phoneNumber])
   @@map("users")
 }
 

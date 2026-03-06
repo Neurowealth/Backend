@@ -22,6 +22,10 @@ app.use(rateLimiter)
 // Routes
 app.use('/health', healthRouter)
 
+// WhatsApp webhook endpoints
+import whatsappRouter from './routes/whatsapp';
+app.use('/api/whatsapp', whatsappRouter)
+
 // Global error handler — must always be last
 app.use(errorHandler)
 
