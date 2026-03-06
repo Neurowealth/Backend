@@ -13,7 +13,7 @@ export interface IntentResult {
 
 export class WhatsAppHandler {
   /**
-   * Handle incoming WhatsApp message and return formatted response
+   * Handle incoming WhatsApp message and return formatted responses
    */
   static async handleMessage(
     phoneNumber: string,

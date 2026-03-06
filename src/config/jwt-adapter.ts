@@ -18,10 +18,8 @@ export class JwtAdapter {
 
   static validateToken<T>(token: string): Promise<T | null> {
     return new Promise((resolve) => {
-      jwt.verify(token, JWT_SEED, (error: Error | null, decoded: object | undefined) => {
-
+      jwt.verify(token, JWT_SEED, (error, decoded) => {
         if (error) return resolve(null);
-
         resolve(decoded as T);
       })
     });
