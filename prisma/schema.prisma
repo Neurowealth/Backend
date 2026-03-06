@@ -52,12 +52,17 @@ enum AgentStatus {
 model User {
   id            String   @id @default(uuid())
   walletAddress String   @unique
+  walletSecret  String?  // Encrypted Stellar secret key
   network       Network  @default(MAINNET)
   displayName   String?
   email         String?  @unique
+  phoneNumber   String?  @unique // WhatsApp phone number
   avatarUrl     String?
   riskTolerance Int      @default(5)
   isActive      Boolean  @default(true)
+  isVerified    Boolean  @default(false) // OTP verification status
+  otpCode       String?  // Current OTP code
+  otpExpiresAt  DateTime? // OTP expiry timestamp
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 

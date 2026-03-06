@@ -5,12 +5,15 @@ import { config } from './config/env'
 import { errorHandler } from './middleware/errorHandler'
 import { requestLogger } from './middleware/logger'
 import { rateLimiter } from './middleware/rateLimiter'
-import { AuthMiddleware } from './middleware/authenticate'
+import { authenticate } from './middleware/auth'
 import { logger } from './utils/logger'
-import { connectDb } from './db'
-import { scheduleSessionCleanup } from './jobs/sessionCleanup'
 import healthRouter from './routes/health'
-import authRouter from './routes/auth'
+import portfolioRouter from './routes/portfolio'
+import transactionsRouter from './routes/transactions'
+import protocolsRouter from './routes/protocols'
+import depositRouter from './routes/deposit'
+import withdrawRouter from './routes/withdraw'
+import whatsappRouter from './routes/whatsapp'
 
 const app = express()
 
@@ -23,41 +26,27 @@ app.use(express.json())
 app.use(requestLogger)
 app.use(rateLimiter)
 
-// Public routes
+// Routes
 app.use('/health', healthRouter)
-app.use('/api/auth', authRouter)
+app.use('/api/whatsapp', whatsappRouter)
 
-// Protected routes (require valid JWT)
-// All routes mounted below this line are automatically protected.
-app.use('/api/portfolio', AuthMiddleware.validateJwt)
-app.use('/api/transactions', AuthMiddleware.validateJwt)
-app.use('/api/deposit', AuthMiddleware.validateJwt)
-app.use('/api/withdraw', AuthMiddleware.validateJwt)
+// Public API Routes
+app.use('/api/protocols', protocolsRouter)
 
-// TODO: mount actual portfolio / transaction / deposit / withdraw routers here
-// e.g. app.use('/api/portfolio', portfolioRouter)
+// Protected API Routes (require authentication)
+app.use('/api/portfolio', authenticate, portfolioRouter)
+app.use('/api/transactions', authenticate, transactionsRouter)
+app.use('/api/deposit', authenticate, depositRouter)
+app.use('/api/withdraw', authenticate, withdrawRouter)
 
 // Global error handler — must always be last
 app.use(errorHandler)
 
-async function main() {
-  // Database connectivity check
-  await connectDb()
-
-  // Background jobs
-  scheduleSessionCleanup()
-
-  // Start HTTP server
-  app.listen(config.port, () => {
-    logger.info(`NeuroWealth backend running on port ${config.port}`)
-    logger.info(`Environment: ${config.nodeEnv}`)
-    logger.info(`Network: ${config.stellar.network}`)
-  })
-}
-
-main().catch((error) => {
-  logger.error('[Startup] Unexpected error:', error)
-  process.exit(1)
+// Start server
+app.listen(config.port, () => {
+  logger.info(`NeuroWealth backend running on port ${config.port}`)
+  logger.info(`Environment: ${config.nodeEnv}`)
+  logger.info(`Network: ${config.stellar.network}`)
 })
 
 export default app
