@@ -9,10 +9,8 @@ export class JwtAdapter {
     return new Promise((resolve) => {
       jwt.sign(payload, JWT_SEED, {
         expiresIn: `${durationInHours}h`
-      }, (error, token) => {
-
+      }, (error: Error | null, token?: string) => {
         if (error) return resolve(null);
-
         return resolve(token!);
       })
     });
@@ -20,7 +18,7 @@ export class JwtAdapter {
 
   static validateToken<T>(token: string): Promise<T | null> {
     return new Promise((resolve) => {
-      jwt.verify(token, JWT_SEED, (error, decoded) => {
+      jwt.verify(token, JWT_SEED, (error: Error | null, decoded: object | undefined) => {
 
         if (error) return resolve(null);
 
