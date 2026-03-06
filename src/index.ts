@@ -39,7 +39,7 @@ app.use('/api/transactions', authenticate, transactionsRouter)
 app.use('/api/deposit', authenticate, depositRouter)
 app.use('/api/withdraw', authenticate, withdrawRouter)
 
-// Global error handler — must always be last
+// Global error handler — must always be lasts
 app.use(errorHandler)
 
 // Start server
