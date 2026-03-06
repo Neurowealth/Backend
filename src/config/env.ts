@@ -27,6 +27,12 @@ export const config = {
   redis: {
     url: process.env.REDIS_URL || 'redis://localhost:6379',
   },
+  jwt: {
+    seed: requireEnv('JWT_SEED'),
+    session_ttl_hours: parseInt(requireEnv('JWT_SESSION_TTL_HOURS') || '24'),
+    nonce_ttl_ms: parseInt(requireEnv('JWT_NONCE_TTL_MS') || '300000'), // default to 5 minutes if not set
+    interval_ms: parseInt(requireEnv('JWT_CLEANUP_INTERVAL_MS') || '86400000') // default to 24 hours if not set
+  },
   whatsapp: {
     twilioSid: process.env.TWILIO_ACCOUNT_SID || '',
     twilioToken: process.env.TWILIO_AUTH_TOKEN || '',
