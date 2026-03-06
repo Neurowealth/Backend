@@ -14,6 +14,7 @@ import app from '../../src/index';
 import * as userManager from '../../src/whatsapp/userManager';
 import db from '../../src/db';
 import twilio from 'twilio';
+import { Server } from 'http';
 
 jest.mock('../../src/whatsapp/userManager');
 jest.mock('../../src/db');
@@ -21,20 +22,49 @@ jest.mock('twilio');
 
 describe('WhatsApp webhook integration', () => {
   const samplePhone = '+15551234567';
+  let server: Server;
+
+  beforeAll((done) => {
+    server = app.listen(0, done);
+  });
+
+  afterAll(async () => {
+    // Close the HTTP server
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+
+    // Disconnect DB if supported
+    if (typeof (db as any).$disconnect === 'function') {
+      await (db as any).$disconnect();
+    } else if (typeof (db as any).disconnect === 'function') {
+      await (db as any).disconnect();
+    } else if (typeof (db as any).end === 'function') {
+      await (db as any).end();
+    }
+
+    // Allow any remaining async handles to settle
+    await new Promise((resolve) => setImmediate(resolve));
+  });
 
   beforeEach(() => {
     jest.resetAllMocks();
   });
 
+  afterEach(async () => {
+    // Flush any pending promises/microtasks between tests
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
   it('GET health check returns 200', async () => {
-    const resp = await request(app).get('/api/whatsapp/webhook');
+    const resp = await request(server).get('/api/whatsapp/webhook');
     expect(resp.status).toBe(200);
     expect(resp.text).toBe('OK');
   });
 
   it('rejects invalid signature', async () => {
     (twilio.validateRequest as jest.Mock).mockReturnValue(false);
-    const resp = await request(app)
+    const resp = await request(server)
       .post('/api/whatsapp/webhook')
       .type('form')
       .send({ From: `whatsapp:${samplePhone}`, Body: 'foo' });
@@ -52,7 +82,7 @@ describe('WhatsApp webhook integration', () => {
     });
     (userManager.generateAndSaveOtp as jest.Mock).mockResolvedValue('123456');
 
-    const resp = await request(app)
+    const resp = await request(server)
       .post('/api/whatsapp/webhook')
       .type('form')
       .send({ From: `whatsapp:${samplePhone}`, Body: 'hello' });
@@ -74,7 +104,7 @@ describe('WhatsApp webhook integration', () => {
     (userManager.verifyOtpCode as jest.Mock).mockResolvedValue(true);
 
     // send 6-digit code
-    const resp = await request(app)
+    const resp = await request(server)
       .post('/api/whatsapp/webhook')
       .type('form')
       .send({ From: `whatsapp:${samplePhone}`, Body: '123456' });
@@ -94,7 +124,7 @@ describe('WhatsApp webhook integration', () => {
     (userManager.verifyOtpCode as jest.Mock).mockResolvedValue(false);
     (userManager.generateAndSaveOtp as jest.Mock).mockResolvedValue('654321');
 
-    const resp = await request(app)
+    const resp = await request(server)
       .post('/api/whatsapp/webhook')
       .type('form')
       .send({ From: `whatsapp:${samplePhone}`, Body: '000000' });
@@ -115,7 +145,7 @@ describe('WhatsApp webhook integration', () => {
     });
     (userManager.calculateBalance as jest.Mock).mockResolvedValue(42);
 
-    const resp = await request(app)
+    const resp = await request(server)
       .post('/api/whatsapp/webhook')
       .type('form')
       .send({ From: `whatsapp:${samplePhone}`, Body: 'balance' });
@@ -136,7 +166,7 @@ describe('WhatsApp webhook integration', () => {
 
     (db.transaction.create as jest.Mock).mockResolvedValue({});
 
-    const resp = await request(app)
+    const resp = await request(server)
       .post('/api/whatsapp/webhook')
       .type('form')
       .send({ From: `whatsapp:${samplePhone}`, Body: 'deposit 100' });
@@ -159,7 +189,7 @@ describe('WhatsApp webhook integration', () => {
     });
     (userManager.calculateBalance as jest.Mock).mockResolvedValue(50);
 
-    const resp = await request(app)
+    const resp = await request(server)
       .post('/api/whatsapp/webhook')
       .type('form')
       .send({ From: `whatsapp:${samplePhone}`, Body: 'withdraw 100' });
@@ -180,7 +210,7 @@ describe('WhatsApp webhook integration', () => {
     (userManager.calculateBalance as jest.Mock).mockResolvedValue(123);
     (db.transaction.create as jest.Mock).mockResolvedValue({});
 
-    const resp = await request(app)
+    const resp = await request(server)
       .post('/api/whatsapp/webhook')
       .type('form')
       .send({ From: `whatsapp:${samplePhone}`, Body: 'withdraw all' });
