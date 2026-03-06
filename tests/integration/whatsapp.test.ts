@@ -12,13 +12,29 @@ process.env.TWILIO_AUTH_TOKEN = 'test-token';
 import request from 'supertest';
 import app from '../../src/index';
 import * as userManager from '../../src/whatsapp/userManager';
-import db from '../../src/db';
 import twilio from 'twilio';
 import { Server } from 'http';
 
+// Mock db with the shape the app expects (Prisma-style client).
+// Defined BEFORE jest.mock so the factory can reference it.
+const mockDb = {
+  transaction: {
+    create: jest.fn(),
+  },
+  $disconnect: jest.fn().mockResolvedValue(undefined),
+};
+
 jest.mock('../../src/whatsapp/userManager');
-jest.mock('../../src/db');
+jest.mock('../../src/db', () => mockDb);
 jest.mock('twilio');
+
+// Helper: TwiML responses look like:
+//   <?xml ...><Response><Message>some text here</Message></Response>
+// Extract the inner text of the first <Message> tag.
+function getTwimlMessage(responseText: string): string {
+  const match = responseText.match(/<Message[^>]*>([\s\S]*?)<\/Message>/i);
+  return match ? match[1].trim() : responseText;
+}
 
 describe('WhatsApp webhook integration', () => {
   const samplePhone = '+15551234567';
@@ -34,25 +50,18 @@ describe('WhatsApp webhook integration', () => {
       server.close((err) => (err ? reject(err) : resolve()));
     });
 
-    // Disconnect DB if supported
-    if (typeof (db as any).$disconnect === 'function') {
-      await (db as any).$disconnect();
-    } else if (typeof (db as any).disconnect === 'function') {
-      await (db as any).disconnect();
-    } else if (typeof (db as any).end === 'function') {
-      await (db as any).end();
-    }
-
-    // Allow any remaining async handles to settle
+    // Drain any remaining async handles
     await new Promise((resolve) => setImmediate(resolve));
   });
 
   beforeEach(() => {
     jest.resetAllMocks();
+    // Re-stub after resetAllMocks wipes mockDb's jest.fn() implementations
+    mockDb.$disconnect.mockResolvedValue(undefined);
+    mockDb.transaction.create.mockResolvedValue(undefined);
   });
 
   afterEach(async () => {
-    // Flush any pending promises/microtasks between tests
     await new Promise((resolve) => setImmediate(resolve));
   });
 
@@ -73,7 +82,6 @@ describe('WhatsApp webhook integration', () => {
 
   it('new user gets OTP message', async () => {
     (twilio.validateRequest as jest.Mock).mockReturnValue(true);
-    // no existing user; getOrCreate will create and return isActive=false
     (userManager.getOrCreateUser as jest.Mock).mockResolvedValue({
       id: 'u1',
       phoneNumber: samplePhone,
@@ -88,13 +96,12 @@ describe('WhatsApp webhook integration', () => {
       .send({ From: `whatsapp:${samplePhone}`, Body: 'hello' });
 
     expect(resp.status).toBe(200);
-    expect(resp.text).toContain('123456');
+    expect(getTwimlMessage(resp.text)).toContain('123456');
     expect(userManager.generateAndSaveOtp).toHaveBeenCalledWith(samplePhone);
   });
 
   it('OTP verification works and returns active message', async () => {
     (twilio.validateRequest as jest.Mock).mockReturnValue(true);
-    // simulate existing not active user
     (userManager.getOrCreateUser as jest.Mock).mockResolvedValue({
       id: 'u1',
       phoneNumber: samplePhone,
@@ -103,14 +110,13 @@ describe('WhatsApp webhook integration', () => {
     });
     (userManager.verifyOtpCode as jest.Mock).mockResolvedValue(true);
 
-    // send 6-digit code
     const resp = await request(server)
       .post('/api/whatsapp/webhook')
       .type('form')
       .send({ From: `whatsapp:${samplePhone}`, Body: '123456' });
 
     expect(resp.status).toBe(200);
-    expect(resp.text).toContain('verified');
+    expect(getTwimlMessage(resp.text)).toContain('verified');
   });
 
   it('wrong OTP triggers resend', async () => {
@@ -130,8 +136,9 @@ describe('WhatsApp webhook integration', () => {
       .send({ From: `whatsapp:${samplePhone}`, Body: '000000' });
 
     expect(resp.status).toBe(200);
-    expect(resp.text).toContain('new OTP');
-    expect(resp.text).toContain('654321');
+    const msg = getTwimlMessage(resp.text);
+    expect(msg).toContain('new OTP');
+    expect(msg).toContain('654321');
   });
 
   it('balance query for active user', async () => {
@@ -151,7 +158,7 @@ describe('WhatsApp webhook integration', () => {
       .send({ From: `whatsapp:${samplePhone}`, Body: 'balance' });
 
     expect(resp.status).toBe(200);
-    expect(resp.text).toContain('42');
+    expect(getTwimlMessage(resp.text)).toContain('42');
   });
 
   it('deposit flow creates pending transaction', async () => {
@@ -163,8 +170,7 @@ describe('WhatsApp webhook integration', () => {
       isActive: true,
       network: 'TESTNET',
     });
-
-    (db.transaction.create as jest.Mock).mockResolvedValue({});
+    mockDb.transaction.create.mockResolvedValue({});
 
     const resp = await request(server)
       .post('/api/whatsapp/webhook')
@@ -172,8 +178,8 @@ describe('WhatsApp webhook integration', () => {
       .send({ From: `whatsapp:${samplePhone}`, Body: 'deposit 100' });
 
     expect(resp.status).toBe(200);
-    expect(resp.text).toMatch(/To deposit/);
-    expect(db.transaction.create).toHaveBeenCalledWith(expect.objectContaining({
+    expect(getTwimlMessage(resp.text)).toMatch(/To deposit/);
+    expect(mockDb.transaction.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ type: 'DEPOSIT', amount: 100 }),
     }));
   });
@@ -195,7 +201,7 @@ describe('WhatsApp webhook integration', () => {
       .send({ From: `whatsapp:${samplePhone}`, Body: 'withdraw 100' });
 
     expect(resp.status).toBe(200);
-    expect(resp.text).toMatch(/only have/);
+    expect(getTwimlMessage(resp.text)).toMatch(/only have/);
   });
 
   it('withdraw all creates pending transaction', async () => {
@@ -208,7 +214,7 @@ describe('WhatsApp webhook integration', () => {
       network: 'TESTNET',
     });
     (userManager.calculateBalance as jest.Mock).mockResolvedValue(123);
-    (db.transaction.create as jest.Mock).mockResolvedValue({});
+    mockDb.transaction.create.mockResolvedValue({});
 
     const resp = await request(server)
       .post('/api/whatsapp/webhook')
@@ -216,8 +222,8 @@ describe('WhatsApp webhook integration', () => {
       .send({ From: `whatsapp:${samplePhone}`, Body: 'withdraw all' });
 
     expect(resp.status).toBe(200);
-    expect(resp.text).toMatch(/withdraw all/);
-    expect(db.transaction.create).toHaveBeenCalledWith(expect.objectContaining({
+    expect(getTwimlMessage(resp.text)).toMatch(/withdraw all/);
+    expect(mockDb.transaction.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ type: 'WITHDRAWAL', amount: 123 }),
     }));
   });
