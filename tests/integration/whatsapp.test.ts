@@ -11,31 +11,73 @@ process.env.TWILIO_AUTH_TOKEN = 'test-token';
 
 import request from 'supertest';
 import app from '../../src/index';
-import * as userManager from '../../src/whatsapp/userManager';
 import twilio from 'twilio';
 import { Server } from 'http';
 
-// Mock db with the shape the app expects (Prisma-style client).
-// Defined BEFORE jest.mock so the factory can reference it.
+// ---------------------------------------------------------------------------
+// userManager mock
+//
+// src/whatsapp/userManager.ts has BOTH named exports AND a default export
+// that is a plain object referencing those same functions.
+// src/whatsapp/handler.ts imports the DEFAULT:
+//   import userManager from './userManager';
+//   userManager.getOrCreateUser(...)
+//
+// To intercept the default-export calls we must mock the module so that the
+// default export object's methods are jest.fn()s we can control.
+// ---------------------------------------------------------------------------
+const mockUserManager = {
+  getOrCreateUser: jest.fn(),
+  generateAndSaveOtp: jest.fn(),
+  verifyOtpCode: jest.fn(),
+  getUserByPhone: jest.fn(),
+  calculateBalance: jest.fn(),
+};
+
+jest.mock('../../src/whatsapp/userManager', () => ({
+  // named exports (used nowhere in the handler, but keep parity)
+  getOrCreateUser: mockUserManager.getOrCreateUser,
+  generateAndSaveOtp: mockUserManager.generateAndSaveOtp,
+  verifyOtpCode: mockUserManager.verifyOtpCode,
+  getUserByPhone: mockUserManager.getUserByPhone,
+  calculateBalance: mockUserManager.calculateBalance,
+  // default export – this is what handler.ts actually calls
+  default: mockUserManager,
+  __esModule: true,
+}));
+
+// ---------------------------------------------------------------------------
+// db mock  (Prisma-style client)
+// ---------------------------------------------------------------------------
 const mockDb = {
   transaction: {
     create: jest.fn(),
   },
+  user: {
+    findUnique: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
+  },
   $disconnect: jest.fn().mockResolvedValue(undefined),
 };
 
-jest.mock('../../src/whatsapp/userManager');
-jest.mock('../../src/db', () => mockDb);
+jest.mock('../../src/db', () => ({ default: mockDb, __esModule: true }));
+
 jest.mock('twilio');
 
+// ---------------------------------------------------------------------------
 // Helper: TwiML responses look like:
-//   <?xml ...><Response><Message>some text here</Message></Response>
+//   <?xml ...><Response><Message>text here</Message></Response>
 // Extract the inner text of the first <Message> tag.
+// ---------------------------------------------------------------------------
 function getTwimlMessage(responseText: string): string {
   const match = responseText.match(/<Message[^>]*>([\s\S]*?)<\/Message>/i);
   return match ? match[1].trim() : responseText;
 }
 
+// ---------------------------------------------------------------------------
+// Suite
+// ---------------------------------------------------------------------------
 describe('WhatsApp webhook integration', () => {
   const samplePhone = '+15551234567';
   let server: Server;
@@ -45,32 +87,34 @@ describe('WhatsApp webhook integration', () => {
   });
 
   afterAll(async () => {
-    // Close the HTTP server
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
     });
-
-    // Drain any remaining async handles
     await new Promise((resolve) => setImmediate(resolve));
   });
 
   beforeEach(() => {
     jest.resetAllMocks();
-    // Re-stub after resetAllMocks wipes mockDb's jest.fn() implementations
+    // Restore default resolved values after resetAllMocks clears them
     mockDb.$disconnect.mockResolvedValue(undefined);
-    mockDb.transaction.create.mockResolvedValue(undefined);
+    mockDb.transaction.create.mockResolvedValue({});
+    mockDb.user.findUnique.mockResolvedValue(null);
+    mockDb.user.create.mockResolvedValue({});
+    mockDb.user.update.mockResolvedValue({});
   });
 
   afterEach(async () => {
     await new Promise((resolve) => setImmediate(resolve));
   });
 
+  // -------------------------------------------------------------------------
   it('GET health check returns 200', async () => {
     const resp = await request(server).get('/api/whatsapp/webhook');
     expect(resp.status).toBe(200);
     expect(resp.text).toBe('OK');
   });
 
+  // -------------------------------------------------------------------------
   it('rejects invalid signature', async () => {
     (twilio.validateRequest as jest.Mock).mockReturnValue(false);
     const resp = await request(server)
@@ -80,15 +124,16 @@ describe('WhatsApp webhook integration', () => {
     expect(resp.status).toBe(403);
   });
 
+  // -------------------------------------------------------------------------
   it('new user gets OTP message', async () => {
     (twilio.validateRequest as jest.Mock).mockReturnValue(true);
-    (userManager.getOrCreateUser as jest.Mock).mockResolvedValue({
+    mockUserManager.getOrCreateUser.mockResolvedValue({
       id: 'u1',
       phoneNumber: samplePhone,
       walletAddress: 'GABC',
       isActive: false,
     });
-    (userManager.generateAndSaveOtp as jest.Mock).mockResolvedValue('123456');
+    mockUserManager.generateAndSaveOtp.mockResolvedValue('123456');
 
     const resp = await request(server)
       .post('/api/whatsapp/webhook')
@@ -97,18 +142,19 @@ describe('WhatsApp webhook integration', () => {
 
     expect(resp.status).toBe(200);
     expect(getTwimlMessage(resp.text)).toContain('123456');
-    expect(userManager.generateAndSaveOtp).toHaveBeenCalledWith(samplePhone);
+    expect(mockUserManager.generateAndSaveOtp).toHaveBeenCalledWith(samplePhone);
   });
 
+  // -------------------------------------------------------------------------
   it('OTP verification works and returns active message', async () => {
     (twilio.validateRequest as jest.Mock).mockReturnValue(true);
-    (userManager.getOrCreateUser as jest.Mock).mockResolvedValue({
+    mockUserManager.getOrCreateUser.mockResolvedValue({
       id: 'u1',
       phoneNumber: samplePhone,
       walletAddress: 'GABC',
       isActive: false,
     });
-    (userManager.verifyOtpCode as jest.Mock).mockResolvedValue(true);
+    mockUserManager.verifyOtpCode.mockResolvedValue(true);
 
     const resp = await request(server)
       .post('/api/whatsapp/webhook')
@@ -119,16 +165,17 @@ describe('WhatsApp webhook integration', () => {
     expect(getTwimlMessage(resp.text)).toContain('verified');
   });
 
+  // -------------------------------------------------------------------------
   it('wrong OTP triggers resend', async () => {
     (twilio.validateRequest as jest.Mock).mockReturnValue(true);
-    (userManager.getOrCreateUser as jest.Mock).mockResolvedValue({
+    mockUserManager.getOrCreateUser.mockResolvedValue({
       id: 'u1',
       phoneNumber: samplePhone,
       walletAddress: 'GABC',
       isActive: false,
     });
-    (userManager.verifyOtpCode as jest.Mock).mockResolvedValue(false);
-    (userManager.generateAndSaveOtp as jest.Mock).mockResolvedValue('654321');
+    mockUserManager.verifyOtpCode.mockResolvedValue(false);
+    mockUserManager.generateAndSaveOtp.mockResolvedValue('654321');
 
     const resp = await request(server)
       .post('/api/whatsapp/webhook')
@@ -141,16 +188,17 @@ describe('WhatsApp webhook integration', () => {
     expect(msg).toContain('654321');
   });
 
+  // -------------------------------------------------------------------------
   it('balance query for active user', async () => {
     (twilio.validateRequest as jest.Mock).mockReturnValue(true);
-    (userManager.getOrCreateUser as jest.Mock).mockResolvedValue({
+    mockUserManager.getOrCreateUser.mockResolvedValue({
       id: 'u1',
       phoneNumber: samplePhone,
       walletAddress: 'GABC',
       isActive: true,
       network: 'TESTNET',
     });
-    (userManager.calculateBalance as jest.Mock).mockResolvedValue(42);
+    mockUserManager.calculateBalance.mockResolvedValue(42);
 
     const resp = await request(server)
       .post('/api/whatsapp/webhook')
@@ -161,16 +209,16 @@ describe('WhatsApp webhook integration', () => {
     expect(getTwimlMessage(resp.text)).toContain('42');
   });
 
+  // -------------------------------------------------------------------------
   it('deposit flow creates pending transaction', async () => {
     (twilio.validateRequest as jest.Mock).mockReturnValue(true);
-    (userManager.getOrCreateUser as jest.Mock).mockResolvedValue({
+    mockUserManager.getOrCreateUser.mockResolvedValue({
       id: 'u1',
       phoneNumber: samplePhone,
       walletAddress: 'GABC',
       isActive: true,
       network: 'TESTNET',
     });
-    mockDb.transaction.create.mockResolvedValue({});
 
     const resp = await request(server)
       .post('/api/whatsapp/webhook')
@@ -184,16 +232,17 @@ describe('WhatsApp webhook integration', () => {
     }));
   });
 
+  // -------------------------------------------------------------------------
   it('withdraw flow with insufficient balance returns message', async () => {
     (twilio.validateRequest as jest.Mock).mockReturnValue(true);
-    (userManager.getOrCreateUser as jest.Mock).mockResolvedValue({
+    mockUserManager.getOrCreateUser.mockResolvedValue({
       id: 'u1',
       phoneNumber: samplePhone,
       walletAddress: 'GABC',
       isActive: true,
       network: 'TESTNET',
     });
-    (userManager.calculateBalance as jest.Mock).mockResolvedValue(50);
+    mockUserManager.calculateBalance.mockResolvedValue(50);
 
     const resp = await request(server)
       .post('/api/whatsapp/webhook')
@@ -204,17 +253,17 @@ describe('WhatsApp webhook integration', () => {
     expect(getTwimlMessage(resp.text)).toMatch(/only have/);
   });
 
+  // -------------------------------------------------------------------------
   it('withdraw all creates pending transaction', async () => {
     (twilio.validateRequest as jest.Mock).mockReturnValue(true);
-    (userManager.getOrCreateUser as jest.Mock).mockResolvedValue({
+    mockUserManager.getOrCreateUser.mockResolvedValue({
       id: 'u1',
       phoneNumber: samplePhone,
       walletAddress: 'GABC',
       isActive: true,
       network: 'TESTNET',
     });
-    (userManager.calculateBalance as jest.Mock).mockResolvedValue(123);
-    mockDb.transaction.create.mockResolvedValue({});
+    mockUserManager.calculateBalance.mockResolvedValue(123);
 
     const resp = await request(server)
       .post('/api/whatsapp/webhook')
