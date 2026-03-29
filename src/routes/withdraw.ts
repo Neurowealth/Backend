@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import db from '../db'
 import { requireAuth } from '../middleware/auth'
-import { withdraw as submitWithdraw } from '../stellar/contract'
+import { withdrawForUser } from '../stellar/contract'
 import { formatWithdrawReply } from '../whatsapp/formatters'
 
 const router = Router()
@@ -36,11 +36,14 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
     return res.status(404).json({ error: 'User not found' })
   }
 
-  const onChainTransaction = await submitWithdraw(
+  const onChainTransaction = await withdrawForUser(
     parsed.data.userId,
     req.auth.walletAddress,
     parsed.data.amount,
   )
+
+  const transactionStatus =
+    onChainTransaction.status === 'success' ? 'CONFIRMED' : 'FAILED'
 
   const existing = await db.transaction.findUnique({
     where: { txHash: onChainTransaction.hash },
@@ -56,16 +59,20 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
       userId: parsed.data.userId,
       txHash: onChainTransaction.hash,
       type: 'WITHDRAWAL',
-      status: 'PENDING',
+      status: transactionStatus,
       assetSymbol: parsed.data.assetSymbol,
       amount: parsed.data.amount,
       network: user.network,
       protocolName: parsed.data.protocolName,
       memo: parsed.data.memo,
+      confirmedAt:
+        transactionStatus === 'CONFIRMED' ? new Date() : null,
     },
   })
 
   return res.status(201).json({
+    txHash: transaction.txHash,
+    status: transaction.status,
     transaction: {
       id: transaction.id,
       txHash: transaction.txHash,

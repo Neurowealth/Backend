@@ -65,7 +65,12 @@ jest.mock('../../../src/stellar/wallet', () => ({
 import { Contract, TransactionBuilder, nativeToScVal } from '@stellar/stellar-sdk'
 import { submitTransaction, waitForConfirmation } from '../../../src/stellar/client'
 import { getKeypairForUser } from '../../../src/stellar/wallet'
-import { deposit, withdraw } from '../../../src/stellar/contract'
+import {
+  deposit,
+  depositForUser,
+  withdraw,
+  withdrawForUser,
+} from '../../../src/stellar/contract'
 
 describe('stellar contract write wrappers', () => {
   beforeEach(() => {
@@ -75,7 +80,7 @@ describe('stellar contract write wrappers', () => {
   })
 
   it('builds, signs, submits, and confirms deposit transactions with the user keypair', async () => {
-    const result = await deposit(
+    const result = await depositForUser(
       '550e8400-e29b-41d4-a716-446655440003',
       'GUSERWALLETADDRESS',
       12.5,
@@ -106,7 +111,7 @@ describe('stellar contract write wrappers', () => {
   })
 
   it('builds withdraw transactions against the vault contract', async () => {
-    const result = await withdraw(
+    const result = await withdrawForUser(
       '550e8400-e29b-41d4-a716-446655440003',
       'GUSERWALLETADDRESS',
       3,
@@ -135,5 +140,23 @@ describe('stellar contract write wrappers', () => {
         1,
       ),
     ).rejects.toThrow('Transaction deposit failed on-chain')
+  })
+
+  it('keeps the legacy deposit/withdraw exports wired to the typed helpers', async () => {
+    await deposit('550e8400-e29b-41d4-a716-446655440003', 'GUSERWALLETADDRESS', 2)
+    await withdraw('550e8400-e29b-41d4-a716-446655440003', 'GUSERWALLETADDRESS', 4)
+
+    expect(mockCall).toHaveBeenNthCalledWith(
+      1,
+      'deposit',
+      expect.anything(),
+      expect.anything(),
+    )
+    expect(mockCall).toHaveBeenNthCalledWith(
+      2,
+      'withdraw',
+      expect.anything(),
+      expect.anything(),
+    )
   })
 })

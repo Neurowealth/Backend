@@ -41,3 +41,12 @@ WALLET_ENCRYPTION_KEY=<64_hex_chars>
 - `triggerRebalance(protocol, apy)` - Execute rebalance
 - `startEventListener()` - Monitor blockchain events
 - `createCustodialWallet(userId)` - Generate user wallet
+- `depositForUser(userId, address, amount)` - Custodial backend-signed vault deposit
+- `withdrawForUser(userId, address, amount)` - Custodial backend-signed vault withdrawal
+
+## Signing Strategy
+
+Deposit and withdraw use a custodial signing model. The backend decrypts the user's
+encrypted Stellar secret via `src/stellar/wallet.ts`, signs the Soroban transaction
+server-side, submits it through the configured RPC server, and returns only the
+resulting transaction hash/status. User secrets must never be logged or returned.

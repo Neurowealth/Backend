@@ -26,7 +26,9 @@ jest.mock('../../../src/db', () => ({
 
 jest.mock('../../../src/stellar/contract', () => ({
   deposit: (...args: unknown[]) => mockDeposit(...args),
+  depositForUser: (...args: unknown[]) => mockDeposit(...args),
   withdraw: (...args: unknown[]) => mockWithdraw(...args),
+  withdrawForUser: (...args: unknown[]) => mockWithdraw(...args),
   getOnChainBalance: jest.fn(),
   getOnChainAPY: jest.fn(),
   getActiveProtocol: jest.fn(),
@@ -167,7 +169,7 @@ describe('API integration routes', () => {
       mockDb.transaction.create.mockResolvedValue({
         id: 'tx-2',
         txHash: 'server-generated-hash-0002',
-        status: 'PENDING',
+        status: 'CONFIRMED',
         amount: 100,
         assetSymbol: 'USDC',
         protocolName: 'Blend',
@@ -188,9 +190,12 @@ describe('API integration routes', () => {
       expect(res.body.transaction).toEqual(
         expect.objectContaining({
           txHash: 'server-generated-hash-0002',
+          status: 'CONFIRMED',
           amount: 100,
         }),
       )
+      expect(res.body.txHash).toBe('server-generated-hash-0002')
+      expect(res.body.status).toBe('CONFIRMED')
     })
   })
 })
