@@ -9,6 +9,7 @@ import { logger } from './utils/logger'
 import { startAgentLoop } from './agent/loop'
 import { connectDb } from './db'
 import { scheduleSessionCleanup } from './jobs/sessionCleanup'
+import { startEventListener } from './stellar/events'
 import healthRouter from './routes/health'
 import agentRouter from './routes/agent'
 import authRouter from './routes/auth'
@@ -57,6 +58,8 @@ async function main() {
     logger.info(`Network: ${config.stellar.network}`)
 
     try {
+      await startEventListener()
+      logger.info('Vault event listener started')
       await startAgentLoop()
     } catch (error) {
       logger.error('Failed to start agent loop', {

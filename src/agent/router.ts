@@ -2,11 +2,11 @@
  * Router - Compares APYs and triggers rebalancing when conditions are met
  */
 
-import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaClient } from '@prisma/client';
 import { logger } from '../utils/logger';
 import { ProtocolComparison, RebalanceDetails, RebalanceThresholds } from './types';
 import { scanAllProtocols, getCurrentOnChainApy } from './scanner';
+import { triggerRebalance as submitRebalance } from '../stellar/contract';
 
 const prisma = new PrismaClient();
 
@@ -14,6 +14,14 @@ const DEFAULT_THRESHOLDS: RebalanceThresholds = {
   minimumImprovement: 0.5, // Must improve by at least 0.5%
   maxGasPercent: 0.1,
 };
+
+function toApyBasisPoints(apyPercent: number): number {
+  if (!Number.isFinite(apyPercent) || apyPercent < 0) {
+    throw new Error('APY must be a non-negative number');
+  }
+
+  return Math.round(apyPercent * 100);
+}
 
 /**
  * Estimate transaction costs for a rebalance
@@ -119,33 +127,76 @@ export async function compareProtocols(
 export async function triggerRebalance(
   fromProtocol: string,
   toProtocol: string,
-  amount: string
+  amount: string,
+  positionIds: string[] = [],
 ): Promise<RebalanceDetails | null> {
   const startTime = Date.now();
 
   try {
+    const comparison = await compareProtocols(fromProtocol, amount);
+    if (!comparison) {
+      throw new Error(`Unable to compare protocols for ${fromProtocol}`);
+    }
+
+    const expectedApyBasisPoints = toApyBasisPoints(comparison.best.apy);
+
     logger.info('Rebalance triggered', {
       fromProtocol,
       toProtocol,
       amount,
+      expectedApyBasisPoints,
     });
 
-    // TODO: Call actual smart contract to execute rebalance
-    // This would interact with the Stellar Soroban vault contract
-    // const txHash = await executeRebalanceOnChain(fromProtocol, toProtocol, amount);
+    const onChainTransaction = await submitRebalance(
+      toProtocol,
+      expectedApyBasisPoints,
+    );
 
-    const mockTxHash = `mock_tx_${Date.now()}`;
+    if (positionIds.length > 0) {
+      const representativePosition = await prisma.position.findFirst({
+        where: {
+          id: { in: positionIds },
+        },
+        include: {
+          user: {
+            select: {
+              network: true,
+            },
+          },
+        },
+      });
 
-    const comparison = await compareProtocols(fromProtocol);
-    const improvement = comparison ? comparison.improvement : 0;
+      if (representativePosition) {
+        await prisma.transaction.create({
+          data: {
+            userId: representativePosition.userId,
+            positionId: representativePosition.id,
+            txHash: onChainTransaction.hash,
+            type: 'REBALANCE',
+            status: 'PENDING',
+            assetSymbol: representativePosition.assetSymbol,
+            amount,
+            network: representativePosition.user.network,
+            protocolName: toProtocol,
+            memo: `Agent rebalance from ${fromProtocol} to ${toProtocol}`,
+          } as any,
+        });
+      } else {
+        logger.warn('No position found to persist rebalance transaction', {
+          fromProtocol,
+          toProtocol,
+          positionIds,
+        });
+      }
+    }
 
     const rebalanceDetail: RebalanceDetails = {
       fromProtocol,
       toProtocol,
       amount,
-      txHash: mockTxHash,
+      txHash: onChainTransaction.hash,
       timestamp: new Date(),
-      improvedBy: improvement,
+      improvedBy: comparison.improvement,
     };
 
     const duration = Date.now() - startTime;
@@ -156,9 +207,9 @@ export async function triggerRebalance(
     });
 
     logger.info('Rebalance successful', {
-      txHash: mockTxHash,
+      txHash: onChainTransaction.hash,
       duration,
-      improvedBy: improvement.toFixed(2),
+      improvedBy: comparison.improvement.toFixed(2),
     });
 
     return rebalanceDetail;
@@ -217,7 +268,8 @@ export async function executeRebalanceIfNeeded(
     return await triggerRebalance(
       currentProtocol,
       comparison.best.name,
-      totalAmount
+      totalAmount,
+      userPositions.map(pos => pos.id),
     );
   } catch (error) {
     logger.error('Rebalance execution check failed', {

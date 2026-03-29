@@ -19,22 +19,38 @@ jest.mock('../../../src/agent/scanner', () => ({
   getBestProtocol: jest.fn(),
 }));
 
+const mockFindFirst = jest.fn();
+const mockTransactionCreate = jest.fn();
+const mockAgentLogCreate = jest.fn().mockResolvedValue({});
+const mockContractTriggerRebalance = jest.fn();
+
 // Mock Prisma used by logAgentAction
 jest.mock('@prisma/client', () => ({
   PrismaClient: jest.fn().mockImplementation(() => ({
     user: {
       findMany: jest.fn().mockResolvedValue([{ id: 'test-user-id' }]),
     },
+    position: {
+      findFirst: (...args: unknown[]) => mockFindFirst(...args),
+    },
+    transaction: {
+      create: (...args: unknown[]) => mockTransactionCreate(...args),
+    },
     agentLog: {
-      create: jest.fn().mockResolvedValue({}),
+      create: (...args: unknown[]) => mockAgentLogCreate(...args),
     },
   })),
+}));
+
+jest.mock('../../../src/stellar/contract', () => ({
+  triggerRebalance: (...args: unknown[]) => mockContractTriggerRebalance(...args),
 }));
 
 import {
   compareProtocols,
   executeRebalanceIfNeeded,
   getThresholds,
+  triggerRebalance,
 } from '../../../src/agent/router';
 import {
   scanAllProtocols,
@@ -63,6 +79,19 @@ const marginalProtocol = {
 describe('Agent Router', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockFindFirst.mockResolvedValue({
+      id: 'pos-1',
+      userId: 'test-user-id',
+      assetSymbol: 'USDC',
+      user: { network: 'TESTNET' },
+    });
+    mockTransactionCreate.mockResolvedValue({});
+    mockAgentLogCreate.mockResolvedValue({});
+    mockContractTriggerRebalance.mockResolvedValue({
+      hash: 'real-rebalance-hash-001',
+      status: 'success',
+      ledger: 77,
+    });
   });
 
   // ── compareProtocols ──────────────────────────────────────────────────────
@@ -187,7 +216,18 @@ describe('Agent Router', () => {
       expect(result).not.toBeNull();
       expect(result!.fromProtocol).toBe('Stellar DEX');
       expect(result!.toProtocol).toBe('Blend');
-      expect(result!.txHash).toBeDefined();
+      expect(result!.txHash).toBe('real-rebalance-hash-001');
+      expect(mockContractTriggerRebalance).toHaveBeenCalledWith('Blend', 800);
+      expect(mockTransactionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            type: 'REBALANCE',
+            status: 'PENDING',
+            txHash: 'real-rebalance-hash-001',
+            protocolName: 'Blend',
+          }),
+        }),
+      );
     });
 
     it('sums amounts across multiple positions before cost calculation', async () => {
@@ -207,6 +247,39 @@ describe('Agent Router', () => {
         { id: 'pos-1', amount: '100000000000000000000000' },
       ]);
       expect(result).toBeNull();
+    });
+  });
+
+  describe('triggerRebalance()', () => {
+    it('converts APY percent to basis points before invoking the vault contract', async () => {
+      mockApy.mockResolvedValue(2.0);
+      mockScan.mockResolvedValue([blendProtocol]);
+
+      const result = await triggerRebalance(
+        'Stellar DEX',
+        'Blend',
+        '100000000000000000000000',
+        ['pos-1'],
+      );
+
+      expect(result?.txHash).toBe('real-rebalance-hash-001');
+      expect(mockContractTriggerRebalance).toHaveBeenCalledWith('Blend', 800);
+    });
+
+    it('skips transaction persistence when no representative position is found', async () => {
+      mockApy.mockResolvedValue(2.0);
+      mockScan.mockResolvedValue([blendProtocol]);
+      mockFindFirst.mockResolvedValueOnce(null);
+
+      const result = await triggerRebalance(
+        'Stellar DEX',
+        'Blend',
+        '100000000000000000000000',
+        ['missing-pos'],
+      );
+
+      expect(result?.txHash).toBe('real-rebalance-hash-001');
+      expect(mockTransactionCreate).not.toHaveBeenCalled();
     });
   });
 });
