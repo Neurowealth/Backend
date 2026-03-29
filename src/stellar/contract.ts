@@ -16,6 +16,8 @@ import { OnChainBalance, TransactionResult } from './types';
 const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
 const STROOPS_PER_TOKEN = 10_000_000n;
 
+export type VaultWriteMethod = 'deposit' | 'withdraw';
+
 /**
  * Get vault contract instance
  */
@@ -74,6 +76,27 @@ async function executeWriteContractCall(
   }
 
   return result;
+}
+
+/**
+ * Execute a custodial user operation against the vault contract.
+ *
+ * Signing strategy:
+ * - The backend uses the encrypted user secret managed by src/stellar/wallet.ts
+ * - Only the public address is passed to the contract arguments
+ * - User secrets are never logged or returned from this module
+ */
+async function executeCustodialVaultOperation(
+  method: VaultWriteMethod,
+  userId: string,
+  userAddress: string,
+  amount: number,
+): Promise<TransactionResult> {
+  const signer = await getKeypairForUser(userId);
+  const userScVal = nativeToScVal(userAddress, { type: 'address' });
+  const amountScVal = nativeToScVal(toContractAmount(amount), { type: 'i128' });
+
+  return executeWriteContractCall(method, [userScVal, amountScVal], signer);
 }
 
 /**
@@ -156,11 +179,15 @@ export async function deposit(
   userAddress: string,
   amount: number,
 ): Promise<TransactionResult> {
-  const signer = await getKeypairForUser(userId);
-  const userScVal = nativeToScVal(userAddress, { type: 'address' });
-  const amountScVal = nativeToScVal(toContractAmount(amount), { type: 'i128' });
+  return depositForUser(userId, userAddress, amount);
+}
 
-  return executeWriteContractCall('deposit', [userScVal, amountScVal], signer);
+export async function depositForUser(
+  userId: string,
+  userAddress: string,
+  amount: number,
+): Promise<TransactionResult> {
+  return executeCustodialVaultOperation('deposit', userId, userAddress, amount);
 }
 
 /**
@@ -171,9 +198,13 @@ export async function withdraw(
   userAddress: string,
   amount: number,
 ): Promise<TransactionResult> {
-  const signer = await getKeypairForUser(userId);
-  const userScVal = nativeToScVal(userAddress, { type: 'address' });
-  const amountScVal = nativeToScVal(toContractAmount(amount), { type: 'i128' });
+  return withdrawForUser(userId, userAddress, amount);
+}
 
-  return executeWriteContractCall('withdraw', [userScVal, amountScVal], signer);
+export async function withdrawForUser(
+  userId: string,
+  userAddress: string,
+  amount: number,
+): Promise<TransactionResult> {
+  return executeCustodialVaultOperation('withdraw', userId, userAddress, amount);
 }

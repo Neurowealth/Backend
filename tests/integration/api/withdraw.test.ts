@@ -23,7 +23,9 @@ jest.mock('../../../src/db', () => ({
 
 jest.mock('../../../src/stellar/contract', () => ({
   deposit: jest.fn(),
+  depositForUser: jest.fn(),
   withdraw: (...args: unknown[]) => mockWithdraw(...args),
+  withdrawForUser: (...args: unknown[]) => mockWithdraw(...args),
   getOnChainBalance: jest.fn(),
   getOnChainAPY: jest.fn(),
   getActiveProtocol: jest.fn(),
@@ -69,7 +71,7 @@ describe('Withdraw route', () => {
     mockDb.transaction.create.mockResolvedValue({
       id: 'withdraw-tx-new',
       txHash: 'withdraw-hash-0001',
-      status: 'PENDING',
+      status: 'CONFIRMED',
       amount: VALID_WITHDRAW.amount,
       assetSymbol: VALID_WITHDRAW.assetSymbol,
       protocolName: VALID_WITHDRAW.protocolName,
@@ -109,17 +111,21 @@ describe('Withdraw route', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           type: 'WITHDRAWAL',
-          status: 'PENDING',
+          status: 'CONFIRMED',
           txHash: 'withdraw-hash-0001',
+          confirmedAt: expect.any(Date),
         }),
       }),
     )
     expect(res.body.transaction).toEqual(
       expect.objectContaining({
         txHash: 'withdraw-hash-0001',
+        status: 'CONFIRMED',
         amount: VALID_WITHDRAW.amount,
       }),
     )
+    expect(res.body.txHash).toBe('withdraw-hash-0001')
+    expect(res.body.status).toBe('CONFIRMED')
   })
 
   it('returns 409 if the generated on-chain hash already exists', async () => {

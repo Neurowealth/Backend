@@ -30,7 +30,9 @@ jest.mock('../../../src/db', () => ({
 
 jest.mock('../../../src/stellar/contract', () => ({
   deposit: (...args: unknown[]) => mockDeposit(...args),
+  depositForUser: (...args: unknown[]) => mockDeposit(...args),
   withdraw: jest.fn(),
+  withdrawForUser: jest.fn(),
   getOnChainBalance: jest.fn(),
   getOnChainAPY: jest.fn(),
   getActiveProtocol: jest.fn(),
@@ -76,7 +78,7 @@ describe('Deposit route', () => {
     mockDb.transaction.create.mockResolvedValue({
       id: 'tx-new',
       txHash: 'chain-hash-0000000001',
-      status: 'PENDING',
+      status: 'CONFIRMED',
       amount: VALID_DEPOSIT.amount,
       assetSymbol: VALID_DEPOSIT.assetSymbol,
       protocolName: VALID_DEPOSIT.protocolName,
@@ -176,9 +178,12 @@ describe('Deposit route', () => {
     expect(res.status).toBe(201);
     expect(res.body.transaction).toMatchObject({
       txHash: 'chain-hash-0000000001',
+      status: 'CONFIRMED',
       amount: VALID_DEPOSIT.amount,
       assetSymbol: VALID_DEPOSIT.assetSymbol,
     });
+    expect(res.body.txHash).toBe('chain-hash-0000000001');
+    expect(res.body.status).toBe('CONFIRMED');
   });
 
   it('returns a whatsappReply string on success', async () => {
@@ -191,7 +196,7 @@ describe('Deposit route', () => {
     expect(res.body.whatsappReply.length).toBeGreaterThan(0);
   });
 
-  it('creates a transaction record with PENDING status', async () => {
+  it('creates a confirmed transaction record with the on-chain hash', async () => {
     await request(app)
       .post('/api/deposit')
       .set(authHeader())
@@ -205,9 +210,10 @@ describe('Deposit route', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           type: 'DEPOSIT',
-          status: 'PENDING',
+          status: 'CONFIRMED',
           userId: USER_ID,
           txHash: 'chain-hash-0000000001',
+          confirmedAt: expect.any(Date),
         }),
       }),
     );
