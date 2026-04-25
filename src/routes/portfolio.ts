@@ -2,6 +2,9 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import db from '../db'
 import { enforceUserAccess, requireAuth } from '../middleware/auth'
+import { validate } from '../middleware/validate'
+import { mapPositionToResponse } from '../utils/api-formatters'
+import { sendNotFound } from '../utils/errors'
 import {
   formatPortfolioEarningsReply,
   formatPortfolioHistoryReply,
@@ -10,18 +13,29 @@ import {
 
 const router = Router()
 
-const historyQuerySchema = z.object({
-  period: z.enum(['7d', '30d', '90d']).default('30d'),
+const portfolioSchema = z.object({
+  params: z.object({
+    userId: z.string().uuid(),
+  }),
 })
 
-router.get('/:userId', requireAuth, enforceUserAccess, async (req: Request, res: Response) => {
-  const userId = String(req.params.userId)
+const historySchema = z.object({
+  params: z.object({
+    userId: z.string().uuid(),
+  }),
+  query: z.object({
+    period: z.enum(['7d', '30d', '90d']).default('30d'),
+  }),
+})
+
+router.get('/:userId', requireAuth, enforceUserAccess, validate(portfolioSchema), async (req: Request, res: Response) => {
+  const userId = req.params.userId
   const user = await db.user.findUnique({
     where: { id: userId },
   })
 
   if (!user) {
-    return res.status(404).json({ error: 'User not found' })
+    return sendNotFound(res, 'User')
   }
 
   const userPositions = await db.position.findMany({
@@ -36,14 +50,7 @@ router.get('/:userId', requireAuth, enforceUserAccess, async (req: Request, res:
   }, 0)
   const activePositions = userPositions.filter((p: any) => p.status === 'ACTIVE').length
 
-  const positions = userPositions.map((position: any) => ({
-    id: position.id,
-    protocolName: position.protocolName,
-    assetSymbol: position.assetSymbol,
-    currentValue: Number(position.currentValue),
-    yieldEarned: Number(position.yieldEarned),
-    status: position.status,
-  }))
+  const positions = userPositions.map(mapPositionToResponse)
 
   return res.status(200).json({
     userId: user.id,
@@ -64,31 +71,24 @@ router.get(
   '/:userId/history',
   requireAuth,
   enforceUserAccess,
+  validate(historySchema),
   async (req: Request, res: Response) => {
-    const queryParsed = historyQuerySchema.safeParse(req.query)
-    if (!queryParsed.success) {
-      return res.status(400).json({
-        error: 'Validation error',
-        details: queryParsed.error.flatten(),
-      })
-    }
-
+    const userId = req.params.userId
     const user = await db.user.findUnique({
-      where: { id: String(req.params.userId) },
+      where: { id: userId },
       select: { id: true },
     })
 
     if (!user) {
-      return res.status(404).json({ error: 'User not found' })
+      return sendNotFound(res, 'User')
     }
 
-    const userId = String(req.params.userId)
     const now = Date.now()
     const dayMs = 24 * 60 * 60 * 1000
     const periodDays =
-      queryParsed.data.period === '7d'
+      req.query.period === '7d'
         ? 7
-        : queryParsed.data.period === '30d'
+        : req.query.period === '30d'
           ? 30
           : 90
     const fromDate = new Date(now - periodDays * dayMs)
@@ -106,10 +106,10 @@ router.get(
 
     return res.status(200).json({
       userId,
-      period: queryParsed.data.period,
+      period: req.query.period,
       points,
       whatsappReply: formatPortfolioHistoryReply({
-        period: queryParsed.data.period,
+        period: req.query.period as any,
         points,
       }),
     })
@@ -120,16 +120,17 @@ router.get(
   '/:userId/earnings',
   requireAuth,
   enforceUserAccess,
+  validate(portfolioSchema),
   async (req: Request, res: Response) => {
+    const userId = req.params.userId
     const user = await db.user.findUnique({
-      where: { id: String(req.params.userId) },
+      where: { id: userId },
     })
 
     if (!user) {
-      return res.status(404).json({ error: 'User not found' })
+      return sendNotFound(res, 'User')
     }
 
-    const userId = String(req.params.userId)
     const userPositions = await db.position.findMany({
       where: { userId },
     })
