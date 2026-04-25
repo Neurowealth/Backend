@@ -66,7 +66,6 @@ model User {
   transactions Transaction[]
   agentLogs    AgentLog[]
 
-  @@index([walletAddress])
   @@map("users")
 }
 
@@ -83,8 +82,9 @@ model Session {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([token])
   @@index([userId])
+  @@index([expiresAt])
+  @@index([userId, expiresAt])
   @@map("sessions")
 }
 
@@ -108,6 +108,10 @@ model Position {
 
   @@index([userId])
   @@index([protocolName])
+  @@index([status])
+  @@index([userId, status])
+  @@index([protocolName, assetSymbol])
+  @@index([assetSymbol])
   @@map("positions")
 }
 
@@ -132,8 +136,11 @@ model Transaction {
   position Position? @relation(fields: [positionId], references: [id])
 
   @@index([userId])
-  @@index([txHash])
   @@index([positionId])
+  @@index([type])
+  @@index([status])
+  @@index([createdAt])
+  @@index([userId, createdAt])
   @@map("transactions")
 }
 
@@ -184,6 +191,8 @@ model AgentLog {
 
   @@index([userId])
   @@index([action])
+  @@index([status])
+  @@index([userId, status])
   @@index([createdAt])
   @@map("agent_logs")
 }
@@ -209,6 +218,7 @@ model ProcessedEvent {
   @@unique([contractId, txHash, eventType, ledger])
   @@index([contractId])
   @@index([txHash])
+  @@index([ledger])
   @@index([processedAt])
   @@map("processed_events")
 }
