@@ -90,4 +90,14 @@ export const config = {
     twilioToken: process.env.TWILIO_AUTH_TOKEN || '',
     fromNumber: process.env.WHATSAPP_FROM || '',
   },
+  security: {
+    rateLimit: {
+      windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000'), // Default 15 minutes
+      max: parseInt(process.env.RATE_LIMIT_MAX || '100'), // Default 100 requests per window
+    },
+    authRateLimit: {
+      windowMs: parseInt(process.env.AUTH_RATE_LIMIT_WINDOW_MS || '900000'), // Default 15 minutes
+      max: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '20'), // Stricter limit for auth: 20 requests per window
+    },
+  },
 }
