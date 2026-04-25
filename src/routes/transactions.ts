@@ -6,6 +6,8 @@ import {
   formatTransactionDetailReply,
   formatTransactionsReply,
 } from '../whatsapp/formatters'
+import { validate } from '../middleware/validate'
+import { userIdParamSchema } from '../validators/common-validators'
 
 const router = Router()
 
@@ -14,8 +16,12 @@ const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(5),
 })
 
-router.get('/detail/:txHash', requireAuth, async (req: Request, res: Response) => {
-  const txHash = String(req.params.txHash)
+const txHashParamSchema = z.object({
+  txHash: z.string().min(1, 'Transaction hash is required')
+})
+
+router.get('/detail/:txHash', requireAuth, validate({ params: txHashParamSchema }), async (req: Request, res: Response) => {
+  const txHash = req.params.txHash
   const tx = await db.transaction.findUnique({
     where: { txHash },
   })
@@ -41,16 +47,8 @@ router.get('/detail/:txHash', requireAuth, async (req: Request, res: Response) =
   })
 })
 
-router.get('/:userId', requireAuth, enforceUserAccess, async (req: Request, res: Response) => {
-  const userId = String(req.params.userId)
-  const queryParsed = listQuerySchema.safeParse(req.query)
-  if (!queryParsed.success) {
-    return res.status(400).json({
-      error: 'Validation error',
-      details: queryParsed.error.flatten(),
-    })
-  }
-
+router.get('/:userId', requireAuth, enforceUserAccess, validate({ params: userIdParamSchema, query: listQuerySchema }), async (req: Request, res: Response) => {
+  const userId = req.params.userId
   const user = await db.user.findUnique({
     where: { id: userId },
     select: { id: true },
@@ -59,8 +57,8 @@ router.get('/:userId', requireAuth, enforceUserAccess, async (req: Request, res:
     return res.status(404).json({ error: 'User not found' })
   }
 
-  const page = queryParsed.data.page
-  const limit = queryParsed.data.limit || 5
+  const page = Number(req.query.page)
+  const limit = Number(req.query.limit) || 5
   const skip = (page - 1) * limit
 
   const [total, transactions] = await Promise.all([

@@ -7,6 +7,8 @@ import {
   formatPortfolioHistoryReply,
   formatPortfolioReply,
 } from '../whatsapp/formatters'
+import { validate } from '../middleware/validate'
+import { userIdParamSchema } from '../validators/common-validators'
 
 const router = Router()
 
@@ -14,7 +16,7 @@ const historyQuerySchema = z.object({
   period: z.enum(['7d', '30d', '90d']).default('30d'),
 })
 
-router.get('/:userId', requireAuth, enforceUserAccess, async (req: Request, res: Response) => {
+router.get('/:userId', requireAuth, enforceUserAccess, validate({ params: userIdParamSchema }), async (req: Request, res: Response) => {
   const userId = String(req.params.userId)
   const user = await db.user.findUnique({
     where: { id: userId },
@@ -64,14 +66,8 @@ router.get(
   '/:userId/history',
   requireAuth,
   enforceUserAccess,
+  validate({ params: userIdParamSchema, query: historyQuerySchema }),
   async (req: Request, res: Response) => {
-    const queryParsed = historyQuerySchema.safeParse(req.query)
-    if (!queryParsed.success) {
-      return res.status(400).json({
-        error: 'Validation error',
-        details: queryParsed.error.flatten(),
-      })
-    }
 
     const user = await db.user.findUnique({
       where: { id: String(req.params.userId) },
@@ -86,9 +82,9 @@ router.get(
     const now = Date.now()
     const dayMs = 24 * 60 * 60 * 1000
     const periodDays =
-      queryParsed.data.period === '7d'
+      req.query.period === '7d'
         ? 7
-        : queryParsed.data.period === '30d'
+        : req.query.period === '30d'
           ? 30
           : 90
     const fromDate = new Date(now - periodDays * dayMs)
@@ -106,10 +102,10 @@ router.get(
 
     return res.status(200).json({
       userId,
-      period: queryParsed.data.period,
+      period: req.query.period,
       points,
       whatsappReply: formatPortfolioHistoryReply({
-        period: queryParsed.data.period,
+        period: req.query.period as any,
         points,
       }),
     })
@@ -120,6 +116,7 @@ router.get(
   '/:userId/earnings',
   requireAuth,
   enforceUserAccess,
+  validate({ params: userIdParamSchema }),
   async (req: Request, res: Response) => {
     const user = await db.user.findUnique({
       where: { id: String(req.params.userId) },
