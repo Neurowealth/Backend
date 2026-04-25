@@ -4,7 +4,7 @@ import helmet from 'helmet'
 import { config } from './config/env'
 import { errorHandler } from './middleware/errorHandler'
 import { requestLogger } from './middleware/logger'
-import { rateLimiter } from './middleware/rateLimiter'
+import { rateLimiter, authRateLimiter } from './middleware/rateLimiter'
 import { logger } from './utils/logger'
 import { startAgentLoop } from './agent/loop'
 import { connectDb } from './db'
@@ -23,6 +23,9 @@ import vaultRouter from './routes/vault'
 
 const app = express()
 
+// Trust proxy for rate limiting (essential if behind Nginx/Heroku/Cloudflare)
+app.set('trust proxy', 1)
+
 // Security and parsing middleware
 app.use(helmet())
 app.use(cors())
@@ -36,7 +39,7 @@ app.use(rateLimiter)
 // Public routes
 app.use('/health', healthRouter)
 app.use('/api/agent', agentRouter)
-app.use('/api/auth', authRouter)
+app.use('/api/auth', authRateLimiter, authRouter)
 app.use('/api/whatsapp', whatsappRouter)
 app.use('/api/portfolio', portfolioRouter)
 app.use('/api/transactions', transactionsRouter)
