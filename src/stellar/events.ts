@@ -5,6 +5,13 @@ import { getRpcServer } from './client';
 import { ContractEvent, DepositEvent, WithdrawEvent, RebalanceEvent, EventMetrics } from './types';
 import { logger } from '../utils/logger';
 import { config } from '../config';
+import { DeadLetterQueue } from './dlq';
+import { 
+  ContractEventSchema, 
+  DepositEventSchema, 
+  WithdrawEventSchema, 
+  RebalanceEventSchema 
+} from '../validators/event-validator';
 
 const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
 const POLL_INTERVAL_MS = 5000;
@@ -161,18 +168,18 @@ function parseRebalanceEvent(event: ContractEvent): RebalanceEvent {
 /**
  * Handle deposit event - persist to database
  */
-async function handleDepositEvent(depositData: DepositEvent, event: ContractEvent): Promise<void> {
+async function handleDepositEvent(depositData: DepositEvent, event: ContractEvent, tx: any = prisma): Promise<void> {
   const user = await timedDbOperation(() =>
-    prisma.user.findUnique({ where: { walletAddress: depositData.user } })
-  );
+    tx.user.findUnique({ where: { walletAddress: depositData.user } })
+  ) as any;
 
   if (!user) {
     logger.warn(`[Deposit] User not found for wallet: ${depositData.user}`);
-    return;
+    throw new Error(`[Deposit] User not found for wallet: ${depositData.user}`);
   }
 
   const transaction = await timedDbOperation(() =>
-    prisma.transaction.upsert({
+    tx.transaction.upsert({
       where: { txHash: event.txHash },
       update: { status: TransactionStatus.CONFIRMED, confirmedAt: new Date() },
       create: {
@@ -186,17 +193,17 @@ async function handleDepositEvent(depositData: DepositEvent, event: ContractEven
         confirmedAt: new Date(),
       },
     })
-  );
+  ) as any;
 
   const position = await timedDbOperation(() =>
-    prisma.position.findFirst({
+    tx.position.findFirst({
       where: { userId: user.id, protocolName: depositData.protocolName, status: 'ACTIVE' },
     })
-  );
+  ) as any;
 
   if (position) {
     await timedDbOperation(() =>
-      prisma.position.update({
+      tx.position.update({
         where: { id: position.id },
         data: {
           depositedAmount: { increment: depositData.amount },
@@ -206,11 +213,11 @@ async function handleDepositEvent(depositData: DepositEvent, event: ContractEven
       })
     );
     await timedDbOperation(() =>
-      prisma.transaction.update({ where: { id: transaction.id }, data: { positionId: position.id } })
+      tx.transaction.update({ where: { id: transaction.id }, data: { positionId: position.id } })
     );
   } else {
     const newPosition = await timedDbOperation(() =>
-      prisma.position.create({
+      tx.position.create({
         data: {
           userId: user.id,
           protocolName: depositData.protocolName,
@@ -220,9 +227,9 @@ async function handleDepositEvent(depositData: DepositEvent, event: ContractEven
           yieldEarned: 0,
         },
       })
-    );
+    ) as any;
     await timedDbOperation(() =>
-      prisma.transaction.update({ where: { id: transaction.id }, data: { positionId: newPosition.id } })
+      tx.transaction.update({ where: { id: transaction.id }, data: { positionId: newPosition.id } })
     );
   }
 }
@@ -230,18 +237,18 @@ async function handleDepositEvent(depositData: DepositEvent, event: ContractEven
 /**
  * Handle withdraw event - persist to database
  */
-async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractEvent): Promise<void> {
+async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractEvent, tx: any = prisma): Promise<void> {
   const user = await timedDbOperation(() =>
-    prisma.user.findUnique({ where: { walletAddress: withdrawData.user } })
-  );
+    tx.user.findUnique({ where: { walletAddress: withdrawData.user } })
+  ) as any;
 
   if (!user) {
     logger.warn(`[Withdraw] User not found for wallet: ${withdrawData.user}`);
-    return;
+    throw new Error(`[Withdraw] User not found for wallet: ${withdrawData.user}`);
   }
 
   const transaction = await timedDbOperation(() =>
-    prisma.transaction.upsert({
+    tx.transaction.upsert({
       where: { txHash: event.txHash },
       update: { status: TransactionStatus.CONFIRMED, confirmedAt: new Date() },
       create: {
@@ -255,26 +262,26 @@ async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractE
         confirmedAt: new Date(),
       },
     })
-  );
+  ) as any;
 
   const position = await timedDbOperation(() =>
-    prisma.position.findFirst({
+    tx.position.findFirst({
       where: { userId: user.id, protocolName: withdrawData.protocolName, status: 'ACTIVE' },
     })
-  );
+  ) as any;
 
   if (position) {
     const newDepositedAmount = new Decimal(position.depositedAmount).minus(withdrawData.amount);
     const newCurrentValue = new Decimal(position.currentValue).minus(withdrawData.amount);
 
     await timedDbOperation(() =>
-      prisma.position.update({
+      tx.position.update({
         where: { id: position.id },
         data: { depositedAmount: newDepositedAmount, currentValue: newCurrentValue, updatedAt: new Date() },
       })
     );
     await timedDbOperation(() =>
-      prisma.transaction.update({ where: { id: transaction.id }, data: { positionId: position.id } })
+      tx.transaction.update({ where: { id: transaction.id }, data: { positionId: position.id } })
     );
   }
 }
@@ -282,9 +289,9 @@ async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractE
 /**
  * Handle rebalance event - persist to database
  */
-async function handleRebalanceEvent(rebalanceData: RebalanceEvent, event: ContractEvent): Promise<void> {
+async function handleRebalanceEvent(rebalanceData: RebalanceEvent, event: ContractEvent, tx: any = prisma): Promise<void> {
   await timedDbOperation(() =>
-    prisma.protocolRate.create({
+    tx.protocolRate.create({
       data: {
         protocolName: rebalanceData.protocol,
         assetSymbol: rebalanceData.assetSymbol,
@@ -299,15 +306,18 @@ async function handleRebalanceEvent(rebalanceData: RebalanceEvent, event: Contra
 }
 
 /**
- * Handle contract event with persistence and idempotency
+ * Handle contract event with persistence, idempotency, and validation (Issue #53)
  */
-async function handleEvent(event: ContractEvent): Promise<void> {
+export async function handleEvent(event: ContractEvent, tx: any = prisma): Promise<void> {
   try {
     logger.info(`[Event] ${event.type} detected at ledger ${event.ledger}, tx: ${event.txHash}`);
 
+    // Issue #53: Event validation
+    ContractEventSchema.parse(event);
+
     // Check if event was already processed (idempotency)
     const existingEvent = await timedDbOperation(() =>
-      prisma.processedEvent.findUnique({
+      tx.processedEvent.findUnique({
         where: {
           contractId_txHash_eventType_ledger: {
             contractId: event.contractId,
@@ -327,29 +337,31 @@ async function handleEvent(event: ContractEvent): Promise<void> {
     switch (event.type) {
       case 'deposit': {
         const depositData = parseDepositEvent(event);
-        logger.info(`[Deposit] User: ${depositData.user}, Amount: ${depositData.amount}, Shares: ${depositData.shares}, Asset: ${depositData.assetSymbol}, Protocol: ${depositData.protocolName}, Network: ${depositData.network}`);
-        await handleDepositEvent(depositData, event);
+        DepositEventSchema.parse(depositData);
+        await handleDepositEvent(depositData, event, tx);
         break;
       }
 
       case 'withdraw': {
         const withdrawData = parseWithdrawEvent(event);
-        logger.info(`[Withdraw] User: ${withdrawData.user}, Amount: ${withdrawData.amount}, Shares: ${withdrawData.shares}, Asset: ${withdrawData.assetSymbol}, Protocol: ${withdrawData.protocolName}, Network: ${withdrawData.network}`);
-        await handleWithdrawEvent(withdrawData, event);
+        WithdrawEventSchema.parse(withdrawData);
+        await handleWithdrawEvent(withdrawData, event, tx);
         break;
       }
 
       case 'rebalance': {
         const rebalanceData = parseRebalanceEvent(event);
-        logger.info(`[Rebalance] Protocol: ${rebalanceData.protocol}, APY: ${rebalanceData.apy}%, Asset: ${rebalanceData.assetSymbol}, Network: ${rebalanceData.network}`);
-        await handleRebalanceEvent(rebalanceData, event);
+        RebalanceEventSchema.parse(rebalanceData);
+        await handleRebalanceEvent(rebalanceData, event, tx);
         break;
       }
+      default:
+        throw new Error(`Unknown event type: ${event.type}`);
     }
 
     // Mark event as processed
     await timedDbOperation(() =>
-      prisma.processedEvent.create({
+      tx.processedEvent.create({
         data: {
           contractId: event.contractId,
           txHash: event.txHash,
@@ -364,6 +376,41 @@ async function handleEvent(event: ContractEvent): Promise<void> {
   } catch (error) {
     recordError();
     logger.error(`[Event Error] Failed to handle ${event.type}:`, error instanceof Error ? error.message : 'Unknown error');
+    // Issue #54: Store in Dead-Letter Queue
+    await DeadLetterQueue.add(event, error instanceof Error ? error.message : 'Unknown error');
+    throw error; // Rethrow so transaction can rollback if running inside one
+  }
+}
+
+/**
+ * Process a batch of events in a single transaction (Issue #55)
+ */
+export async function processEventBatch(events: ContractEvent[]): Promise<void> {
+  const start = Date.now();
+  let processedCount = 0;
+
+  logger.info(`[Batch Processing] Attempting to process ${events.length} events`);
+
+  try {
+    // Multiple events processed in a single transaction
+    await prisma.$transaction(async (tx) => {
+      for (const event of events) {
+        await handleEvent(event, tx);
+        processedCount++;
+      }
+    });
+    const duration = Date.now() - start;
+    logger.info(`[Batch Processing] Throughput: Successfully processed batch of ${processedCount} events in ${duration}ms`);
+  } catch (batchError) {
+    logger.error(`[Batch Processing Error] Transaction failed, falling back to individual processing:`, batchError);
+    // Fallback: Process individually so robust events succeed
+    for (const event of events) {
+      try {
+        await handleEvent(event, prisma);
+      } catch (individualError) {
+        logger.error(`[Batch Fallback Error] Event processing completely failed for ${event.txHash}`);
+      }
+    }
   }
 }
 
@@ -406,7 +453,7 @@ async function updateLastProcessedLedger(ledger: number): Promise<void> {
 }
 
 /**
- * Fetch and process events from ledger range
+ * Fetch and process events from ledger range with Batching (Issue #55)
  */
 async function fetchEvents(startLedger: number): Promise<void> {
   const server = getRpcServer();
@@ -430,22 +477,26 @@ async function fetchEvents(startLedger: number): Promise<void> {
       ],
     });
 
+    const contractEvents: ContractEvent[] = [];
     for (const event of events.events) {
       const topics = event.topic;
       const eventType = topics.length > 0 ? scValToNative(topics[0]) : null;
 
       if (['deposit', 'withdraw', 'rebalance'].includes(eventType)) {
-        const contractEvent: ContractEvent = {
+        contractEvents.push({
           type: eventType as 'deposit' | 'withdraw' | 'rebalance',
           ledger: event.ledger,
           txHash: event.txHash,
           contractId: typeof event.contractId === 'string' ? event.contractId : VAULT_CONTRACT_ID,
           topics: topics,
           value: event.value,
-        };
-
-        await handleEvent(contractEvent);
+        });
       }
+    }
+
+    if (contractEvents.length > 0) {
+      // Use batch processing
+      await processEventBatch(contractEvents);
     }
 
     // Update cursor in database
@@ -457,7 +508,63 @@ async function fetchEvents(startLedger: number): Promise<void> {
 }
 
 /**
- * Start event listener
+ * Backfill events for range-based reprocessing (Issue #59)
+ */
+export async function backfillEvents(startLedger: number, endLedger?: number): Promise<void> {
+  const server = getRpcServer();
+  const latestLedger = await server.getLatestLedger();
+  const finalLedger = endLedger && endLedger <= latestLedger.sequence ? endLedger : latestLedger.sequence;
+
+  logger.info(`[Backfill] Starting range reprocessing from ${startLedger} to ${finalLedger}`);
+
+  const CHUNK_SIZE = 100;
+  for (let current = startLedger; current <= finalLedger; current += CHUNK_SIZE) {
+    const chunkEnd = Math.min(current + CHUNK_SIZE - 1, finalLedger);
+    try {
+      const events = await server.getEvents({
+        startLedger: current,
+        filters: [{ type: 'contract', contractIds: [VAULT_CONTRACT_ID] }],
+      });
+
+      const contractEvents: ContractEvent[] = [];
+      for (const event of events.events) {
+        const topics = event.topic;
+        const eventType = topics.length > 0 ? scValToNative(topics[0]) : null;
+
+        if (['deposit', 'withdraw', 'rebalance'].includes(eventType) && event.ledger <= chunkEnd) {
+          contractEvents.push({
+            type: eventType as 'deposit' | 'withdraw' | 'rebalance',
+            ledger: event.ledger,
+            txHash: event.txHash,
+            contractId: typeof event.contractId === 'string' ? event.contractId : VAULT_CONTRACT_ID,
+            topics: topics,
+            value: event.value,
+          });
+        }
+      }
+
+      if (contractEvents.length > 0) {
+        await processEventBatch(contractEvents);
+      }
+    } catch (error) {
+      logger.error(`[Backfill Error] Failed range ${current}-${chunkEnd}:`, error instanceof Error ? error.message : 'Unknown error');
+    }
+  }
+  logger.info(`[Backfill] Range reprocessing completed.`);
+}
+
+/**
+ * Manual intervention: Retry failed events from DLQ (Issue #54)
+ */
+export async function retryDeadLetterEvents(): Promise<void> {
+  logger.info(`[DLQ] Starting manual intervention retry for all DLQ events`);
+  await DeadLetterQueue.retryAll(async (eventPayload) => {
+    await handleEvent(eventPayload, prisma);
+  });
+}
+
+/**
+ * Start event listener with fault recovery check (Issue #59)
  */
 export async function startEventListener(): Promise<void> {
   if (isListening) {
@@ -475,6 +582,18 @@ export async function startEventListener(): Promise<void> {
   lastProcessedLedger = await loadLastProcessedLedger();
 
   logger.info(`[Event Listener] Started at ledger ${lastProcessedLedger}`);
+
+  // Fault recovery: Check if we are lagging significantly behind latest ledger
+  try {
+    const server = getRpcServer();
+    const latestLedger = await server.getLatestLedger();
+    if (latestLedger.sequence > lastProcessedLedger + 1) {
+      logger.info(`[Fault Recovery] Downtime detected. Backfilling missed events from ${lastProcessedLedger + 1} to ${latestLedger.sequence}`);
+      await backfillEvents(lastProcessedLedger + 1, latestLedger.sequence);
+    }
+  } catch (error) {
+    logger.error('[Fault Recovery Error] Failed to perform backfill on startup:', error);
+  }
 
   // Poll loop
   const poll = async () => {

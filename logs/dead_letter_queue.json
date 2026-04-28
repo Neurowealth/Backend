@@ -1,0 +1,6286 @@
+[
+  {
+    "id": "2tgh5ik46h840ndrs7il77",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_withdraw_1",
+    "eventType": "withdraw",
+    "ledger": 101,
+    "error": "tx.processedEvent.findUnique is not a function",
+    "payload": {
+      "type": "withdraw",
+      "ledger": 101,
+      "txHash": "tx_withdraw_1",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "withdraw"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "2000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "2000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 3,
+    "createdAt": "2026-04-28T18:03:33.400Z",
+    "updatedAt": "2026-04-28T18:12:05.627Z"
+  },
+  {
+    "id": "txh8r4twuj6nspp6kp7rm",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_unique_001",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "tx.processedEvent.findUnique is not a function",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_unique_001",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 3,
+    "createdAt": "2026-04-28T18:03:33.427Z",
+    "updatedAt": "2026-04-28T18:12:05.631Z"
+  },
+  {
+    "id": "llwkkhzj1lhe720a0lzw3",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.7259979125658989",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "tx.processedEvent.findUnique is not a function",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.7259979125658989",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 3,
+    "createdAt": "2026-04-28T18:03:33.461Z",
+    "updatedAt": "2026-04-28T18:12:05.634Z"
+  },
+  {
+    "id": "7w1vk5k8kmte5nagez2su",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_unknown_user",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "tx.processedEvent.findUnique is not a function",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_unknown_user",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GUNKNOWN_WALLET_ADDRESS"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 3,
+    "createdAt": "2026-04-28T18:03:33.531Z",
+    "updatedAt": "2026-04-28T18:12:05.639Z"
+  },
+  {
+    "id": "teue33lbhpnfgp08zbjrn",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.009634375188604327",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "tx.processedEvent.findUnique is not a function",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.009634375188604327",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        },
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "USDC"
+        },
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "blend"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 3,
+    "createdAt": "2026-04-28T18:03:33.565Z",
+    "updatedAt": "2026-04-28T18:12:05.643Z"
+  },
+  {
+    "id": "5pymkcqh0rmp9r5q93a9x",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_rebalance_0.03395038798672467",
+    "eventType": "rebalance",
+    "ledger": 99,
+    "error": "tx.processedEvent.findUnique is not a function",
+    "payload": {
+      "type": "rebalance",
+      "ledger": 99,
+      "txHash": "tx_rebalance_0.03395038798672467",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "rebalance"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "apy"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "700"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "protocol"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "blend"
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "timestamp"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1777399413"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 3,
+    "createdAt": "2026-04-28T18:03:33.673Z",
+    "updatedAt": "2026-04-28T18:12:05.648Z"
+  },
+  {
+    "id": "7rv6s7jie7pas4g8vxkmq7",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_batch_1",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "tx.processedEvent.findUnique is not a function",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_batch_1",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 3,
+    "createdAt": "2026-04-28T18:03:47.048Z",
+    "updatedAt": "2026-04-28T18:12:05.651Z"
+  },
+  {
+    "id": "v24rxq9hpxbbu45m9imtb6",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_batch_1",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "tx.processedEvent.findUnique is not a function",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_batch_1",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 3,
+    "createdAt": "2026-04-28T18:03:47.058Z",
+    "updatedAt": "2026-04-28T18:12:05.655Z"
+  },
+  {
+    "id": "po8w8w3hscgesw1g6ye5no",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_batch_2",
+    "eventType": "withdraw",
+    "ledger": 101,
+    "error": "tx.processedEvent.findUnique is not a function",
+    "payload": {
+      "type": "withdraw",
+      "ledger": 101,
+      "txHash": "tx_batch_2",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "withdraw"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "500"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "50"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 3,
+    "createdAt": "2026-04-28T18:03:47.116Z",
+    "updatedAt": "2026-04-28T18:12:05.686Z"
+  },
+  {
+    "id": "qdq82dec71dnfmhbtbshe",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_invalid_schema",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "tx.processedEvent.findUnique is not a function",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_invalid_schema",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": ""
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 3,
+    "createdAt": "2026-04-28T18:03:47.145Z",
+    "updatedAt": "2026-04-28T18:12:05.691Z"
+  },
+  {
+    "id": "6jzexnjok47q261505kyk",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_invalid_schema",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "tx.processedEvent.findUnique is not a function",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_invalid_schema",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": ""
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 3,
+    "createdAt": "2026-04-28T18:03:47.147Z",
+    "updatedAt": "2026-04-28T18:12:05.695Z"
+  },
+  {
+    "id": "yq3qsdrynylhp6r18o0odi",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_retry_test",
+    "eventType": "deposit",
+    "ledger": 105,
+    "error": "Test manual error",
+    "payload": {
+      "type": "deposit",
+      "ledger": 105,
+      "txHash": "tx_retry_test",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"
+    },
+    "status": "RETRIED",
+    "retryCount": 3,
+    "createdAt": "2026-04-28T18:03:47.150Z",
+    "updatedAt": "2026-04-28T18:12:05.699Z"
+  },
+  {
+    "id": "u26udbkor5oj0r2loan8mi",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_batch_1",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "tx.transaction.update is not a function",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_batch_1",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 2,
+    "createdAt": "2026-04-28T18:07:35.191Z",
+    "updatedAt": "2026-04-28T18:12:05.705Z"
+  },
+  {
+    "id": "d31a4z6qb87mrjuuwjg2sl",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_batch_1",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "tx.transaction.update is not a function",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_batch_1",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 2,
+    "createdAt": "2026-04-28T18:07:35.196Z",
+    "updatedAt": "2026-04-28T18:12:05.707Z"
+  },
+  {
+    "id": "omw0ly0ndkcm1xdyii6i1",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_invalid_schema",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "[\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"user\"\n    ],\n    \"message\": \"User wallet address is required\"\n  }\n]",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_invalid_schema",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": ""
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 2,
+    "createdAt": "2026-04-28T18:07:35.286Z",
+    "updatedAt": "2026-04-28T18:12:05.721Z"
+  },
+  {
+    "id": "o2my3vvonhkiqg7lpcwux",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_invalid_schema",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "[\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"user\"\n    ],\n    \"message\": \"User wallet address is required\"\n  }\n]",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_invalid_schema",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": ""
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 2,
+    "createdAt": "2026-04-28T18:07:35.293Z",
+    "updatedAt": "2026-04-28T18:12:05.728Z"
+  },
+  {
+    "id": "kf5gjhq3knn8ubrw5py2p",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_retry_test",
+    "eventType": "deposit",
+    "ledger": 105,
+    "error": "Test manual error",
+    "payload": {
+      "type": "deposit",
+      "ledger": 105,
+      "txHash": "tx_retry_test",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"
+    },
+    "status": "RETRIED",
+    "retryCount": 2,
+    "createdAt": "2026-04-28T18:07:35.307Z",
+    "updatedAt": "2026-04-28T18:12:05.731Z"
+  },
+  {
+    "id": "0t7hp4uk5bt7k715sbdjri",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "deposit_tx_001",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "deposit_tx_001",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:07:39.271Z",
+    "updatedAt": "2026-04-28T18:12:05.733Z"
+  },
+  {
+    "id": "otv43518nooe6y3zvcwdg",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_1",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_1",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:07:39.379Z",
+    "updatedAt": "2026-04-28T18:12:05.736Z"
+  },
+  {
+    "id": "h4t0a3y89f4l9tqol06mm",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_2",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_deposit_2",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "3000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "3000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:07:39.578Z",
+    "updatedAt": "2026-04-28T18:12:05.801Z"
+  },
+  {
+    "id": "8omd4rn1bp6r0fdi9sadcp",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_withdraw_1",
+    "eventType": "withdraw",
+    "ledger": 101,
+    "error": "[Withdraw] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "withdraw",
+      "ledger": 101,
+      "txHash": "tx_withdraw_1",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "withdraw"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "2000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "2000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:07:39.646Z",
+    "updatedAt": "2026-04-28T18:12:05.828Z"
+  },
+  {
+    "id": "m7m3w6c5fkd1rjlcj25iax",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_unique_001",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_unique_001",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:07:39.779Z",
+    "updatedAt": "2026-04-28T18:12:05.872Z"
+  },
+  {
+    "id": "ha08l74tw6qkz9d5v6i4sr",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_unknown_user",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GUNKNOWN_WALLET_ADDRESS",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_unknown_user",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GUNKNOWN_WALLET_ADDRESS"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:07:39.890Z",
+    "updatedAt": "2026-04-28T18:12:05.904Z"
+  },
+  {
+    "id": "u9w1j5dvn471o7je9z2d",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.328557914625889",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.328557914625889",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:08:04.660Z",
+    "updatedAt": "2026-04-28T18:12:05.978Z"
+  },
+  {
+    "id": "1rnk109d9wq6u4adbwkq93",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.328557914625889",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.328557914625889",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:08:04.672Z",
+    "updatedAt": "2026-04-28T18:12:05.982Z"
+  },
+  {
+    "id": "xb8sbzothmlggaxpcp66i6",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_withdraw_0.05324723649918628",
+    "eventType": "withdraw",
+    "ledger": 99,
+    "error": "[Withdraw] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "withdraw",
+      "ledger": 99,
+      "txHash": "tx_withdraw_0.05324723649918628",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "withdraw"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:08:04.780Z",
+    "updatedAt": "2026-04-28T18:12:06.003Z"
+  },
+  {
+    "id": "cll5suogoafx3dd5npu1f",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_rebalance_0.7815217152479776",
+    "eventType": "rebalance",
+    "ledger": 99,
+    "error": "Cannot mix BigInt and other types, use explicit conversions",
+    "payload": {
+      "type": "rebalance",
+      "ledger": 99,
+      "txHash": "tx_rebalance_0.7815217152479776",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "rebalance"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "apy"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "500"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "protocol"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "aave"
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "timestamp"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1777399684"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:08:04.879Z",
+    "updatedAt": "2026-04-28T18:12:06.008Z"
+  },
+  {
+    "id": "jcm4p52s07d0f7zubw9g5",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.0034031505101737025",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.0034031505101737025",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:08:04.987Z",
+    "updatedAt": "2026-04-28T18:12:06.013Z"
+  },
+  {
+    "id": "nh1lps5nei9odnyz6jj92o",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.011161555218091479",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.011161555218091479",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "3000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "3000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:08:04.992Z",
+    "updatedAt": "2026-04-28T18:12:06.140Z"
+  },
+  {
+    "id": "n3yd88zvvvrkyfc35t3xd",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_withdraw_0.6421024382083187",
+    "eventType": "withdraw",
+    "ledger": 99,
+    "error": "[Withdraw] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "withdraw",
+      "ledger": 99,
+      "txHash": "tx_withdraw_0.6421024382083187",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "withdraw"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "2000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "2000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:08:05.002Z",
+    "updatedAt": "2026-04-28T18:12:06.152Z"
+  },
+  {
+    "id": "8jx542x56971jgvl6ekc07",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.7343792381358436",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.7343792381358436",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        },
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "XLM"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:08:05.093Z",
+    "updatedAt": "2026-04-28T18:12:06.157Z"
+  },
+  {
+    "id": "9f5lpc8b5u9hsw5ybupgm",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.533638089303262",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.533638089303262",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:08:05.202Z",
+    "updatedAt": "2026-04-28T18:12:06.210Z"
+  },
+  {
+    "id": "26vi1jsxw2owaun7a4gks",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.8123825730846415",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.8123825730846415",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        },
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "USDC"
+        },
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "blend"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:08:05.298Z",
+    "updatedAt": "2026-04-28T18:12:06.228Z"
+  },
+  {
+    "id": "1ffpv3cjs7bi19ffx0hv9ot",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_rebalance_0.5522954944848437",
+    "eventType": "rebalance",
+    "ledger": 99,
+    "error": "Cannot mix BigInt and other types, use explicit conversions",
+    "payload": {
+      "type": "rebalance",
+      "ledger": 99,
+      "txHash": "tx_rebalance_0.5522954944848437",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "rebalance"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "apy"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "700"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "protocol"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "blend"
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "timestamp"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1777399685"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:08:05.400Z",
+    "updatedAt": "2026-04-28T18:12:06.238Z"
+  },
+  {
+    "id": "gu76fdbr8llzsu8vbz3sy8",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_batch_1",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "tx.transaction.update is not a function",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_batch_1",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:12:05.535Z",
+    "updatedAt": "2026-04-28T18:12:06.346Z"
+  },
+  {
+    "id": "iltipe5c42c3eoisxqg0cr",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_batch_1",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "tx.transaction.update is not a function",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_batch_1",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:12:05.538Z",
+    "updatedAt": "2026-04-28T18:12:06.388Z"
+  },
+  {
+    "id": "3ou7oh25tdu2nr6zc54muv",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_invalid_schema",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "[\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"user\"\n    ],\n    \"message\": \"User wallet address is required\"\n  }\n]",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_invalid_schema",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": ""
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:12:05.571Z",
+    "updatedAt": "2026-04-28T18:12:06.503Z"
+  },
+  {
+    "id": "0512yit5ppy8vmbm3w7c9u",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_invalid_schema",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "[\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"user\"\n    ],\n    \"message\": \"User wallet address is required\"\n  }\n]",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_invalid_schema",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": ""
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:12:05.576Z",
+    "updatedAt": "2026-04-28T18:12:06.529Z"
+  },
+  {
+    "id": "dxiy74fr0bgwcei4bv119s",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_retry_test",
+    "eventType": "deposit",
+    "ledger": 105,
+    "error": "Test manual error",
+    "payload": {
+      "type": "deposit",
+      "ledger": 105,
+      "txHash": "tx_retry_test",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"
+    },
+    "status": "RETRIED",
+    "retryCount": 1,
+    "createdAt": "2026-04-28T18:12:05.603Z",
+    "updatedAt": "2026-04-28T18:12:06.534Z"
+  },
+  {
+    "id": "lzm8n34xg3sgu1yqtqs468",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.6322673945460029",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.6322673945460029",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:10.939Z",
+    "updatedAt": "2026-04-28T18:12:10.939Z"
+  },
+  {
+    "id": "dzk2ca9j6zl53r1fkr4z47",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_withdraw_0.4609723826482035",
+    "eventType": "withdraw",
+    "ledger": 99,
+    "error": "[Withdraw] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "withdraw",
+      "ledger": 99,
+      "txHash": "tx_withdraw_0.4609723826482035",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "withdraw"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.041Z",
+    "updatedAt": "2026-04-28T18:12:11.041Z"
+  },
+  {
+    "id": "sjr2ve2d47p7q6hm28vc7l",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_rebalance_0.048082744446642955",
+    "eventType": "rebalance",
+    "ledger": 99,
+    "error": "Cannot mix BigInt and other types, use explicit conversions",
+    "payload": {
+      "type": "rebalance",
+      "ledger": 99,
+      "txHash": "tx_rebalance_0.048082744446642955",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "rebalance"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "apy"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "500"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "protocol"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "aave"
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "timestamp"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1777399931"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.142Z",
+    "updatedAt": "2026-04-28T18:12:11.142Z"
+  },
+  {
+    "id": "jjf8wynglynidmk3iwcf",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.2663163812185987",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.2663163812185987",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.264Z",
+    "updatedAt": "2026-04-28T18:12:11.264Z"
+  },
+  {
+    "id": "lu1zkw6u4i2am9nwhaxo",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.9444683208551432",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.9444683208551432",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "3000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "3000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.281Z",
+    "updatedAt": "2026-04-28T18:12:11.281Z"
+  },
+  {
+    "id": "n61qzmwhs5g2d0vesbncjz",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_withdraw_0.9800861249738384",
+    "eventType": "withdraw",
+    "ledger": 99,
+    "error": "[Withdraw] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "withdraw",
+      "ledger": 99,
+      "txHash": "tx_withdraw_0.9800861249738384",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "withdraw"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "2000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "2000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.297Z",
+    "updatedAt": "2026-04-28T18:12:11.297Z"
+  },
+  {
+    "id": "e3j0fwea0wu6bkhtjwypp5",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.6621065276938449",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.6621065276938449",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        },
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "XLM"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.368Z",
+    "updatedAt": "2026-04-28T18:12:11.368Z"
+  },
+  {
+    "id": "z1xc3t71q6egr7eojwd9sj",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.27312827731755496",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.27312827731755496",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.465Z",
+    "updatedAt": "2026-04-28T18:12:11.465Z"
+  },
+  {
+    "id": "xzajsvsaswdbvsx5yapif",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_0.8751917399622275",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_0.8751917399622275",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        },
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "USDC"
+        },
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "blend"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "100"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.570Z",
+    "updatedAt": "2026-04-28T18:12:11.570Z"
+  },
+  {
+    "id": "lcifmsqs0bfkvfpyrikqb",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "deposit_tx_001",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "deposit_tx_001",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.634Z",
+    "updatedAt": "2026-04-28T18:12:11.634Z"
+  },
+  {
+    "id": "4rd3xbvpvxlh78erm9e2p6",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_rebalance_0.3113782260911804",
+    "eventType": "rebalance",
+    "ledger": 99,
+    "error": "Cannot mix BigInt and other types, use explicit conversions",
+    "payload": {
+      "type": "rebalance",
+      "ledger": 99,
+      "txHash": "tx_rebalance_0.3113782260911804",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "rebalance"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "apy"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "700"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "protocol"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "blend"
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "timestamp"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "1777399931"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.674Z",
+    "updatedAt": "2026-04-28T18:12:11.674Z"
+  },
+  {
+    "id": "9jxtox84mowk3c8mmko9",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_1",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_deposit_1",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.735Z",
+    "updatedAt": "2026-04-28T18:12:11.735Z"
+  },
+  {
+    "id": "e2e0ycyd0ifzf3ochq7ic",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_deposit_2",
+    "eventType": "deposit",
+    "ledger": 100,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 100,
+      "txHash": "tx_deposit_2",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "3000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "3000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.743Z",
+    "updatedAt": "2026-04-28T18:12:11.743Z"
+  },
+  {
+    "id": "hi81e5i7pbcxsqemlf2z9k",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_withdraw_1",
+    "eventType": "withdraw",
+    "ledger": 101,
+    "error": "[Withdraw] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "withdraw",
+      "ledger": 101,
+      "txHash": "tx_withdraw_1",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "withdraw"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "2000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "2000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.795Z",
+    "updatedAt": "2026-04-28T18:12:11.795Z"
+  },
+  {
+    "id": "0dbx74hj9mt8ps7onexj7nm",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_unique_001",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_unique_001",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.837Z",
+    "updatedAt": "2026-04-28T18:12:11.837Z"
+  },
+  {
+    "id": "82cuj6hfinoitkg89qs7th",
+    "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "txHash": "tx_unknown_user",
+    "eventType": "deposit",
+    "ledger": 99,
+    "error": "[Deposit] User not found for wallet: GUNKNOWN_WALLET_ADDRESS",
+    "payload": {
+      "type": "deposit",
+      "ledger": 99,
+      "txHash": "tx_unknown_user",
+      "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+      "topics": [
+        {
+          "_switch": {
+            "name": "scvString",
+            "value": 14
+          },
+          "_arm": "str",
+          "_armType": {
+            "_maxLength": 4294967295
+          },
+          "_value": "deposit"
+        }
+      ],
+      "value": {
+        "_switch": {
+          "name": "scvMap",
+          "value": 17
+        },
+        "_arm": "map",
+        "_armType": {
+          "_childType": {
+            "_maxLength": 2147483647
+          }
+        },
+        "_value": [
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "amount"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "shares"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvU64",
+                  "value": 5
+                },
+                "_arm": "u64",
+                "_value": {
+                  "_value": "5000000"
+                }
+              }
+            }
+          },
+          {
+            "_attributes": {
+              "key": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "user"
+              },
+              "val": {
+                "_switch": {
+                  "name": "scvString",
+                  "value": 14
+                },
+                "_arm": "str",
+                "_armType": {
+                  "_maxLength": 4294967295
+                },
+                "_value": "GUNKNOWN_WALLET_ADDRESS"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "status": "PENDING",
+    "retryCount": 0,
+    "createdAt": "2026-04-28T18:12:11.941Z",
+    "updatedAt": "2026-04-28T18:12:11.941Z"
+  }
+]
