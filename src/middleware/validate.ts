@@ -16,7 +16,10 @@ function isZodSchema(val: any): val is ZodSchema<any> | ZodTypeAny {
 }
 
 function formatZodErrors(err: ZodError) {
-  return err.issues.map(e => ({ path: e.path.join('.'), message: e.message }));
+  return err.issues.map(e => ({
+    path: e.path.join('.'),
+    message: e.message.includes('received undefined') ? 'Required' : e.message,
+  }));
 }
 
 /**

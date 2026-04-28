@@ -2,7 +2,7 @@ import { Request, Response } from 'express'
 import db from '../db'
 import { depositForUser, withdrawForUser } from '../stellar/contract'
 import { formatDepositReply, formatWithdrawReply } from '../whatsapp/formatters'
-import { sendNotFound, sendConflict } from '../utils/errors'
+import { sendNotFound, sendConflict, sendUnauthorized } from '../utils/errors'
 
 export async function processOnChainTransaction(
   req: Request,
@@ -10,6 +10,10 @@ export async function processOnChainTransaction(
   type: 'DEPOSIT' | 'WITHDRAWAL'
 ) {
   const { userId, amount, assetSymbol, protocolName, memo } = req.body
+
+  if (!req.auth || req.auth.userId !== userId) {
+    return sendUnauthorized(res)
+  }
 
   const user = await db.user.findUnique({
     where: { id: userId },
