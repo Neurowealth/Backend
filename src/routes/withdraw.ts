@@ -4,6 +4,7 @@ import db from '../db'
 import { requireAuth } from '../middleware/auth'
 import { withdrawForUser } from '../stellar/contract'
 import { formatWithdrawReply } from '../whatsapp/formatters'
+import { validate } from '../middleware/validate'
 
 const router = Router()
 
@@ -15,21 +16,16 @@ const withdrawSchema = z.object({
   memo: z.string().max(280).optional(),
 })
 
-router.post('/', requireAuth, async (req: Request, res: Response) => {
-  const parsed = withdrawSchema.safeParse(req.body)
-  if (!parsed.success) {
-    return res.status(400).json({
-      error: 'Validation error',
-      details: parsed.error.flatten(),
-    })
-  }
+router.post('/', requireAuth, validate({ body: withdrawSchema, errorMessage: 'Validation error' }), async (req: Request, res: Response) => {
+  const parsed = req.body
+  const auth = req.auth
 
-  if (req.auth?.userId !== parsed.data.userId) {
+  if (!auth || auth.userId !== parsed.userId) {
     return res.status(401).json({ error: 'Unauthorized' })
   }
 
   const user = await db.user.findUnique({
-    where: { id: parsed.data.userId },
+    where: { id: parsed.userId },
     select: { id: true, network: true },
   })
   if (!user) {
@@ -37,9 +33,9 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
   }
 
   const onChainTransaction = await withdrawForUser(
-    parsed.data.userId,
-    req.auth.walletAddress,
-    parsed.data.amount,
+    parsed.userId,
+    auth.walletAddress,
+    parsed.amount,
   )
 
   const transactionStatus =
@@ -56,15 +52,15 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
 
   const transaction = await db.transaction.create({
     data: {
-      userId: parsed.data.userId,
+      userId: parsed.userId,
       txHash: onChainTransaction.hash,
       type: 'WITHDRAWAL',
       status: transactionStatus,
-      assetSymbol: parsed.data.assetSymbol,
-      amount: parsed.data.amount,
+      assetSymbol: parsed.assetSymbol,
+      amount: parsed.amount,
       network: user.network,
-      protocolName: parsed.data.protocolName,
-      memo: parsed.data.memo,
+      protocolName: parsed.protocolName,
+      memo: parsed.memo,
       confirmedAt:
         transactionStatus === 'CONFIRMED' ? new Date() : null,
     },
