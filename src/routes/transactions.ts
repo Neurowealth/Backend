@@ -10,6 +10,8 @@ import {
   formatTransactionDetailReply,
   formatTransactionsReply,
 } from '../whatsapp/formatters'
+import { validate } from '../middleware/validate'
+import { userIdParamSchema } from '../validators/common-validators'
 
 const router = Router()
 
@@ -20,7 +22,11 @@ const listSchema = z.object({
   query: paginationSchema,
 })
 
-router.get('/detail/:txHash', requireAuth, async (req: Request, res: Response) => {
+const txHashParamSchema = z.object({
+  txHash: z.string().min(1, 'Transaction hash is required'),
+})
+
+router.get('/detail/:txHash', requireAuth, validate({ params: txHashParamSchema }), async (req: Request, res: Response) => {
   const txHash = String(req.params.txHash)
   const tx = await db.transaction.findUnique({
     where: { txHash },
