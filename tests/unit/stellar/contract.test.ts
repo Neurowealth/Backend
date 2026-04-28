@@ -77,6 +77,7 @@ describe('stellar contract write wrappers', () => {
     jest.clearAllMocks()
     mockGetAccount.mockResolvedValue({ accountId: 'GACCOUNT' })
     mockPrepareTransaction.mockResolvedValue(mockPreparedTx)
+    mockServer.simulateTransaction.mockResolvedValue({ result: { retval: {} } })
   })
 
   it('builds, signs, submits, and confirms deposit transactions with the user keypair', async () => {
@@ -84,6 +85,7 @@ describe('stellar contract write wrappers', () => {
       '550e8400-e29b-41d4-a716-446655440003',
       'GUSERWALLETADDRESS',
       12.5,
+      'USDC',
     )
 
     expect(getKeypairForUser).toHaveBeenCalledWith(
@@ -93,6 +95,7 @@ describe('stellar contract write wrappers', () => {
     expect(Contract).toHaveBeenCalled()
     expect(mockCall).toHaveBeenCalledWith(
       'deposit',
+      expect.anything(),
       expect.anything(),
       expect.anything(),
     )
@@ -115,11 +118,13 @@ describe('stellar contract write wrappers', () => {
       '550e8400-e29b-41d4-a716-446655440003',
       'GUSERWALLETADDRESS',
       3,
+      'USDC',
     )
 
     expect(mockGetAccount).toHaveBeenCalledWith('GUSERPUBLICKEY')
     expect(mockCall).toHaveBeenCalledWith(
       'withdraw',
+      expect.anything(),
       expect.anything(),
       expect.anything(),
     )
@@ -138,23 +143,26 @@ describe('stellar contract write wrappers', () => {
         '550e8400-e29b-41d4-a716-446655440003',
         'GUSERWALLETADDRESS',
         1,
+        'USDC',
       ),
     ).rejects.toThrow('Transaction deposit failed on-chain')
   })
 
   it('keeps the legacy deposit/withdraw exports wired to the typed helpers', async () => {
-    await deposit('550e8400-e29b-41d4-a716-446655440003', 'GUSERWALLETADDRESS', 2)
-    await withdraw('550e8400-e29b-41d4-a716-446655440003', 'GUSERWALLETADDRESS', 4)
+    await deposit('550e8400-e29b-41d4-a716-446655440003', 'GUSERWALLETADDRESS', 2, 'USDC')
+    await withdraw('550e8400-e29b-41d4-a716-446655440003', 'GUSERWALLETADDRESS', 4, 'USDC')
 
     expect(mockCall).toHaveBeenNthCalledWith(
       1,
       'deposit',
       expect.anything(),
       expect.anything(),
+      expect.anything(),
     )
     expect(mockCall).toHaveBeenNthCalledWith(
       2,
       'withdraw',
+      expect.anything(),
       expect.anything(),
       expect.anything(),
     )

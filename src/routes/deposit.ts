@@ -36,6 +36,7 @@ router.post('/', requireAuth, validate({ body: depositSchema, errorMessage: 'Val
     parsed.userId,
     auth.walletAddress,
     parsed.amount,
+    parsed.assetSymbol,
   )
 
   const transactionStatus =

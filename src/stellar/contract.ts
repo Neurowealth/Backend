@@ -65,6 +65,16 @@ async function executeWriteContractCall(
 ): Promise<TransactionResult> {
   const server = getRpcServer();
   const tx = await buildContractCall(method, args, signer.publicKey());
+
+  // Pre-Transaction Simulation & Validation (Issue #58)
+  const simulation = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(`Transaction simulation failed for ${method}: ${simulation.error}`);
+  }
+  if (!simulation.result) {
+    throw new Error(`Transaction simulation failed for ${method}: No result returned from simulation`);
+  }
+
   const prepared = await server.prepareTransaction(tx);
   prepared.sign(signer);
 
@@ -91,12 +101,14 @@ async function executeCustodialVaultOperation(
   userId: string,
   userAddress: string,
   amount: number,
+  assetSymbol: string,
 ): Promise<TransactionResult> {
   const signer = await getKeypairForUser(userId);
   const userScVal = nativeToScVal(userAddress, { type: 'address' });
   const amountScVal = nativeToScVal(toContractAmount(amount), { type: 'i128' });
+  const assetScVal = nativeToScVal(assetSymbol, { type: 'string' });
 
-  return executeWriteContractCall(method, [userScVal, amountScVal], signer);
+  return executeWriteContractCall(method, [userScVal, amountScVal, assetScVal], signer);
 }
 
 /**
@@ -178,16 +190,18 @@ export async function deposit(
   userId: string,
   userAddress: string,
   amount: number,
+  assetSymbol: string,
 ): Promise<TransactionResult> {
-  return depositForUser(userId, userAddress, amount);
+  return depositForUser(userId, userAddress, amount, assetSymbol);
 }
 
 export async function depositForUser(
   userId: string,
   userAddress: string,
   amount: number,
+  assetSymbol: string,
 ): Promise<TransactionResult> {
-  return executeCustodialVaultOperation('deposit', userId, userAddress, amount);
+  return executeCustodialVaultOperation('deposit', userId, userAddress, amount, assetSymbol);
 }
 
 /**
@@ -197,16 +211,18 @@ export async function withdraw(
   userId: string,
   userAddress: string,
   amount: number,
+  assetSymbol: string,
 ): Promise<TransactionResult> {
-  return withdrawForUser(userId, userAddress, amount);
+  return withdrawForUser(userId, userAddress, amount, assetSymbol);
 }
 
 export async function withdrawForUser(
   userId: string,
   userAddress: string,
   amount: number,
+  assetSymbol: string,
 ): Promise<TransactionResult> {
-  return executeCustodialVaultOperation('withdraw', userId, userAddress, amount);
+  return executeCustodialVaultOperation('withdraw', userId, userAddress, amount, assetSymbol);
 }
 
 /**
@@ -218,12 +234,24 @@ export async function buildUnsignedVaultTransaction(
   method: VaultWriteMethod,
   userAddress: string,
   amount: number,
+  assetSymbol: string,
 ): Promise<string> {
   const server = getRpcServer();
   const userScVal = nativeToScVal(userAddress, { type: 'address' });
   const amountScVal = nativeToScVal(toContractAmount(amount), { type: 'i128' });
+  const assetScVal = nativeToScVal(assetSymbol, { type: 'string' });
 
-  const tx = await buildContractCall(method, [userScVal, amountScVal], userAddress);
+  const tx = await buildContractCall(method, [userScVal, amountScVal, assetScVal], userAddress);
+
+  // Pre-Transaction Simulation & Validation (Issue #58)
+  const simulation = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(`Transaction simulation failed for ${method}: ${simulation.error}`);
+  }
+  if (!simulation.result) {
+    throw new Error(`Transaction simulation failed for ${method}: No result returned from simulation`);
+  }
+
   const prepared = await server.prepareTransaction(tx);
 
   return prepared.toXDR();

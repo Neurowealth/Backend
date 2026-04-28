@@ -197,7 +197,7 @@ async function handleDepositEvent(depositData: DepositEvent, event: ContractEven
 
   const position = await timedDbOperation(() =>
     tx.position.findFirst({
-      where: { userId: user.id, protocolName: depositData.protocolName, status: 'ACTIVE' },
+      where: { userId: user.id, protocolName: depositData.protocolName, assetSymbol: depositData.assetSymbol, status: 'ACTIVE' },
     })
   ) as any;
 
@@ -266,7 +266,7 @@ async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractE
 
   const position = await timedDbOperation(() =>
     tx.position.findFirst({
-      where: { userId: user.id, protocolName: withdrawData.protocolName, status: 'ACTIVE' },
+      where: { userId: user.id, protocolName: withdrawData.protocolName, assetSymbol: withdrawData.assetSymbol, status: 'ACTIVE' },
     })
   ) as any;
 

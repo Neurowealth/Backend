@@ -36,6 +36,7 @@ router.post('/', requireAuth, validate({ body: withdrawSchema, errorMessage: 'Va
     parsed.userId,
     auth.walletAddress,
     parsed.amount,
+    parsed.assetSymbol,
   )
 
   const transactionStatus =
