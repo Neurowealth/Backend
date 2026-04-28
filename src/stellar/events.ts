@@ -1,9 +1,10 @@
 import { rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
-import { PrismaClient, TransactionType, TransactionStatus } from '@prisma/client';
+import { PrismaClient, TransactionType, TransactionStatus, Network } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { getRpcServer } from './client';
-import { ContractEvent, DepositEvent, WithdrawEvent, RebalanceEvent } from './types';
+import { ContractEvent, DepositEvent, WithdrawEvent, RebalanceEvent, EventMetrics } from './types';
 import { logger } from '../utils/logger';
+import { config } from '../config';
 
 const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
 const POLL_INTERVAL_MS = 5000;
@@ -12,6 +13,106 @@ const prisma = new PrismaClient();
 
 let lastProcessedLedger = 0;
 let isListening = false;
+
+// --- Metrics state (Issue #50) ---
+const metrics: EventMetrics = {
+  totalProcessed: 0,
+  totalErrors: 0,
+  processingRatePerMinute: 0,
+  errorRate: 0,
+  ledgerLag: 0,
+  lastDbOperationMs: 0,
+  lastUpdated: new Date(),
+};
+
+// Rolling window for processing rate (events in last 60s)
+const processingTimestamps: number[] = [];
+
+function recordProcessed(): void {
+  const now = Date.now();
+  processingTimestamps.push(now);
+  // Keep only last 60 seconds
+  const cutoff = now - 60_000;
+  while (processingTimestamps.length > 0 && processingTimestamps[0] < cutoff) {
+    processingTimestamps.shift();
+  }
+  metrics.totalProcessed++;
+  metrics.processingRatePerMinute = processingTimestamps.length;
+  metrics.errorRate = metrics.totalProcessed > 0 ? metrics.totalErrors / metrics.totalProcessed : 0;
+  metrics.lastUpdated = new Date();
+}
+
+function recordError(): void {
+  metrics.totalErrors++;
+  metrics.errorRate = metrics.totalProcessed > 0 ? metrics.totalErrors / metrics.totalProcessed : 0;
+  metrics.lastUpdated = new Date();
+}
+
+function recordLedgerLag(latestLedger: number): void {
+  metrics.ledgerLag = latestLedger - lastProcessedLedger;
+  metrics.lastUpdated = new Date();
+}
+
+async function timedDbOperation<T>(fn: () => Promise<T>): Promise<T> {
+  const start = Date.now();
+  try {
+    return await fn();
+  } finally {
+    metrics.lastDbOperationMs = Date.now() - start;
+    metrics.lastUpdated = new Date();
+  }
+}
+
+/**
+ * Get current event processing metrics (Issue #50)
+ */
+export function getEventMetrics(): Readonly<EventMetrics> {
+  return { ...metrics };
+}
+
+// --- Event context extraction helpers (Issue #51) ---
+
+/**
+ * Extract asset symbol from event topics or value.
+ * Topics[1] carries the asset symbol when present; falls back to 'USDC'.
+ */
+function extractAssetSymbol(event: ContractEvent): string {
+  if (event.topics.length > 1) {
+    try {
+      const raw = scValToNative(event.topics[1]);
+      if (typeof raw === 'string' && raw.length > 0) return raw;
+    } catch {
+      // fall through to default
+    }
+  }
+  return 'USDC';
+}
+
+/**
+ * Extract protocol name from event topics or value.
+ * Topics[2] carries the protocol name when present; falls back to 'vault'.
+ */
+function extractProtocolName(event: ContractEvent): string {
+  if (event.topics.length > 2) {
+    try {
+      const raw = scValToNative(event.topics[2]);
+      if (typeof raw === 'string' && raw.length > 0) return raw;
+    } catch {
+      // fall through to default
+    }
+  }
+  return 'vault';
+}
+
+/**
+ * Extract network from config (canonical source of truth).
+ */
+function extractNetwork(): Network {
+  const n = config.stellar.network.toUpperCase();
+  if (n === 'TESTNET') return Network.TESTNET;
+  if (n === 'FUTURENET') return Network.FUTURENET;
+  return Network.MAINNET;
+}
 
 /**
  * Parse deposit event
@@ -22,6 +123,9 @@ function parseDepositEvent(event: ContractEvent): DepositEvent {
     user: data.user,
     amount: data.amount?.toString() || '0',
     shares: data.shares?.toString() || '0',
+    assetSymbol: extractAssetSymbol(event),
+    protocolName: extractProtocolName(event),
+    network: extractNetwork(),
   };
 }
 
@@ -34,6 +138,9 @@ function parseWithdrawEvent(event: ContractEvent): WithdrawEvent {
     user: data.user,
     amount: data.amount?.toString() || '0',
     shares: data.shares?.toString() || '0',
+    assetSymbol: extractAssetSymbol(event),
+    protocolName: extractProtocolName(event),
+    network: extractNetwork(),
   };
 }
 
@@ -46,6 +153,8 @@ function parseRebalanceEvent(event: ContractEvent): RebalanceEvent {
     protocol: data.protocol,
     apy: data.apy / 100, // Convert basis points to percentage
     timestamp: data.timestamp,
+    assetSymbol: extractAssetSymbol(event),
+    network: extractNetwork(),
   };
 }
 
@@ -53,82 +162,68 @@ function parseRebalanceEvent(event: ContractEvent): RebalanceEvent {
  * Handle deposit event - persist to database
  */
 async function handleDepositEvent(depositData: DepositEvent, event: ContractEvent): Promise<void> {
-  // Find user by wallet address
-  const user = await prisma.user.findUnique({
-    where: { walletAddress: depositData.user },
-  });
+  const user = await timedDbOperation(() =>
+    prisma.user.findUnique({ where: { walletAddress: depositData.user } })
+  );
 
   if (!user) {
     logger.warn(`[Deposit] User not found for wallet: ${depositData.user}`);
     return;
   }
 
-  // Create or update transaction
-  const transaction = await prisma.transaction.upsert({
-    where: { txHash: event.txHash },
-    update: {
-      status: TransactionStatus.CONFIRMED,
-      confirmedAt: new Date(),
-    },
-    create: {
-      userId: user.id,
-      txHash: event.txHash,
-      type: TransactionType.DEPOSIT,
-      status: TransactionStatus.CONFIRMED,
-      assetSymbol: 'USDC', // TODO: Extract from event if available
-      amount: depositData.amount,
-      network: user.network,
-      confirmedAt: new Date(),
-    },
-  });
+  const transaction = await timedDbOperation(() =>
+    prisma.transaction.upsert({
+      where: { txHash: event.txHash },
+      update: { status: TransactionStatus.CONFIRMED, confirmedAt: new Date() },
+      create: {
+        userId: user.id,
+        txHash: event.txHash,
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.CONFIRMED,
+        assetSymbol: depositData.assetSymbol,
+        amount: depositData.amount,
+        network: depositData.network,
+        confirmedAt: new Date(),
+      },
+    })
+  );
 
-  // Find or create position
-  const position = await prisma.position.findFirst({
-    where: {
-      userId: user.id,
-      protocolName: 'vault', // TODO: Extract from event if available
-      status: 'ACTIVE',
-    },
-  });
+  const position = await timedDbOperation(() =>
+    prisma.position.findFirst({
+      where: { userId: user.id, protocolName: depositData.protocolName, status: 'ACTIVE' },
+    })
+  );
 
   if (position) {
-    // Update existing position
-    await prisma.position.update({
-      where: { id: position.id },
-      data: {
-        depositedAmount: {
-          increment: depositData.amount,
+    await timedDbOperation(() =>
+      prisma.position.update({
+        where: { id: position.id },
+        data: {
+          depositedAmount: { increment: depositData.amount },
+          currentValue: { increment: depositData.amount },
+          updatedAt: new Date(),
         },
-        currentValue: {
-          increment: depositData.amount,
-        },
-        updatedAt: new Date(),
-      },
-    });
-
-    // Link transaction to position
-    await prisma.transaction.update({
-      where: { id: transaction.id },
-      data: { positionId: position.id },
-    });
+      })
+    );
+    await timedDbOperation(() =>
+      prisma.transaction.update({ where: { id: transaction.id }, data: { positionId: position.id } })
+    );
   } else {
-    // Create new position
-    const newPosition = await prisma.position.create({
-      data: {
-        userId: user.id,
-        protocolName: 'vault',
-        assetSymbol: 'USDC',
-        depositedAmount: depositData.amount,
-        currentValue: depositData.amount,
-        yieldEarned: 0,
-      },
-    });
-
-    // Link transaction to position
-    await prisma.transaction.update({
-      where: { id: transaction.id },
-      data: { positionId: newPosition.id },
-    });
+    const newPosition = await timedDbOperation(() =>
+      prisma.position.create({
+        data: {
+          userId: user.id,
+          protocolName: depositData.protocolName,
+          assetSymbol: depositData.assetSymbol,
+          depositedAmount: depositData.amount,
+          currentValue: depositData.amount,
+          yieldEarned: 0,
+        },
+      })
+    );
+    await timedDbOperation(() =>
+      prisma.transaction.update({ where: { id: transaction.id }, data: { positionId: newPosition.id } })
+    );
   }
 }
 
@@ -136,63 +231,51 @@ async function handleDepositEvent(depositData: DepositEvent, event: ContractEven
  * Handle withdraw event - persist to database
  */
 async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractEvent): Promise<void> {
-  // Find user by wallet address
-  const user = await prisma.user.findUnique({
-    where: { walletAddress: withdrawData.user },
-  });
+  const user = await timedDbOperation(() =>
+    prisma.user.findUnique({ where: { walletAddress: withdrawData.user } })
+  );
 
   if (!user) {
     logger.warn(`[Withdraw] User not found for wallet: ${withdrawData.user}`);
     return;
   }
 
-  // Create transaction
-  const transaction = await prisma.transaction.upsert({
-    where: { txHash: event.txHash },
-    update: {
-      status: TransactionStatus.CONFIRMED,
-      confirmedAt: new Date(),
-    },
-    create: {
-      userId: user.id,
-      txHash: event.txHash,
-      type: TransactionType.WITHDRAWAL,
-      status: TransactionStatus.CONFIRMED,
-      assetSymbol: 'USDC',
-      amount: withdrawData.amount,
-      network: user.network,
-      confirmedAt: new Date(),
-    },
-  });
+  const transaction = await timedDbOperation(() =>
+    prisma.transaction.upsert({
+      where: { txHash: event.txHash },
+      update: { status: TransactionStatus.CONFIRMED, confirmedAt: new Date() },
+      create: {
+        userId: user.id,
+        txHash: event.txHash,
+        type: TransactionType.WITHDRAWAL,
+        status: TransactionStatus.CONFIRMED,
+        assetSymbol: withdrawData.assetSymbol,
+        amount: withdrawData.amount,
+        network: withdrawData.network,
+        confirmedAt: new Date(),
+      },
+    })
+  );
 
-  // Find active position
-  const position = await prisma.position.findFirst({
-    where: {
-      userId: user.id,
-      protocolName: 'vault',
-      status: 'ACTIVE',
-    },
-  });
+  const position = await timedDbOperation(() =>
+    prisma.position.findFirst({
+      where: { userId: user.id, protocolName: withdrawData.protocolName, status: 'ACTIVE' },
+    })
+  );
 
   if (position) {
-    // Update position
     const newDepositedAmount = new Decimal(position.depositedAmount).minus(withdrawData.amount);
     const newCurrentValue = new Decimal(position.currentValue).minus(withdrawData.amount);
 
-    await prisma.position.update({
-      where: { id: position.id },
-      data: {
-        depositedAmount: newDepositedAmount,
-        currentValue: newCurrentValue,
-        updatedAt: new Date(),
-      },
-    });
-
-    // Link transaction to position
-    await prisma.transaction.update({
-      where: { id: transaction.id },
-      data: { positionId: position.id },
-    });
+    await timedDbOperation(() =>
+      prisma.position.update({
+        where: { id: position.id },
+        data: { depositedAmount: newDepositedAmount, currentValue: newCurrentValue, updatedAt: new Date() },
+      })
+    );
+    await timedDbOperation(() =>
+      prisma.transaction.update({ where: { id: transaction.id }, data: { positionId: position.id } })
+    );
   }
 }
 
@@ -200,16 +283,17 @@ async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractE
  * Handle rebalance event - persist to database
  */
 async function handleRebalanceEvent(rebalanceData: RebalanceEvent, event: ContractEvent): Promise<void> {
-  // Create protocol rate record
-  await prisma.protocolRate.create({
-    data: {
-      protocolName: rebalanceData.protocol,
-      assetSymbol: 'USDC',
-      supplyApy: rebalanceData.apy,
-      network: 'MAINNET', // TODO: Get from config
-      fetchedAt: new Date(),
-    },
-  });
+  await timedDbOperation(() =>
+    prisma.protocolRate.create({
+      data: {
+        protocolName: rebalanceData.protocol,
+        assetSymbol: rebalanceData.assetSymbol,
+        supplyApy: rebalanceData.apy,
+        network: rebalanceData.network,
+        fetchedAt: new Date(),
+      },
+    })
+  );
 
   logger.info(`[Rebalance] Recorded protocol rate for ${rebalanceData.protocol} at ${rebalanceData.apy}%`);
 }
@@ -222,16 +306,18 @@ async function handleEvent(event: ContractEvent): Promise<void> {
     logger.info(`[Event] ${event.type} detected at ledger ${event.ledger}, tx: ${event.txHash}`);
 
     // Check if event was already processed (idempotency)
-    const existingEvent = await prisma.processedEvent.findUnique({
-      where: {
-        contractId_txHash_eventType_ledger: {
-          contractId: event.contractId,
-          txHash: event.txHash,
-          eventType: event.type,
-          ledger: event.ledger,
+    const existingEvent = await timedDbOperation(() =>
+      prisma.processedEvent.findUnique({
+        where: {
+          contractId_txHash_eventType_ledger: {
+            contractId: event.contractId,
+            txHash: event.txHash,
+            eventType: event.type,
+            ledger: event.ledger,
+          },
         },
-      },
-    });
+      })
+    );
 
     if (existingEvent) {
       logger.info(`[Event] Skipping duplicate event: ${event.type} at ledger ${event.ledger}`);
@@ -241,38 +327,42 @@ async function handleEvent(event: ContractEvent): Promise<void> {
     switch (event.type) {
       case 'deposit': {
         const depositData = parseDepositEvent(event);
-        logger.info(`[Deposit] User: ${depositData.user}, Amount: ${depositData.amount}, Shares: ${depositData.shares}`);
+        logger.info(`[Deposit] User: ${depositData.user}, Amount: ${depositData.amount}, Shares: ${depositData.shares}, Asset: ${depositData.assetSymbol}, Protocol: ${depositData.protocolName}, Network: ${depositData.network}`);
         await handleDepositEvent(depositData, event);
         break;
       }
 
       case 'withdraw': {
         const withdrawData = parseWithdrawEvent(event);
-        logger.info(`[Withdraw] User: ${withdrawData.user}, Amount: ${withdrawData.amount}, Shares: ${withdrawData.shares}`);
+        logger.info(`[Withdraw] User: ${withdrawData.user}, Amount: ${withdrawData.amount}, Shares: ${withdrawData.shares}, Asset: ${withdrawData.assetSymbol}, Protocol: ${withdrawData.protocolName}, Network: ${withdrawData.network}`);
         await handleWithdrawEvent(withdrawData, event);
         break;
       }
 
       case 'rebalance': {
         const rebalanceData = parseRebalanceEvent(event);
-        logger.info(`[Rebalance] Protocol: ${rebalanceData.protocol}, APY: ${rebalanceData.apy}%`);
+        logger.info(`[Rebalance] Protocol: ${rebalanceData.protocol}, APY: ${rebalanceData.apy}%, Asset: ${rebalanceData.assetSymbol}, Network: ${rebalanceData.network}`);
         await handleRebalanceEvent(rebalanceData, event);
         break;
       }
     }
 
     // Mark event as processed
-    await prisma.processedEvent.create({
-      data: {
-        contractId: event.contractId,
-        txHash: event.txHash,
-        eventType: event.type,
-        ledger: event.ledger,
-      },
-    });
+    await timedDbOperation(() =>
+      prisma.processedEvent.create({
+        data: {
+          contractId: event.contractId,
+          txHash: event.txHash,
+          eventType: event.type,
+          ledger: event.ledger,
+        },
+      })
+    );
 
+    recordProcessed();
     logger.info(`[Event] Successfully processed ${event.type} event`);
   } catch (error) {
+    recordError();
     logger.error(`[Event Error] Failed to handle ${event.type}:`, error instanceof Error ? error.message : 'Unknown error');
   }
 }
@@ -327,6 +417,8 @@ async function fetchEvents(startLedger: number): Promise<void> {
     if (startLedger > latestLedger.sequence) {
       return; // No new ledgers
     }
+
+    recordLedgerLag(latestLedger.sequence);
 
     const events = await server.getEvents({
       startLedger,
