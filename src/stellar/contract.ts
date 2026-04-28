@@ -208,3 +208,23 @@ export async function withdrawForUser(
 ): Promise<TransactionResult> {
   return executeCustodialVaultOperation('withdraw', userId, userAddress, amount);
 }
+
+/**
+ * Build an unsigned XDR transaction for non-custodial signing.
+ * The backend constructs and prepares the transaction but never signs it.
+ * The client (e.g. Freighter) signs and submits the returned XDR.
+ */
+export async function buildUnsignedVaultTransaction(
+  method: VaultWriteMethod,
+  userAddress: string,
+  amount: number,
+): Promise<string> {
+  const server = getRpcServer();
+  const userScVal = nativeToScVal(userAddress, { type: 'address' });
+  const amountScVal = nativeToScVal(toContractAmount(amount), { type: 'i128' });
+
+  const tx = await buildContractCall(method, [userScVal, amountScVal], userAddress);
+  const prepared = await server.prepareTransaction(tx);
+
+  return prepared.toXDR();
+}
