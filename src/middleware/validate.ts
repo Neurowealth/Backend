@@ -6,6 +6,7 @@ export interface ValidationSchemas {
   body?: ZodSchema;
   query?: ZodSchema;
   params?: ZodSchema;
+  errorMessage?: string;
 }
 
 /**
@@ -20,20 +21,28 @@ export const validate = (schemas: ValidationSchemas) => {
         req.body = schemas.body.parse(req.body);
       }
       if (schemas.query) {
-        req.query = schemas.query.parse(req.query);
+        Object.defineProperty(req, 'query', {
+          value: schemas.query.parse(req.query) as typeof req.query,
+          writable: true,
+          configurable: true,
+        });
       }
       if (schemas.params) {
-        req.params = schemas.params.parse(req.params);
+        Object.defineProperty(req, 'params', {
+          value: schemas.params.parse(req.params) as typeof req.params,
+          writable: true,
+          configurable: true,
+        });
       }
       next();
     } catch (error) {
       if (error instanceof ZodError) {
-        const errors = error.errors.map(err => ({
+        const errors = error.issues.map(err => ({
           path: err.path.join('.'),
-          message: err.message,
+          message: err.message.includes('received undefined') ? 'Required' : err.message,
         }));
         logger.warn(`[Validation] Request validation failed: ${JSON.stringify(errors)}`);
-        res.status(400).json({ error: 'Validation failed', details: errors });
+        res.status(400).json({ error: schemas.errorMessage ?? 'Validation failed', details: errors });
       } else {
         logger.error(`[Validation] Unexpected error:`, error);
         res.status(500).json({ error: 'Internal server error during validation' });

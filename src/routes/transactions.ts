@@ -17,11 +17,11 @@ const listQuerySchema = z.object({
 })
 
 const txHashParamSchema = z.object({
-  txHash: z.string().min(1, 'Transaction hash is required')
+  txHash: z.string().min(1, 'Transaction hash is required'),
 })
 
 router.get('/detail/:txHash', requireAuth, validate({ params: txHashParamSchema }), async (req: Request, res: Response) => {
-  const txHash = req.params.txHash
+  const txHash = String(req.params.txHash)
   const tx = await db.transaction.findUnique({
     where: { txHash },
   })
@@ -48,7 +48,7 @@ router.get('/detail/:txHash', requireAuth, validate({ params: txHashParamSchema 
 })
 
 router.get('/:userId', requireAuth, enforceUserAccess, validate({ params: userIdParamSchema, query: listQuerySchema }), async (req: Request, res: Response) => {
-  const userId = req.params.userId
+  const userId = String(req.params.userId)
   const user = await db.user.findUnique({
     where: { id: userId },
     select: { id: true },

@@ -16,10 +16,11 @@ const depositSchema = z.object({
   memo: z.string().max(280).optional(),
 })
 
-router.post('/', requireAuth, validate({ body: depositSchema }), async (req: Request, res: Response) => {
+router.post('/', requireAuth, validate({ body: depositSchema, errorMessage: 'Validation error' }), async (req: Request, res: Response) => {
   const parsed = req.body
+  const auth = req.auth
 
-  if (req.auth?.userId !== parsed.userId) {
+  if (!auth || auth.userId !== parsed.userId) {
     return res.status(401).json({ error: 'Unauthorized' })
   }
 
@@ -33,7 +34,7 @@ router.post('/', requireAuth, validate({ body: depositSchema }), async (req: Req
 
   const onChainTransaction = await depositForUser(
     parsed.userId,
-    req.auth.walletAddress,
+    auth.walletAddress,
     parsed.amount,
   )
 
