@@ -66,7 +66,6 @@ model User {
   transactions Transaction[]
   agentLogs    AgentLog[]
 
-  @@index([walletAddress])
   @@map("users")
 }
 
@@ -83,8 +82,8 @@ model Session {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([token])
   @@index([userId])
+  @@index([expiresAt])
   @@map("sessions")
 }
 
@@ -107,7 +106,9 @@ model Position {
   yieldSnapshots YieldSnapshot[]
 
   @@index([userId])
+  @@index([status])
   @@index([protocolName])
+  @@index([userId, protocolName, status])
   @@map("positions")
 }
 
@@ -132,7 +133,6 @@ model Transaction {
   position Position? @relation(fields: [positionId], references: [id])
 
   @@index([userId])
-  @@index([txHash])
   @@index([positionId])
   @@map("transactions")
 }
@@ -149,6 +149,7 @@ model YieldSnapshot {
 
   @@index([positionId])
   @@index([snapshotAt])
+  @@index([positionId, snapshotAt])
   @@map("yield_snapshots")
 }
 
@@ -165,6 +166,7 @@ model ProtocolRate {
   @@unique([protocolName, assetSymbol, network, fetchedAt])
   @@index([protocolName, assetSymbol])
   @@index([fetchedAt])
+  @@index([protocolName, assetSymbol, fetchedAt])
   @@map("protocol_rates")
 }
 
