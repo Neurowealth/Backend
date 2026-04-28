@@ -109,7 +109,6 @@ model Position {
   @@index([userId])
   @@index([status])
   @@index([protocolName])
-  @@index([status])
   @@index([userId, status])
   @@index([protocolName, assetSymbol])
   @@index([assetSymbol])
