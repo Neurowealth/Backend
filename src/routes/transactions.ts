@@ -2,6 +2,10 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import db from '../db'
 import { enforceUserAccess, requireAuth } from '../middleware/auth'
+import { validate } from '../middleware/validate'
+import { paginationSchema, getPaginationParams } from '../utils/pagination'
+import { mapTransactionToResponse } from '../utils/api-formatters'
+import { sendNotFound } from '../utils/errors'
 import {
   formatTransactionDetailReply,
   formatTransactionsReply,
@@ -11,9 +15,11 @@ import { userIdParamSchema } from '../validators/common-validators'
 
 const router = Router()
 
-const listQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(50).default(5),
+const listSchema = z.object({
+  params: z.object({
+    userId: z.string().uuid(),
+  }),
+  query: paginationSchema,
 })
 
 const txHashParamSchema = z.object({
@@ -27,19 +33,10 @@ router.get('/detail/:txHash', requireAuth, validate({ params: txHashParamSchema 
   })
 
   if (!tx || tx.userId !== req.auth?.userId) {
-    return res.status(404).json({ error: 'Transaction not found' })
+    return sendNotFound(res, 'Transaction')
   }
 
-  const item = {
-    id: tx.id,
-    txHash: tx.txHash,
-    type: tx.type,
-    status: tx.status,
-    amount: Number(tx.amount),
-    assetSymbol: tx.assetSymbol,
-    protocolName: tx.protocolName,
-    createdAt: tx.createdAt.toISOString(),
-  }
+  const item = mapTransactionToResponse(tx)
 
   return res.status(200).json({
     transaction: item,
@@ -47,19 +44,17 @@ router.get('/detail/:txHash', requireAuth, validate({ params: txHashParamSchema 
   })
 })
 
-router.get('/:userId', requireAuth, enforceUserAccess, validate({ params: userIdParamSchema, query: listQuerySchema }), async (req: Request, res: Response) => {
-  const userId = String(req.params.userId)
+router.get('/:userId', requireAuth, enforceUserAccess, validate(listSchema), async (req: Request, res: Response) => {
+  const userId = req.params.userId as string
+  const { page, limit, skip } = getPaginationParams(req.query)
+
   const user = await db.user.findUnique({
     where: { id: userId },
     select: { id: true },
   })
   if (!user) {
-    return res.status(404).json({ error: 'User not found' })
+    return sendNotFound(res, 'User')
   }
-
-  const page = Number(req.query.page)
-  const limit = Number(req.query.limit) || 5
-  const skip = (page - 1) * limit
 
   const [total, transactions] = await Promise.all([
     db.transaction.count({ where: { userId } }),
@@ -71,16 +66,7 @@ router.get('/:userId', requireAuth, enforceUserAccess, validate({ params: userId
     }),
   ])
 
-  const items = transactions.map((tx: any) => ({
-    id: tx.id,
-    txHash: tx.txHash,
-    type: tx.type,
-    status: tx.status,
-    amount: Number(tx.amount),
-    assetSymbol: tx.assetSymbol,
-    protocolName: tx.protocolName,
-    createdAt: tx.createdAt.toISOString(),
-  }))
+  const items = transactions.map(mapTransactionToResponse)
 
   return res.status(200).json({
     page,
