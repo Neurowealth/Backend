@@ -78,6 +78,7 @@ export function createMockDb() {
       findMany: jest.fn(),
       findFirst: jest.fn(),
       create: jest.fn(),
+      upsert: jest.fn(),
       count: jest.fn(),
     },
     yieldSnapshot: {
@@ -95,6 +96,7 @@ export function createMockDb() {
       create: jest.fn(),
     },
     processedEvent: {
+      findUnique: jest.fn(),
       findFirst: jest.fn(),
       findMany: jest.fn(),
       create: jest.fn(),
