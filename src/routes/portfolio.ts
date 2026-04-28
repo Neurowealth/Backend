@@ -29,7 +29,7 @@ const historySchema = z.object({
 })
 
 router.get('/:userId', requireAuth, enforceUserAccess, validate(portfolioSchema), async (req: Request, res: Response) => {
-  const userId = req.params.userId
+  const userId = req.params.userId as string
   const user = await db.user.findUnique({
     where: { id: userId },
   })
@@ -73,7 +73,7 @@ router.get(
   enforceUserAccess,
   validate(historySchema),
   async (req: Request, res: Response) => {
-    const userId = req.params.userId
+    const userId = req.params.userId as string
     const user = await db.user.findUnique({
       where: { id: userId },
       select: { id: true },
@@ -122,7 +122,7 @@ router.get(
   enforceUserAccess,
   validate(portfolioSchema),
   async (req: Request, res: Response) => {
-    const userId = req.params.userId
+    const userId = req.params.userId as string
     const user = await db.user.findUnique({
       where: { id: userId },
     })

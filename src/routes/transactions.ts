@@ -39,7 +39,7 @@ router.get('/detail/:txHash', requireAuth, async (req: Request, res: Response) =
 })
 
 router.get('/:userId', requireAuth, enforceUserAccess, validate(listSchema), async (req: Request, res: Response) => {
-  const userId = req.params.userId
+  const userId = req.params.userId as string
   const { page, limit, skip } = getPaginationParams(req.query)
 
   const user = await db.user.findUnique({
