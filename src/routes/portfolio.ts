@@ -10,7 +10,6 @@ import {
   formatPortfolioHistoryReply,
   formatPortfolioReply,
 } from '../whatsapp/formatters'
-import { validate } from '../middleware/validate'
 import { userIdParamSchema } from '../validators/common-validators'
 
 const router = Router()
