@@ -107,6 +107,7 @@ model Position {
   yieldSnapshots YieldSnapshot[]
 
   @@index([userId])
+  @@index([status])
   @@index([protocolName])
   @@index([status])
   @@index([userId, status])
@@ -156,6 +157,7 @@ model YieldSnapshot {
 
   @@index([positionId])
   @@index([snapshotAt])
+  @@index([positionId, snapshotAt])
   @@map("yield_snapshots")
 }
 
@@ -172,6 +174,7 @@ model ProtocolRate {
   @@unique([protocolName, assetSymbol, network, fetchedAt])
   @@index([protocolName, assetSymbol])
   @@index([fetchedAt])
+  @@index([protocolName, assetSymbol, fetchedAt])
   @@map("protocol_rates")
 }
 

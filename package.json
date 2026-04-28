@@ -8,7 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
-    "prisma:generate": "DATABASE_URL=postgresql://user:pass@localhost:5432/db prisma generate",
+    "prisma:generate": "npx prisma generate",
     "pretest": "npm run prisma:generate",
     "test": "jest",
     "test:coverage": "jest --coverage"
