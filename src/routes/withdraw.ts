@@ -1,10 +1,8 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
-import db from '../db'
 import { requireAuth } from '../middleware/auth'
-import { withdrawForUser } from '../stellar/contract'
-import { formatWithdrawReply } from '../whatsapp/formatters'
 import { validate } from '../middleware/validate'
+import { processOnChainTransaction } from '../controllers/transaction-controller'
 
 const router = Router()
 
@@ -16,20 +14,12 @@ const withdrawSchema = z.object({
   memo: z.string().max(280).optional(),
 })
 
-router.post('/', requireAuth, validate({ body: withdrawSchema, errorMessage: 'Validation error' }), async (req: Request, res: Response) => {
-  const parsed = req.body
-  const auth = req.auth
-
-  if (!auth || auth.userId !== parsed.userId) {
-    return res.status(401).json({ error: 'Unauthorized' })
-  }
-
-  const user = await db.user.findUnique({
-    where: { id: parsed.userId },
-    select: { id: true, network: true },
-  })
-  if (!user) {
-    return res.status(404).json({ error: 'User not found' })
+router.post(
+  '/',
+  requireAuth,
+  validate({ body: withdrawSchema, errorMessage: 'Validation error' }),
+  async (req: Request, res: Response) => {
+    return processOnChainTransaction(req, res, 'WITHDRAWAL')
   }
 
   const onChainTransaction = await withdrawForUser(

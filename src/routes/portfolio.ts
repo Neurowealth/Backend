@@ -2,28 +2,41 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import db from '../db'
 import { enforceUserAccess, requireAuth } from '../middleware/auth'
+import { validate } from '../middleware/validate'
+import { mapPositionToResponse } from '../utils/api-formatters'
+import { sendNotFound } from '../utils/errors'
 import {
   formatPortfolioEarningsReply,
   formatPortfolioHistoryReply,
   formatPortfolioReply,
 } from '../whatsapp/formatters'
-import { validate } from '../middleware/validate'
 import { userIdParamSchema } from '../validators/common-validators'
 
 const router = Router()
 
-const historyQuerySchema = z.object({
-  period: z.enum(['7d', '30d', '90d']).default('30d'),
+const portfolioSchema = z.object({
+  params: z.object({
+    userId: z.string().uuid(),
+  }),
 })
 
-router.get('/:userId', requireAuth, enforceUserAccess, validate({ params: userIdParamSchema }), async (req: Request, res: Response) => {
-  const userId = String(req.params.userId)
+const historySchema = z.object({
+  params: z.object({
+    userId: z.string().uuid(),
+  }),
+  query: z.object({
+    period: z.enum(['7d', '30d', '90d']).default('30d'),
+  }),
+})
+
+router.get('/:userId', requireAuth, enforceUserAccess, validate(portfolioSchema), async (req: Request, res: Response) => {
+  const userId = req.params.userId as string
   const user = await db.user.findUnique({
     where: { id: userId },
   })
 
   if (!user) {
-    return res.status(404).json({ error: 'User not found' })
+    return sendNotFound(res, 'User')
   }
 
   const userPositions = await db.position.findMany({
@@ -38,14 +51,7 @@ router.get('/:userId', requireAuth, enforceUserAccess, validate({ params: userId
   }, 0)
   const activePositions = userPositions.filter((p: any) => p.status === 'ACTIVE').length
 
-  const positions = userPositions.map((position: any) => ({
-    id: position.id,
-    protocolName: position.protocolName,
-    assetSymbol: position.assetSymbol,
-    currentValue: Number(position.currentValue),
-    yieldEarned: Number(position.yieldEarned),
-    status: position.status,
-  }))
+  const positions = userPositions.map(mapPositionToResponse)
 
   return res.status(200).json({
     userId: user.id,
@@ -66,19 +72,18 @@ router.get(
   '/:userId/history',
   requireAuth,
   enforceUserAccess,
-  validate({ params: userIdParamSchema, query: historyQuerySchema }),
+  validate(historySchema),
   async (req: Request, res: Response) => {
-
+    const userId = req.params.userId as string
     const user = await db.user.findUnique({
-      where: { id: String(req.params.userId) },
+      where: { id: userId },
       select: { id: true },
     })
 
     if (!user) {
-      return res.status(404).json({ error: 'User not found' })
+      return sendNotFound(res, 'User')
     }
 
-    const userId = String(req.params.userId)
     const now = Date.now()
     const dayMs = 24 * 60 * 60 * 1000
     const periodDays =
@@ -116,17 +121,17 @@ router.get(
   '/:userId/earnings',
   requireAuth,
   enforceUserAccess,
-  validate({ params: userIdParamSchema }),
+  validate(portfolioSchema),
   async (req: Request, res: Response) => {
+    const userId = req.params.userId as string
     const user = await db.user.findUnique({
-      where: { id: String(req.params.userId) },
+      where: { id: userId },
     })
 
     if (!user) {
-      return res.status(404).json({ error: 'User not found' })
+      return sendNotFound(res, 'User')
     }
 
-    const userId = String(req.params.userId)
     const userPositions = await db.position.findMany({
       where: { userId },
     })
