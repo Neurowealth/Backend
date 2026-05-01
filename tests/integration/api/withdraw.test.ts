@@ -106,6 +106,7 @@ describe('Withdraw route', () => {
       USER_ID,
       SESSION.walletAddress,
       VALID_WITHDRAW.amount,
+      VALID_WITHDRAW.assetSymbol,
     )
     expect(mockDb.transaction.create).toHaveBeenCalledWith(
       expect.objectContaining({

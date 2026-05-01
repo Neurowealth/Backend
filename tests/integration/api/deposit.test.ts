@@ -205,6 +205,7 @@ describe('Deposit route', () => {
       USER_ID,
       SESSION.walletAddress,
       VALID_DEPOSIT.amount,
+      VALID_DEPOSIT.assetSymbol,
     );
     expect(mockDb.transaction.create).toHaveBeenCalledWith(
       expect.objectContaining({

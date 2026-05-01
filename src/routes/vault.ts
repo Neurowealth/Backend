@@ -54,6 +54,7 @@ router.get('/balance', requireAuth, async (req: Request, res: Response) => {
 const buildTransactionSchema = z.object({
   type: z.enum(['deposit', 'withdraw']),
   amount: z.number().positive(),
+  assetSymbol: z.string().min(1),
 })
 
 /**
@@ -73,6 +74,7 @@ router.post('/build-transaction', requireAuth, async (req: Request, res: Respons
     parsed.data.type,
     walletAddress,
     parsed.data.amount,
+    parsed.data.assetSymbol,
   )
 
   return res.status(200).json({
