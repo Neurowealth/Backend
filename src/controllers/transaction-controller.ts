@@ -27,7 +27,8 @@ export async function processOnChainTransaction(
   const onChainTransaction = await onChainFn(
     userId,
     req.auth!.walletAddress,
-    amount
+    amount,
+    assetSymbol
   )
 
   const transactionStatus = onChainTransaction.status === 'success' ? 'CONFIRMED' : 'FAILED'
