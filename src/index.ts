@@ -1,7 +1,8 @@
 import express from 'express'
-import cors from 'cors'
+import cors, { type CorsOptions } from 'cors'
 import helmet from 'helmet'
 import { config } from './config/env'
+import { markReady } from './config/readiness'
 import { errorHandler } from './middleware/errorHandler'
 import { requestLogger } from './middleware/logger'
 import { rateLimiter, authRateLimiter } from './middleware/rateLimiter'
@@ -10,6 +11,7 @@ import { startAgentLoop } from './agent/loop'
 import { connectDb } from './db'
 import { scheduleSessionCleanup } from './jobs/sessionCleanup'
 import { startEventListener } from './stellar/events'
+import { DeadLetterQueue } from './stellar/dlq'
 import healthRouter from './routes/health'
 import agentRouter from './routes/agent'
 import authRouter from './routes/auth'
@@ -28,11 +30,22 @@ const app = express()
 // Trust proxy for rate limiting (essential if behind Nginx/Heroku/Cloudflare)
 app.set('trust proxy', 1)
 
-// Security and parsing middleware
+// ── Security and parsing middleware ────────────────────────────────────────
 app.use(helmet())
-app.use(cors())
-app.use(express.json())
-app.use(express.urlencoded({ extended: false }))
+
+const corsOptions: CorsOptions =
+  config.security.cors.origins === '*'
+    ? { origin: '*' }
+    : { origin: config.security.cors.origins }
+app.use(cors(corsOptions))
+
+app.use(express.json({ limit: config.security.bodyLimits.json }))
+app.use(
+  express.urlencoded({
+    limit: config.security.bodyLimits.urlencoded,
+    extended: false,
+  }),
+)
 
 // Logging and rate limiting
 app.use(requestLogger)
@@ -59,6 +72,19 @@ app.use(errorHandler)
 
 async function main() {
   await connectDb()
+  markReady('database')
+
+  try {
+    const migration = await DeadLetterQueue.migrateFromLegacyFile()
+    if (migration.imported > 0 || migration.skipped > 0) {
+      logger.info('[Startup] Legacy DLQ migration finished', migration)
+    }
+  } catch (error) {
+    logger.error('[Startup] Legacy DLQ migration failed (continuing without migrating)', {
+      error: error instanceof Error ? error.message : 'Unknown error',
+    })
+  }
+
   scheduleSessionCleanup()
 
   app.listen(config.port, async () => {
@@ -68,11 +94,14 @@ async function main() {
 
     try {
       await startEventListener()
+      markReady('eventListener')
       logger.info('Vault event listener started')
+
       await startAgentLoop()
+      markReady('agentLoop')
     } catch (error) {
-      logger.error('Failed to start agent loop', {
-        error: error instanceof Error ? error.message : 'Unknown error'
+      logger.error('Failed to start agent loop or event listener', {
+        error: error instanceof Error ? error.message : 'Unknown error',
       })
     }
   })

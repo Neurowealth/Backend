@@ -81,12 +81,12 @@ router.get('/stellar/metrics', (req: Request, res: Response) => {
  *   - status: PENDING | RETRIED | RESOLVED (optional)
  *   - limit: max items to return (default 50)
  */
-router.get('/dlq/inspect', (req: Request, res: Response) => {
+router.get('/dlq/inspect', async (req: Request, res: Response) => {
     try {
         const { status, limit = '50' } = req.query
         const maxLimit = Math.min(parseInt(limit as string) || 50, 500)
 
-        const allEvents = DeadLetterQueue.getAll()
+        const allEvents = await DeadLetterQueue.getAll()
 
         // Filter by status if provided
         let filtered = allEvents
@@ -140,7 +140,7 @@ router.post('/dlq/retry', async (req: Request, res: Response) => {
 
         if (dryRun) {
             // Just report what would be retried
-            const events = DeadLetterQueue.getAll()
+            const events = await DeadLetterQueue.getAll()
             const pending = events.filter(e => e.status === 'PENDING' || e.status === 'RETRIED')
 
             return res.status(200).json({
@@ -166,7 +166,7 @@ router.post('/dlq/retry', async (req: Request, res: Response) => {
         const { retryDeadLetterEvents } = await import('../stellar/events')
         await retryDeadLetterEvents()
 
-        const result = DeadLetterQueue.getAll()
+        const result = await DeadLetterQueue.getAll()
         const resolved = result.filter(e => e.status === 'RESOLVED').length
         const failed = result.filter(e => e.status === 'RETRIED').length
 

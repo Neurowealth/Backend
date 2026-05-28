@@ -7,9 +7,23 @@ function requireEnv(key: string): string {
   return value
 }
 
+const nodeEnv = process.env.NODE_ENV || 'development'
+const isProduction = nodeEnv === 'production'
+
 /**
- * Validate all required environment variables at startup
- * Fails fast with clear error messages
+ * Logging in this file deliberately uses console.warn / console.error rather
+ * than the winston logger: `env.ts` is imported before the logger transports
+ * are guaranteed to be ready, and we want startup failures to land on stderr
+ * unambiguously. Anything that ships beyond this module routes through the
+ * shared `logger` instead.
+ */
+
+/**
+ * Validate all required environment variables at startup.
+ * Fails fast with clear error messages.
+ *
+ * Production has a stricter set than non-production — secrets that are merely
+ * useful in dev (e.g. WALLET_ENCRYPTION_KEY) are mandatory in production.
  */
 function validateAllRequiredEnvVars(): void {
   const requiredVars = [
@@ -23,8 +37,17 @@ function validateAllRequiredEnvVars(): void {
     'JWT_SEED',
   ]
 
+  // Production-only secrets and feature flags. These can be left unset in
+  // development without crashing the boot, but production refuses to start
+  // without them.
+  const productionOnlyVars = ['WALLET_ENCRYPTION_KEY']
+
+  const allRequired = isProduction
+    ? [...requiredVars, ...productionOnlyVars]
+    : requiredVars
+
   const missing: string[] = []
-  for (const key of requiredVars) {
+  for (const key of allRequired) {
     if (!process.env[key]) {
       missing.push(key)
     }
@@ -39,8 +62,8 @@ function validateAllRequiredEnvVars(): void {
 }
 
 /**
- * CRITICAL: Validate Stellar network to prevent testnet/mainnet mix-ups
- * Protects against accidental mainnet transactions with testnet keys
+ * CRITICAL: Validate Stellar network to prevent testnet/mainnet mix-ups.
+ * Protects against accidental mainnet transactions with testnet keys.
  */
 function validateStellarNetwork(network: string): 'testnet' | 'mainnet' | 'futurenet' {
   const validNetworks = ['testnet', 'mainnet', 'futurenet'] as const
@@ -56,46 +79,67 @@ function validateStellarNetwork(network: string): 'testnet' | 'mainnet' | 'futur
 }
 
 /**
- * CRITICAL: Validate Stellar secret key format and warn on mainnet in dev
+ * CRITICAL: Validate Stellar secret key format and warn on mainnet in dev.
  */
 function validateStellarKey(secretKey: string, network: 'testnet' | 'mainnet' | 'futurenet'): void {
-  // Stellar secret keys always start with 'S'
   if (!secretKey.startsWith('S')) {
     throw new Error('STELLAR_AGENT_SECRET_KEY must start with S (invalid Stellar secret key format)')
   }
 
-  // Stellar keys are exactly 56 characters
   if (secretKey.length !== 56) {
     throw new Error(
       `STELLAR_AGENT_SECRET_KEY invalid length: ${secretKey.length}. Stellar keys must be 56 characters.`
     )
   }
 
-  // Log network configuration
-  const env = process.env.NODE_ENV || 'development'
-  const networkDisplay = network.toUpperCase()
-  console.log(`✓ Stellar Agent configured for ${networkDisplay} (NODE_ENV=${env})`)
-
-  // CRITICAL: Warn if mainnet in development
-  if (network === 'mainnet' && env !== 'production') {
-    console.warn('')
-    console.warn('⚠️  CRITICAL WARNING: Using MAINNET in non-production environment!')
-    console.warn('⚠️  This could result in real financial loss!')
-    console.warn('⚠️  Verify STELLAR_NETWORK and NODE_ENV settings immediately!')
-    console.warn('')
+  // Use console.error in non-test so this surfaces even before winston is wired
+  if (network === 'mainnet' && !isProduction) {
+    console.error('')
+    console.error('⚠️  CRITICAL WARNING: Using MAINNET in non-production environment!')
+    console.error('⚠️  This could result in real financial loss!')
+    console.error('⚠️  Verify STELLAR_NETWORK and NODE_ENV settings immediately!')
+    console.error('')
   }
+}
+
+/**
+ * Parse `CORS_ORIGINS` into an explicit allowlist. Defaults to `*` when unset
+ * outside production. Production refuses to start without an explicit list —
+ * preventing the previous default of a wildcard `cors()` from leaking into
+ * production by accident.
+ */
+function parseCorsOrigins(): string[] | '*' {
+  const raw = process.env.CORS_ORIGINS?.trim()
+  if (!raw || raw === '*') {
+    if (isProduction) {
+      throw new Error(
+        'CORS_ORIGINS must be set to an explicit comma-separated list in production (wildcard "*" is not allowed).'
+      )
+    }
+    return '*'
+  }
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+function parseByteLimit(value: string | undefined, fallback: string): string {
+  return value && /^\d+(kb|mb|b)?$/i.test(value) ? value : fallback
 }
 
 const stellarNetwork = validateStellarNetwork(requireEnv('STELLAR_NETWORK'))
 const agentSecretKey = requireEnv('STELLAR_AGENT_SECRET_KEY')
 validateStellarKey(agentSecretKey, stellarNetwork)
 
-// Run all validations at startup
 validateAllRequiredEnvVars()
+
+const corsOrigins = parseCorsOrigins()
 
 export const config = {
   port: parseInt(process.env.PORT || '3001'),
-  nodeEnv: process.env.NODE_ENV || 'development',
+  nodeEnv,
+  isProduction,
   stellar: {
     network: stellarNetwork,
     rpcUrl: requireEnv('STELLAR_RPC_URL'),
@@ -116,8 +160,8 @@ export const config = {
   jwt: {
     seed: requireEnv('JWT_SEED'),
     session_ttl_hours: parseInt(requireEnv('JWT_SESSION_TTL_HOURS') || '24'),
-    nonce_ttl_ms: parseInt(requireEnv('JWT_NONCE_TTL_MS') || '300000'), // default to 5 minutes if not set
-    interval_ms: parseInt(requireEnv('JWT_CLEANUP_INTERVAL_MS') || '86400000') // default to 24 hours if not set
+    nonce_ttl_ms: parseInt(requireEnv('JWT_NONCE_TTL_MS') || '300000'),
+    interval_ms: parseInt(requireEnv('JWT_CLEANUP_INTERVAL_MS') || '86400000'),
   },
   whatsapp: {
     twilioSid: process.env.TWILIO_ACCOUNT_SID || '',
@@ -125,13 +169,21 @@ export const config = {
     fromNumber: process.env.WHATSAPP_FROM || '',
   },
   security: {
+    walletEncryptionKey: process.env.WALLET_ENCRYPTION_KEY || '',
+    cors: {
+      origins: corsOrigins,
+    },
+    bodyLimits: {
+      json: parseByteLimit(process.env.BODY_LIMIT_JSON, '1mb'),
+      urlencoded: parseByteLimit(process.env.BODY_LIMIT_URLENCODED, '1mb'),
+    },
     rateLimit: {
-      windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000'), // Default 15 minutes
-      max: parseInt(process.env.RATE_LIMIT_MAX || '100'), // Default 100 requests per window
+      windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000'),
+      max: parseInt(process.env.RATE_LIMIT_MAX || '100'),
     },
     authRateLimit: {
-      windowMs: parseInt(process.env.AUTH_RATE_LIMIT_WINDOW_MS || '900000'), // Default 15 minutes
-      max: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '20'), // Stricter limit for auth: 20 requests per window
+      windowMs: parseInt(process.env.AUTH_RATE_LIMIT_WINDOW_MS || '900000'),
+      max: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '20'),
     },
   },
 }
