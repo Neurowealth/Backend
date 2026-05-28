@@ -1,5 +1,3 @@
-import fs from 'fs'
-import path from 'path'
 import { createMockDb } from '../../helpers/testDb'
 
 const mockPrisma = createMockDb()
@@ -28,7 +26,6 @@ const mockRpcServer = getRpcServer as jest.MockedFunction<typeof getRpcServer>
 
 const CONTRACT_ID = 'CDUMMYVAULTCONTRACTID'
 const WALLET = 'GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G'
-const DLQ_FILE = path.join(__dirname, '../../../logs/dead_letter_queue.json')
 
 function waitForPoll(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 100))
@@ -56,8 +53,6 @@ describe('Vault event recovery integration', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     stopEventListener()
-    fs.mkdirSync(path.dirname(DLQ_FILE), { recursive: true })
-    fs.writeFileSync(DLQ_FILE, '[]')
 
     mockPrisma.user.findUnique.mockResolvedValue({
       id: 'user-1',
@@ -76,6 +71,36 @@ describe('Vault event recovery integration', () => {
     mockPrisma.eventCursor.upsert.mockResolvedValue({
       contractId: CONTRACT_ID,
       lastProcessedLedger: 102,
+    })
+
+    // DLQ-backed-by-Prisma needs an in-memory simulation of the rows it returns.
+    let dlqRows: any[] = []
+    mockPrisma.deadLetterEvent.create.mockImplementation(async (args: any) => {
+      const row = {
+        id: `dlq-${dlqRows.length + 1}`,
+        ...args.data,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      dlqRows.push(row)
+      return row
+    })
+    mockPrisma.deadLetterEvent.findMany.mockImplementation(
+      async (args: any) => {
+        if (args?.where?.status?.in) {
+          const allowed: string[] = args.where.status.in
+          return dlqRows.filter((r) => allowed.includes(r.status))
+        }
+        return dlqRows
+      }
+    )
+    mockPrisma.deadLetterEvent.count.mockImplementation(
+      async () => dlqRows.length
+    )
+    mockPrisma.deadLetterEvent.update.mockImplementation(async (args: any) => {
+      const row = dlqRows.find((r) => r.id === args.where.id)
+      if (row) Object.assign(row, args.data, { updatedAt: new Date() })
+      return row ?? { id: args.where.id }
     })
   })
 
@@ -142,7 +167,7 @@ describe('Vault event recovery integration', () => {
 
     await retryDeadLetterEvents()
 
-    const queue = DeadLetterQueue.getAll()
+    const queue = await DeadLetterQueue.getAll()
     expect(queue).toHaveLength(1)
     expect(queue[0].status).toBe('RESOLVED')
     expect(queue[0].retryCount).toBe(1)

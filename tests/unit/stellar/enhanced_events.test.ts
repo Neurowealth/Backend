@@ -92,9 +92,9 @@ describe('Vault Enhanced Events Tests', () => {
                 }
             ];
 
-            const initialSize = DeadLetterQueue.getSize();
+            const initialSize = await DeadLetterQueue.getSize();
             await processEventBatch(events);
-            const finalSize = DeadLetterQueue.getSize();
+            const finalSize = await DeadLetterQueue.getSize();
 
             expect(finalSize).toBeGreaterThanOrEqual(initialSize);
         });
@@ -102,15 +102,37 @@ describe('Vault Enhanced Events Tests', () => {
 
     describe('Dead Letter Queue Retry (Issue #54)', () => {
         it('should retry DLQ events when triggered', async () => {
-             const initialSize = DeadLetterQueue.getSize();
+             // Simulate queue growth across the mocked Prisma count() — first
+             // call reports the baseline, the second reports baseline+1 once
+             // add() runs.
+             let count = 0;
+             (mockPrisma as any).deadLetterEvent.count.mockImplementation(async () => count);
+             (mockPrisma as any).deadLetterEvent.create.mockImplementation(async () => {
+                 count += 1;
+                 return {
+                     id: 'dlq-1',
+                     contractId: CONTRACT_ID,
+                     txHash: 'tx_retry_test',
+                     eventType: 'deposit',
+                     ledger: 105,
+                     error: 'Test manual error',
+                     payload: {},
+                     status: 'PENDING',
+                     retryCount: 0,
+                     createdAt: new Date(),
+                     updatedAt: new Date(),
+                 };
+             });
+
+             const initialSize = await DeadLetterQueue.getSize();
              await DeadLetterQueue.add({
                  type: 'deposit',
                  ledger: 105,
                  txHash: 'tx_retry_test',
                  contractId: CONTRACT_ID
              }, 'Test manual error');
-             
-             expect(DeadLetterQueue.getSize()).toBe(initialSize + 1);
+
+             expect(await DeadLetterQueue.getSize()).toBe(initialSize + 1);
 
              // Just call retryDeadLetterEvents to cover logic
              await retryDeadLetterEvents();

@@ -49,6 +49,12 @@ enum AgentStatus {
   SKIPPED
 }
 
+enum DeadLetterEventStatus {
+  PENDING
+  RETRIED
+  RESOLVED
+}
+
 model User {
   id            String   @id @default(uuid())
   walletAddress String   @unique
@@ -223,4 +229,24 @@ model ProcessedEvent {
   @@index([ledger])
   @@index([processedAt])
   @@map("processed_events")
+}
+
+model DeadLetterEvent {
+  id          String                @id @default(uuid())
+  contractId  String
+  txHash      String
+  eventType   String
+  ledger      Int
+  error       String                @db.Text
+  payload     Json
+  status      DeadLetterEventStatus @default(PENDING)
+  retryCount  Int                   @default(0)
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  @@index([status])
+  @@index([contractId])
+  @@index([txHash])
+  @@index([createdAt])
+  @@map("dead_letter_events")
 }
