@@ -1,6 +1,126 @@
 # Production deployment, secrets, and migrations
 
-This guide covers secret management, CI/CD injection, database migrations, health/readiness checks, and rollback for the NeuroWealth backend.
+This guide covers container image build, secret management, CI/CD injection, database migrations, health/readiness checks, and rollback for the NeuroWealth backend.
+
+## Container image (Dockerfile)
+
+The repo ships a multi-stage `Dockerfile`:
+
+| Stage | Base | Purpose |
+|-------|------|---------|
+| `builder` | `node:20-alpine` | `npm ci` → `prisma generate` → `tsc` |
+| `runtime` | `node:20-alpine` | Slim image; only `dist/`, production `node_modules`, and Prisma artefacts |
+
+### Build
+
+```bash
+docker build -t neurowealth-backend:latest .
+```
+
+Push to your registry:
+
+```bash
+docker tag neurowealth-backend:latest registry.example.com/neurowealth-backend:$(git rev-parse --short HEAD)
+docker push registry.example.com/neurowealth-backend:$(git rev-parse --short HEAD)
+```
+
+### Environment variables (production minimum)
+
+```bash
+NODE_ENV=production
+DATABASE_URL=postgresql://user:pass@db-host:5432/neurowealth
+JWT_SEED=<64 hex chars>
+WALLET_ENCRYPTION_KEY=<64 hex chars>
+STELLAR_NETWORK=mainnet
+STELLAR_RPC_URL=https://soroban-mainnet.stellar.org
+STELLAR_AGENT_SECRET_KEY=S...
+VAULT_CONTRACT_ID=C...
+USDC_TOKEN_ADDRESS=C...
+ANTHROPIC_API_KEY=sk-ant-...
+TWILIO_AUTH_TOKEN=<Twilio auth token>
+TWILIO_ACCOUNT_SID=AC...
+WHATSAPP_FROM=whatsapp:+1234567890
+ADMIN_API_TOKEN=<strong random token>
+CORS_ORIGINS=https://app.neurowealth.io
+```
+
+Generate secrets locally (never commit raw values):
+
+```bash
+openssl rand -hex 64   # JWT_SEED
+openssl rand -hex 32   # WALLET_ENCRYPTION_KEY
+openssl rand -hex 32   # ADMIN_API_TOKEN
+```
+
+### Database migrations (pre-start / init container)
+
+Run `prisma migrate deploy` **before** starting the app. The container `CMD`
+does this automatically for simple single-instance deploys:
+
+```
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+```
+
+For Kubernetes, use a dedicated `initContainer` so the migration completes
+before any app replica starts:
+
+```yaml
+initContainers:
+  - name: migrate
+    image: registry.example.com/neurowealth-backend:$(TAG)
+    command: ["npx", "prisma", "migrate", "deploy"]
+    env:
+      - name: DATABASE_URL
+        valueFrom:
+          secretKeyRef:
+            name: neurowealth-secrets
+            key: DATABASE_URL
+```
+
+### Health and readiness probes for load balancers / Kubernetes
+
+| Endpoint | HTTP method | Expected status | Use |
+|----------|-------------|-----------------|-----|
+| `GET /health/live` | GET | 200 always | Liveness — is the process running? |
+| `GET /health/ready` | GET | 200 ready / 503 not ready | Readiness — are DB, event listener, and agent loop healthy? |
+| `GET /health` | GET | 200 | Legacy; returns subsystem map from `readiness.ts` |
+
+Kubernetes example:
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: 3001
+  initialDelaySeconds: 10
+  periodSeconds: 15
+
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: 3001
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  failureThreshold: 3
+```
+
+AWS ALB / Nginx: configure the target group health check to `GET /health/ready`
+and mark targets unhealthy at HTTP 5xx. During rolling deploys new instances
+will return 503 until all three subsystems (`database`, `eventListener`,
+`agentLoop`) are ready.
+
+### Key rotation / backup expectations
+
+- **WALLET_ENCRYPTION_KEY** — custodial wallet secrets are stored AES-256-GCM
+  encrypted in the `custodial_wallets` table. Rotate by running a migration
+  job that decrypts with the old key and re-encrypts with the new one before
+  swapping the env var. Back up the database; losing the encryption key makes
+  wallets unrecoverable.
+- **JWT_SEED** — rotate every 90 days. All active sessions are invalidated;
+  users re-authenticate. Use a maintenance window.
+- **Auth nonces** — stored in `auth_nonces` table with a 5-minute TTL. No
+  special rotation needed; expired rows are pruned lazily on each challenge
+  request.
 
 ## Secret managers (recommended)
 
