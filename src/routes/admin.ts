@@ -1,14 +1,26 @@
 /**
  * Admin Routes - Operational tooling for Stellar event listener and DLQ management
- * Protected by admin authentication middleware
+ * Protected by admin authentication middleware and rate limiting
  */
 
 import { Router, Request, Response } from 'express'
 import { getEventMetrics } from '../stellar/events'
 import { DeadLetterQueue } from '../stellar/dlq'
 import { logger } from '../utils/logger'
+import { adminRateLimiter } from '../middleware/rateLimiter'
 
 const router = Router()
+
+// Log admin actions for audit trail
+function auditLog(req: Request, action: string, details?: Record<string, any>): void {
+  logger.info('[Admin Audit]', {
+    action,
+    ip: req.ip,
+    method: req.method,
+    path: req.path,
+    ...details,
+  })
+}
 
 /**
  * Admin auth middleware - checks for admin token or internal access
@@ -39,7 +51,8 @@ function requireAdminAuth(req: Request, res: Response, next: Function): void {
     next()
 }
 
-// Apply admin auth to all routes
+// Apply admin auth and rate limiting to all routes
+router.use(adminRateLimiter)
 router.use(requireAdminAuth)
 
 /**
@@ -49,6 +62,7 @@ router.use(requireAdminAuth)
 router.get('/stellar/metrics', (req: Request, res: Response) => {
     try {
         const metrics = getEventMetrics()
+        auditLog(req, 'GET_STELLAR_METRICS')
 
         res.status(200).json({
             success: true,
@@ -65,6 +79,9 @@ router.get('/stellar/metrics', (req: Request, res: Response) => {
         })
     } catch (error) {
         logger.error('[Admin] Failed to get metrics', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+        })
+        auditLog(req, 'GET_STELLAR_METRICS_FAILED', {
             error: error instanceof Error ? error.message : 'Unknown error',
         })
         res.status(500).json({
@@ -84,7 +101,7 @@ router.get('/stellar/metrics', (req: Request, res: Response) => {
 router.get('/dlq/inspect', async (req: Request, res: Response) => {
     try {
         const { status, limit = '50' } = req.query
-        const maxLimit = Math.min(parseInt(limit as string) || 50, 500)
+        const maxLimit = Math.min(Number.parseInt(limit as string) || 50, 500)
 
         const allEvents = await DeadLetterQueue.getAll()
 
@@ -96,6 +113,13 @@ router.get('/dlq/inspect', async (req: Request, res: Response) => {
 
         // Apply limit
         const items = filtered.slice(0, maxLimit)
+
+        auditLog(req, 'INSPECT_DLQ', {
+            statusFilter: status,
+            totalInQueue: allEvents.length,
+            filteredCount: filtered.length,
+            returnedCount: items.length,
+        })
 
         res.status(200).json({
             success: true,
@@ -122,6 +146,9 @@ router.get('/dlq/inspect', async (req: Request, res: Response) => {
         logger.error('[Admin] Failed to inspect DLQ', {
             error: error instanceof Error ? error.message : 'Unknown error',
         })
+        auditLog(req, 'INSPECT_DLQ_FAILED', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+        })
         res.status(500).json({
             success: false,
             error: 'Failed to inspect DLQ',
@@ -143,6 +170,10 @@ router.post('/dlq/retry', async (req: Request, res: Response) => {
             const events = await DeadLetterQueue.getAll()
             const pending = events.filter(e => e.status === 'PENDING' || e.status === 'RETRIED')
 
+            auditLog(req, 'DLQ_RETRY_DRY_RUN', {
+                wouldRetry: pending.length,
+            })
+
             return res.status(200).json({
                 success: true,
                 data: {
@@ -161,6 +192,7 @@ router.post('/dlq/retry', async (req: Request, res: Response) => {
 
         // Perform actual retry
         logger.info('[Admin] Starting DLQ retry operation')
+        auditLog(req, 'DLQ_RETRY_START')
 
         // Import the retry function from events module
         const { retryDeadLetterEvents } = await import('../stellar/events')
@@ -171,6 +203,7 @@ router.post('/dlq/retry', async (req: Request, res: Response) => {
         const failed = result.filter(e => e.status === 'RETRIED').length
 
         logger.info('[Admin] DLQ retry completed', { resolved, failed })
+        auditLog(req, 'DLQ_RETRY_COMPLETED', { resolved, failed, totalRemaining: result.length })
 
         res.status(200).json({
             success: true,
@@ -183,6 +216,9 @@ router.post('/dlq/retry', async (req: Request, res: Response) => {
         })
     } catch (error) {
         logger.error('[Admin] DLQ retry failed', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+        })
+        auditLog(req, 'DLQ_RETRY_FAILED', {
             error: error instanceof Error ? error.message : 'Unknown error',
         })
         res.status(500).json({
@@ -202,6 +238,9 @@ router.post('/dlq/resolve', async (req: Request, res: Response) => {
         const { eventId } = req.body
 
         if (!eventId || typeof eventId !== 'string') {
+            auditLog(req, 'DLQ_RESOLVE_INVALID', {
+                error: 'Missing or invalid eventId',
+            })
             return res.status(400).json({
                 success: false,
                 error: 'eventId is required and must be a string',
@@ -211,6 +250,7 @@ router.post('/dlq/resolve', async (req: Request, res: Response) => {
         const resolved = await DeadLetterQueue.resolve(eventId)
 
         if (!resolved) {
+            auditLog(req, 'DLQ_RESOLVE_NOT_FOUND', { eventId })
             return res.status(404).json({
                 success: false,
                 error: `Event ${eventId} not found in DLQ`,
@@ -218,6 +258,7 @@ router.post('/dlq/resolve', async (req: Request, res: Response) => {
         }
 
         logger.info('[Admin] Event manually resolved', { eventId })
+        auditLog(req, 'DLQ_RESOLVE_SUCCESS', { eventId })
 
         res.status(200).json({
             success: true,
@@ -229,6 +270,9 @@ router.post('/dlq/resolve', async (req: Request, res: Response) => {
         })
     } catch (error) {
         logger.error('[Admin] Failed to resolve DLQ event', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+        })
+        auditLog(req, 'DLQ_RESOLVE_FAILED', {
             error: error instanceof Error ? error.message : 'Unknown error',
         })
         res.status(500).json({
@@ -248,6 +292,9 @@ router.post('/stellar/backfill', async (req: Request, res: Response) => {
         const { startLedger, endLedger } = req.body
 
         if (!startLedger || typeof startLedger !== 'number' || startLedger < 0) {
+            auditLog(req, 'STELLAR_BACKFILL_INVALID', {
+                error: 'Invalid startLedger',
+            })
             return res.status(400).json({
                 success: false,
                 error: 'startLedger is required and must be a non-negative number',
@@ -255,6 +302,9 @@ router.post('/stellar/backfill', async (req: Request, res: Response) => {
         }
 
         if (endLedger && (typeof endLedger !== 'number' || endLedger < startLedger)) {
+            auditLog(req, 'STELLAR_BACKFILL_INVALID', {
+                error: 'Invalid endLedger',
+            })
             return res.status(400).json({
                 success: false,
                 error: 'endLedger must be a number >= startLedger',
@@ -262,6 +312,7 @@ router.post('/stellar/backfill', async (req: Request, res: Response) => {
         }
 
         logger.info('[Admin] Starting manual backfill', { startLedger, endLedger })
+        auditLog(req, 'STELLAR_BACKFILL_START', { startLedger, endLedger })
 
         // Import backfill function from events module
         const { backfillEvents } = await import('../stellar/events')
@@ -279,6 +330,9 @@ router.post('/stellar/backfill', async (req: Request, res: Response) => {
         })
     } catch (error) {
         logger.error('[Admin] Backfill operation failed', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+        })
+        auditLog(req, 'STELLAR_BACKFILL_FAILED', {
             error: error instanceof Error ? error.message : 'Unknown error',
         })
         res.status(500).json({

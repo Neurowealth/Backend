@@ -93,12 +93,33 @@ npm run build
 npm start
 ```
 
+Rate limiting
+-------------
+The API applies layered rate limits (all configurable via `.env`):
+
+| Limiter | Routes | Default | Env vars |
+|---------|--------|---------|----------|
+| Global | All routes | 100 req / 15 min | `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS` |
+| Auth | `/api/auth/*` | 20 req / 15 min | `AUTH_RATE_LIMIT_MAX`, `AUTH_RATE_LIMIT_WINDOW_MS` |
+| Admin | `/api/admin/*` | 10 req / 15 min | `ADMIN_RATE_LIMIT_MAX`, `ADMIN_RATE_LIMIT_WINDOW_MS` |
+| Internal | `/api/agent/*` | 500 req / 1 min | `INTERNAL_RATE_LIMIT_MAX`, `INTERNAL_RATE_LIMIT_WINDOW_MS` |
+
+**Bypass (trusted services only):** set `TRUSTED_IPS` to a comma-separated allowlist of IPs, or send the shared secret in the `X-Internal-Token` header (`INTERNAL_SERVICE_TOKEN`). Mount order matters: the bypass middleware runs before limiters in `src/index.ts`.
+
+For production secret handling, migrations, and rollback steps see `docs/PRODUCTION_DEPLOYMENT.md`.
+
 Testing
 -------
 Run unit tests (Jest):
 
 ```bash
 npm test
+```
+
+Post-migration smoke check (DB connectivity + core tables):
+
+```bash
+npm run smoke
 ```
 
 Auth overview (short)

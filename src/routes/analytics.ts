@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import db from '../db'
-import { requireAuth, enforceUserAccess } from '../middleware/auth'
+import { AuthMiddleware } from '../middleware/authenticate'
 
 const router = Router()
 
@@ -17,7 +17,7 @@ function periodToDays(period: string): number {
  * GET /analytics/apy-history
  * Returns APY snapshots over time for a user's positions (graph-ready).
  */
-router.get('/apy-history', requireAuth, async (req: Request, res: Response) => {
+router.get('/apy-history', AuthMiddleware.validateJwt, async (req: Request, res: Response) => {
   const userId = req.auth!.userId
   const parsed = periodSchema.safeParse(req.query)
   if (!parsed.success) {
@@ -45,7 +45,7 @@ router.get('/apy-history', requireAuth, async (req: Request, res: Response) => {
  * GET /analytics/user-yield
  * Returns cumulative and period yield earned by the authenticated user.
  */
-router.get('/user-yield', requireAuth, async (req: Request, res: Response) => {
+router.get('/user-yield', AuthMiddleware.validateJwt, async (req: Request, res: Response) => {
   const userId = req.auth!.userId
   const parsed = periodSchema.safeParse(req.query)
   if (!parsed.success) {

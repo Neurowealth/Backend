@@ -28,6 +28,7 @@ jobs:
     env:
       NODE_ENV: test
       DATABASE_URL: postgresql://user:pass@localhost:5432/db
+      WALLET_ENCRYPTION_KEY: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
 
     steps:
       # Checkout repository
@@ -65,3 +66,74 @@ jobs:
       # Run tests
       - name: Run tests
         run: npm test
+
+  # ── Issue #100: migration smoke gate ──────────────────────────────────────
+  # Isolated job that re-applies migrations against a clean DB and runs the
+  # smoke test.  Fails the pipeline if either step errors, preventing a broken
+  # migration from reaching production.
+  migration-smoke:
+    name: Migration smoke test
+    runs-on: ubuntu-latest
+    needs: ci
+    services:
+      postgres:
+        image: postgres:14.4
+        env:
+          POSTGRES_USER: smoke_user
+          POSTGRES_PASSWORD: smoke_pass
+          POSTGRES_DB: smoke_db
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd="pg_isready -U smoke_user"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://smoke_user:smoke_pass@localhost:5433/smoke_db
+      # Non-secret stubs required by env.ts at module-load time
+      STELLAR_NETWORK: testnet
+      STELLAR_RPC_URL: https://rpc.example.com
+      STELLAR_AGENT_SECRET_KEY: SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      VAULT_CONTRACT_ID: CDUMMYVAULTCONTRACTID
+      USDC_TOKEN_ADDRESS: CDUMMYUSDC
+      ANTHROPIC_API_KEY: smoke-anthropic-key
+      JWT_SEED: smoke-jwt-seed
+      JWT_SESSION_TTL_HOURS: '24'
+      JWT_NONCE_TTL_MS: '300000'
+      JWT_CLEANUP_INTERVAL_MS: '86400000'
+      WALLET_ENCRYPTION_KEY: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Check migration status (staging gate)
+        run: npx prisma migrate status
+
+      - name: Apply migrations to smoke DB
+        run: npx prisma migrate deploy
+
+      - name: Confirm no pending migrations after deploy
+        run: |
+          npx prisma migrate status | tee /tmp/migrate-status.txt
+          if grep -q "following migration have not yet been applied" /tmp/migrate-status.txt; then
+            echo "::error::Pending migrations remain after migrate deploy"
+            exit 1
+          fi
+
+      - name: Run smoke test
+        run: npm run smoke

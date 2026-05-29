@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
-import { requireAuth } from '../middleware/auth'
+import { AuthMiddleware } from '../middleware/authenticate'
 import { validate } from '../middleware/validate'
 import { processOnChainTransaction } from '../controllers/transaction-controller'
 
@@ -16,7 +16,7 @@ const depositSchema = z.object({
 
 router.post(
   '/',
-  requireAuth,
+  AuthMiddleware.validateJwt,
   validate({ body: depositSchema, errorMessage: 'Validation error' }),
   async (req: Request, res: Response) => {
     return processOnChainTransaction(req, res, 'DEPOSIT')

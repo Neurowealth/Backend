@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import db from '../db'
-import { enforceUserAccess, requireAuth } from '../middleware/auth'
+import { AuthMiddleware } from '../middleware/authenticate'
+import { enforceUserAccess } from '../middleware/auth'
 import { validate } from '../middleware/validate'
 import { paginationSchema, getPaginationParams } from '../utils/pagination'
 import { mapTransactionToResponse } from '../utils/api-formatters'
@@ -25,7 +26,7 @@ const txHashParamSchema = z.object({
   txHash: z.string().min(1, 'Transaction hash is required'),
 })
 
-router.get('/detail/:txHash', requireAuth, validate({ params: txHashParamSchema }), async (req: Request, res: Response) => {
+router.get('/detail/:txHash', AuthMiddleware.validateJwt, validate({ params: txHashParamSchema }), async (req: Request, res: Response) => {
   const txHash = String(req.params.txHash)
   const tx = await db.transaction.findUnique({
     where: { txHash },
@@ -43,7 +44,7 @@ router.get('/detail/:txHash', requireAuth, validate({ params: txHashParamSchema 
   })
 })
 
-router.get('/:userId', requireAuth, enforceUserAccess, validate(listSchema), async (req: Request, res: Response) => {
+router.get('/:userId', AuthMiddleware.validateJwt, enforceUserAccess, validate(listSchema), async (req: Request, res: Response) => {
   const userId = req.params.userId as string
   const { page, limit, skip } = getPaginationParams(req.query)
 

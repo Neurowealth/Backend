@@ -22,7 +22,7 @@ export class AuthMiddleware {
     const authorization = req.header('Authorization');
 
     if (!authorization) {
-      res.status(401).json({ error: 'No token provided' });
+      res.status(401).json({ error: 'Unauthorized' });
       return;
     }
 
@@ -60,9 +60,21 @@ export class AuthMiddleware {
         return;
       }
 
-      // 4. Attach authenticated identity to request
+      // 4. Reject inactive users
+      if (!session.user.isActive) {
+        res.status(401).json({ error: 'User account is inactive' });
+        return;
+      }
+
+      // 5. Attach authenticated identity to request
       req.userId = session.user.id;
       req.stellarPubKey = session.walletAddress;
+      req.auth = {
+        userId: session.userId,
+        sessionId: session.id,
+        walletAddress: session.walletAddress,
+        network: session.network,
+      };
 
       next();
     } catch (error) {

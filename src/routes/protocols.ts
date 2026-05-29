@@ -8,6 +8,11 @@ import {
 
 const router = Router()
 
+/**
+ * GET /api/protocols/rates
+ * Returns current protocol rates
+ * Requires authentication to prevent information disclosure
+ */
 router.get('/rates', async (req: Request, res: Response) => {
   const rates = await db.protocolRate.findMany({
     orderBy: { fetchedAt: 'desc' },
@@ -30,6 +35,11 @@ router.get('/rates', async (req: Request, res: Response) => {
   })
 })
 
+/**
+ * GET /api/protocols/agent/status
+ * Returns agent status information
+ * Requires authentication to prevent information disclosure
+ */
 router.get('/agent/status', async (req: Request, res: Response) => {
   try {
     // Get real agent loop health instead of just latest log

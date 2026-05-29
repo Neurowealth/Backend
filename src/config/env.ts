@@ -81,6 +81,20 @@ function validateStellarNetwork(network: string): 'testnet' | 'mainnet' | 'futur
   return lowerNetwork as 'testnet' | 'mainnet' | 'futurenet'
 }
 
+/** Parse `CORS_ORIGINS` / `ALLOWED_ORIGINS` (comma-separated or `*`). */
+function parseCorsOrigins(): string[] | '*' {
+  const raw = (process.env.CORS_ORIGINS ?? process.env.ALLOWED_ORIGINS)?.trim()
+  if (!raw || raw === '*') return '*'
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+function parseByteLimit(value: string | undefined, fallback: string): string {
+  return value && /^\d+(kb|mb|b)?$/i.test(value) ? value : fallback
+}
+
 /**
  * Validate Stellar secret key format and warn on mainnet in dev.
  */
@@ -114,6 +128,12 @@ const stellarNetwork = validateStellarNetwork(requireEnv('STELLAR_NETWORK'))
 const agentSecretKey = requireEnv('STELLAR_AGENT_SECRET_KEY')
 validateStellarKey(agentSecretKey, stellarNetwork)
 
+const corsOrigins = parseCorsOrigins()
+const bodySizeLimit = parseByteLimit(
+  process.env.BODY_SIZE_LIMIT ?? process.env.BODY_LIMIT_JSON,
+  '100kb'
+)
+
 // ── Typed NODE_ENV ─────────────────────────────────────────────────────────
 type NodeEnv = 'development' | 'staging' | 'production' | 'test'
 const nodeEnv = process.env.NODE_ENV as NodeEnv
@@ -139,26 +159,64 @@ export const config = {
     url: process.env.REDIS_URL || 'redis://localhost:6379',
   },
   jwt: {
+    /**
+     * JWT_SEED: 64-hex secret used to sign/verify JWTs.
+     * Rotate every 90 days. Inject via AWS Secrets Manager, HashiCorp Vault,
+     * or GitHub Actions secrets — never commit the raw value.
+     */
     seed: requireEnv('JWT_SEED'),
     session_ttl_hours: parseInt(process.env.JWT_SESSION_TTL_HOURS || '24'),
     nonce_ttl_ms: parseInt(process.env.JWT_NONCE_TTL_MS || '300000'),
     interval_ms: parseInt(process.env.JWT_CLEANUP_INTERVAL_MS || '86400000'),
   },
   security: {
-    walletEncryptionKey: requireEnv('WALLET_ENCRYPTION_KEY'),
-    allowedOrigins: (process.env.ALLOWED_ORIGINS || '')
-      .split(',')
-      .map(o => o.trim())
-      .filter(Boolean),
-    bodySizeLimit: process.env.BODY_SIZE_LIMIT || '100kb',
+    /**
+     * WALLET_ENCRYPTION_KEY: 32-byte hex key for encrypting stored wallet secrets.
+     * Rotate with a coordinated key migration. Inject via AWS Secrets Manager or
+     * HashiCorp Vault — never commit the raw value.
+     */
+    walletEncryptionKey: process.env.WALLET_ENCRYPTION_KEY || '',
+    cors: {
+      origins: corsOrigins,
+    },
+    /** Used by `corsandbody` — empty when wildcard (non-production allows all origins). */
+    allowedOrigins: corsOrigins === '*' ? [] : corsOrigins,
+    bodySizeLimit,
+    bodyLimits: {
+      json: parseByteLimit(process.env.BODY_LIMIT_JSON, bodySizeLimit),
+      urlencoded: parseByteLimit(process.env.BODY_LIMIT_URLENCODED, bodySizeLimit),
+    },
+    /** Global rate limiter — applied to every route */
     rateLimit: {
       windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000'),
       max: parseInt(process.env.RATE_LIMIT_MAX || '100'),
     },
+    /** Auth endpoints — stricter to resist credential stuffing */
     authRateLimit: {
       windowMs: parseInt(process.env.AUTH_RATE_LIMIT_WINDOW_MS || '900000'),
       max: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '20'),
     },
+    /** Admin endpoints — tightest limits (management/sensitive ops) */
+    adminRateLimit: {
+      windowMs: parseInt(process.env.ADMIN_RATE_LIMIT_WINDOW_MS || '900000'),
+      max: parseInt(process.env.ADMIN_RATE_LIMIT_MAX || '10'),
+    },
+    /** Internal/agent endpoints — higher throughput for service-to-service calls */
+    internalRateLimit: {
+      windowMs: parseInt(process.env.INTERNAL_RATE_LIMIT_WINDOW_MS || '60000'),
+      max: parseInt(process.env.INTERNAL_RATE_LIMIT_MAX || '500'),
+    },
+    /**
+     * TRUSTED_IPS: comma-separated list of IPv4/IPv6 addresses that bypass rate
+     * limiting entirely (e.g. your CI runner, internal health-check probe).
+     * INTERNAL_SERVICE_TOKEN: bearer token accepted in X-Internal-Token header
+     * for service-to-service calls that should skip per-route limits.
+     */
+    trustedIps: (process.env.TRUSTED_IPS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    internalServiceToken: process.env.INTERNAL_SERVICE_TOKEN || '',
   },
   whatsapp: {
     twilioSid: process.env.TWILIO_ACCOUNT_SID || '',

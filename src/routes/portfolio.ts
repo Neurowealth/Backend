@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import db from '../db'
-import { enforceUserAccess, requireAuth } from '../middleware/auth'
+import { AuthMiddleware } from '../middleware/authenticate'
+import { enforceUserAccess } from '../middleware/auth'
 import { validate } from '../middleware/validate'
 import { mapPositionToResponse } from '../utils/api-formatters'
 import { sendNotFound } from '../utils/errors'
@@ -29,7 +30,7 @@ const historySchema = z.object({
   }),
 })
 
-router.get('/:userId', requireAuth, enforceUserAccess, validate(portfolioSchema), async (req: Request, res: Response) => {
+router.get('/:userId', AuthMiddleware.validateJwt, enforceUserAccess, validate(portfolioSchema), async (req: Request, res: Response) => {
   const userId = req.params.userId as string
   const user = await db.user.findUnique({
     where: { id: userId },
@@ -70,7 +71,7 @@ router.get('/:userId', requireAuth, enforceUserAccess, validate(portfolioSchema)
 
 router.get(
   '/:userId/history',
-  requireAuth,
+  AuthMiddleware.validateJwt,
   enforceUserAccess,
   validate(historySchema),
   async (req: Request, res: Response) => {
@@ -119,7 +120,7 @@ router.get(
 
 router.get(
   '/:userId/earnings',
-  requireAuth,
+  AuthMiddleware.validateJwt,
   enforceUserAccess,
   validate(portfolioSchema),
   async (req: Request, res: Response) => {

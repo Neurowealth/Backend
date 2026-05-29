@@ -1,17 +1,15 @@
+import { type Server } from 'node:http'
 import express from 'express'
-import cors, { type CorsOptions } from 'cors'
 import helmet from 'helmet'
 import { config } from './config/env'
 import { errorHandler } from './middleware/errorHandler'
 import { requestLogger } from './middleware/logger'
-import { rateLimiter, authRateLimiter } from './middleware/rateLimiter'
-
+import { rateLimiter, authRateLimiter, adminRateLimiter, internalRateLimiter, trustedIpBypass } from './middleware/rateLimiter'
 import { logger } from './utils/logger'
-import { startAgentLoop } from './agent/loop'
+import { startAgentLoop, stopAgentLoop } from './agent/loop'
 import { connectDb } from './db'
 import { scheduleSessionCleanup } from './jobs/sessionCleanup'
-import { startEventListener } from './stellar/events'
-import { DeadLetterQueue } from './stellar/dlq'
+import { startEventListener, stopEventListener } from './stellar/events'
 import healthRouter from './routes/health'
 import agentRouter from './routes/agent'
 import authRouter from './routes/auth'
@@ -43,6 +41,10 @@ const serviceStatus: Record<string, ServiceStatus> = {
   agentLoop: { ready: false },
 }
 
+let isShuttingDown = false
+let httpServer: Server | null = null
+const REQUEST_DRAIN_TIMEOUT_MS = 30000
+
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every(s => s.ready)
 }
@@ -66,6 +68,8 @@ app.use(urlencodedBodyParser)
 
 // Logging + rate limiting
 app.use(requestLogger)
+// Trusted-IP / service-token bypass must run before any rate limiter
+app.use(trustedIpBypass)
 app.use(rateLimiter)
 
 // ── Readiness / liveness probes ───────────────────────────────────────────────
@@ -78,6 +82,14 @@ app.get('/health/live', (_req, res) => {
 })
 
 app.get('/health/ready', (_req, res) => {
+  if (isShuttingDown) {
+    return res.status(503).json({
+      status: 'shutting_down',
+      services: serviceStatus,
+      timestamp: new Date().toISOString(),
+    })
+  }
+
   if (allServicesReady()) {
     res.status(200).json({
       status: 'ready',
@@ -96,7 +108,7 @@ app.get('/health/ready', (_req, res) => {
 // ── Application routes ────────────────────────────────────────────────────────
 
 app.use('/health', healthRouter)
-app.use('/api/agent', agentRouter)
+app.use('/api/agent', internalRateLimiter, agentRouter)
 app.use('/api/auth', authRateLimiter, authRouter)
 app.use('/api/whatsapp', whatsappRouter)
 app.use('/api/portfolio', portfolioRouter)
@@ -106,14 +118,69 @@ app.use('/api/deposit', depositRouter)
 app.use('/api/withdraw', withdrawRouter)
 app.use('/api/vault', vaultRouter)
 app.use('/api/analytics', analyticsRouter)
-app.use('/api/admin', adminRouter)
+
 app.use('/metrics', metricsRouter)
+// Admin routes (protected, strictest rate limit)
+app.use('/api/admin', adminRateLimiter, adminRouter)
 
 // 413 handler — must be after body parsers, before generic error handler
 app.use(payloadSizeErrorHandler)
 
 // Generic error handler — must always be last
 app.use(errorHandler)
+// ── Graceful shutdown ────────────────────────────────────────────────────────
+//
+// On SIGTERM/SIGINT, we:
+// 1. Mark as shutting down so readiness probe returns 503
+// 2. Close the HTTP server (stops accepting new connections)
+// 3. Wait up to REQUEST_DRAIN_TIMEOUT_MS for in-flight requests to complete
+// 4. Stop event listener
+// 5. Stop agent cron jobs
+// 6. Disconnect Prisma
+// 7. Exit cleanly
+
+async function gracefulShutdown(signal: string): Promise<void> {
+  logger.info(`[Shutdown] Received ${signal}, initiating graceful shutdown...`)
+  isShuttingDown = true
+
+  if (!httpServer) {
+    logger.warn('[Shutdown] No HTTP server to close')
+    process.exit(0)
+  }
+
+  logger.info('[Shutdown] Closing HTTP server (no new requests accepted)')
+  httpServer.close(async () => {
+    logger.info('[Shutdown] HTTP server closed')
+
+    try {
+      logger.info('[Shutdown] Stopping event listener...')
+      stopEventListener()
+
+      logger.info('[Shutdown] Stopping agent loop...')
+      await stopAgentLoop()
+
+      logger.info('[Shutdown] Disconnecting Prisma...')
+      // Importing here to avoid circular dependency
+      const db = await import('./db').then(m => m.default)
+      await db.$disconnect()
+
+      logger.info('[Shutdown] ✓ All services stopped gracefully')
+      process.exit(0)
+    } catch (error) {
+      logger.error('[Shutdown] Error during graceful shutdown:', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      process.exit(1)
+    }
+  })
+
+  // Force shutdown after timeout
+  setTimeout(() => {
+    logger.error('[Shutdown] Timeout reached, forcing shutdown...')
+    process.exit(1)
+  }, REQUEST_DRAIN_TIMEOUT_MS)
+}
+
 // ── Startup sequence ──────────────────────────────────────────────────────────
 //
 // The HTTP server does NOT start accepting connections until every critical
@@ -121,6 +188,17 @@ app.use(errorHandler)
 // and exit with a nonzero code so process supervisors / K8s restart us.
 
 async function initServices(): Promise<void> {
+  // 0. Validate production configuration
+  if (config.nodeEnv === 'production') {
+    const adminToken = process.env.ADMIN_API_TOKEN
+    if (!adminToken || adminToken.length < 8) {
+      const msg = 'ADMIN_API_TOKEN must be set to a strong value in production'
+      logger.error('[Startup] Configuration validation failed — cannot continue', { error: msg })
+      throw new Error(msg)
+    }
+    logger.info('[Startup] Admin API token configured ✓')
+  }
+
   // 1. Database
   try {
     await connectDb()
@@ -178,10 +256,14 @@ async function main(): Promise<void> {
   }
 
   // All services healthy — now accept traffic
-  app.listen(config.port, () => {
+  httpServer = app.listen(config.port, () => {
     logger.info(`[Startup] HTTP server listening on port ${config.port} ✓`)
     logger.info('[Startup] All systems operational — ready to serve requests')
   })
+
+  // Register graceful shutdown handlers
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
   // Non-critical jobs start after the server is up
   scheduleSessionCleanup()

@@ -1,3 +1,10 @@
+jest.mock('../../../src/config/jwt-adapter', () => ({
+  JwtAdapter: {
+    generateToken: jest.fn().mockResolvedValue('mock-token'),
+    validateToken: jest.fn().mockResolvedValue({ id: 'mock-user-id' }),
+  },
+}))
+
 const mockDb = {
   session: { findUnique: jest.fn() },
   user: { findUnique: jest.fn() },

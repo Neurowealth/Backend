@@ -1,5 +1,7 @@
 # Deployment Guide - Vault Events Persistence
 
+> For production secrets, migration roll-forward/rollback, and the full release checklist, see **[PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md)**.
+
 ## Pre-Deployment Checklist
 
 - [x] Code review completed

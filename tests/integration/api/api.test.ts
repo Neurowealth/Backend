@@ -1,3 +1,10 @@
+jest.mock('../../../src/config/jwt-adapter', () => ({
+  JwtAdapter: {
+    generateToken: jest.fn().mockResolvedValue('mock-token'),
+    validateToken: jest.fn().mockResolvedValue({ id: 'mock-user-id' }),
+  },
+}))
+
 import request from 'supertest'
 
 const mockDb = {

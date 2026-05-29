@@ -11,6 +11,16 @@ jest.mock('../../../src/config/jwt-adapter', () => ({
     },
 }));
 
+const passthroughLimiter = (_req: unknown, _res: unknown, next: () => void) => next()
+
+jest.mock('../../../src/middleware/rateLimiter', () => ({
+    trustedIpBypass: (_req: unknown, _res: unknown, next: () => void) => next(),
+    rateLimiter: passthroughLimiter,
+    authRateLimiter: passthroughLimiter,
+    adminRateLimiter: passthroughLimiter,
+    internalRateLimiter: passthroughLimiter,
+}));
+
 jest.mock('../../../src/stellar/events', () => ({
     getEventMetrics: jest.fn().mockReturnValue({
         totalProcessed: 1000,

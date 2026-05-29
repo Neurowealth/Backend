@@ -285,7 +285,10 @@ describe('AuthMiddleware.validateJwt', () => {
     token: 'valid.token',
     expiresAt: new Date(Date.now() + 60_000),
     walletAddress: 'GBTEST',
-    user: { id: 'user-1', walletAddress: 'GBTEST' },
+    userId: 'user-1',
+    id: 'session-1',
+    network: 'TESTNET',
+    user: { id: 'user-1', walletAddress: 'GBTEST', isActive: true },
   };
 
   beforeEach(() => {
