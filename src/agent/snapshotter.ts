@@ -2,11 +2,9 @@
  * Snapshotter - Captures user balance snapshots for historical charting
  */
 
-import { PrismaClient } from '@prisma/client';
 import { logger } from '../utils/logger';
 import { UserBalance } from './types';
-
-const prisma = new PrismaClient();
+import db from '../db';
 
 /**
  * Capture all user balance snapshots
@@ -14,7 +12,7 @@ const prisma = new PrismaClient();
  */
 export async function captureAllUserBalances(): Promise<void> {
   try {
-    const positions = await prisma.position.findMany({
+    const positions = await db.position.findMany({
       where: {
         status: 'ACTIVE',
       },
@@ -56,7 +54,7 @@ export async function captureAllUserBalances(): Promise<void> {
 
     // Single batch insert is much faster than individual creates
     if (snapshotData.length > 0) {
-      await prisma.yieldSnapshot.createMany({
+      await db.yieldSnapshot.createMany({
         data: snapshotData,
         skipDuplicates: false,
       });
@@ -103,7 +101,7 @@ export async function getPositionHistory(
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
 
-    const snapshots = await prisma.yieldSnapshot.findMany({
+    const snapshots = await db.yieldSnapshot.findMany({
       where: {
         positionId,
         snapshotAt: {
@@ -151,7 +149,7 @@ export async function cleanupOldSnapshots(retentionDays: number = 90): Promise<v
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
 
-    const deleted = await prisma.yieldSnapshot.deleteMany({
+    const deleted = await db.yieldSnapshot.deleteMany({
       where: {
         snapshotAt: {
           lt: cutoffDate,
@@ -177,7 +175,7 @@ export async function cleanupOldSnapshots(retentionDays: number = 90): Promise<v
  */
 export async function getLatestUserBalance(positionId: string): Promise<UserBalance | null> {
   try {
-    const snapshot = await prisma.yieldSnapshot.findFirst({
+    const snapshot = await db.yieldSnapshot.findFirst({
       where: {
         positionId,
       },

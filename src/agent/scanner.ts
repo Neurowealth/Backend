@@ -4,9 +4,7 @@
 
 import { logger } from '../utils/logger';
 import { YieldProtocol, ProtocolRate } from './types';
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import db from '../db';
 
 const PROTOCOLS = ['Blend', 'Stellar DEX', 'Luma'];
 const ASSET_SYMBOL = 'USDC';
@@ -161,7 +159,7 @@ async function saveProtocolRates(protocols: YieldProtocol[]): Promise<void> {
     const networkLabel = normalizeNetwork()
 
     for (const protocol of protocols) {
-      await prisma.protocolRate.create({
+      await db.protocolRate.create({
         data: {
           protocolName: protocol.name,
           assetSymbol: protocol.assetSymbol,
@@ -185,7 +183,7 @@ async function saveProtocolRates(protocols: YieldProtocol[]): Promise<void> {
  */
 export async function getCurrentOnChainApy(protocolName: string): Promise<number | null> {
   try {
-    const latestRate = await prisma.protocolRate.findFirst({
+    const latestRate = await db.protocolRate.findFirst({
       where: {
         protocolName,
         assetSymbol: ASSET_SYMBOL,

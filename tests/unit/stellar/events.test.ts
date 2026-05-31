@@ -10,6 +10,9 @@ jest.mock('@prisma/client', () => {
     };
 });
 
+// Point the db singleton at the mock so events.ts uses it instead of a real connection.
+jest.mock('../../../src/db', () => ({ default: mockPrisma }));
+
 jest.mock('../../../src/stellar/client');
 jest.mock('../../../src/utils/logger');
 jest.mock('../../../src/config', () => ({

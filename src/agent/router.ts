@@ -2,13 +2,11 @@
  * Router - Compares APYs and triggers rebalancing when conditions are met
  */
 
-import { PrismaClient } from '@prisma/client';
 import { logger } from '../utils/logger';
 import { ProtocolComparison, RebalanceDetails, RebalanceThresholds } from './types';
 import { scanAllProtocols, getCurrentOnChainApy } from './scanner';
 import { triggerRebalance as submitRebalance } from '../stellar/contract';
-
-const prisma = new PrismaClient();
+import db from '../db';
 
 const DEFAULT_THRESHOLDS: RebalanceThresholds = {
   minimumImprovement: 0.5, // Must improve by at least 0.5%
@@ -153,7 +151,7 @@ export async function triggerRebalance(
     );
 
     if (positionIds.length > 0) {
-      const representativePosition = await prisma.position.findFirst({
+      const representativePosition = await db.position.findFirst({
         where: {
           id: { in: positionIds },
         },
@@ -167,7 +165,7 @@ export async function triggerRebalance(
       });
 
       if (representativePosition) {
-        await prisma.transaction.create({
+        await db.transaction.create({
           data: {
             userId: representativePosition.userId,
             positionId: representativePosition.id,
@@ -290,7 +288,7 @@ export async function logAgentAction(
 ): Promise<void> {
   try {
     // Log to all users for now - in production, could be per-user
-    const users = await prisma.user.findMany({
+    const users = await db.user.findMany({
       select: { id: true },
       take: 1, // For now, just log to first user
     });
@@ -302,7 +300,7 @@ export async function logAgentAction(
 
     const userId = users[0].id;
 
-    await prisma.agentLog.create({
+    await db.agentLog.create({
       data: {
         userId,
         action: action as any,

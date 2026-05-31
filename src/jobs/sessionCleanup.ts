@@ -1,8 +1,6 @@
-import { PrismaClient } from '@prisma/client';
+import db from '../db';
 import { logger } from '../utils/logger';
 import { config } from '../config/env';
-
-const prisma = new PrismaClient();
 
 /**
  * Delete all sessions whose expiration timestamp is in the past.
@@ -10,7 +8,7 @@ const prisma = new PrismaClient();
  */
 export async function cleanupExpiredSessions(): Promise<void> {
   try {
-    const result = await prisma.session.deleteMany({
+    const result = await db.session.deleteMany({
       where: { expiresAt: { lt: new Date() } },
     });
     if (result.count > 0) {

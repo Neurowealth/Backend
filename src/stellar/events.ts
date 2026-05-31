@@ -1,5 +1,6 @@
 import { rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
-import { PrismaClient, TransactionType, TransactionStatus, Network } from '@prisma/client';
+import { TransactionType, TransactionStatus, Network } from '@prisma/client';
+import db from '../db';
 import { Decimal } from '@prisma/client/runtime/library';
 import { getRpcServer } from './client';
 import { ContractEvent, DepositEvent, WithdrawEvent, RebalanceEvent, EventMetrics } from './types';
@@ -24,8 +25,6 @@ import {
 
 const VAULT_CONTRACT_ID = config.stellar.vaultContractId;
 const POLL_INTERVAL_MS = 5000;
-
-const prisma = new PrismaClient();
 
 let lastProcessedLedger = 0;
 let isListening = false;
@@ -201,7 +200,7 @@ function parseRebalanceEvent(event: ContractEvent): RebalanceEvent {
 /**
  * Handle deposit event - persist to database
  */
-async function handleDepositEvent(depositData: DepositEvent, event: ContractEvent, tx: any = prisma): Promise<void> {
+async function handleDepositEvent(depositData: DepositEvent, event: ContractEvent, tx: any = db): Promise<void> {
   const user = await timedDbOperation(() =>
     tx.user.findUnique({ where: { walletAddress: depositData.user } })
   ) as any;
@@ -270,7 +269,7 @@ async function handleDepositEvent(depositData: DepositEvent, event: ContractEven
 /**
  * Handle withdraw event - persist to database
  */
-async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractEvent, tx: any = prisma): Promise<void> {
+async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractEvent, tx: any = db): Promise<void> {
   const user = await timedDbOperation(() =>
     tx.user.findUnique({ where: { walletAddress: withdrawData.user } })
   ) as any;
@@ -322,7 +321,7 @@ async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractE
 /**
  * Handle rebalance event - persist to database
  */
-async function handleRebalanceEvent(rebalanceData: RebalanceEvent, event: ContractEvent, tx: any = prisma): Promise<void> {
+async function handleRebalanceEvent(rebalanceData: RebalanceEvent, event: ContractEvent, tx: any = db): Promise<void> {
   await timedDbOperation(() =>
     tx.protocolRate.create({
       data: {
@@ -341,7 +340,7 @@ async function handleRebalanceEvent(rebalanceData: RebalanceEvent, event: Contra
 /**
  * Handle contract event with persistence, idempotency, and validation (Issue #53)
  */
-export async function handleEvent(event: ContractEvent, tx: any = prisma): Promise<void> {
+export async function handleEvent(event: ContractEvent, tx: any = db): Promise<void> {
   const startTime = Date.now();
   try {
     logger.info(`[Event] ${event.type} detected at ledger ${event.ledger}, tx: ${event.txHash}`);
@@ -437,7 +436,7 @@ export async function processEventBatch(events: ContractEvent[]): Promise<void> 
 
   try {
     // Multiple events processed in a single transaction
-    await prisma.$transaction(async (tx) => {
+    await db.$transaction(async (tx) => {
       for (const event of events) {
         await handleEvent(event, tx);
         processedCount++;
@@ -450,7 +449,7 @@ export async function processEventBatch(events: ContractEvent[]): Promise<void> 
     // Fallback: Process individually so robust events succeed
     for (const event of events) {
       try {
-        await handleEvent(event, prisma);
+        await handleEvent(event, db);
       } catch (individualError) {
         logger.error(`[Batch Fallback Error] Event processing completely failed for ${event.txHash}`);
       }
@@ -462,7 +461,7 @@ export async function processEventBatch(events: ContractEvent[]): Promise<void> 
  * Load last processed ledger from database
  */
 async function loadLastProcessedLedger(): Promise<number> {
-  const cursor = await prisma.eventCursor.findUnique({
+  const cursor = await db.eventCursor.findUnique({
     where: { contractId: VAULT_CONTRACT_ID },
   });
 
@@ -483,7 +482,7 @@ async function loadLastProcessedLedger(): Promise<number> {
  * Update last processed ledger in database
  */
 async function persistLastProcessedLedger(ledger: number): Promise<void> {
-  await prisma.eventCursor.upsert({
+  await db.eventCursor.upsert({
     where: { contractId: VAULT_CONTRACT_ID },
     update: {
       lastProcessedLedger: ledger,
@@ -605,7 +604,7 @@ export async function backfillEvents(startLedger: number, endLedger?: number): P
 export async function retryDeadLetterEvents(): Promise<void> {
   logger.info(`[DLQ] Starting manual intervention retry for all DLQ events`);
   await DeadLetterQueue.retryAll(async (eventPayload) => {
-    await handleEvent(eventPayload, prisma);
+    await handleEvent(eventPayload, db);
   });
 }
 

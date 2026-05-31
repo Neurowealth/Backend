@@ -8,3 +8,5 @@ coverage/
 .agents/
 skills-lock.json
 postgres/
+CLAUDE.md
+plan.md

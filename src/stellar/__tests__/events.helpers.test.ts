@@ -20,14 +20,11 @@ jest.mock('@stellar/stellar-sdk', () => {
   };
 });
 
-// Avoid spinning a real PrismaClient on import.
-jest.mock('@prisma/client', () => {
-  const enums = jest.requireActual('@prisma/client');
-  return {
-    ...enums,
-    PrismaClient: jest.fn().mockImplementation(() => ({})),
-  };
-});
+// Keep enum values from @prisma/client; no PrismaClient instantiation needed.
+jest.mock('@prisma/client', () => jest.requireActual('@prisma/client'));
+
+// Prevent the db singleton from opening a real connection.
+jest.mock('../../db', () => ({ default: {} }));
 
 // Avoid the dlq module pulling in a Prisma connection too.
 jest.mock('../dlq', () => ({

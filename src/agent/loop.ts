@@ -7,7 +7,7 @@ import { logger } from '../utils/logger';
 import { scanAllProtocols } from './scanner';
 import { executeRebalanceIfNeeded, getThresholds, logAgentAction } from './router';
 import { captureAllUserBalances, cleanupOldSnapshots } from './snapshotter';
-import { PrismaClient } from '@prisma/client';
+import db from '../db';
 import {
   updateAgentHeartbeat,
   updateAgentStatus,
@@ -15,8 +15,6 @@ import {
   recordRebalanceTriggered,
   recordDbOperation
 } from '../utils/metrics';
-
-const prisma = new PrismaClient();
 
 let isRunning = false;
 let lastRebalanceAt: Date | null = null;
@@ -75,7 +73,7 @@ async function rebalanceCheckJob(): Promise<void> {
     updateAgentHeartbeat();
 
     // Get all active positions
-    const positions = await prisma.position.findMany({
+    const positions = await db.position.findMany({
       where: {
         status: 'ACTIVE',
       },
@@ -295,9 +293,6 @@ export async function stopAgentLoop(): Promise<void> {
     });
     cronJobs.length = 0;
 
-    // Close database connection
-    await prisma.$disconnect();
-
     isRunning = false;
     logger.info('✅ Agent loop stopped gracefully');
   } catch (error) {
@@ -311,15 +306,6 @@ export async function stopAgentLoop(): Promise<void> {
  * Setup graceful shutdown handlers
  */
 function setupGracefulShutdown(): void {
-  const shutdown = async (signal: string) => {
-    logger.info(`Received ${signal}, shutting down gracefully...`);
-    await stopAgentLoop();
-    process.exit(0);
-  };
-
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
-
   // Handle uncaught exceptions
   process.on('uncaughtException', error => {
     logger.error('Uncaught exception in agent', {
