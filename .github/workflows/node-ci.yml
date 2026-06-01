@@ -59,6 +59,9 @@ jobs:
       - name: Run format check
         run: npm run format:check
 
+      - name: Check OpenAPI spec
+        run: npm run openapi:check
+
       # Build the project
       - name: Build project
         run: npm run build

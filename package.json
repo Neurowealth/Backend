@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "npm run lint:types && npm run lint:style",
+    "openapi:check": "ts-node --transpile-only scripts/check-openapi.ts",
     "lint:types": "tsc --noEmit",
     "lint:style": "eslint \"src/**/*.ts\" \"tests/**/*.ts\" \"prisma/**/*.ts\" \"jest.config.ts\"",
     "format": "prettier --write .github/workflows/node-ci.yml package.json .prettierrc.json eslint.config.mjs src/nlp/parser.ts src/stellar/dlq.ts src/whatsapp/handler.ts src/whatsapp/userManager.ts tests/helpers/testDb.ts tests/integration/stellar/events.test.ts tests/unit/nlp/parser.test.ts tests/unit/whatsapp/handler.test.ts",
