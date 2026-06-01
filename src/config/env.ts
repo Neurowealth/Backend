@@ -156,9 +156,6 @@ export const config = {
   database: {
     url: requireEnv('DATABASE_URL'),
   },
-  redis: {
-    url: process.env.REDIS_URL || 'redis://localhost:6379',
-  },
   jwt: {
     /**
      * JWT_SEED: 64-hex secret used to sign/verify JWTs.

@@ -1,12 +1,11 @@
 node_modules
 .env
 dist
-logs/*.log
+logs/
+postgres/
 coverage/
-
 
 .agents/
 skills-lock.json
-postgres/
 CLAUDE.md
 plan.md

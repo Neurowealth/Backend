@@ -134,3 +134,25 @@ Troubleshooting
 - If the app logs `Cannot connect to database`, check `DATABASE_URL`, and that Postgres is running (Docker or external).
 - If migrating fails, confirm the DB user has permission to CREATE/ALTER tables.
 - Ensure `JWT_SEED` and `WALLET_ENCRYPTION_KEY` are set when running the server.
+
+Dead Letter Queue (DLQ)
+------------------------
+Failed Stellar events are stored in the database (`dead_letter_events` table), not in log files. The DLQ provides:
+- Automatic retry with exponential backoff
+- Persistent storage across restarts
+- Query and monitoring via `/api/admin/dlq` endpoints
+
+**Important:** The `logs/` directory is for application logs only and is excluded from version control. All DLQ data is persisted in the database to ensure reliability across deployments and restarts.
+
+Security
+--------
+The project uses automated security scanning to prevent vulnerable dependencies from reaching production:
+
+- **npm audit** runs on every PR and blocks merges if HIGH or CRITICAL vulnerabilities are detected
+- **Dependabot** automatically creates PRs for dependency updates (configured for weekly scans)
+- **Policy for failing builds:**
+  - HIGH/CRITICAL CVEs: Must be fixed before merge (blocking)
+  - MODERATE CVEs: Review required, fix in follow-up PR (non-blocking)
+  - LOW CVEs: Tracked via Dependabot, fix during regular maintenance
+
+See `.github/workflows/node-ci.yml` for CI configuration and `.github/dependabot.yml` for automated dependency updates.

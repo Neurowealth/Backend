@@ -67,6 +67,36 @@ jobs:
       - name: Run tests
         run: npm test
 
+  # ── Security scanning ─────────────────────────────────────────────────────
+  # Issue #114: npm audit for known vulnerabilities
+  # Fails on high or critical CVEs to prevent merging vulnerable dependencies
+  # 
+  # Policy: Builds fail on HIGH or CRITICAL vulnerabilities
+  # - HIGH/CRITICAL: Must be fixed before merge (blocking)
+  # - MODERATE: Review required, fix in follow-up PR (non-blocking via Dependabot)
+  # - LOW: Tracked via Dependabot, fix during regular maintenance
+  # 
+  # Dependabot automatically creates PRs for vulnerable dependencies
+  security-scan:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit (HIGH and CRITICAL only)
+        run: npm audit --audit-level=high
+        continue-on-error: false
+
   # ── Issue #100: migration smoke gate ──────────────────────────────────────
   # Isolated job that re-applies migrations against a clean DB and runs the
   # smoke test.  Fails the pipeline if either step errors, preventing a broken

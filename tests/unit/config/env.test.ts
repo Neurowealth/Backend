@@ -1,202 +1,197 @@
 /**
  * Unit tests — Environment configuration validation
+ * 
+ * Tests run in isolated child processes to prevent env pollution between tests.
  */
+
+import { spawn } from 'child_process'
+import path from 'path'
 
 // Valid test values
 const VALID_WALLET_KEY = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2' // 64 hex chars
 const VALID_SECRET_KEY = 'SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX' // 56 chars starting with S
 
-/** Set a complete, valid environment so individual tests can delete/override one var at a time. */
-function setValidEnv() {
-  process.env.STELLAR_NETWORK = 'testnet'
-  process.env.STELLAR_RPC_URL = 'https://rpc.example.com'
-  process.env.STELLAR_AGENT_SECRET_KEY = VALID_SECRET_KEY
-  process.env.VAULT_CONTRACT_ID = 'CVAULT'
-  process.env.USDC_TOKEN_ADDRESS = 'CUSDC'
-  process.env.ANTHROPIC_API_KEY = 'key'
-  process.env.DATABASE_URL = 'postgresql://localhost/db'
-  process.env.JWT_SEED = 'seed'
-  process.env.WALLET_ENCRYPTION_KEY = VALID_WALLET_KEY
-  process.env.TWILIO_AUTH_TOKEN = 'test-twilio-auth-token'
-  process.env.NODE_ENV = 'test'
+/** Base valid environment for all tests */
+const BASE_ENV = {
+  STELLAR_NETWORK: 'testnet',
+  STELLAR_RPC_URL: 'https://rpc.example.com',
+  STELLAR_AGENT_SECRET_KEY: VALID_SECRET_KEY,
+  VAULT_CONTRACT_ID: 'CVAULT',
+  USDC_TOKEN_ADDRESS: 'CUSDC',
+  ANTHROPIC_API_KEY: 'key',
+  DATABASE_URL: 'postgresql://localhost/db',
+  JWT_SEED: 'seed',
+  WALLET_ENCRYPTION_KEY: VALID_WALLET_KEY,
+  TWILIO_AUTH_TOKEN: 'test-twilio-auth-token',
+  NODE_ENV: 'test',
+}
+
+/**
+ * Run env.ts in a child process with custom environment.
+ * Returns { success: boolean, stderr: string }
+ */
+function testEnvInProcess(env: Record<string, string>): Promise<{ success: boolean; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(
+      'node',
+      ['-e', `require('${path.resolve(__dirname, '../../../src/config/env')}')`],
+      {
+        env: { ...env, PATH: process.env.PATH },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      }
+    )
+
+    let stderr = ''
+    child.stderr?.on('data', (data) => {
+      stderr += data.toString()
+    })
+
+    child.on('close', (code) => {
+      resolve({ success: code === 0, stderr })
+    })
+  })
 }
 
 describe('Environment Configuration', () => {
-  let originalEnv: NodeJS.ProcessEnv
-
-  beforeEach(() => {
-    originalEnv = { ...process.env }
-    jest.resetModules()
-  })
-
-  afterEach(() => {
-    process.env = originalEnv
-  })
-
   describe('Required environment variables validation', () => {
-    it('throws error when STELLAR_NETWORK is missing', () => {
-      setValidEnv()
-      delete process.env.STELLAR_NETWORK
+    it('throws error when STELLAR_NETWORK is missing', async () => {
+      const env = { ...BASE_ENV }
+      delete env.STELLAR_NETWORK
 
-      expect(() => {
-        require('../../../src/config/env')
-      }).toThrow(/Missing required environment variable: STELLAR_NETWORK/)
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(false)
+      expect(result.stderr).toContain('Missing required environment variable: STELLAR_NETWORK')
     })
 
-    it('throws error when STELLAR_AGENT_SECRET_KEY is missing', () => {
-      setValidEnv()
-      delete process.env.STELLAR_AGENT_SECRET_KEY
+    it('throws error when STELLAR_AGENT_SECRET_KEY is missing', async () => {
+      const env = { ...BASE_ENV }
+      delete env.STELLAR_AGENT_SECRET_KEY
 
-      expect(() => {
-        require('../../../src/config/env')
-      }).toThrow(/Missing required environment variable: STELLAR_AGENT_SECRET_KEY/)
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(false)
+      expect(result.stderr).toContain('Missing required environment variable: STELLAR_AGENT_SECRET_KEY')
     })
 
-    it('throws error when VAULT_CONTRACT_ID is missing', () => {
-      setValidEnv()
-      delete process.env.VAULT_CONTRACT_ID
+    it('throws error when VAULT_CONTRACT_ID is missing', async () => {
+      const env = { ...BASE_ENV }
+      delete env.VAULT_CONTRACT_ID
 
-      expect(() => {
-        require('../../../src/config/env')
-      }).toThrow(/Missing required environment variable: VAULT_CONTRACT_ID/)
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(false)
+      expect(result.stderr).toContain('Missing required environment variable: VAULT_CONTRACT_ID')
     })
 
-    it('throws error when DATABASE_URL is missing', () => {
-      setValidEnv()
-      delete process.env.DATABASE_URL
+    it('throws error when DATABASE_URL is missing', async () => {
+      const env = { ...BASE_ENV }
+      delete env.DATABASE_URL
 
-      expect(() => {
-        require('../../../src/config/env')
-      }).toThrow(/Missing required environment variable: DATABASE_URL/)
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(false)
+      expect(result.stderr).toContain('Missing required environment variable: DATABASE_URL')
     })
 
-    it('throws error when WALLET_ENCRYPTION_KEY is missing', () => {
-      setValidEnv()
-      delete process.env.WALLET_ENCRYPTION_KEY
+    it('throws error when WALLET_ENCRYPTION_KEY is missing', async () => {
+      const env = { ...BASE_ENV }
+      delete env.WALLET_ENCRYPTION_KEY
 
-      expect(() => {
-        require('../../../src/config/env')
-      }).toThrow(/Missing required environment variable: WALLET_ENCRYPTION_KEY/)
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(false)
+      expect(result.stderr).toContain('Missing required environment variable: WALLET_ENCRYPTION_KEY')
     })
 
-    it('throws error when WALLET_ENCRYPTION_KEY is not 64 hex chars', () => {
-      setValidEnv()
-      process.env.WALLET_ENCRYPTION_KEY = 'tooshort'
+    it('throws error when WALLET_ENCRYPTION_KEY is not 64 hex chars', async () => {
+      const env = { ...BASE_ENV, WALLET_ENCRYPTION_KEY: 'tooshort' }
 
-      expect(() => {
-        require('../../../src/config/env')
-      }).toThrow(/WALLET_ENCRYPTION_KEY is invalid/)
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(false)
+      expect(result.stderr).toContain('WALLET_ENCRYPTION_KEY is invalid')
     })
 
-    it('throws error when TWILIO_AUTH_TOKEN is missing', () => {
-      setValidEnv()
-      delete process.env.TWILIO_AUTH_TOKEN
+    it('throws error when TWILIO_AUTH_TOKEN is missing', async () => {
+      const env = { ...BASE_ENV }
+      delete env.TWILIO_AUTH_TOKEN
 
-      expect(() => {
-        require('../../../src/config/env')
-      }).toThrow(/Missing required environment variable: TWILIO_AUTH_TOKEN/)
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(false)
+      expect(result.stderr).toContain('Missing required environment variable: TWILIO_AUTH_TOKEN')
     })
   })
 
   describe('Stellar network validation', () => {
-    it('accepts valid network: testnet', () => {
-      setValidEnv()
-
-      const config = require('../../../src/config/env').config
-      expect(config.stellar.network).toBe('testnet')
+    it('accepts valid network: testnet', async () => {
+      const result = await testEnvInProcess(BASE_ENV)
+      expect(result.success).toBe(true)
     })
 
-    it('accepts valid network: mainnet', () => {
-      setValidEnv()
-      process.env.STELLAR_NETWORK = 'mainnet'
-      process.env.NODE_ENV = 'production'
+    it('accepts valid network: mainnet', async () => {
+      const env = { ...BASE_ENV, STELLAR_NETWORK: 'mainnet', NODE_ENV: 'production' }
 
-      const config = require('../../../src/config/env').config
-      expect(config.stellar.network).toBe('mainnet')
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(true)
     })
 
-    it('accepts valid network: futurenet', () => {
-      setValidEnv()
-      process.env.STELLAR_NETWORK = 'futurenet'
+    it('accepts valid network: futurenet', async () => {
+      const env = { ...BASE_ENV, STELLAR_NETWORK: 'futurenet' }
 
-      const config = require('../../../src/config/env').config
-      expect(config.stellar.network).toBe('futurenet')
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(true)
     })
 
-    it('rejects invalid network', () => {
-      setValidEnv()
-      process.env.STELLAR_NETWORK = 'invalidnet'
+    it('rejects invalid network', async () => {
+      const env = { ...BASE_ENV, STELLAR_NETWORK: 'invalidnet' }
 
-      expect(() => {
-        require('../../../src/config/env')
-      }).toThrow(/Invalid STELLAR_NETWORK/)
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(false)
+      expect(result.stderr).toContain('Invalid STELLAR_NETWORK')
     })
 
-    it('is case-insensitive', () => {
-      setValidEnv()
-      process.env.STELLAR_NETWORK = 'TESTNET'
+    it('is case-insensitive', async () => {
+      const env = { ...BASE_ENV, STELLAR_NETWORK: 'TESTNET' }
 
-      const config = require('../../../src/config/env').config
-      expect(config.stellar.network).toBe('testnet')
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(true)
     })
   })
 
   describe('Stellar secret key validation', () => {
-    it('rejects key not starting with S', () => {
-      setValidEnv()
-      process.env.STELLAR_AGENT_SECRET_KEY = 'AXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+    it('rejects key not starting with S', async () => {
+      const env = { ...BASE_ENV, STELLAR_AGENT_SECRET_KEY: 'AXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX' }
 
-      expect(() => {
-        require('../../../src/config/env')
-      }).toThrow(/must start with S/)
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(false)
+      expect(result.stderr).toContain('must start with S')
     })
 
-    it('rejects key with incorrect length', () => {
-      setValidEnv()
-      process.env.STELLAR_AGENT_SECRET_KEY = 'SSHORT'
+    it('rejects key with incorrect length', async () => {
+      const env = { ...BASE_ENV, STELLAR_AGENT_SECRET_KEY: 'SSHORT' }
 
-      expect(() => {
-        require('../../../src/config/env')
-      }).toThrow(/invalid length/)
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(false)
+      expect(result.stderr).toContain('invalid length')
     })
 
-    it('accepts valid 56-character key starting with S', () => {
-      setValidEnv()
-
-      const config = require('../../../src/config/env').config
-      expect(config.stellar.agentSecretKey).toBe(VALID_SECRET_KEY)
+    it('accepts valid 56-character key starting with S', async () => {
+      const result = await testEnvInProcess(BASE_ENV)
+      expect(result.success).toBe(true)
     })
   })
 
   describe('Mainnet warning', () => {
-    it('warns when mainnet is used in development', () => {
-      const consoleSpy = jest.spyOn(console, 'warn').mockImplementation()
-      setValidEnv()
-      process.env.STELLAR_NETWORK = 'mainnet'
-      process.env.NODE_ENV = 'development'
+    it('warns when mainnet is used in development', async () => {
+      const env = { ...BASE_ENV, STELLAR_NETWORK: 'mainnet', NODE_ENV: 'development' }
 
-      require('../../../src/config/env')
-
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('CRITICAL WARNING'))
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('MAINNET'))
-
-      consoleSpy.mockRestore()
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(true)
+      expect(result.stderr).toContain('CRITICAL WARNING')
+      expect(result.stderr).toContain('MAINNET')
     })
 
-    it('does not warn when mainnet is used in production', () => {
-      const consoleSpy = jest.spyOn(console, 'warn').mockImplementation()
-      setValidEnv()
-      process.env.STELLAR_NETWORK = 'mainnet'
-      process.env.NODE_ENV = 'production'
+    it('does not warn when mainnet is used in production', async () => {
+      const env = { ...BASE_ENV, STELLAR_NETWORK: 'mainnet', NODE_ENV: 'production' }
 
-      require('../../../src/config/env')
-
-      const criticalWarnings = consoleSpy.mock.calls.filter(call =>
-        call[0]?.toString().includes('CRITICAL WARNING')
-      )
-      expect(criticalWarnings.length).toBe(0)
-
-      consoleSpy.mockRestore()
+      const result = await testEnvInProcess(env)
+      expect(result.success).toBe(true)
+      expect(result.stderr).not.toContain('CRITICAL WARNING')
     })
   })
 })
