@@ -71,6 +71,12 @@ export const dlqRetryTotal = new client.Counter({
   registers: [register],
 })
 
+export const dlqAlertActive = new client.Gauge({
+  name: 'dlq_alert_active',
+  help: 'Whether a DLQ size alert is currently active (1=active, 0=inactive)',
+  registers: [register],
+})
+
 // ── Cursor/Lag Metrics ──────────────────────────────────────────────────────────
 
 export const cursorLag = new client.Gauge({
