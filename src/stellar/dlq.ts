@@ -13,7 +13,7 @@ import { xdr } from '@stellar/stellar-sdk'
 import { logger } from '../utils/logger'
 import db from '../db'
 import { updateDlqSize } from '../utils/metrics'
-import config from '../config'
+import { config } from '../config'
 import { alertingService, type DLQAlertPayload } from '../services/alerting'
 
 export type DeadLetterEventStatus = 'PENDING' | 'RETRIED' | 'RESOLVED'
