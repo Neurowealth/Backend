@@ -4,6 +4,7 @@
 
 import express, { Request, Response } from 'express';
 import { getAgentStatus } from '../agent/loop';
+import { authInternal } from '../middleware/authInternal';
 
 const router = express.Router();
 
@@ -11,7 +12,7 @@ const router = express.Router();
  * GET /api/agent/status
  * Returns current agent status and health information
  */
-router.get('/status', (req: Request, res: Response) => {
+router.get('/status', authInternal, (req: Request, res: Response) => {
   try {
     const status = getAgentStatus();
     res.json({
