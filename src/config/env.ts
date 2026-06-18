@@ -274,4 +274,8 @@ export const config = {
     circuitBreakerThreshold: parseInt(process.env.HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD || '5'),
     circuitBreakerResetMs: parseInt(process.env.HTTP_CLIENT_CIRCUIT_BREAKER_RESET_MS || '30000'),
   },
+  shutdown: {
+    /** Grace period (ms) for in-force requests to complete before force-exit */
+    drainTimeoutMs: parseInt(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS || '30000'),
+  },
 }

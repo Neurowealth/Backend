@@ -45,7 +45,7 @@ const serviceStatus: Record<string, ServiceStatus> = {
 
 let isShuttingDown = false
 let httpServer: Server | null = null
-const REQUEST_DRAIN_TIMEOUT_MS = 30000
+let sessionCleanupHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every(s => s.ready)
@@ -149,6 +149,13 @@ async function gracefulShutdown(signal: string): Promise<void> {
   logger.info(`[Shutdown] Received ${signal}, initiating graceful shutdown...`)
   isShuttingDown = true
 
+  // Stop the session cleanup interval so it doesn't fire during shutdown
+  if (sessionCleanupHandle) {
+    clearInterval(sessionCleanupHandle)
+    sessionCleanupHandle = null
+    logger.info('[Shutdown] Session cleanup timer cleared')
+  }
+
   if (!httpServer) {
     logger.warn('[Shutdown] No HTTP server to close')
     process.exit(0)
@@ -180,11 +187,11 @@ async function gracefulShutdown(signal: string): Promise<void> {
     }
   })
 
-  // Force shutdown after timeout
+  // Force shutdown after configurable timeout
   setTimeout(() => {
-    logger.error('[Shutdown] Timeout reached, forcing shutdown...')
+    logger.error('[Shutdown] Grace period exhausted, forcing shutdown...')
     process.exit(1)
-  }, REQUEST_DRAIN_TIMEOUT_MS)
+  }, config.shutdown.drainTimeoutMs)
 }
 
 // ── Startup sequence ──────────────────────────────────────────────────────────
@@ -279,7 +286,7 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
   // Non-critical jobs start after the server is up
-  scheduleSessionCleanup()
+  sessionCleanupHandle = scheduleSessionCleanup()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────
