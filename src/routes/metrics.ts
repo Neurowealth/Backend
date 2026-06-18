@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { getMetrics } from '../utils/metrics'
+import { internalAuthGuardStrict } from '../middleware/authGuard'
 
 const router = Router()
 
@@ -7,8 +8,12 @@ const router = Router()
  * GET /metrics
  * Prometheus-compatible metrics endpoint for observability
  *
- * Exposes all registered metrics in Prometheus format for scraping by
- * Prometheus, Grafana, or other monitoring systems.
+ * PROTECTED: Requires one of:
+ * - X-Internal-Token header matching INTERNAL_SERVICE_TOKEN
+ * - Client IP in INTERNAL_IP_WHITELIST
+ * - Bearer token matching ADMIN_API_TOKEN
+ *
+ * Returns 404 if unauthorized (info hiding mode)
  *
  * Metrics include:
  * - Event processing counters and histograms
@@ -20,7 +25,7 @@ const router = Router()
  * - HTTP request metrics
  * - Analytics API metrics
  */
-router.get('/', async (_req: Request, res: Response) => {
+router.get('/', internalAuthGuardStrict, async (_req: Request, res: Response) => {
   try {
     const metrics = await getMetrics()
     res.set('Content-Type', 'text/plain')

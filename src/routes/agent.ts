@@ -1,19 +1,26 @@
 /**
  * Agent Routes - API endpoints for agent control and monitoring
  */
+import express, { Request, Response } from 'express'
+import { getAgentStatus } from '../agent/loop'
+import { internalAuthGuard } from '../middleware/authGuard'
 
-import express, { Request, Response } from 'express';
-import { getAgentStatus } from '../agent/loop';
-
-const router = express.Router();
+const router = express.Router()
 
 /**
  * GET /api/agent/status
  * Returns current agent status and health information
+ *
+ * PROTECTED: Requires one of:
+ * - X-Internal-Token header matching INTERNAL_SERVICE_TOKEN
+ * - Client IP in INTERNAL_IP_WHITELIST
+ * - Bearer token matching ADMIN_API_TOKEN
+ *
+ * Returns 403 if unauthorized
  */
-router.get('/status', (req: Request, res: Response) => {
+router.get('/status', internalAuthGuard, (req: Request, res: Response) => {
   try {
-    const status = getAgentStatus();
+    const status = getAgentStatus()
     res.json({
       success: true,
       data: {
@@ -26,13 +33,13 @@ router.get('/status', (req: Request, res: Response) => {
         healthStatus: status.healthStatus,
         timestamp: new Date().toISOString(),
       },
-    });
+    })
   } catch (error) {
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
-    });
+    })
   }
-});
+})
 
-export default router;
+export default router
