@@ -7,6 +7,8 @@ Comprehensive reference for all backend endpoints defined in src/routes.
 - Base URL (local): http://localhost:3001
 - Content type: application/json unless otherwise specified
 - Auth header format: Authorization: Bearer <token>
+- OpenAPI JSON: GET /openapi.json in non-production with a valid bearer token
+- Swagger UI: GET /docs in non-production
 
 ## Authentication and Authorization
 
@@ -685,4 +687,7 @@ Response 404:
 - protocols.ts: GET /api/protocols/rates, GET /api/protocols/agent/status
 - deposit.ts: POST /api/deposit
 - withdraw.ts: POST /api/withdraw
-- vault.ts: GET /api/vault/state, GET /api/vault/balance
+- vault.ts: GET /api/vault/state, GET /api/vault/balance, POST /api/vault/build-transaction
+- analytics.ts: GET /api/analytics/apy-history, GET /api/analytics/user-yield, GET /api/analytics/protocol-performance
+- stellar.ts: GET /api/stellar/metrics
+- admin.ts: GET /api/admin/stellar/metrics, GET /api/admin/dlq/inspect, POST /api/admin/dlq/retry, POST /api/admin/dlq/resolve, POST /api/admin/stellar/backfill

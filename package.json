@@ -11,6 +11,7 @@
     "wallet:rotate": "npx ts-node scripts/rotate-wallet-key.ts",
     "wallet:rotate:dry-run": "npx ts-node scripts/rotate-wallet-key.ts --dry-run",
     "lint": "npm run lint:types && npm run lint:style",
+    "openapi:check": "ts-node --transpile-only scripts/check-openapi.ts",
     "lint:types": "tsc --noEmit",
     "lint:style": "eslint \"src/**/*.ts\" \"prisma/**/*.ts\"",
     "format": "prettier --write .github/workflows/node-ci.yml package.json .prettierrc.json eslint.config.mjs src/nlp/parser.ts src/stellar/dlq.ts src/whatsapp/handler.ts src/whatsapp/userManager.ts tests/unit/stellar/dlq-alerts.test.ts",
