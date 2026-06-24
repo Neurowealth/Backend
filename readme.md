@@ -1,178 +1,48 @@
+# NeuroWealth Backend
 
-# NeuroWealth — Backend
+Express + TypeScript REST API for the NeuroWealth platform — AI-assisted portfolio management backed by Stellar smart contracts.
 
-About
------
-NeuroWealth is an autonomous AI investment agent that automatically manages and grows users' crypto assets on the Stellar blockchain. Deposit once, the AI finds the best yield opportunities across Stellar's DeFi ecosystem; users can withdraw anytime with no lock-ups.
+## API Documentation
 
-This repository contains the backend API (Express + TypeScript), Stellar integration, Prisma schema and migrations, and utilities for authentication (Stellar signature challenge + JWT sessions).
+The full OpenAPI 3.1 specification lives at [`docs/openapi.yaml`](docs/openapi.yaml).
 
-Quickstart
-----------
-1. Copy the example environment file and adjust secrets:
+It covers:
 
-```powershell
-copy .env.example .env
-```
+| Tag | Base path | Auth |
+|---|---|---|
+| health | `/health` | None |
+| auth | `/api/auth` | None (issues JWT) |
+| portfolio | `/api/portfolio` | Bearer JWT |
+| transactions | `/api/transactions` | Bearer JWT |
+| deposit | `/api/deposit` | Bearer JWT |
+| withdraw | `/api/withdraw` | Bearer JWT |
+| vault | `/api/vault` | Bearer JWT |
+| admin | `/api/admin` | `X-Admin-Token` header |
 
-2. Edit `.env` and set secure values:
-- `DATABASE_URL` — PostgreSQL connection string (see below)
-- `DB_NAME`, `DB_PASSWORD` — used by `docker-compose.yml` when running Postgres locally
-- `JWT_SEED` — 64-hex secret (generate with `openssl rand -hex 64`)
-- `WALLET_ENCRYPTION_KEY` — 32-byte hex (generate with `openssl rand -hex 32`)
-
-Docker (Postgres)
-------------------
-To run a local Postgres instance used by the project:
-
-```powershell
-docker compose up -d
-docker compose ps
-docker compose logs anylistDB --tail 200
-```
-
-The `docker-compose.yml` expects these env vars (set them in your `.env`):
-
-```
-DB_NAME=neurowealth
-DB_PASSWORD=postgres_password_here
-DATABASE_URL=postgresql://postgres:postgres_password_here@localhost:5432/neurowealth
-```
-
-Prisma & Database migrations
-----------------------------
-Generate the Prisma client (run after any `schema.prisma` change):
+### Viewing the docs locally
 
 ```bash
-npx prisma generate
+npx @redocly/cli preview-docs docs/openapi.yaml
 ```
 
-Create and apply a migration (development):
+### Updating the spec
+
+When you add or change a route, update `docs/openapi.yaml` in the same PR. The `api-contract` CI job will lint the spec and run smoke tests automatically.
+
+### Breaking-change policy
+
+This API follows semantic versioning. Breaking changes (removed fields, changed response shapes, new required parameters) increment the major version and are announced at least two weeks before release.
+
+## Development
 
 ```bash
-npx prisma migrate dev --name init
-```
-
-Notes:
-- `migrate dev` will create a new migration in `prisma/migrations/` and apply it to the database specified by `DATABASE_URL`.
-- To reset a development database (WARNING: destroys data):
-
-```bash
-npx prisma migrate reset
-# or if your Prisma version requires preview option
-npx prisma migrate reset --preview-feature
-```
-
-Apply migrations in production (use CI or a deployment task):
-
-```bash
-npx prisma migrate deploy
-```
-
-Seeding
--------
-If you have a seed script (see `prisma/seed.ts`), run:
-
-```bash
-npx prisma db seed
-```
-
-Running the backend
--------------------
-Development (with ts-node + nodemon):
-
-```bash
+cp .env.example .env
 npm install
 npm run dev
 ```
 
-Build and run:
-
-```bash
-npm run build
-npm start
-```
-
-Rate limiting
--------------
-The API applies layered rate limits (all configurable via `.env`). Health probe paths (`/health/live`, `/health/ready`, `/health/*`) are exempt from the global limiter so Kubernetes and load-balancer checks are not throttled.
-
-| Limiter | Routes | Default | Env vars |
-|---------|--------|---------|----------|
-| Global | All routes except health probes | 100 req / 15 min | `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS` |
-| Auth | `/api/auth/*` | 20 req / 15 min | `AUTH_RATE_LIMIT_MAX`, `AUTH_RATE_LIMIT_WINDOW_MS` |
-| Admin | `/api/admin/*` | 10 req / 15 min | `ADMIN_RATE_LIMIT_MAX`, `ADMIN_RATE_LIMIT_WINDOW_MS` |
-| Internal | `/api/agent/*` | 500 req / 1 min | `INTERNAL_RATE_LIMIT_MAX`, `INTERNAL_RATE_LIMIT_WINDOW_MS` |
-| Webhook | `/api/whatsapp/*` | 30 req / 1 min | `WEBHOOK_RATE_LIMIT_MAX`, `WEBHOOK_RATE_LIMIT_WINDOW_MS` |
-
-Public unauthenticated read endpoints (`/api/protocols/*`, `/api/vault/state`, `/api/stellar/*`, `/api/analytics/protocol-performance`) are covered by the global limiter. Authenticated routes stack the global limiter with JWT validation.
-
-**Bypass (trusted services only):** set `TRUSTED_IPS` to a comma-separated allowlist of IPs, or send the shared secret in the `X-Internal-Token` header (`INTERNAL_SERVICE_TOKEN`). Mount order matters: the bypass middleware runs before limiters in `src/index.ts`.
-
-For production secret handling, migrations, and rollback steps see `docs/DEPLOYMENT.md` and `docs/DEPLOYMENT_PRODUCTION.md`.
-
-Request tracing
----------------
-Every API response includes an `X-Request-ID` header for correlating logs across HTTP handlers, Stellar event processing, DLQ entries, and agent actions.
-
-- **Send your own ID:** include `X-Request-ID` or `X-Correlation-ID` on any request (alphanumeric, hyphen, underscore; max 128 characters). Invalid values are replaced with a server-generated UUID.
-- **Response header:** `X-Request-ID` is always returned on success and error responses.
-- **Error JSON:** 500 responses include `"requestId": "<uuid>"` alongside the error message.
-- **Logs:** structured log entries include `correlationId` when a request or background job context is active.
-
-Example:
-
-```bash
-curl -v -H "X-Request-ID: my-deposit-attempt-001" \
-  https://api.neurowealth.io/api/deposit ...
-# Response header: X-Request-ID: my-deposit-attempt-001
-```
-
-Testing
--------
-Run unit tests (Jest):
+## Running tests
 
 ```bash
 npm test
 ```
-
-Post-migration smoke check (DB connectivity + core tables):
-
-```bash
-npm run smoke
-```
-
-Auth overview (short)
----------------------
-- `POST /api/auth/challenge` — client posts `stellarPubKey`, server returns a one-time `nonce`.
-- Client signs `nonce` with their Stellar key (Freighter) and sends signature to `POST /api/auth/verify`.
-- Server verifies signature, creates user if missing, issues JWT (stored as a session in DB).
-- Protected endpoints require `Authorization: Bearer <token>` and are validated against the `sessions` table; logout removes the session.
-
-Troubleshooting
----------------
-- If the app logs `Cannot connect to database`, check `DATABASE_URL`, and that Postgres is running (Docker or external).
-- If migrating fails, confirm the DB user has permission to CREATE/ALTER tables.
-- Ensure `JWT_SEED` and `WALLET_ENCRYPTION_KEY` are set when running the server.
-
-Dead Letter Queue (DLQ)
-------------------------
-Failed Stellar events are stored in the database (`dead_letter_events` table), not in log files. The DLQ provides:
-- Automatic retry with exponential backoff
-- Persistent storage across restarts
-- Query and monitoring via `/api/admin/dlq` endpoints
-
-**Important:** The `logs/` directory is for application logs only and is excluded from version control. All DLQ data is persisted in the database to ensure reliability across deployments and restarts.
-
-Security
---------
-The project uses automated security scanning to prevent vulnerable dependencies from reaching production:
-
-- **npm audit** runs on every PR and blocks merges if HIGH or CRITICAL vulnerabilities are detected
-- **Dependabot** automatically creates PRs for dependency updates (configured for weekly scans)
-- **Policy for failing builds:**
-  - HIGH/CRITICAL CVEs: Must be fixed before merge (blocking)
-  - MODERATE CVEs: Review required, fix in follow-up PR (non-blocking)
-  - LOW CVEs: Tracked via Dependabot, fix during regular maintenance
-
-See `.github/workflows/node-ci.yml` for CI configuration and `.github/dependabot.yml` for automated dependency updates.
