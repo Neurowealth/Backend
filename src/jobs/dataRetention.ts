@@ -1,5 +1,6 @@
 import db from '../db';
-import { logger } from '../utils/logger';
+import { logger, logBackgroundJob } from '../utils/logger';
+import { generateCorrelationId, runWithCorrelationIdAsync, getCorrelationId } from '../utils/correlation';
 import { config } from '../config/env';
 import { recordBackgroundJob, recordRetentionDeletes } from '../utils/metrics';
 
@@ -13,49 +14,75 @@ function cutoffDate(retentionDays: number): Date {
  * Delete expired auth_nonces (expiresAt < now).
  */
 export async function cleanupAuthNonces(): Promise<void> {
-  const start = Date.now();
-  const jobName = 'retention_auth_nonces';
-  try {
-    const result = await db.authNonce.deleteMany({
-      where: { expiresAt: { lt: new Date() } },
-    });
-    const duration = (Date.now() - start) / 1000;
-    if (result.count > 0) {
-      logger.info(`[DataRetention] auth_nonces: removed ${result.count} expired row(s)`);
-      recordRetentionDeletes('auth_nonces', result.count);
+  const correlationId = generateCorrelationId();
+  return runWithCorrelationIdAsync(correlationId, async () => {
+    const start = Date.now();
+    const jobName = 'retention_auth_nonces';
+
+    try {
+      const result = await db.authNonce.deleteMany({
+        where: { expiresAt: { lt: new Date() } },
+      });
+      const duration = (Date.now() - start) / 1000;
+
+      logBackgroundJob(jobName, 'success', duration, correlationId, {
+        rowsDeleted: result.count,
+      });
+
+      if (result.count > 0) {
+        recordRetentionDeletes('auth_nonces', result.count);
+      }
+      recordBackgroundJob(jobName, 'success', duration);
+    } catch (error) {
+      const duration = (Date.now() - start) / 1000;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      logBackgroundJob(jobName, 'failed', duration, correlationId, {
+        error: errorMessage,
+      });
+
+      recordBackgroundJob(jobName, 'failed', duration);
     }
-    recordBackgroundJob(jobName, 'success', duration);
-  } catch (error) {
-    const duration = (Date.now() - start) / 1000;
-    logger.error('[DataRetention] auth_nonces cleanup failed:', error);
-    recordBackgroundJob(jobName, 'failed', duration);
-  }
+  });
 }
 
 /**
  * Prune processed_events older than RETENTION_PROCESSED_EVENTS_DAYS (default 90).
  */
 export async function cleanupProcessedEvents(): Promise<void> {
-  const start = Date.now();
-  const jobName = 'retention_processed_events';
-  try {
-    const cutoff = cutoffDate(config.retention.processedEventsDays);
-    const result = await db.processedEvent.deleteMany({
-      where: { processedAt: { lt: cutoff } },
-    });
-    const duration = (Date.now() - start) / 1000;
-    if (result.count > 0) {
-      logger.info(
-        `[DataRetention] processed_events: removed ${result.count} row(s) older than ${config.retention.processedEventsDays}d`,
-      );
-      recordRetentionDeletes('processed_events', result.count);
+  const correlationId = generateCorrelationId();
+  return runWithCorrelationIdAsync(correlationId, async () => {
+    const start = Date.now();
+    const jobName = 'retention_processed_events';
+
+    try {
+      const cutoff = cutoffDate(config.retention.processedEventsDays);
+      const result = await db.processedEvent.deleteMany({
+        where: { processedAt: { lt: cutoff } },
+      });
+      const duration = (Date.now() - start) / 1000;
+
+      logBackgroundJob(jobName, 'success', duration, correlationId, {
+        rowsDeleted: result.count,
+        retentionDays: config.retention.processedEventsDays,
+      });
+
+      if (result.count > 0) {
+        recordRetentionDeletes('processed_events', result.count);
+      }
+      recordBackgroundJob(jobName, 'success', duration);
+    } catch (error) {
+      const duration = (Date.now() - start) / 1000;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      logBackgroundJob(jobName, 'failed', duration, correlationId, {
+        error: errorMessage,
+        retentionDays: config.retention.processedEventsDays,
+      });
+
+      recordBackgroundJob(jobName, 'failed', duration);
     }
-    recordBackgroundJob(jobName, 'success', duration);
-  } catch (error) {
-    const duration = (Date.now() - start) / 1000;
-    logger.error('[DataRetention] processed_events cleanup failed:', error);
-    recordBackgroundJob(jobName, 'failed', duration);
-  }
+  });
 }
 
 /**
@@ -63,67 +90,113 @@ export async function cleanupProcessedEvents(): Promise<void> {
  * PENDING and RETRIED records are left untouched so they remain actionable.
  */
 export async function cleanupDeadLetterEvents(): Promise<void> {
-  const start = Date.now();
-  const jobName = 'retention_dead_letter_events';
-  try {
-    const cutoff = cutoffDate(config.retention.deadLetterEventsDays);
-    const result = await db.deadLetterEvent.deleteMany({
-      where: {
-        status: 'RESOLVED',
-        createdAt: { lt: cutoff },
-      },
-    });
-    const duration = (Date.now() - start) / 1000;
-    if (result.count > 0) {
-      logger.info(
-        `[DataRetention] dead_letter_events: removed ${result.count} RESOLVED row(s) older than ${config.retention.deadLetterEventsDays}d`,
-      );
-      recordRetentionDeletes('dead_letter_events', result.count);
+  const correlationId = generateCorrelationId();
+  return runWithCorrelationIdAsync(correlationId, async () => {
+    const start = Date.now();
+    const jobName = 'retention_dead_letter_events';
+
+    try {
+      const cutoff = cutoffDate(config.retention.deadLetterEventsDays);
+      const result = await db.deadLetterEvent.deleteMany({
+        where: {
+          status: 'RESOLVED',
+          createdAt: { lt: cutoff },
+        },
+      });
+      const duration = (Date.now() - start) / 1000;
+
+      logBackgroundJob(jobName, 'success', duration, correlationId, {
+        rowsDeleted: result.count,
+        eventStatus: 'RESOLVED',
+        retentionDays: config.retention.deadLetterEventsDays,
+      });
+
+      if (result.count > 0) {
+        recordRetentionDeletes('dead_letter_events', result.count);
+      }
+      recordBackgroundJob(jobName, 'success', duration);
+    } catch (error) {
+      const duration = (Date.now() - start) / 1000;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      logBackgroundJob(jobName, 'failed', duration, correlationId, {
+        error: errorMessage,
+        eventStatus: 'RESOLVED',
+        retentionDays: config.retention.deadLetterEventsDays,
+      });
+
+      recordBackgroundJob(jobName, 'failed', duration);
     }
-    recordBackgroundJob(jobName, 'success', duration);
-  } catch (error) {
-    const duration = (Date.now() - start) / 1000;
-    logger.error('[DataRetention] dead_letter_events cleanup failed:', error);
-    recordBackgroundJob(jobName, 'failed', duration);
-  }
+  });
 }
 
 /**
  * Prune agent_logs older than RETENTION_AGENT_LOGS_DAYS (default 60).
  */
 export async function cleanupAgentLogs(): Promise<void> {
-  const start = Date.now();
-  const jobName = 'retention_agent_logs';
-  try {
-    const cutoff = cutoffDate(config.retention.agentLogsDays);
-    const result = await db.agentLog.deleteMany({
-      where: { createdAt: { lt: cutoff } },
-    });
-    const duration = (Date.now() - start) / 1000;
-    if (result.count > 0) {
-      logger.info(
-        `[DataRetention] agent_logs: removed ${result.count} row(s) older than ${config.retention.agentLogsDays}d`,
-      );
-      recordRetentionDeletes('agent_logs', result.count);
+  const correlationId = generateCorrelationId();
+  return runWithCorrelationIdAsync(correlationId, async () => {
+    const start = Date.now();
+    const jobName = 'retention_agent_logs';
+
+    try {
+      const cutoff = cutoffDate(config.retention.agentLogsDays);
+      const result = await db.agentLog.deleteMany({
+        where: { createdAt: { lt: cutoff } },
+      });
+      const duration = (Date.now() - start) / 1000;
+
+      logBackgroundJob(jobName, 'success', duration, correlationId, {
+        rowsDeleted: result.count,
+        retentionDays: config.retention.agentLogsDays,
+      });
+
+      if (result.count > 0) {
+        recordRetentionDeletes('agent_logs', result.count);
+      }
+      recordBackgroundJob(jobName, 'success', duration);
+    } catch (error) {
+      const duration = (Date.now() - start) / 1000;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      logBackgroundJob(jobName, 'failed', duration, correlationId, {
+        error: errorMessage,
+        retentionDays: config.retention.agentLogsDays,
+      });
+
+      recordBackgroundJob(jobName, 'failed', duration);
     }
-    recordBackgroundJob(jobName, 'success', duration);
-  } catch (error) {
-    const duration = (Date.now() - start) / 1000;
-    logger.error('[DataRetention] agent_logs cleanup failed:', error);
-    recordBackgroundJob(jobName, 'failed', duration);
-  }
+  });
 }
 
 /**
  * Run all retention jobs sequentially.
  */
 export async function runAllRetentionJobs(): Promise<void> {
-  logger.info('[DataRetention] Starting all retention cleanup jobs');
-  await cleanupAuthNonces();
-  await cleanupProcessedEvents();
-  await cleanupDeadLetterEvents();
-  await cleanupAgentLogs();
-  logger.info('[DataRetention] All retention cleanup jobs complete');
+  const correlationId = generateCorrelationId();
+  await runWithCorrelationIdAsync(correlationId, async () => {
+    const startTime = Date.now();
+    const jobName = 'retention_all_jobs';
+
+    logger.info(`[${jobName}] Starting all retention cleanup jobs`, { correlationId });
+
+    try {
+      await cleanupAuthNonces();
+      await cleanupProcessedEvents();
+      await cleanupDeadLetterEvents();
+      await cleanupAgentLogs();
+
+      const duration = (Date.now() - startTime) / 1000;
+      logBackgroundJob(jobName, 'success', duration, correlationId);
+    } catch (error) {
+      const duration = (Date.now() - startTime) / 1000;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      logBackgroundJob(jobName, 'failed', duration, correlationId, {
+        error: errorMessage,
+      });
+    }
+  });
 }
 
 /**
