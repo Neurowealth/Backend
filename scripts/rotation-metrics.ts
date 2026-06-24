@@ -312,6 +312,129 @@ export function formatMetricsPrometheus(metrics: RotationMetrics): string {
 }
 
 /**
+ * Generate a dedicated dry-run report string.
+ * Safe to store in CI artifacts, logs, or audit records — no secrets, keys, or credentials.
+ */
+export function generateDryRunReport(metrics: RotationMetrics): string {
+  const durationSec = metrics.durationMs !== undefined ? (metrics.durationMs / 1000).toFixed(2) : 'N/A';
+  const isReady = metrics.failedRotations === 0;
+  const readiness = isReady ? 'READY' : 'NOT READY';
+  const dbDisplay = metrics.databaseUrl ?? 'not available';
+
+  const sep = '=================================================================';
+  const lines: string[] = [];
+
+  lines.push(sep);
+  lines.push('WALLET ROTATION DRY-RUN REPORT');
+  lines.push(sep);
+  lines.push(`Report ID:        ${metrics.rotationId}`);
+  lines.push(`Generated At:     ${metrics.timestamp}`);
+  lines.push(`Environment:      ${metrics.environment}`);
+  lines.push(`Mode:             DRY RUN (no changes made)`);
+  lines.push(`Database:         ${dbDisplay}`);
+  lines.push(sep);
+  lines.push('');
+  lines.push('SUMMARY');
+  lines.push('-------');
+  lines.push(`Total Wallets Scanned:  ${metrics.totalWallets}`);
+  lines.push(`Successfully Validated: ${metrics.successfullyRotated}`);
+  lines.push(`Validation Failures:    ${metrics.failedRotations}`);
+  lines.push(`Rotation Readiness:     ${readiness}`);
+  lines.push('');
+  lines.push(sep);
+  lines.push('VALIDATION RESULTS');
+  lines.push(sep);
+
+  if (metrics.failedRotations === 0) {
+    lines.push(`All ${metrics.totalWallets} wallets passed validation checks:`);
+    lines.push('  - Decryption successful with current key');
+    lines.push('  - Re-encryption round-trip verified');
+    lines.push('  - No wallet would fail after rotation');
+  } else {
+    lines.push(`WARNING: ${metrics.failedRotations} wallet(s) failed validation:`);
+    const displayErrors = metrics.errors.slice(0, 20);
+    for (const err of displayErrors) {
+      lines.push(
+        `  [FAIL] Wallet ${err.walletId.substring(0, 8)}... (User ${err.userId.substring(0, 8)}...): ${err.error}`
+      );
+    }
+    if (metrics.errors.length > 20) {
+      lines.push(`  ... and ${metrics.errors.length - 20} more`);
+    }
+  }
+
+  lines.push('');
+  lines.push(sep);
+  lines.push('WARNINGS');
+  lines.push(sep);
+
+  if (metrics.failedRotations === 0) {
+    lines.push('None.');
+  } else {
+    lines.push(`- ${metrics.failedRotations} wallet(s) cannot be decrypted with the provided old key.`);
+    lines.push('- These wallets must be investigated before proceeding with live rotation.');
+    lines.push('- The live rotation will abort if any wallet fails decryption.');
+  }
+
+  lines.push('');
+  lines.push(sep);
+  lines.push('NEXT STEPS');
+  lines.push(sep);
+
+  if (isReady) {
+    lines.push('1. The dry-run completed successfully. All wallets are ready for rotation.');
+    lines.push('2. Schedule a maintenance window for the live rotation.');
+    lines.push('3. Back up the database before running live rotation.');
+    lines.push('4. Run live rotation:');
+    lines.push('     WALLET_ROTATION_OLD_KEY=<current-key> WALLET_ROTATION_NEW_KEY=<new-key> \\');
+    lines.push('       npx ts-node scripts/rotate-wallet-key.ts --skip-confirm');
+    lines.push('5. After rotation, verify all wallets decrypted with the new key:');
+    lines.push('     npx ts-node scripts/rotate-wallet-key.ts --verify --key <new-key>');
+    lines.push('6. Update WALLET_ENCRYPTION_KEY in your environment/secrets manager.');
+  } else {
+    lines.push(`1. Investigate the ${metrics.failedRotations} wallet(s) that failed validation (listed above).`);
+    lines.push('2. Ensure the correct OLD key is being used for the dry-run.');
+    lines.push('3. Re-run the dry-run after resolving failures before attempting live rotation.');
+  }
+
+  lines.push('');
+  lines.push(sep);
+  lines.push('PERFORMANCE ESTIMATE');
+  lines.push(sep);
+  lines.push(`Wallets Scanned:  ${metrics.totalWallets}`);
+  lines.push(`Duration:         ${durationSec}s`);
+  lines.push(`Est. Live Duration: ~${durationSec}s (includes DB writes)`);
+  lines.push('');
+  lines.push(sep);
+  lines.push('SAFETY NOTES');
+  lines.push(sep);
+  lines.push('- This report contains NO private keys, secrets, or credentials.');
+  lines.push('- Wallet IDs are truncated to first 8 characters for security.');
+  lines.push('- User IDs are truncated to first 8 characters for security.');
+  lines.push('- Safe to store in CI artifacts, logs, or audit records.');
+  lines.push(sep);
+
+  return lines.join('\n');
+}
+
+/**
+ * Save dry-run report to a .txt file in outputDir.
+ * Returns the absolute path to the written file.
+ */
+export function saveDryRunReport(metrics: RotationMetrics, outputDir: string): string {
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  const filename = `wallet-rotation-dry-run-${metrics.rotationId}.txt`;
+  const filepath = path.join(outputDir, filename);
+  const report = generateDryRunReport(metrics);
+  fs.writeFileSync(filepath, report);
+
+  return filepath;
+}
+
+/**
  * Log rotation progress to console with formatting
  */
 export function logRotationProgress(

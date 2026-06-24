@@ -33,6 +33,7 @@ import {
   recordSuccess,
   calculateProgress,
   saveMetricsToFile,
+  saveDryRunReport,
   formatMetricsSummary,
   logRotationProgress,
 } from './rotation-metrics';
@@ -195,7 +196,7 @@ Usage: npx ts-node scripts/rotate-wallet-key.ts [options]
 Rotate mode (default):
   --old-key <hex>      The current WALLET_ENCRYPTION_KEY (64 hex chars)
   --new-key <hex>      The new WALLET_ENCRYPTION_KEY (64 hex chars)
-  --dry-run            Validate rotation without making changes
+  --dry-run            Validate rotation without making changes (saves report to logs/wallet-rotation/)
   --skip-confirm       Skip confirmation prompts
 
 Verify mode:
@@ -500,6 +501,11 @@ async function main() {
   // Save metrics
   const metricsPath = saveMetricsToFile(metrics, METRICS_OUTPUT_DIR);
   console.log(`📝 Rotation metrics saved: ${metricsPath}`);
+
+  if (dryRun) {
+    const reportPath = saveDryRunReport(metrics, METRICS_OUTPUT_DIR);
+    console.log(`📋 Dry-run report saved: ${reportPath}`);
+  }
 
   // Exit with appropriate code
   process.exit(metrics.failedRotations > 0 ? 1 : 0);
