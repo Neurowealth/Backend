@@ -305,10 +305,12 @@ model CustodialWallet {
   encryptedSecret String
   iv              String
   authTag         String
+  keyVersion      Int      @default(1)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   @@index([userId])
+  @@index([keyVersion])
   @@map("custodial_wallets")
 }
 
