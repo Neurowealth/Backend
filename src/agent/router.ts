@@ -4,9 +4,10 @@
 
 import { logger } from '../utils/logger';
 import { getCorrelationId } from '../utils/correlation';
-import { ProtocolComparison, RebalanceDetails, RebalanceThresholds } from './types';
+import { ProtocolComparison, RebalanceDetails, RebalanceThresholds, RebalanceStrategy, UserStrategyPreferences } from './types';
 import { scanAllProtocols, getCurrentOnChainApy } from './scanner';
 import { triggerRebalance as submitRebalance } from '../stellar/contract';
+import { MaxYieldStrategy, TargetAllocationStrategy } from './strategies';
 import db from '../db';
 
 const DEFAULT_THRESHOLDS: RebalanceThresholds = {
@@ -128,6 +129,7 @@ export async function triggerRebalance(
   toProtocol: string,
   amount: string,
   positionIds: string[] = [],
+  strategyInfo?: { name: string; reasoning: string; deviationTrigger?: string },
 ): Promise<RebalanceDetails | null> {
   const startTime = Date.now();
 
@@ -215,11 +217,19 @@ export async function triggerRebalance(
         seen.add(key);
         await logAgentAction('REBALANCE', 'SUCCESS', {
           rebalanceDetail,
+          strategyName: strategyInfo?.name,
+          reasoning: strategyInfo?.reasoning,
+          deviationTrigger: strategyInfo?.deviationTrigger,
         }, pos.userId, pos.id);
       }
     } else {
       // No positions linked – log as system-level (userId stays null)
-      await logAgentAction('REBALANCE', 'SUCCESS', { rebalanceDetail });
+      await logAgentAction('REBALANCE', 'SUCCESS', {
+        rebalanceDetail,
+        strategyName: strategyInfo?.name,
+        reasoning: strategyInfo?.reasoning,
+        deviationTrigger: strategyInfo?.deviationTrigger,
+      });
     }
 
     logger.info('Rebalance successful', {
@@ -257,11 +267,11 @@ export async function triggerRebalance(
  */
 export async function executeRebalanceIfNeeded(
   currentProtocol: string,
-  userPositions: Array<{ id: string; amount: string }>,
-  thresholds?: RebalanceThresholds
+  userPositions: Array<{ id: string; amount: string; userId?: string }>,
+  thresholds?: RebalanceThresholds,
+  userStrategyPreferences?: UserStrategyPreferences[],
 ): Promise<RebalanceDetails | null> {
   try {
-    // Sum all user positions FIRST to account for costs
     const totalAmount = userPositions
       .reduce(
         (sum, pos) => sum + BigInt(pos.amount),
@@ -269,8 +279,60 @@ export async function executeRebalanceIfNeeded(
       )
       .toString();
 
-    // FIXED: Pass totalAmount to compareProtocols so it can account for transaction costs
-    const comparison = await compareProtocols(currentProtocol, totalAmount, thresholds);
+    const effectiveThresholds = thresholds ?? getThresholds();
+
+    // Use strategy engine when user preferences are present
+    if (userStrategyPreferences && userStrategyPreferences.length > 0) {
+      const currentApy = await getCurrentOnChainApy(currentProtocol);
+      if (!currentApy) {
+        logger.warn(`Cannot get current APY for ${currentProtocol}`);
+        return null;
+      }
+
+      const allProtocols = await scanAllProtocols();
+      if (allProtocols.length === 0) {
+        logger.warn('No protocols available for comparison');
+        return null;
+      }
+
+      const preferredStrategy = userStrategyPreferences[0]?.strategyName;
+      const strategy: RebalanceStrategy =
+        preferredStrategy === 'TARGET_ALLOCATION'
+          ? new TargetAllocationStrategy()
+          : new MaxYieldStrategy();
+
+      const decision = await strategy.analyze({
+        currentProtocol,
+        totalAmount,
+        currentApy,
+        availableProtocols: allProtocols,
+        thresholds: effectiveThresholds,
+        userStrategyPreferences,
+      });
+
+      if (!decision.shouldRebalance) {
+        logger.info('No rebalance needed (strategy)', {
+          strategy: strategy.name,
+          reasoning: decision.reasoning,
+        });
+        return null;
+      }
+
+      return await triggerRebalance(
+        currentProtocol,
+        decision.targetProtocol,
+        totalAmount,
+        userPositions.map(pos => pos.id),
+        {
+          name: strategy.name,
+          reasoning: decision.reasoning,
+          deviationTrigger: decision.deviationTrigger,
+        },
+      );
+    }
+
+    // Default: existing compareProtocols flow (backward compatible)
+    const comparison = await compareProtocols(currentProtocol, totalAmount, effectiveThresholds);
 
     if (!comparison || !comparison.shouldRebalance) {
       logger.info('No rebalance needed', {
@@ -286,6 +348,11 @@ export async function executeRebalanceIfNeeded(
       comparison.best.name,
       totalAmount,
       userPositions.map(pos => pos.id),
+      {
+        name: 'MAX_YIELD',
+        reasoning: `Moving from ${currentProtocol} to ${comparison.best.name} — net gain ${comparison.improvement.toFixed(2)}% after costs`,
+        deviationTrigger: `APY delta: ${(comparison.best.apy - (comparison.current.apy)).toFixed(2)}%`,
+      },
     );
   } catch (error) {
     logger.error('Rebalance execution check failed', {
