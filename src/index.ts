@@ -27,6 +27,7 @@ import adminRouter from './routes/admin'
 import metricsRouter from './routes/metrics'
 import stellarRouter from './routes/stellar'
 import { corsMiddleware, jsonBodyParser, payloadSizeErrorHandler, urlencodedBodyParser } from './middleware/corsandbody'
+import { compressionMiddleware } from './middleware/compression'
 
 // ── Readiness state ───────────────────────────────────────────────────────────
 //
@@ -65,6 +66,9 @@ app.use(securityHeaders())
 
 // CORS — must come before body parsers so pre-flight OPTIONS is handled
 app.use(corsMiddleware)
+
+// Response compression — gzip/brotli for responses > 1 KB, /metrics excluded
+app.use(compressionMiddleware)
 
 // Body parsers with size limits (100 kb default, see config.security.bodySizeLimit)
 app.use(jsonBodyParser)

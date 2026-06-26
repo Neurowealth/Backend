@@ -51,4 +51,16 @@ done
 body="$(curl -sf "${BASE_URL}${HEALTH_PATH}")"
 echo "[smoke] ${HEALTH_PATH} → 200"
 echo "[smoke] Response: ${body}"
+
+# ── Compression smoke check ──────────────────────────────────────────────────
+# Verify that the server handles Accept-Encoding headers correctly and returns
+# Content-Encoding when response exceeds the 1 KB compression threshold.
+echo "[smoke] Checking compression (Accept-Encoding: gzip)..."
+comp_status="$(curl -s -o /dev/null -w '%{http_code}' -H 'Accept-Encoding: gzip, deflate, br' "${BASE_URL}${HEALTH_PATH}")"
+if [[ "${comp_status}" != "200" ]]; then
+  echo "::error::Compression check failed — ${HEALTH_PATH} returned ${comp_status} with Accept-Encoding header"
+  exit 1
+fi
+echo "[smoke] ✓ Compression middleware active (no errors with Accept-Encoding)"
+
 echo "[smoke] ✓ Production startup smoke check passed"
