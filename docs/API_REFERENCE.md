@@ -674,6 +674,43 @@ Response 404:
 
 ---
 
+## Analytics
+
+### GET /api/analytics
+
+- Auth: required (requireAuth)
+- Description: Returns portfolio analytics metrics computed from YieldSnapshot history.
+- Query params:
+  - period: enum('7d', '30d', '90d', '1y'), default '30d'
+
+Response 200:
+{
+  "userId": "550e8400-e29b-41d4-a716-446655440001",
+  "period": "30d",
+  "realizedAPY": 18.42,
+  "sharpeRatio": 1.35,
+  "maxDrawdown": 6.75,
+  "protocolAllocation": [
+    { "protocol": "Blend", "percentage": 65.2, "value": 6520 },
+    { "protocol": "Soroswap", "percentage": 34.8, "value": 3480 }
+  ],
+  "snapshotCount": 12,
+  "startDate": "2026-05-27",
+  "endDate": "2026-06-26",
+  "totalValue": 10000
+}
+
+Response 400:
+{
+  "error": "Validation error",
+  "details": { ... }
+}
+
+Response 401:
+{
+  "error": "Unauthorized"
+}
+
 ## Endpoint Coverage Checklist (src/routes)
 
 - health.ts: GET /health
@@ -686,3 +723,4 @@ Response 404:
 - deposit.ts: POST /api/deposit
 - withdraw.ts: POST /api/withdraw
 - vault.ts: GET /api/vault/state, GET /api/vault/balance
+- analytics.ts: GET /api/analytics (new), plus legacy /apy-history, /user-yield, /protocol-performance
