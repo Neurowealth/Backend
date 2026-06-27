@@ -165,6 +165,7 @@ export async function createCustodialWallet(userId: string) {
       encryptedSecret: encrypted,
       iv,
       authTag,
+      keyVersion: 2,
     },
   });
 
@@ -199,6 +200,26 @@ export async function getKeypairForUser(userId: string): Promise<Keypair> {
 
   if (keyUsed === 'fallback') {
     logger.debug(`[Wallet] User ${userId} decrypted with fallback key; schedule re-encryption`);
+  }
+
+  // Lazy re-encryption for wallets on v1
+  if (wallet.keyVersion === 1) {
+    try {
+      const { encrypted, iv, authTag } = encryptSecret(secret);
+      await db.custodialWallet.update({
+        where: { id: wallet.id },
+        data: {
+          encryptedSecret: encrypted,
+          iv,
+          authTag,
+          keyVersion: 2,
+        },
+      });
+      logger.info(`[Wallet] Upgraded user ${userId} to keyVersion 2 via lazy re-encryption`);
+    } catch (err) {
+      logger.error(`[Wallet] Failed to lazy re-encrypt user ${userId}: ${err instanceof Error ? err.message : 'unknown error'}`);
+      // Non-fatal, we still return the keypair
+    }
   }
 
   return Keypair.fromSecret(secret);

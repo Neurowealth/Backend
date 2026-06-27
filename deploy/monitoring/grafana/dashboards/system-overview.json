@@ -1,21 +1,56 @@
 {
-  "title": "NeuroWealth — System Overview",
+  "title": "NeuroWealth \u2014 System Overview",
   "uid": "nw-system-overview",
   "schemaVersion": 38,
   "refresh": "30s",
-  "time": { "from": "now-1h", "to": "now" },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "panels": [
     {
       "id": 1,
       "title": "Agent Loop Status",
       "type": "stat",
-      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
-      "targets": [{ "expr": "agent_loop_status", "legendFormat": "status" }],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "agent_loop_status",
+          "legendFormat": "status"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
       "fieldConfig": {
         "defaults": {
           "mappings": [
-            { "type": "value", "options": { "0": { "text": "STOPPED", "color": "red" }, "1": { "text": "RUNNING", "color": "green" }, "2": { "text": "DEGRADED", "color": "yellow" } } }
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "STOPPED",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "RUNNING",
+                  "color": "green"
+                },
+                "2": {
+                  "text": "DEGRADED",
+                  "color": "yellow"
+                }
+              }
+            }
           ]
         }
       }
@@ -24,12 +59,37 @@
       "id": 2,
       "title": "Heartbeat Age (s)",
       "type": "stat",
-      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
-      "targets": [{ "expr": "time() - agent_loop_heartbeat_timestamp", "legendFormat": "age" }],
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "time() - agent_loop_heartbeat_timestamp",
+          "legendFormat": "age"
+        }
+      ],
       "fieldConfig": {
         "defaults": {
           "unit": "s",
-          "thresholds": { "steps": [{ "value": 0, "color": "green" }, { "value": 120, "color": "yellow" }, { "value": 300, "color": "red" }] }
+          "thresholds": {
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 120,
+                "color": "yellow"
+              },
+              {
+                "value": 300,
+                "color": "red"
+              }
+            ]
+          }
         }
       }
     },
@@ -37,11 +97,36 @@
       "id": 3,
       "title": "Cursor Lag (ledgers)",
       "type": "stat",
-      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
-      "targets": [{ "expr": "cursor_lag_ledgers", "legendFormat": "lag" }],
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "cursor_lag_ledgers",
+          "legendFormat": "lag"
+        }
+      ],
       "fieldConfig": {
         "defaults": {
-          "thresholds": { "steps": [{ "value": 0, "color": "green" }, { "value": 50, "color": "yellow" }, { "value": 100, "color": "red" }] }
+          "thresholds": {
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 50,
+                "color": "yellow"
+              },
+              {
+                "value": 100,
+                "color": "red"
+              }
+            ]
+          }
         }
       }
     },
@@ -49,11 +134,36 @@
       "id": 4,
       "title": "DLQ Size",
       "type": "stat",
-      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
-      "targets": [{ "expr": "dlq_size", "legendFormat": "dlq" }],
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "dlq_size",
+          "legendFormat": "dlq"
+        }
+      ],
       "fieldConfig": {
         "defaults": {
-          "thresholds": { "steps": [{ "value": 0, "color": "green" }, { "value": 20, "color": "yellow" }, { "value": 50, "color": "red" }] }
+          "thresholds": {
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 20,
+                "color": "yellow"
+              },
+              {
+                "value": 50,
+                "color": "red"
+              }
+            ]
+          }
         }
       }
     },
@@ -61,29 +171,115 @@
       "id": 5,
       "title": "HTTP Request Rate",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 6 },
-      "targets": [{ "expr": "rate(http_requests_total[1m])", "legendFormat": "{{method}} {{route}} {{status_code}}" }]
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "rate(http_requests_total[1m])",
+          "legendFormat": "{{method}} {{route}} {{status_code}}"
+        }
+      ]
     },
     {
       "id": 6,
       "title": "HTTP P95 Latency (s)",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 6 },
-      "targets": [{ "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))", "legendFormat": "p95" }]
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95"
+        }
+      ]
     },
     {
       "id": 7,
       "title": "Event Processing Rate",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 10, "w": 12, "h": 6 },
-      "targets": [{ "expr": "rate(events_processed_total[1m])", "legendFormat": "{{event_type}} {{status}}" }]
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "rate(events_processed_total[1m])",
+          "legendFormat": "{{event_type}} {{status}}"
+        }
+      ]
     },
     {
       "id": 8,
       "title": "Failure Rate",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 10, "w": 12, "h": 6 },
-      "targets": [{ "expr": "rate(failures_total[1m])", "legendFormat": "{{component}} {{error_type}}" }]
+      "gridPos": {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "rate(failures_total[1m])",
+          "legendFormat": "{{component}} {{error_type}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "DB Connection Pool",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "db_pool_size",
+          "legendFormat": "size"
+        },
+        {
+          "expr": "db_pool_active",
+          "legendFormat": "active"
+        },
+        {
+          "expr": "db_pool_idle",
+          "legendFormat": "idle"
+        },
+        {
+          "expr": "db_pool_wait_count",
+          "legendFormat": "waiting"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "DB Pool Wait Duration (ms, cumulative)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "db_pool_wait_duration_ms",
+          "legendFormat": "wait_ms"
+        }
+      ]
     }
   ]
 }

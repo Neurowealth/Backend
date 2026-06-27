@@ -1,6 +1,6 @@
 /**
  * Integration tests for protected internal endpoints
- * Tests that /metrics and /api/agent/status properly reject unauthorized access
+ * Tests that /metrics and /api/v1/agent/status properly reject unauthorized access
  */
 
 import request from 'supertest'
@@ -55,23 +55,23 @@ describe('Internal Endpoint Authentication', () => {
     })
   })
 
-  describe('GET /api/agent/status', () => {
+  describe('GET /api/v1/agent/status', () => {
     it('should return 403 without valid credentials', async () => {
-      const res = await request(app).get('/api/agent/status')
+      const res = await request(app).get('/api/v1/agent/status')
       expect(res.status).toBe(403)
       expect(res.body.error).toBe('Forbidden')
     })
 
     it('should return 403 with invalid X-Internal-Token', async () => {
       const res = await request(app)
-        .get('/api/agent/status')
+        .get('/api/v1/agent/status')
         .set('X-Internal-Token', 'invalid-token')
       expect(res.status).toBe(403)
     })
 
     it('should return 403 with invalid Bearer token', async () => {
       const res = await request(app)
-        .get('/api/agent/status')
+        .get('/api/v1/agent/status')
         .set('Authorization', 'Bearer invalid-token')
       expect(res.status).toBe(403)
     })
@@ -83,7 +83,7 @@ describe('Internal Endpoint Authentication', () => {
         return
       }
       const res = await request(app)
-        .get('/api/agent/status')
+        .get('/api/v1/agent/status')
         .set('X-Internal-Token', token)
       expect(res.status).toBe(200)
       expect(res.body.success).toBe(true)
@@ -97,7 +97,7 @@ describe('Internal Endpoint Authentication', () => {
         return
       }
       const res = await request(app)
-        .get('/api/agent/status')
+        .get('/api/v1/agent/status')
         .set('Authorization', `Bearer ${token}`)
       expect(res.status).toBe(200)
       expect(res.body.success).toBe(true)

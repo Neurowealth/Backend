@@ -246,15 +246,15 @@ async function rotateWalletKeys(
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('');
 
-    console.log('🔍 Counting custodial wallets...');
-    metrics.totalWallets = await prisma.custodialWallet.count();
+    console.log('🔍 Counting custodial wallets on v1...');
+    metrics.totalWallets = await prisma.custodialWallet.count({ where: { keyVersion: 1 } });
 
     if (metrics.totalWallets === 0) {
-      console.log('✅ No wallets to rotate.');
+      console.log('✅ No v1 wallets to rotate.');
       return finalizeMetrics(metrics);
     }
 
-    console.log(`📊 Found ${metrics.totalWallets} wallet(s) to rotate.`);
+    console.log(`📊 Found ${metrics.totalWallets} v1 wallet(s) to rotate.`);
     console.log(`🔐 Mode: ${dryRun ? 'DRY RUN (no changes)' : 'LIVE ROTATION'}`);
     console.log(`📋 Rotation ID: ${metrics.rotationId}`);
     console.log('');
@@ -267,21 +267,18 @@ async function rotateWalletKeys(
     }, 2000); // Log progress every 2 seconds
 
     try {
-      // Paginate with skip/take rather than loading the whole table at once.
-      // (Using skip/take instead of a cursor on `id` so this works regardless
-      // of whether your schema's id is a string (cuid/uuid) or a number —
-      // adjust to cursor-based pagination if this table grows very large,
-      // since skip-based pagination gets more expensive at high offsets.)
-      let skip = 0;
+      let cursor: string | undefined;
       // eslint-disable-next-line no-constant-condition
       while (true) {
         const batch = await prisma.custodialWallet.findMany({
+          where: { keyVersion: 1 },
           take: BATCH_SIZE,
-          skip,
+          ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
           orderBy: { id: 'asc' },
         });
 
         if (batch.length === 0) break;
+        cursor = batch[batch.length - 1].id;
 
         for (const wallet of batch) {
           const startedAt = Date.now();
@@ -303,6 +300,7 @@ async function rotateWalletKeys(
                   encryptedSecret: encrypted,
                   iv,
                   authTag,
+                  keyVersion: 2,
                   updatedAt: new Date(),
                 },
               });
@@ -314,8 +312,7 @@ async function rotateWalletKeys(
             recordError(metrics, wallet.id, wallet.userId, errorMsg);
           }
         }
-
-        skip += batch.length;
+        // Cursor already updated at the start of the loop
       }
     } finally {
       clearInterval(logInterval);

@@ -1,4 +1,4 @@
-import { type Express } from 'express'
+import { type Express, type Request, type Response, type NextFunction } from 'express'
 import helmet from 'helmet'
 import { config } from '../config/env'
 
@@ -13,10 +13,10 @@ export function configureTrustProxy(app: Express): void {
 }
 
 /**
- * Helmet security headers.
+ * Helmet security headers — all directives set explicitly; no framework defaults.
  *
- * Production uses strict defaults (CSP, HSTS, CORP/COOP). Development and
- * test disable CSP/HSTS so local tooling is not blocked.
+ * Production: full CSP lock-down, HSTS 2-year preload, CORP/COOP/COEP isolation.
+ * Development/test: CSP and HSTS disabled so local tooling is not blocked.
  */
 export function securityHeaders() {
   const isProduction = config.nodeEnv === 'production'
@@ -26,7 +26,17 @@ export function securityHeaders() {
       ? {
           directives: {
             defaultSrc: ["'none'"],
+            scriptSrc: ["'none'"],
+            styleSrc: ["'none'"],
+            imgSrc: ["'none'"],
+            connectSrc: ["'none'"],
+            fontSrc: ["'none'"],
+            objectSrc: ["'none'"],
+            mediaSrc: ["'none'"],
+            frameSrc: ["'none'"],
             frameAncestors: ["'none'"],
+            formAction: ["'none'"],
+            upgradeInsecureRequests: [],
           },
         }
       : false,
@@ -35,11 +45,32 @@ export function securityHeaders() {
     crossOriginResourcePolicy: { policy: 'same-origin' },
     hsts: isProduction
       ? {
-          maxAge: 31_536_000,
+          maxAge: 63_072_000,
           includeSubDomains: true,
           preload: true,
         }
       : false,
     referrerPolicy: { policy: 'no-referrer' },
+    xContentTypeOptions: true,
+    xDnsPrefetchControl: { allow: false },
+    xDownloadOptions: true,
+    xFrameOptions: { action: 'deny' },
+    xXssProtection: false,
   })
+}
+
+/**
+ * Sets `Permissions-Policy` to disable all browser features irrelevant to a
+ * pure financial API (geolocation, camera, microphone, payment, usb, …).
+ * Helmet does not yet provide a typed `permissionsPolicy` option so we set
+ * this header manually after the helmet middleware runs.
+ */
+export function permissionsPolicy() {
+  return (_req: Request, res: Response, next: NextFunction): void => {
+    res.setHeader(
+      'Permissions-Policy',
+      'geolocation=(), camera=(), microphone=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()',
+    )
+    next()
+  }
 }

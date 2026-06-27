@@ -1,0 +1,26 @@
+name: Migration rollback check
+
+# Ensures every Prisma migration ships a rollback.sql so production always has a
+# documented recovery path. See scripts/check-migration-rollback.sh.
+
+on:
+  pull_request:
+    paths:
+      - 'prisma/migrations/**'
+      - 'scripts/check-migration-rollback.sh'
+      - '.github/workflows/migration-rollback-check.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'prisma/migrations/**'
+
+jobs:
+  rollback-check:
+    name: Require rollback.sql per migration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check every migration has a rollback.sql
+        run: bash scripts/check-migration-rollback.sh

@@ -10,6 +10,7 @@ import {
   formatTransactionDetailReply,
   formatTransactionsReply,
 } from '../whatsapp/formatters'
+import { recordTransactionEvent } from '../utils/transaction-events'
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -93,6 +94,28 @@ router.get(
       transactions: items,
       whatsappReply: formatTransactionsReply({ page, limit, transactions: items }),
     })
+  },  // ← closes the async handler for /:userId
+)     // ← closes router.get('/:userId', ...)
+
+/**
+ * GET /transactions/:id/events
+ * Returns the ordered event history for a transaction (admin only).
+ */
+router.get(
+  '/:id/events',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const id = String(req.params.id)  // ← String() cast fixes the string | string[] error
+
+    const tx = await db.transaction.findUnique({ where: { id } })
+    if (!tx) return sendNotFound(res, 'Transaction')
+
+    const events = await (db as any).transactionEvent.findMany({
+      where: { transactionId: id },
+      orderBy: { occurredAt: 'asc' },
+    })
+
+    return res.status(200).json({ transactionId: id, events })
   },
 )
 
