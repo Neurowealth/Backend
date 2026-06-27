@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - 'deploy/k8s/**'
+      - 'deploy/monitoring/**'
       - '.github/workflows/k8s-validate.yml'
   pull_request:
     paths:
       - 'deploy/k8s/**'
+      - 'deploy/monitoring/**'
       - '.github/workflows/k8s-validate.yml'
 
 jobs:
@@ -25,3 +27,14 @@ jobs:
       - name: Validate manifests
         run: |
           kubeconform -summary -ignore-missing-schemas deploy/k8s/*.yaml
+
+      - name: Install promtool
+        run: |
+          VERSION="2.54.1"
+          curl -sSL "https://github.com/prometheus/prometheus/releases/download/v${VERSION}/prometheus-${VERSION}.linux-amd64.tar.gz" \
+            | tar xz --strip-components=1 "prometheus-${VERSION}.linux-amd64/promtool"
+          sudo mv promtool /usr/local/bin/
+
+      - name: Validate Prometheus alert rules
+        run: |
+          promtool check rules deploy/monitoring/prometheus/alert-rules.yaml

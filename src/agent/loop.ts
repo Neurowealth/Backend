@@ -16,7 +16,9 @@ import {
   recordRebalanceTriggered,
   recordDbOperation,
   recordBackgroundJob,
-  recordExternalServiceError
+  recordExternalServiceError,
+  recordAgentLoopError,
+  recordAgentLoopSuccess
 } from '../utils/metrics';
 
 let isRunning = false;
@@ -141,6 +143,7 @@ async function rebalanceCheckJob(): Promise<void> {
       recordDbOperation('rebalance_check', duration);
 
       lastError = null;
+      recordAgentLoopSuccess();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       lastError = errorMessage;
@@ -150,6 +153,7 @@ async function rebalanceCheckJob(): Promise<void> {
         error: errorMessage,
       });
 
+      recordAgentLoopError();
       recordRebalanceCheck('failed');
       recordDbOperation('rebalance_check', duration);
 
@@ -196,18 +200,20 @@ async function snapshotJob(): Promise<void> {
     // Record Prometheus metrics
     recordDbOperation('snapshot_job', duration / 1000);
     recordBackgroundJob('snapshot', 'success', duration / 1000);
+    recordAgentLoopSuccess();
     logger.info(`${jobName} scheduled`, { duration });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     const duration = Date.now() - startTime;
-    logger.error(`${jobName} failed`, {
-      error: errorMessage,
-      duration,
-    });
-    // Record Prometheus metrics
-    recordDbOperation('snapshot_job', duration / 1000);
-    recordBackgroundJob('snapshot', 'failed', duration / 1000);
-  }
+      logger.error(`${jobName} failed`, {
+        error: errorMessage,
+        duration,
+      });
+      // Record Prometheus metrics
+      recordDbOperation('snapshot_job', duration / 1000);
+      recordBackgroundJob('snapshot', 'failed', duration / 1000);
+      recordAgentLoopError();
+    }
   });
 }
 
