@@ -4,14 +4,14 @@ export class AppError extends Error {
   constructor(
     public statusCode: number,
     public message: string,
-    public details?: any
+    public details?: unknown
   ) {
     super(message)
     Object.setPrototypeOf(this, AppError.prototype)
   }
 }
 
-export const sendError = (res: Response, statusCode: number, message: string, details?: any) => {
+export const sendError = (res: Response, statusCode: number, message: string, details?: unknown) => {
   return res.status(statusCode).json({
     error: message,
     details,

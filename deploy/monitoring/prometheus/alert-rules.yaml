@@ -29,14 +29,35 @@ groups:
           summary: "Event cursor lag critical"
           description: "Cursor lag is {{ $value }} ledgers (> 100)"
 
-      - alert: DLQSizeCritical
+      - alert: AgentLoopConsecutiveFailures
+        expr: increase(agent_loop_errors_total[5m]) > 3
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Agent loop consecutive failures detected"
+          description: "Agent loop has failed more than 3 times in 5 minutes"
+          runbook_url: "https://github.com/anomalyco/neurowealth/wiki/runbooks/agent-loop-failures"
+
+      - alert: AgentLoopStalled
+        expr: time() - agent_loop_last_success_timestamp > 600
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Agent loop has stalled"
+          description: "No successful agent loop tick for {{ $value }}s (> 600s)"
+          runbook_url: "https://github.com/anomalyco/neurowealth/wiki/runbooks/agent-loop-stalled"
+
+      - alert: DLQDepthHigh
         expr: dlq_size > 50
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "Dead Letter Queue critically large"
+          summary: "Dead Letter Queue depth high"
           description: "DLQ has {{ $value }} events (> 50)"
+          runbook_url: "https://github.com/anomalyco/neurowealth/wiki/runbooks/dlq-clearance"
 
       - alert: HighFailureRate
         expr: rate(failures_total[5m]) > 10

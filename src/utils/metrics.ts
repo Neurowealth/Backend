@@ -125,6 +125,18 @@ export const agentRebalancesTriggeredTotal = new client.Counter({
   registers: [register],
 })
 
+export const agentLoopErrorsTotal = new client.Counter({
+  name: 'agent_loop_errors_total',
+  help: 'Total number of agent loop execution errors',
+  registers: [register],
+})
+
+export const agentLoopLastSuccess = new client.Gauge({
+  name: 'agent_loop_last_success_timestamp',
+  help: 'Unix timestamp of the last successful agent loop tick',
+  registers: [register],
+})
+
 export const agentSnapshotDuration = new client.Histogram({
   name: 'agent_snapshot_duration_seconds',
   help: 'Duration of balance snapshot operations in seconds',
@@ -319,6 +331,20 @@ export function recordRebalanceCheck(status: 'success' | 'failed'): void {
  */
 export function recordRebalanceTriggered(): void {
   agentRebalancesTriggeredTotal.inc()
+}
+
+/**
+ * Record an agent loop error
+ */
+export function recordAgentLoopError(): void {
+  agentLoopErrorsTotal.inc()
+}
+
+/**
+ * Record a successful agent loop tick
+ */
+export function recordAgentLoopSuccess(): void {
+  agentLoopLastSuccess.set(Date.now() / 1000)
 }
 
 /**

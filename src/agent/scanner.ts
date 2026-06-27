@@ -2,6 +2,7 @@
  * Scanner - Fetches real APY rates from Stellar yield protocols
  */
 
+import { Network } from '@prisma/client';
 import { logger } from '../utils/logger';
 import { YieldProtocol, ProtocolRate } from './types';
 import db from '../db';
@@ -40,13 +41,12 @@ async function fetchBlendApy(): Promise<YieldProtocol | null> {
 
     const poolId = process.env.BLEND_POOL_ID || 'GBUQWP3BOUZX34PISXEAMBNIZJLNCLVNX77MHAHVXHVVB4CMYAOK6BAC';
 
-    const data = await fetchWithRetry(
+    const data = await fetchWithRetry<{ reserves?: Array<{ asset?: { code?: string; symbol?: string }; supplyApy?: string; totalSupply?: string }> }>(
       `${network}/api/v1/pool/${poolId}`,
       { timeout: 5000, retries: 3 }
     );
 
-    // Extract USDC reserve APY and TVL from response
-    const reserve = data?.reserves?.find((r: any) =>
+    const reserve = data?.reserves?.find((r) =>
       r.asset?.code === 'USDC' || r.asset?.symbol === 'USDC'
     );
 
@@ -87,7 +87,7 @@ async function fetchStellarDexApy(): Promise<YieldProtocol | null> {
     const horizonUrl = process.env.HORIZON_URL || 'https://horizon.stellar.org';
     const usdcIssuer = process.env.USDC_ISSUER || 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
 
-    const data = await fetchWithRetry(
+    const data = await fetchWithRetry<{ _embedded?: { records?: Array<{ total_shares?: string; fee_bp?: string }> } }>(
       `${horizonUrl}/liquidity_pools?reserves=${ASSET_SYMBOL}:${usdcIssuer}&limit=10&order=desc`,
       { timeout: 5000, retries: 3 }
     );
@@ -134,16 +134,16 @@ async function fetchLumaApy(): Promise<YieldProtocol | null> {
   try {
     const lumaUrl = process.env.LUMA_API_URL || 'https://api.luma.finance';
 
-    const data = await fetchWithRetry(
+    const data = await fetchWithRetry<{ rates?: Array<{ asset?: string; symbol?: string; apy?: string; tvl?: string }> }>(
       `${lumaUrl}/v1/rates?asset=${ASSET_SYMBOL}`,
       { timeout: 5000, retries: 3 }
     );
 
-    const rate = data?.rates?.find((r: any) =>
+    const rate = data?.rates?.find((r) =>
       r.asset === ASSET_SYMBOL || r.symbol === ASSET_SYMBOL
     );
 
-    if (!rate) throw new Error('USDC rate not found in Luma response');
+    if (!rate?.apy) throw new Error('USDC rate not found in Luma response');
 
     const apyRate = parseFloat(rate.apy) * 100;
     const tvl = rate.tvl ? parseFloat(rate.tvl) : undefined;
@@ -209,15 +209,16 @@ export async function scanAllProtocols(): Promise<YieldProtocol[]> {
   return filtered;
 }
 
-function normalizeNetwork(): string {
+function normalizeNetwork(): Network {
   const network = process.env.STELLAR_NETWORK?.toLowerCase();
-  const validNetworks = ['mainnet', 'testnet', 'futurenet'];
-  if (!network || !validNetworks.includes(network)) {
+  const validNetworks: Network[] = ['MAINNET', 'TESTNET', 'FUTURENET'];
+  const upper = network?.toUpperCase() as Network | undefined;
+  if (!upper || !validNetworks.includes(upper)) {
     throw new Error(
       `Invalid STELLAR_NETWORK: "${process.env.STELLAR_NETWORK}". Must be one of: ${validNetworks.join(', ')}`
     );
   }
-  return network.toUpperCase();
+  return upper;
 }
 
 /**
@@ -231,10 +232,9 @@ async function saveProtocolRates(protocols: YieldProtocol[]): Promise<void> {
         data: {
           protocolName: protocol.name,
           assetSymbol: protocol.assetSymbol,
-          supplyApy: protocol.apy as any,
-          tvl: protocol.tvl === undefined ? undefined : (protocol.tvl as any),
-          network: networkLabel as any,
-          rawResponse: JSON.stringify({ fetchedAt: new Date(), source: protocol.name }),
+          supplyApy: protocol.apy,
+          tvl: protocol.tvl === undefined ? undefined : protocol.tvl,
+          network: networkLabel,
         },
       });
     }

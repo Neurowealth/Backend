@@ -201,10 +201,12 @@ function parseRebalanceEvent(event: ContractEvent): RebalanceEvent {
 /**
  * Handle deposit event - persist to database
  */
-async function handleDepositEvent(depositData: DepositEvent, event: ContractEvent, tx: any = db): Promise<void> {
+type TxClient = Omit<typeof db, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
+
+async function handleDepositEvent(depositData: DepositEvent, event: ContractEvent, tx: TxClient = db): Promise<void> {
   const user = await timedDbOperation(() =>
     tx.user.findUnique({ where: { walletAddress: depositData.user } })
-  ) as any;
+  );
 
   if (!user) {
     logger.warn(`[Deposit] User not found for wallet: ${depositData.user}`);
@@ -226,13 +228,13 @@ async function handleDepositEvent(depositData: DepositEvent, event: ContractEven
         confirmedAt: new Date(),
       },
     })
-  ) as any;
+  );
 
   const position = await timedDbOperation(() =>
     tx.position.findFirst({
       where: { userId: user.id, protocolName: depositData.protocolName, assetSymbol: depositData.assetSymbol, status: 'ACTIVE' },
     })
-  ) as any;
+  );
 
   if (position) {
     await timedDbOperation(() =>
@@ -260,7 +262,7 @@ async function handleDepositEvent(depositData: DepositEvent, event: ContractEven
           yieldEarned: 0,
         },
       })
-    ) as any;
+    );
     await timedDbOperation(() =>
       tx.transaction.update({ where: { id: transaction.id }, data: { positionId: newPosition.id } })
     );
@@ -270,10 +272,10 @@ async function handleDepositEvent(depositData: DepositEvent, event: ContractEven
 /**
  * Handle withdraw event - persist to database
  */
-async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractEvent, tx: any = db): Promise<void> {
+async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractEvent, tx: TxClient = db): Promise<void> {
   const user = await timedDbOperation(() =>
     tx.user.findUnique({ where: { walletAddress: withdrawData.user } })
-  ) as any;
+  );
 
   if (!user) {
     logger.warn(`[Withdraw] User not found for wallet: ${withdrawData.user}`);
@@ -295,13 +297,13 @@ async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractE
         confirmedAt: new Date(),
       },
     })
-  ) as any;
+  );
 
   const position = await timedDbOperation(() =>
     tx.position.findFirst({
       where: { userId: user.id, protocolName: withdrawData.protocolName, assetSymbol: withdrawData.assetSymbol, status: 'ACTIVE' },
     })
-  ) as any;
+  );
 
   if (position) {
     const newDepositedAmount = new Decimal(position.depositedAmount).minus(withdrawData.amount);
@@ -322,7 +324,7 @@ async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractE
 /**
  * Handle rebalance event - persist to database
  */
-async function handleRebalanceEvent(rebalanceData: RebalanceEvent, event: ContractEvent, tx: any = db): Promise<void> {
+async function handleRebalanceEvent(rebalanceData: RebalanceEvent, event: ContractEvent, tx: TxClient = db): Promise<void> {
   await timedDbOperation(() =>
     tx.protocolRate.create({
       data: {
@@ -341,7 +343,7 @@ async function handleRebalanceEvent(rebalanceData: RebalanceEvent, event: Contra
 /**
  * Handle contract event with persistence, idempotency, and validation (Issue #53)
  */
-export async function handleEvent(event: ContractEvent, tx: any = db): Promise<void> {
+export async function handleEvent(event: ContractEvent, tx: TxClient = db): Promise<void> {
   const correlationId = generateCorrelationId();
   return runWithCorrelationIdAsync(correlationId, async () => {
     const eventWithCorrelation = { ...event, correlationId };
@@ -614,7 +616,7 @@ export async function backfillEvents(startLedger: number, endLedger?: number): P
 export async function retryDeadLetterEvents(): Promise<void> {
   logger.info(`[DLQ] Starting manual intervention retry for all DLQ events`);
   await DeadLetterQueue.retryAll(async (eventPayload) => {
-    await handleEvent(eventPayload, db);
+    await handleEvent(eventPayload as ContractEvent, db);
   });
 }
 
