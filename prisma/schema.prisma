@@ -67,10 +67,11 @@ model User {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  sessions     Session[]
-  positions    Position[]
-  transactions Transaction[]
-  agentLogs    AgentLog[]
+  sessions              Session[]
+  positions             Position[]
+  transactions          Transaction[]
+  agentLogs             AgentLog[]
+  webhookSubscriptions  WebhookSubscription[]
 
   @@map("users")
 }
@@ -323,4 +324,47 @@ model AuthNonce {
 
   @@index([expiresAt])
   @@map("auth_nonces")
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+model WebhookSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  url       String
+  events    String[]
+  secret    String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@index([userId])
+  @@map("webhook_subscriptions")
+}
+
+model WebhookDelivery {
+  id             String                @id @default(uuid())
+  subscriptionId String
+  event          String
+  payload        Json
+  statusCode     Int?
+  attempts       Int                   @default(0)
+  status         WebhookDeliveryStatus @default(PENDING)
+  error          String?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("webhook_deliveries")
 }

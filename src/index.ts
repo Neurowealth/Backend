@@ -44,6 +44,7 @@ import analyticsRouter from './routes/analytics'
 import adminRouter from './routes/admin'
 import metricsRouter from './routes/metrics'
 import stellarRouter from './routes/stellar'
+import webhooksRouter from './routes/webhooks'
 import { corsMiddleware, jsonBodyParser, payloadSizeErrorHandler, urlencodedBodyParser, contentTypeRestrictionMiddleware } from './middleware/corsandbody'
 import { setSpanUser } from './telemetry/spans'
 
@@ -153,6 +154,7 @@ app.use('/api/withdraw', withdrawRouter)
 app.use('/api/vault', vaultRouter)
 app.use('/api/analytics', analyticsRouter)
 app.use('/api/stellar', stellarRouter)
+app.use('/api/webhooks', webhooksRouter)
 app.use('/metrics', metricsRouter)
 app.use('/api/admin', adminRateLimiter, adminRouter)
 
