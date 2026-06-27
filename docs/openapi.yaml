@@ -38,6 +38,8 @@ tags:
     description: Vault / savings product
   - name: admin
     description: Admin-only management endpoints
+  - name: webhooks
+    description: Webhook subscriptions for server-push event notifications
 
 # ── Security schemes ─────────────────────────────────────────────────────────
 components:
@@ -197,6 +199,51 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    WebhookEvent:
+      type: string
+      enum:
+        - transaction.confirmed
+        - agent.rebalanced
+        - deposit.received
+        - withdraw.completed
+
+    WebhookSubscription:
+      type: object
+      required: [id, url, events, isActive, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+          example: https://myapp.example.com/webhooks
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEvent'
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    WebhookSubscriptionWithSecret:
+      allOf:
+        - $ref: '#/components/schemas/WebhookSubscription'
+        - type: object
+          required: [secret]
+          properties:
+            secret:
+              type: string
+              description: >
+                HMAC-SHA256 signing secret. **Returned once at creation only.**
+                Use it to verify the `X-Neurowealth-Signature` header on incoming webhook requests.
+              example: a3f9e2c1d0b84756a3f9e2c1d0b84756a3f9e2c1d0b84756a3f9e2c1d0b84756
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 paths:
@@ -563,6 +610,159 @@ paths:
                     $ref: '#/components/schemas/Transaction'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  # ── Webhooks ───────────────────────────────────────────────────────────────
+  /api/webhooks:
+    post:
+      tags: [webhooks]
+      operationId: createWebhook
+      summary: Create a webhook subscription
+      description: >
+        Creates a new webhook subscription. The signing `secret` is returned **once only**
+        in this response — store it securely. Use it to verify the `X-Neurowealth-Signature`
+        header (`sha256=<hmac-hex>`) on every incoming webhook request.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, events]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  example: https://myapp.example.com/webhooks
+                events:
+                  type: array
+                  minItems: 1
+                  items:
+                    $ref: '#/components/schemas/WebhookEvent'
+      responses:
+        '201':
+          description: Subscription created — secret shown once
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscriptionWithSecret'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    get:
+      tags: [webhooks]
+      operationId: listWebhooks
+      summary: List webhook subscriptions
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of subscriptions (secrets not returned)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subscriptions]
+                properties:
+                  subscriptions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebhookSubscription'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/webhooks/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      tags: [webhooks]
+      operationId: getWebhook
+      summary: Get a webhook subscription
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Subscription detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    patch:
+      tags: [webhooks]
+      operationId: updateWebhook
+      summary: Update a webhook subscription
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  format: uri
+                events:
+                  type: array
+                  minItems: 1
+                  items:
+                    $ref: '#/components/schemas/WebhookEvent'
+                isActive:
+                  type: boolean
+      responses:
+        '200':
+          description: Updated subscription
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags: [webhooks]
+      operationId: deleteWebhook
+      summary: Delete a webhook subscription
+      security:
+        - BearerAuth: []
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ── Admin ──────────────────────────────────────────────────────────────────
   /api/admin/users:

@@ -4,6 +4,7 @@ import { depositForUser, withdrawForUser } from '../stellar/contract'
 import { formatDepositReply, formatWithdrawReply } from '../whatsapp/formatters'
 import { sendNotFound, sendConflict, sendUnauthorized } from '../utils/errors'
 import { logger } from '../utils/logger'
+import { dispatchWebhookEvent } from '../services/webhookDispatcher'
 
 export async function processOnChainTransaction(
   req: Request,
@@ -76,6 +77,18 @@ export async function processOnChainTransaction(
   })
 
   const formatter = type === 'DEPOSIT' ? formatDepositReply : formatWithdrawReply
+
+  if (transactionStatus === 'CONFIRMED') {
+    dispatchWebhookEvent('transaction.confirmed', {
+      txHash: transaction.txHash,
+      type,
+      status: transaction.status,
+      assetSymbol,
+      amount,
+      protocolName,
+      userId,
+    }).catch(() => {})
+  }
 
   return res.status(201).json({
     txHash: transaction.txHash,

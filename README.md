@@ -25,6 +25,7 @@ It covers:
 | deposit | `/api/deposit` | Bearer JWT |
 | withdraw | `/api/withdraw` | Bearer JWT |
 | vault | `/api/vault` | Bearer JWT |
+| webhooks | `/api/webhooks` | Bearer JWT |
 | admin | `/api/admin` | `X-Admin-Token` header |
 
 ### Viewing the docs locally
