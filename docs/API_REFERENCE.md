@@ -8,6 +8,13 @@ Comprehensive reference for all backend endpoints defined in src/routes.
 - Content type: application/json unless otherwise specified
 - Auth header format: Authorization: Bearer <token>
 
+## API Versioning
+
+- All endpoints are served under an explicit version prefix: `/api/v1/<resource>` (for example `/api/v1/auth/challenge`).
+- The legacy unversioned paths shown below (`/api/<resource>`) remain available as **deprecated aliases**. They still function but return `Deprecation: true` and `Sunset` headers and a `Link` header pointing at the `/api/v1` successor.
+- Every response includes an `X-API-Version: 1` header.
+- Breaking changes introduce a new major version (`/api/v2`); deprecated versions are supported for a minimum of 6 months before the announced `Sunset` date. The full policy lives in [`docs/api-versioning.md`](api-versioning.md).
+
 ## Authentication and Authorization
 
 - Public endpoints: GET /health, POST /api/auth/challenge, POST /api/auth/verify, GET /api/whatsapp/webhook, POST /api/whatsapp/webhook, GET /api/vault/state, GET /api/protocols/rates, GET /api/protocols/agent/status, GET /api/agent/status

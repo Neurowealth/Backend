@@ -8,9 +8,9 @@ import request from 'supertest'
 import app from '../src/index'
 
 describe('Zod validation on public routes', () => {
-  describe('POST /api/auth/challenge', () => {
+  describe('POST /api/v1/auth/challenge', () => {
     it('returns 400 when stellarPubKey is missing', async () => {
-      const res = await request(app).post('/api/auth/challenge').send({})
+      const res = await request(app).post('/api/v1/auth/challenge').send({})
       expect(res.status).toBe(400)
       expect(res.body.error).toBeDefined()
       expect(res.body.details).toBeDefined()
@@ -18,7 +18,7 @@ describe('Zod validation on public routes', () => {
 
     it('returns 400 when stellarPubKey is empty string', async () => {
       const res = await request(app)
-        .post('/api/auth/challenge')
+        .post('/api/v1/auth/challenge')
         .send({ stellarPubKey: '' })
       expect(res.status).toBe(400)
       expect(res.body.details).toBeDefined()
@@ -28,7 +28,7 @@ describe('Zod validation on public routes', () => {
       // The key is invalid Stellar format so we get 400 from the controller,
       // but the Zod middleware layer should not be the one rejecting it.
       const res = await request(app)
-        .post('/api/auth/challenge')
+        .post('/api/v1/auth/challenge')
         .send({ stellarPubKey: 'GNOTAVALIDKEY' })
       // 400 from controller (invalid Stellar key format), not from validation layer
       expect(res.status).toBe(400)
@@ -36,9 +36,9 @@ describe('Zod validation on public routes', () => {
     })
   })
 
-  describe('POST /api/auth/verify', () => {
+  describe('POST /api/v1/auth/verify', () => {
     it('returns 400 when both fields are missing', async () => {
-      const res = await request(app).post('/api/auth/verify').send({})
+      const res = await request(app).post('/api/v1/auth/verify').send({})
       expect(res.status).toBe(400)
       expect(res.body.error).toBeDefined()
       expect(res.body.details).toBeDefined()
@@ -46,7 +46,7 @@ describe('Zod validation on public routes', () => {
 
     it('returns 400 when signature is missing', async () => {
       const res = await request(app)
-        .post('/api/auth/verify')
+        .post('/api/v1/auth/verify')
         .send({ stellarPubKey: 'GXXXXXX' })
       expect(res.status).toBe(400)
       expect(res.body.details).toBeDefined()
@@ -54,17 +54,17 @@ describe('Zod validation on public routes', () => {
 
     it('returns 400 when stellarPubKey is missing', async () => {
       const res = await request(app)
-        .post('/api/auth/verify')
+        .post('/api/v1/auth/verify')
         .send({ signature: 'abc123' })
       expect(res.status).toBe(400)
       expect(res.body.details).toBeDefined()
     })
   })
 
-  describe('POST /api/whatsapp/webhook', () => {
+  describe('POST /api/v1/whatsapp/webhook', () => {
     it('returns 400 when From is missing', async () => {
       const res = await request(app)
-        .post('/api/whatsapp/webhook')
+        .post('/api/v1/whatsapp/webhook')
         .send({ Body: 'hello' })
       expect(res.status).toBe(400)
       expect(res.body.error).toBeDefined()
@@ -72,7 +72,7 @@ describe('Zod validation on public routes', () => {
 
     it('returns 400 when Body is missing', async () => {
       const res = await request(app)
-        .post('/api/whatsapp/webhook')
+        .post('/api/v1/whatsapp/webhook')
         .send({ From: '+1234567890' })
       expect(res.status).toBe(400)
       expect(res.body.error).toBeDefined()

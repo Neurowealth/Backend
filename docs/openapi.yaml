@@ -12,9 +12,14 @@ info:
     increment the major version and are announced in CHANGELOG.md at least two
     weeks before release.
 
+    **Versioning:** All endpoints are served under an explicit version prefix
+    (`/api/v1/*`). The legacy unversioned paths (`/api/*`) remain available as
+    deprecated aliases and return `Deprecation`/`Sunset` headers. Every response
+    includes an `X-API-Version` header. See `docs/api-versioning.md`.
+
 servers:
   - url: http://localhost:{port}
-    description: Local development
+    description: Local development (versioned base path included in each route)
     variables:
       port:
         default: '3000'
@@ -46,12 +51,12 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT issued by `/api/auth/verify`. Include as `Authorization: Bearer <token>`.
+      description: JWT issued by `/api/v1/auth/verify`. Include as `Authorization: Bearer <token>`.
     AdminToken:
       type: apiKey
       in: header
       name: X-Admin-Token
-      description: Static admin token set via `ADMIN_SECRET` env var. Required for all `/api/admin/*` routes.
+      description: Static admin token set via `ADMIN_SECRET` env var. Required for all `/api/v1/admin/*` routes.
     InternalToken:
       type: apiKey
       in: header
@@ -237,7 +242,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   # ── Auth ───────────────────────────────────────────────────────────────────
-  /api/auth/challenge:
+  /api/v1/auth/challenge:
     get:
       tags: [auth]
       operationId: getAuthChallenge
@@ -263,7 +268,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /api/auth/verify:
+  /api/v1/auth/verify:
     post:
       tags: [auth]
       operationId: verifyAuthSignature
@@ -288,7 +293,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /api/auth/logout:
+  /api/v1/auth/logout:
     post:
       tags: [auth]
       operationId: logout
@@ -310,7 +315,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
   # ── Portfolio ──────────────────────────────────────────────────────────────
-  /api/portfolio:
+  /api/v1/portfolio:
     get:
       tags: [portfolio]
       operationId: getPortfolio
@@ -327,7 +332,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /api/portfolio/query:
+  /api/v1/portfolio/query:
     post:
       tags: [portfolio]
       operationId: queryPortfolio
@@ -360,7 +365,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
   # ── Transactions ───────────────────────────────────────────────────────────
-  /api/transactions:
+  /api/v1/transactions:
     get:
       tags: [transactions]
       operationId: listTransactions
@@ -404,7 +409,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
   # ── Deposit ────────────────────────────────────────────────────────────────
-  /api/deposit:
+  /api/v1/deposit:
     post:
       tags: [deposit]
       operationId: initiateDeposit
@@ -442,7 +447,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
   # ── Withdraw ───────────────────────────────────────────────────────────────
-  /api/withdraw:
+  /api/v1/withdraw:
     post:
       tags: [withdraw]
       operationId: initiateWithdrawal
@@ -482,7 +487,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
   # ── Vault ──────────────────────────────────────────────────────────────────
-  /api/vault:
+  /api/v1/vault:
     get:
       tags: [vault]
       operationId: getVaultPosition
@@ -499,7 +504,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /api/vault/deposit:
+  /api/v1/vault/deposit:
     post:
       tags: [vault]
       operationId: depositToVault
@@ -532,7 +537,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /api/vault/withdraw:
+  /api/v1/vault/withdraw:
     post:
       tags: [vault]
       operationId: withdrawFromVault
@@ -565,7 +570,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
   # ── Admin ──────────────────────────────────────────────────────────────────
-  /api/admin/users:
+  /api/v1/admin/users:
     get:
       tags: [admin]
       operationId: adminListUsers
@@ -608,7 +613,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
-  /api/admin/stats:
+  /api/v1/admin/stats:
     get:
       tags: [admin]
       operationId: adminGetStats

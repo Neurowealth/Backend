@@ -29,6 +29,7 @@ import { startAgentLoop, stopAgentLoop } from './agent/loop'
 import { connectDb } from './db'
 import { scheduleSessionCleanup } from './jobs/sessionCleanup'
 import { scheduleDataRetention } from './jobs/dataRetention'
+import { schedulePoolMetrics } from './jobs/poolMetrics'
 import { startEventListener, stopEventListener } from './stellar/events'
 import healthRouter from './routes/health'
 import agentRouter from './routes/agent'
@@ -64,6 +65,7 @@ let isShuttingDown = false
 let httpServer: Server | null = null
 let sessionCleanupHandle: NodeJS.Timeout | null = null
 let dataRetentionHandle: NodeJS.Timeout | null = null
+let poolMetricsHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every(s => s.ready)
@@ -139,22 +141,66 @@ app.get('/health/ready', (_req, res) => {
   }
 })
 
+// ── API versioning ────────────────────────────────────────────────────────────
+//
+// All /api/* routes are served under an explicit version prefix (/api/v1/*).
+// The legacy unversioned paths (/api/*) remain mounted as deprecated aliases so
+// existing clients keep working; they emit RFC 8594 Deprecation/Sunset headers
+// announcing the removal date. See docs/api-versioning.md for the policy.
+
+const API_VERSION = '1'
+
+// Unversioned routes are supported for at least 6 months from this release.
+const UNVERSIONED_SUNSET = new Date(Date.now() + 182 * 24 * 60 * 60 * 1000).toUTCString()
+
+// Advertise the served API version on every response.
+app.use((_req: Request, res: Response, next) => {
+  res.setHeader('X-API-Version', API_VERSION)
+  next()
+})
+
+// Marks legacy unversioned /api/* responses as deprecated.
+function deprecatedApiWarning(req: Request, res: Response, next: express.NextFunction): void {
+  res.setHeader('Deprecation', 'true')
+  res.setHeader('Sunset', UNVERSIONED_SUNSET)
+  res.setHeader('Link', `<${req.baseUrl.replace('/api/', '/api/v1/')}>; rel="successor-version"`)
+  next()
+}
+
+interface ApiRoute {
+  path: string
+  handlers: express.RequestHandler[]
+}
+
+const apiRoutes: ApiRoute[] = [
+  { path: 'agent', handlers: [internalRateLimiter, agentRouter] },
+  { path: 'auth', handlers: [authRateLimiter, authRouter] },
+  { path: 'whatsapp', handlers: [webhookRateLimiter, whatsappRouter] },
+  { path: 'portfolio', handlers: [portfolioRouter] },
+  { path: 'transactions', handlers: [transactionsRouter] },
+  { path: 'protocols', handlers: [protocolsRouter] },
+  { path: 'deposit', handlers: [depositRouter] },
+  { path: 'withdraw', handlers: [withdrawRouter] },
+  { path: 'vault', handlers: [vaultRouter] },
+  { path: 'analytics', handlers: [analyticsRouter] },
+  { path: 'stellar', handlers: [stellarRouter] },
+  { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
+]
+
 // ── Application routes ────────────────────────────────────────────────────────
 
 app.use('/health', healthRouter)
-app.use('/api/agent', internalRateLimiter, agentRouter)
-app.use('/api/auth', authRateLimiter, authRouter)
-app.use('/api/whatsapp', webhookRateLimiter, whatsappRouter)
-app.use('/api/portfolio', portfolioRouter)
-app.use('/api/transactions', transactionsRouter)
-app.use('/api/protocols', protocolsRouter)
-app.use('/api/deposit', depositRouter)
-app.use('/api/withdraw', withdrawRouter)
-app.use('/api/vault', vaultRouter)
-app.use('/api/analytics', analyticsRouter)
-app.use('/api/stellar', stellarRouter)
 app.use('/metrics', metricsRouter)
-app.use('/api/admin', adminRateLimiter, adminRouter)
+
+// Primary, versioned mounts: /api/v1/*
+for (const route of apiRoutes) {
+  app.use(`/api/v1/${route.path}`, ...route.handlers)
+}
+
+// Legacy unversioned aliases: /api/* (deprecated, still functional)
+for (const route of apiRoutes) {
+  app.use(`/api/${route.path}`, deprecatedApiWarning, ...route.handlers)
+}
 
 // 413 handler — must be after body parsers, before generic error handler
 app.use(payloadSizeErrorHandler)
@@ -178,6 +224,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(dataRetentionHandle)
     dataRetentionHandle = null
     logger.info('[Shutdown] Data retention timer cleared')
+  }
+
+  if (poolMetricsHandle) {
+    clearInterval(poolMetricsHandle)
+    poolMetricsHandle = null
+    logger.info('[Shutdown] Pool metrics timer cleared')
   }
 
   if (!httpServer) {
@@ -305,6 +357,7 @@ async function main(): Promise<void> {
 
   sessionCleanupHandle = scheduleSessionCleanup()
   dataRetentionHandle = scheduleDataRetention()
+  poolMetricsHandle = schedulePoolMetrics()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────
