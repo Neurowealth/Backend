@@ -19,11 +19,8 @@
     "test": "jest",
     "test:unit": "jest tests/unit",
     "test:integration": "jest tests/integration",
-    "test:load:smoke": "k6 run tests/load/smoke.js",
-    "test:load": "k6 run tests/load/load.js",
-    "test:load:stress": "k6 run tests/load/stress.js",
-    "test:load:soak": "k6 run tests/load/soak.js",
-    "prisma:generate": "npx prisma generate"
+    "prisma:generate": "npx prisma generate",
+    "prepare": "husky"
   },
   "jest": {
     "preset": "ts-jest",
@@ -44,6 +41,10 @@
         }
       ]
     }
+  },
+  "lint-staged": {
+    "src/**/*.ts": ["eslint --fix", "prettier --write"],
+    "tests/**/*.ts": ["eslint --fix", "prettier --write"]
   },
   "prisma": {
     "schema": "prisma/schema.prisma",
@@ -99,7 +100,9 @@
     "@typescript-eslint/parser": "^8.60.0",
     "eslint": "^10.4.0",
     "eslint-config-prettier": "^10.1.8",
+    "husky": "^9.1.7",
     "jest": "^30.2.0",
+    "lint-staged": "^17.0.8",
     "nodemon": "^3.1.14",
     "prettier": "^3.8.3",
     "prisma": "^5.22.0",

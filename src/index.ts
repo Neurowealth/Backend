@@ -45,6 +45,7 @@ import analyticsRouter from './routes/analytics'
 import adminRouter from './routes/admin'
 import metricsRouter from './routes/metrics'
 import stellarRouter from './routes/stellar'
+import webhooksRouter from './routes/webhooks'
 import { corsMiddleware, jsonBodyParser, payloadSizeErrorHandler, urlencodedBodyParser, contentTypeRestrictionMiddleware } from './middleware/corsandbody'
 import { setSpanUser } from './telemetry/spans'
 
@@ -192,6 +193,18 @@ const apiRoutes: ApiRoute[] = [
 // ── Application routes ────────────────────────────────────────────────────────
 
 app.use('/health', healthRouter)
+app.use('/api/agent', internalRateLimiter, agentRouter)
+app.use('/api/auth', authRateLimiter, authRouter)
+app.use('/api/whatsapp', webhookRateLimiter, whatsappRouter)
+app.use('/api/portfolio', portfolioRouter)
+app.use('/api/transactions', transactionsRouter)
+app.use('/api/protocols', protocolsRouter)
+app.use('/api/deposit', depositRouter)
+app.use('/api/withdraw', withdrawRouter)
+app.use('/api/vault', vaultRouter)
+app.use('/api/analytics', analyticsRouter)
+app.use('/api/stellar', stellarRouter)
+app.use('/api/webhooks', webhooksRouter)
 app.use('/metrics', metricsRouter)
 
 // Primary, versioned mounts: /api/v1/*
