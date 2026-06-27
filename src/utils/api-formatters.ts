@@ -1,4 +1,6 @@
-export const mapTransactionToResponse = (tx: any) => ({
+import type { Transaction, Position } from '@prisma/client'
+
+export const mapTransactionToResponse = (tx: Transaction) => ({
   id: tx.id,
   txHash: tx.txHash,
   type: tx.type,
@@ -9,7 +11,7 @@ export const mapTransactionToResponse = (tx: any) => ({
   createdAt: tx.createdAt.toISOString(),
 })
 
-export const mapPositionToResponse = (position: any) => ({
+export const mapPositionToResponse = (position: Position) => ({
   id: position.id,
   protocolName: position.protocolName,
   assetSymbol: position.assetSymbol,

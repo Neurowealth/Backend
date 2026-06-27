@@ -5,7 +5,7 @@ export const paginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(5),
 })
 
-export function getPaginationParams(query: any) {
+export function getPaginationParams(query: Record<string, unknown>) {
   const page = Number(query.page) || 1
   const limit = Number(query.limit) || 5
   const skip = (page - 1) * limit

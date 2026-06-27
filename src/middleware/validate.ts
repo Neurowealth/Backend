@@ -9,10 +9,10 @@ export interface ValidationSchemas {
   errorMessage?: string;
 }
 
-type SchemasOrSchema = ValidationSchemas | ZodSchema<any> | ZodTypeAny;
+type SchemasOrSchema = ValidationSchemas | ZodTypeAny;
 
-function isZodSchema(val: any): val is ZodSchema<any> | ZodTypeAny {
-  return val && typeof val.safeParseAsync === 'function';
+function isZodSchema(val: unknown): val is ZodTypeAny {
+  return val !== null && typeof val === 'object' && 'safeParseAsync' in val && typeof (val as Record<string, unknown>).safeParseAsync === 'function';
 }
 
 function formatZodErrors(err: ZodError) {
@@ -37,7 +37,7 @@ export const validate = (schemasOrSchema: SchemasOrSchema) => {
         }
 
         // Merge parsed results back into req if present
-        const data: any = parsed.data || {};
+        const data = (parsed.data ?? {}) as Record<string, unknown>;
         if (data.body !== undefined) req.body = data.body;
         if (data.query !== undefined) Object.defineProperty(req, 'query', { value: data.query, writable: true, configurable: true });
         if (data.params !== undefined) Object.defineProperty(req, 'params', { value: data.params, writable: true, configurable: true });

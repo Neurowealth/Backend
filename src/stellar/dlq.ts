@@ -9,6 +9,7 @@
  */
 import * as fs from 'fs'
 import * as path from 'path'
+import type { Prisma } from '@prisma/client'
 import { xdr } from '@stellar/stellar-sdk'
 import { logger } from '../utils/logger'
 import db from '../db'
@@ -26,7 +27,7 @@ export interface DeadLetterEvent {
   eventType: string
   ledger: number
   error: string
-  payload: any
+  payload: unknown
   status: DeadLetterEventStatus
   retryCount: number
   createdAt: string
@@ -54,7 +55,7 @@ function deserializeScVal(value: unknown): unknown {
   }
 }
 
-function serializePayload(event: any): any {
+function serializePayload(event: Record<string, unknown>): Record<string, unknown> {
   return {
     ...event,
     topics: Array.isArray(event?.topics)
@@ -64,7 +65,7 @@ function serializePayload(event: any): any {
   }
 }
 
-function buildPayload(event: any): any {
+function buildPayload(event: Record<string, unknown>): Record<string, unknown> {
   const correlationId = getCorrelationId() ?? event?.correlationId
   const serialized = serializePayload(event)
   if (correlationId) {
@@ -76,7 +77,7 @@ function buildPayload(event: any): any {
   return serialized
 }
 
-function deserializePayload(event: any): any {
+function deserializePayload(event: Record<string, unknown>): Record<string, unknown> {
   return {
     ...event,
     topics: Array.isArray(event?.topics)
@@ -122,16 +123,26 @@ function toDomain(row: PrismaDeadLetterRow): DeadLetterEvent {
   }
 }
 
+interface StellarEventPayload {
+  contractId?: string;
+  txHash?: string;
+  type?: string;
+  ledger?: number;
+  topics?: unknown[];
+  value?: unknown;
+  correlationId?: string;
+}
+
 export class DeadLetterQueue {
-  static async add(event: any, errorMsg: string): Promise<DeadLetterEvent> {
-    const row = await (db as any).deadLetterEvent.create({
+  static async add(event: StellarEventPayload, errorMsg: string): Promise<DeadLetterEvent> {
+    const row = await db.deadLetterEvent.create({
       data: {
         contractId: event?.contractId ?? 'unknown',
         txHash: event?.txHash ?? 'unknown',
         eventType: event?.type ?? 'unknown',
         ledger: typeof event?.ledger === 'number' ? event.ledger : 0,
         error: errorMsg,
-        payload: buildPayload(event),
+        payload: buildPayload(event as unknown as Record<string, unknown>) as unknown as Prisma.InputJsonValue,
         status: 'PENDING' as const,
         retryCount: 0,
       },
@@ -146,24 +157,20 @@ export class DeadLetterQueue {
   }
 
   static async getAll(): Promise<DeadLetterEvent[]> {
-    const rows: PrismaDeadLetterRow[] = await (
-      db as any
-    ).deadLetterEvent.findMany({
+    const rows = await db.deadLetterEvent.findMany({
       orderBy: { createdAt: 'asc' },
     })
     return rows.map(toDomain)
   }
 
   static async getSize(): Promise<number> {
-    return (db as any).deadLetterEvent.count()
+    return db.deadLetterEvent.count()
   }
 
   static async retryAll(
-    retryFn: (event: any) => Promise<void>
+    retryFn: (event: unknown) => Promise<void>
   ): Promise<{ resolved: number; failed: number }> {
-    const rows: PrismaDeadLetterRow[] = await (
-      db as any
-    ).deadLetterEvent.findMany({
+    const rows = await db.deadLetterEvent.findMany({
       where: { status: { in: ['PENDING', 'RETRIED'] } },
       orderBy: { createdAt: 'asc' },
     })
@@ -173,15 +180,15 @@ export class DeadLetterQueue {
 
     for (const row of rows) {
       try {
-        await retryFn(deserializePayload(row.payload))
-        await (db as any).deadLetterEvent.update({
+        await retryFn(deserializePayload(row.payload as Record<string, unknown>))
+        await db.deadLetterEvent.update({
           where: { id: row.id },
           data: { status: 'RESOLVED', retryCount: row.retryCount + 1 },
         })
         resolved++
         logger.info(`[DLQ Retry] Successfully retried event ${row.id}`)
       } catch (error) {
-        await (db as any).deadLetterEvent.update({
+        await db.deadLetterEvent.update({
           where: { id: row.id },
           data: { status: 'RETRIED', retryCount: row.retryCount + 1 },
         })
@@ -204,7 +211,7 @@ export class DeadLetterQueue {
 
   static async resolve(id: string): Promise<boolean> {
     try {
-      await (db as any).deadLetterEvent.update({
+      await db.deadLetterEvent.update({
         where: { id },
         data: { status: 'RESOLVED' },
       })
@@ -243,7 +250,7 @@ export class DeadLetterQueue {
     let skipped = 0
 
     for (const event of rows) {
-      const existing = await (db as any).deadLetterEvent.findFirst({
+      const existing = await db.deadLetterEvent.findFirst({
         where: {
           contractId: event.contractId,
           txHash: event.txHash,
@@ -257,14 +264,14 @@ export class DeadLetterQueue {
         continue
       }
 
-      await (db as any).deadLetterEvent.create({
+      await db.deadLetterEvent.create({
         data: {
           contractId: event.contractId,
           txHash: event.txHash,
           eventType: event.eventType,
           ledger: event.ledger,
           error: event.error,
-          payload: event.payload,
+          payload: event.payload as unknown as Prisma.InputJsonValue,
           status: event.status,
           retryCount: event.retryCount,
         },
@@ -352,13 +359,13 @@ export class DeadLetterQueue {
     retried: number
     resolved: number
   }> {
-    const pending = await (db as any).deadLetterEvent.count({
+    const pending = await db.deadLetterEvent.count({
       where: { status: 'PENDING' },
     })
-    const retried = await (db as any).deadLetterEvent.count({
+    const retried = await db.deadLetterEvent.count({
       where: { status: 'RETRIED' },
     })
-    const resolved = await (db as any).deadLetterEvent.count({
+    const resolved = await db.deadLetterEvent.count({
       where: { status: 'RESOLVED' },
     })
 
@@ -369,7 +376,7 @@ export class DeadLetterQueue {
    * Get the oldest pending event (for age tracking)
    */
   private static async getOldestPendingEvent(): Promise<PrismaDeadLetterRow | null> {
-    return (db as any).deadLetterEvent.findFirst({
+    return db.deadLetterEvent.findFirst({
       where: { status: 'PENDING' },
       orderBy: { createdAt: 'asc' },
     })

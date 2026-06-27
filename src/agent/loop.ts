@@ -110,7 +110,7 @@ async function rebalanceCheckJob(): Promise<void> {
       for (const [protocol, protocolPositions] of byProtocol.entries()) {
         const result = await executeRebalanceIfNeeded(
           protocol,
-          protocolPositions.map((p: any) => ({
+          protocolPositions.map((p) => ({
             id: p.id,
             amount: p.currentValue.toString(),
           })),

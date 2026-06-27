@@ -10,6 +10,7 @@
  */
 
 import { Router, Request, Response } from 'express'
+import type { Prisma } from '@prisma/client'
 import { getEventMetrics } from '../stellar/events'
 import { DeadLetterQueue } from '../stellar/dlq'
 import { logger } from '../utils/logger'
@@ -17,14 +18,14 @@ import { requireAdminAuth, requireAdminScope } from '../middleware/adminAuth'
 import db from '../db'
 
 const router = Router()
-const prisma = db as any
+const prisma = db
 
 function auditLog(
   req: Request,
   res: Response,
   action: string,
   result: string,
-  details?: Record<string, any>,
+  details?: Record<string, unknown>,
 ): void {
   const adminAuth = res.locals.adminAuth
   const auditPayload = {
@@ -52,7 +53,7 @@ function auditLog(
           action,
           target: req.originalUrl || req.path,
           result,
-          details,
+          details: details as unknown as Prisma.InputJsonValue,
           ipAddress: req.ip,
           userAgent: req.get('user-agent') || null,
           method: req.method,
@@ -168,14 +169,14 @@ router.get(
       if (timeRangeStart) {
         const startDate = new Date(timeRangeStart as string)
         if (!isNaN(startDate.getTime())) {
-          filtered = filtered.filter(e => e.createdAt >= startDate)
+          filtered = filtered.filter(e => new Date(e.createdAt) >= startDate)
         }
       }
 
       if (timeRangeEnd) {
         const endDate = new Date(timeRangeEnd as string)
         if (!isNaN(endDate.getTime())) {
-          filtered = filtered.filter(e => e.createdAt <= endDate)
+          filtered = filtered.filter(e => new Date(e.createdAt) <= endDate)
         }
       }
 
@@ -605,9 +606,10 @@ router.post(
         },
         timestamp: new Date().toISOString(),
       })
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Unique constraint violation — name already taken
-      if (error?.code === 'P2002') {
+      const prismaError = error as { code?: string };
+      if (prismaError?.code === 'P2002') {
         return res.status(409).json({ success: false, error: 'A key with that name already exists' })
       }
       logger.error('[Admin] Failed to create admin key', {
@@ -631,7 +633,7 @@ router.delete(
   requireAdminScope('keys:write'),
   async (req: Request, res: Response) => {
     try {
-      const { id } = req.params
+      const id = req.params.id as string
 
       const existing = await prisma.adminApiKey.findUnique({
         where: { id },
@@ -647,7 +649,7 @@ router.delete(
       }
 
       await prisma.adminApiKey.update({
-        where: { id },
+        where: { id: id },
         data: { revokedAt: new Date() },
       })
 
