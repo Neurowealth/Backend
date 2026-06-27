@@ -35,7 +35,7 @@ export async function captureAllUserBalances(): Promise<void> {
 
     // CRITICAL FIX: Use batch insert (createMany) instead of individual awaits
     // This scales much better as user base grows
-    const snapshotData = positions.map((pos: any) => {
+    const snapshotData = positions.map((pos) => {
       const yearsActive = calculateYearsActive(pos.openedAt);
       const apy = calculateApy(
         pos.depositedAmount.toNumber(),
@@ -46,7 +46,7 @@ export async function captureAllUserBalances(): Promise<void> {
       return {
         positionId: pos.id,
         // Coerce computed APY (number) into Prisma Decimal field.
-        apy: apy as any,
+        apy,
         yieldAmount: pos.yieldEarned,
         principalAmount: pos.depositedAmount,
       };
@@ -122,7 +122,7 @@ export async function getPositionHistory(
       },
     });
 
-    return snapshots.map((snapshot: any) => ({
+    return snapshots.map((snapshot) => ({
       userId: snapshot.position.userId,
       walletAddress: snapshot.position.user.walletAddress,
       positionId,

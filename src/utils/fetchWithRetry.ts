@@ -18,10 +18,10 @@ const circuitBreakers: Record<string, CircuitBreaker> = {};
 const CIRCUIT_OPEN_DURATION = 60000; // 1 minute
 const FAILURE_THRESHOLD = 3;
 
-export async function fetchWithRetry(
+export async function fetchWithRetry<T = unknown>(
   url: string,
   options: FetchOptions = {}
-): Promise<any> {
+): Promise<T> {
   const { timeout = 5000, retries = 3, retryDelay = 1000 } = options;
 
   // Check circuit breaker
@@ -50,7 +50,7 @@ export async function fetchWithRetry(
       // Reset circuit breaker on success
       circuitBreakers[url] = { failures: 0, lastFailure: 0, isOpen: false };
 
-      return await res.json();
+      return (await res.json()) as T;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       if (attempt < retries - 1) {

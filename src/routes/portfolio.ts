@@ -43,13 +43,13 @@ router.get('/:userId', requireAuth, enforceUserAccess, validate(portfolioSchema)
     where: { userId },
   })
 
-  const totalBalance = userPositions.reduce((sum: number, position: any) => {
+  const totalBalance = userPositions.reduce((sum: number, position) => {
     return sum + Number(position.currentValue)
   }, 0)
-  const totalEarnings = userPositions.reduce((sum: number, position: any) => {
+  const totalEarnings = userPositions.reduce((sum: number, position) => {
     return sum + Number(position.yieldEarned)
   }, 0)
-  const activePositions = userPositions.filter((p: any) => p.status === 'ACTIVE').length
+  const activePositions = userPositions.filter((p) => p.status === 'ACTIVE').length
 
   const positions = userPositions.map(mapPositionToResponse)
 
@@ -100,7 +100,7 @@ router.get(
       take: 30,
     })
 
-    const points = snapshots.map((snapshot: any) => ({
+    const points = snapshots.map((snapshot) => ({
       date: snapshot.snapshotAt.toISOString().slice(0, 10),
       yieldAmount: Number(snapshot.yieldAmount),
     }))
@@ -110,7 +110,7 @@ router.get(
       period: req.query.period,
       points,
       whatsappReply: formatPortfolioHistoryReply({
-        period: req.query.period as any,
+        period: req.query.period as '7d' | '30d' | '90d',
         points,
       }),
     })
@@ -142,16 +142,16 @@ router.get(
       take: 30,
     })
 
-    const totalEarnings = userPositions.reduce((sum: number, position: any) => {
+    const totalEarnings = userPositions.reduce((sum: number, position) => {
       return sum + Number(position.yieldEarned)
     }, 0)
-    const periodEarnings = snapshots.reduce((sum: number, snapshot: any) => {
+    const periodEarnings = snapshots.reduce((sum: number, snapshot) => {
       return sum + Number(snapshot.yieldAmount)
     }, 0)
     const averageApy =
       snapshots.length > 0
         ? snapshots.reduce(
-            (sum: number, snapshot: any) => sum + Number(snapshot.apy),
+            (sum: number, snapshot) => sum + Number(snapshot.apy),
             0
           ) /
           snapshots.length

@@ -1,4 +1,10 @@
 import { type Request, type Response, type NextFunction } from 'express'
+
+interface RateLimitRequest extends Request {
+  rateLimit?: {
+    resetTime?: Date;
+  };
+}
 import rateLimit from 'express-rate-limit'
 import { config } from '../config/env'
 import { recordRateLimitHit } from '../utils/metrics'
@@ -64,8 +70,8 @@ function getRouteGroup(path: string): string {
  * Handler called when rate limit is exceeded. Sets Retry-After before responding.
  */
 function handleRateLimitExceeded(
-  req: any,
-  res: any,
+  req: RateLimitRequest,
+  res: Response,
   options: { limiterType: string; windowMs: number }
 ): void {
   const routeGroup = getRouteGroup(req.path)
@@ -117,7 +123,7 @@ export function buildRateLimiter(
     legacyHeaders: false,
     skip: opts.skip,
     message: { error: opts.message ?? 'Too many requests. Please try again later.' },
-    handler: (req: any, res: any) =>
+    handler: (req: RateLimitRequest, res: Response) =>
       handleRateLimitExceeded(req, res, {
         limiterType: opts.limiterType,
         windowMs: opts.windowMs,

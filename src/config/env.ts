@@ -113,7 +113,7 @@ function validateAllRequiredEnvVars(): void {
   // ── 10. NODE_ENV: must be one of the known deployment environments ────────
   const nodeEnv = process.env.NODE_ENV
   const validNodeEnvs = ['development', 'staging', 'production', 'test'] as const
-  if (nodeEnv && !validNodeEnvs.includes(nodeEnv as any)) {
+  if (nodeEnv && !(validNodeEnvs as readonly string[]).includes(nodeEnv)) {
     errors.push(
       `NODE_ENV is invalid: "${nodeEnv}". Must be one of: ${validNodeEnvs.join(' | ')}`
     )
@@ -137,7 +137,7 @@ function validateStellarNetwork(network: string): 'testnet' | 'mainnet' | 'futur
   const validNetworks = ['testnet', 'mainnet', 'futurenet'] as const
   const lowerNetwork = network.toLowerCase()
 
-  if (!validNetworks.includes(lowerNetwork as any)) {
+  if (!(validNetworks as readonly string[]).includes(lowerNetwork)) {
     throw new Error(
       `Invalid STELLAR_NETWORK: "${network}". Must be one of: ${validNetworks.join(', ')}`
     )

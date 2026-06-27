@@ -114,7 +114,7 @@ async function executeCustodialVaultOperation(
 /**
  * Simulate and parse contract read call
  */
-async function simulateRead(method: string, args: xdr.ScVal[] = []): Promise<any> {
+async function simulateRead(method: string, args: xdr.ScVal[] = []): Promise<unknown> {
   const tx = await buildContractCall(method, args);
   
   const simulation = await simulateTransaction(tx);
@@ -135,7 +135,7 @@ async function simulateRead(method: string, args: xdr.ScVal[] = []): Promise<any
  */
 export async function getOnChainBalance(userAddress: string): Promise<OnChainBalance> {
   const addressScVal = nativeToScVal(userAddress, { type: 'address' });
-  const result = await simulateRead('get_balance', [addressScVal]);
+  const result = await simulateRead('get_balance', [addressScVal]) as { balance?: unknown; shares?: unknown };
   
   return {
     balance: result.balance?.toString() || '0',
@@ -147,7 +147,7 @@ export async function getOnChainBalance(userAddress: string): Promise<OnChainBal
  * Get current APY from vault
  */
 export async function getOnChainAPY(): Promise<number> {
-  const apyBasisPoints = await simulateRead('get_apy');
+  const apyBasisPoints = await simulateRead('get_apy') as number;
   return apyBasisPoints / 100; // Convert basis points to percentage
 }
 
@@ -155,7 +155,7 @@ export async function getOnChainAPY(): Promise<number> {
  * Get active protocol
  */
 export async function getActiveProtocol(): Promise<string> {
-  return await simulateRead('get_active_protocol');
+  return await simulateRead('get_active_protocol') as string;
 }
 
 /**

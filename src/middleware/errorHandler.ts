@@ -20,7 +20,7 @@ export function errorHandler(
   const isDevelopment = process.env.NODE_ENV === 'development'
   const errorResponse = ErrorResponses.internalError(
     'Internal server error',
-    requestId,
+    requestId ?? 'unknown',
     isDevelopment ? { message: err.message } : undefined
   )
 

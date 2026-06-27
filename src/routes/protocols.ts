@@ -19,7 +19,7 @@ router.get('/rates', async (req: Request, res: Response) => {
     take: 10,
   })
 
-  const items = rates.map((rate: any) => ({
+  const items = rates.map((rate) => ({
     protocolName: rate.protocolName,
     assetSymbol: rate.assetSymbol,
     supplyApy: Number(rate.supplyApy),

@@ -17,7 +17,7 @@ export interface AlertPayload {
   description: string
   severity: 'info' | 'warning' | 'critical'
   component: string
-  metadata?: Record<string, any>
+  metadata?: Record<string, unknown>
 }
 
 export interface DLQAlertPayload extends AlertPayload {
@@ -228,7 +228,7 @@ class AlertingService {
           : 'good'
     const dlqPayload = payload as DLQAlertPayload
 
-    let blocks: any[] = [
+    const blocks: Array<Record<string, unknown>> = [
       {
         type: 'header',
         text: {
@@ -248,7 +248,7 @@ class AlertingService {
 
     // Add DLQ-specific metadata
     if (dlqPayload.dlqSize !== undefined) {
-      const fields: any[] = [
+      const fields: Array<Record<string, string>> = [
         {
           type: 'mrkdwn',
           text: `*Current Size:*\n${dlqPayload.dlqSize} events`,
@@ -351,7 +351,7 @@ class AlertingService {
           ? 'warning'
           : 'info'
 
-    let customDetails: Record<string, any> = {
+    let customDetails: Record<string, unknown> = {
       ...payload.metadata,
     }
 

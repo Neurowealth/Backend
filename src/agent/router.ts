@@ -4,6 +4,7 @@
 
 import { logger } from '../utils/logger';
 import { getCorrelationId } from '../utils/correlation';
+import type { AgentAction, AgentStatus } from '@prisma/client';
 import { ProtocolComparison, RebalanceDetails, RebalanceThresholds } from './types';
 import { scanAllProtocols, getCurrentOnChainApy } from './scanner';
 import { triggerRebalance as submitRebalance } from '../stellar/contract';
@@ -178,7 +179,7 @@ export async function triggerRebalance(
             network: representativePosition.user.network,
             protocolName: toProtocol,
             memo: `Agent rebalance from ${fromProtocol} to ${toProtocol}`,
-          } as any,
+          },
         });
       } else {
         logger.warn('No position found to persist rebalance transaction', {
@@ -307,8 +308,8 @@ export async function executeRebalanceIfNeeded(
  *   a null userId so it is distinguishable from user-level actions.
  */
 export async function logAgentAction(
-  action: string,
-  status: 'SUCCESS' | 'FAILED' | 'SKIPPED',
+  action: AgentAction,
+  status: AgentStatus,
   data?: Record<string, unknown>,
   userId?: string,
   positionId?: string,
@@ -327,8 +328,8 @@ export async function logAgentAction(
       data: {
         userId: userId ?? null,
         positionId: positionId ?? null,
-        action: action as any,
-        status: status as any,
+        action,
+        status,
         inputData: inputWithCorrelation ? JSON.stringify(inputWithCorrelation) : data?.input ? JSON.stringify(data.input) : undefined,
         outputData: data?.output ? JSON.stringify(data.output) : undefined,
         reasoning: data?.reasoning as string | undefined,

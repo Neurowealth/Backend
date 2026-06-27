@@ -115,12 +115,12 @@ export const urlencodedBodyParser = express.urlencoded({
  * this converts those into a consistent JSON response.
  */
 export function payloadSizeErrorHandler(
-  err: any,
+  err: unknown,
   _req: Request,
   res: Response,
   next: NextFunction
 ): void {
-  if (err.type === 'entity.too.large') {
+  if (err && typeof err === 'object' && 'type' in err && (err as Record<string, unknown>).type === 'entity.too.large') {
     res.status(413).json({
       success: false,
       error: 'Payload Too Large',

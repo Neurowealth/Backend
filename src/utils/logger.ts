@@ -51,7 +51,7 @@ const correlationFormat = winston.format((info) => {
 // Custom format that redacts sensitive data
 const redactFormat = winston.format.printf(({ timestamp, level, message, ...meta }) => {
   const safeMessage = typeof message === 'string' ? redactSensitiveData(message) : message
-  const safeMeta: any = {}
+  const safeMeta: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(meta)) {
     safeMeta[key] = typeof value === 'string' ? redactSensitiveData(value) : value
   }
@@ -144,7 +144,7 @@ export function logBackgroundJob(
   status: 'success' | 'failed',
   durationSeconds: number,
   correlationId?: string,
-  details?: Record<string, any>
+  details?: Record<string, unknown>
 ): void {
   const logContext = {
     jobName,
