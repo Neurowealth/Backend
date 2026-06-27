@@ -361,4 +361,10 @@ export const config = {
     /** Interval between retention job runs in ms (default: 24 hours) */
     intervalMs: parseInt(process.env.RETENTION_INTERVAL_MS || '86400000'),
   },
+  analytics: {
+    /** Risk-free rate used for Sharpe ratio calculation (annual, decimal e.g. 0.02 for 2%). Default 0. */
+    riskFreeRate: parseFloat(process.env.RISK_FREE_RATE || process.env.ANALYTICS_RISK_FREE_RATE || '0'),
+  },
 }
+}
+

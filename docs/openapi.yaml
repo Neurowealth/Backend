@@ -43,6 +43,8 @@ tags:
     description: Vault / savings product
   - name: admin
     description: Admin-only management endpoints
+  - name: analytics
+    description: Portfolio performance analytics (APY, Sharpe, Drawdown, Allocations)
 
 # ── Security schemes ─────────────────────────────────────────────────────────
 components:
@@ -638,6 +640,77 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+
+  # ── Analytics ──────────────────────────────────────────────────────────────
+  /api/analytics:
+    get:
+      tags: [portfolio]
+      operationId: getAnalytics
+      summary: Get portfolio analytics metrics (Realized APY, Sharpe, Max Drawdown, Protocol Allocation)
+      description: |
+        Computes historical performance metrics using YieldSnapshot data.
+        Supports periods: 7d, 30d, 90d, 1y (default 30d).
+        Requires authentication.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: period
+          schema:
+            type: string
+            enum: ['7d', '30d', '90d', '1y']
+            default: '30d'
+          description: Analysis period
+      responses:
+        '200':
+          description: Analytics metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                  period:
+                    type: string
+                    example: '30d'
+                  realizedAPY:
+                    type: number
+                    description: Annualised return from history (CAGR)
+                    example: 12.45
+                  sharpeRatio:
+                    type: number
+                    description: Risk-adjusted return (Sharpe)
+                    example: 1.82
+                  maxDrawdown:
+                    type: number
+                    description: Largest peak-to-trough decline (%)
+                    example: 8.75
+                  protocolAllocation:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        protocol:
+                          type: string
+                        percentage:
+                          type: number
+                        value:
+                          type: number
+                  snapshotCount:
+                    type: integer
+                  startDate:
+                    type: string
+                    nullable: true
+                  endDate:
+                    type: string
+                    nullable: true
+                  totalValue:
+                    type: number
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   # ── Reusable responses ────────────────────────────────────────────────────
   responses: {}
