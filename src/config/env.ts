@@ -249,6 +249,14 @@ export const config = {
   },
   database: {
     url: requireEnv('DATABASE_URL'),
+    /**
+     * Max connections Prisma may open per instance. Applied to the connection
+     * string as `connection_limit` (see src/db/index.ts). Keep this in line with
+     * the Postgres `max_connections` budget divided across all replicas.
+     */
+    connectionLimit: parseInt(process.env.DATABASE_CONNECTION_LIMIT || '10'),
+    /** How often (ms) to poll prisma.$metrics.json() for pool gauges. */
+    poolMetricsIntervalMs: parseInt(process.env.DB_POOL_METRICS_INTERVAL_MS || '15000'),
   },
   jwt: {
     /**
