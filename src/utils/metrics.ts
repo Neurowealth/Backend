@@ -182,6 +182,15 @@ export const analyticsRequestDuration = new client.Histogram({
   registers: [register],
 })
 
+// ── Request Validation Metrics ────────────────────────────────────────────────────
+
+export const rejectedRequestsTotal = new client.Counter({
+  name: 'rejected_requests_total',
+  help: 'Total number of rejected requests due to size or content-type',
+  labelNames: ['reason'] as const,
+  registers: [register],
+})
+
 // ── Background Job Metrics ──────────────────────────────────────────────────
 
 export const backgroundJobsTotal = new client.Counter({
@@ -405,6 +414,13 @@ export function recordAuthFailure(endpoint: string, failureType: string): void {
  */
 export function updateRateLimitViolations(routeGroup: string, count: number): void {
   rateLimitActiveViolations.set({ route_group: routeGroup }, count)
+}
+
+/**
+ * Record a rejected request due to size or content-type
+ */
+export function recordRejectedRequest(reason: 'oversized' | 'content_type'): void {
+  rejectedRequestsTotal.inc({ reason })
 }
 
 /**

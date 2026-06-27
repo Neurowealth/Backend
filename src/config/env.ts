@@ -226,7 +226,7 @@ validateStellarKey(agentSecretKey, stellarNetwork)
 const corsOrigins = parseCorsOrigins()
 const bodySizeLimit = parseByteLimit(
   process.env.BODY_SIZE_LIMIT ?? process.env.BODY_LIMIT_JSON,
-  '100kb'
+  '64kb'
 )
 
 // ── Typed NODE_ENV ─────────────────────────────────────────────────────────

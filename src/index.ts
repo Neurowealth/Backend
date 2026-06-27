@@ -44,7 +44,7 @@ import analyticsRouter from './routes/analytics'
 import adminRouter from './routes/admin'
 import metricsRouter from './routes/metrics'
 import stellarRouter from './routes/stellar'
-import { corsMiddleware, jsonBodyParser, payloadSizeErrorHandler, urlencodedBodyParser } from './middleware/corsandbody'
+import { corsMiddleware, jsonBodyParser, payloadSizeErrorHandler, urlencodedBodyParser, contentTypeRestrictionMiddleware } from './middleware/corsandbody'
 import { setSpanUser } from './telemetry/spans'
 
 // ── Readiness state ───────────────────────────────────────────────────────────
@@ -79,6 +79,7 @@ configureTrustProxy(app)
 
 app.use(securityHeaders())
 app.use(corsMiddleware)
+app.use(contentTypeRestrictionMiddleware)
 app.use(jsonBodyParser)
 app.use(urlencodedBodyParser)
 

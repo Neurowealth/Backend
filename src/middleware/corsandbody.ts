@@ -14,6 +14,7 @@ import cors, { CorsOptions } from 'cors'
 import express from 'express'
 import { config } from '../config/env'
 import { logger } from '../utils/logger'
+import { recordRejectedRequest } from '../utils/metrics'
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
 
@@ -90,12 +91,56 @@ export function corsMiddleware(req: Request, res: Response, next: NextFunction):
   })
 }
 
+// ── Content-type restrictions ────────────────────────────────────────────────────
+
+const DISALLOWED_CONTENT_TYPES = [
+  'multipart/form-data',
+  'application/x-www-form-urlencoded',
+]
+
+/**
+ * Middleware to reject disallowed content types (multipart/form-data, application/x-www-form-urlencoded).
+ * Returns 415 Unsupported Media Type for disallowed content types.
+ * Can be skipped per-route by setting req.allowUrlEncoded = true.
+ */
+export function contentTypeRestrictionMiddleware(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void {
+  // Skip if route has opted out of content-type restrictions
+  if ((req as any).allowUrlEncoded) {
+    return next()
+  }
+
+  const contentType = req.headers['content-type']
+  if (!contentType) {
+    return next()
+  }
+
+  // Check if content type matches any disallowed type
+  for (const disallowed of DISALLOWED_CONTENT_TYPES) {
+    if (contentType.toLowerCase().includes(disallowed)) {
+      logger.warn(`[Content-Type] Rejecting disallowed content type: ${contentType}`)
+      recordRejectedRequest('content_type')
+      res.status(415).json({
+        success: false,
+        error: 'Unsupported Media Type',
+        reason: `Content type "${disallowed}" is not allowed.`,
+      })
+      return
+    }
+  }
+
+  next()
+}
+
 // ── Body size limits ──────────────────────────────────────────────────────────
 
 const { bodySizeLimit } = config.security
 
 /**
- * JSON body parser capped at `bodySizeLimit` (default 100 kb).
+ * JSON body parser capped at `bodySizeLimit` (default 64 kb).
  * Requests exceeding the limit are rejected with 413 automatically by Express.
  */
 export const jsonBodyParser = express.json({ limit: bodySizeLimit })
@@ -103,6 +148,9 @@ export const jsonBodyParser = express.json({ limit: bodySizeLimit })
 /**
  * URL-encoded body parser capped at `bodySizeLimit`.
  * `extended: false` uses the built-in querystring library — no prototype-pollution risk.
+ * Note: This parser is still available for routes that need it (e.g., Twilio webhooks),
+ * but the contentTypeRestrictionMiddleware will reject application/x-www-form-urlencoded
+ * unless the route opts out by setting req.allowUrlEncoded = true.
  */
 export const urlencodedBodyParser = express.urlencoded({
   limit: bodySizeLimit,
@@ -121,6 +169,7 @@ export function payloadSizeErrorHandler(
   next: NextFunction
 ): void {
   if (err.type === 'entity.too.large') {
+    recordRejectedRequest('oversized')
     res.status(413).json({
       success: false,
       error: 'Payload Too Large',
@@ -129,4 +178,16 @@ export function payloadSizeErrorHandler(
     return
   }
   next(err)
+}
+
+/**
+ * Middleware to allow per-route override of body size limit.
+ * Usage: app.post('/admin/bulk', allowBodySizeOverride('1mb'), handler)
+ */
+export function allowBodySizeOverride(limit: string) {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    // Store the override limit on the request for the body parser to use
+    ;(req as any).bodySizeLimitOverride = limit
+    next()
+  }
 }
