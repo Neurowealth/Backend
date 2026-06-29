@@ -73,3 +73,34 @@ export interface RebalanceThresholds {
   minimumImprovement: number; // 0.5% default
   maxGasPercent: number; // 0.1% default
 }
+
+export type StrategyName = 'MAX_YIELD' | 'TARGET_ALLOCATION';
+
+export interface StrategyDecision {
+  shouldRebalance: boolean;
+  targetProtocol: string;
+  reasoning: string;
+  deviationTrigger?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface StrategyParams {
+  currentProtocol: string;
+  totalAmount: string;
+  currentApy: number;
+  availableProtocols: YieldProtocol[];
+  thresholds: RebalanceThresholds;
+  userStrategyPreferences: UserStrategyPreferences[];
+}
+
+export interface RebalanceStrategy {
+  readonly name: StrategyName;
+  analyze(params: StrategyParams): Promise<StrategyDecision>;
+}
+
+export interface UserStrategyPreferences {
+  userId: string;
+  strategyName?: StrategyName | null;
+  targetAllocations?: Record<string, number>;
+  riskTolerance?: number;
+}

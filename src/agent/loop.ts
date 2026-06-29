@@ -16,7 +16,7 @@ import {
   recordRebalanceTriggered,
   recordDbOperation,
   recordBackgroundJob,
-  recordExternalServiceError
+  recordExternalServiceError,
 } from '../utils/metrics';
 
 let isRunning = false;
@@ -95,26 +95,45 @@ async function rebalanceCheckJob(): Promise<void> {
         return;
       }
 
-      const byProtocol = new Map<string, typeof positions>();
+      // Group by (protocol, strategy) so users with different strategies
+      // are evaluated independently
+      type PositionWithUser = typeof positions[number];
+      const byProtocolAndStrategy = new Map<string, PositionWithUser[]>();
       for (const pos of positions) {
-        const key = pos.protocolName;
-        if (!byProtocol.has(key)) {
-          byProtocol.set(key, []);
+        const strategy = (pos.user as any).rebalanceStrategy || 'DEFAULT';
+        const key = `${pos.protocolName}:${strategy}`;
+        if (!byProtocolAndStrategy.has(key)) {
+          byProtocolAndStrategy.set(key, []);
         }
-        byProtocol.get(key)!.push(pos);
+        byProtocolAndStrategy.get(key)!.push(pos);
       }
 
       let rebalancesTriggered = 0;
       const thresholds = getThresholds();
 
-      for (const [protocol, protocolPositions] of byProtocol.entries()) {
+      for (const [key, protocolPositions] of byProtocolAndStrategy.entries()) {
+        const [protocol, strategyKey] = key.split(':');
+        const strategyName = strategyKey === 'DEFAULT' ? undefined : strategyKey;
+
+        // Build per-user strategy preferences
+        const userStrategyPreferences = strategyName
+          ? protocolPositions.map((p: any) => ({
+              userId: p.userId,
+              strategyName: p.user.rebalanceStrategy || null,
+              targetAllocations: p.user.strategyConfig?.targetAllocations || undefined,
+              riskTolerance: p.user.riskTolerance,
+            }))
+          : undefined;
+
         const result = await executeRebalanceIfNeeded(
           protocol,
           protocolPositions.map((p: any) => ({
             id: p.id,
             amount: p.currentValue.toString(),
+            userId: p.userId,
           })),
-          thresholds
+          thresholds,
+          userStrategyPreferences,
         );
 
         if (result) {
