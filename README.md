@@ -2,14 +2,6 @@
 
 Express + TypeScript REST API for the NeuroWealth platform — AI-assisted portfolio management backed by Stellar smart contracts.
 
-## Documentation
-
-- **API Documentation**: [`docs/openapi.yaml`](docs/openapi.yaml) - Full OpenAPI 3.1 specification
-- **SLO Guidance**: [`docs/SLO_GUIDANCE.md`](docs/SLO_GUIDANCE.md) - Latency budgets and performance targets
-- **Observability**: [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) - Monitoring and alerting guidance
-- **Runbook**: [`docs/RUNBOOK.md`](docs/RUNBOOK.md) - Production operations and incident response
-- **Troubleshooting**: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) - Local development troubleshooting guide
-
 ## API Documentation
 
 The full OpenAPI 3.1 specification lives at [`docs/openapi.yaml`](docs/openapi.yaml).
@@ -48,8 +40,6 @@ cp .env.example .env
 npm install
 npm run dev
 ```
-
-**Troubleshooting**: If you encounter issues during setup, see the [Troubleshooting Guide](docs/TROUBLESHOOTING.md) for common problems and solutions.
 
 ## Running tests
 
