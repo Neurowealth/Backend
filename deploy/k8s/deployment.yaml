@@ -79,9 +79,11 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
-            httpGet:
-              path: /health/ready
-              port: http
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "wget --spider -q --header=\"X-Internal-Token: $INTERNAL_SERVICE_TOKEN\" http://localhost:3001/health/deep"
             initialDelaySeconds: 15
             periodSeconds: 10
             timeoutSeconds: 5

@@ -10,7 +10,7 @@ import { executeRebalanceIfNeeded, getThresholds, logAgentAction } from './route
 import { captureAllUserBalances, cleanupOldSnapshots } from './snapshotter';
 import db from '../db';
 import {
-  updateAgentHeartbeat,
+  updateAgentHeartbeat as metricsUpdateAgentHeartbeat,
   updateAgentStatus,
   recordRebalanceCheck,
   recordRebalanceTriggered,
@@ -24,9 +24,15 @@ let lastRebalanceAt: Date | null = null;
 let currentProtocol: string | null = null;
 let currentApy: number | null = null;
 let lastError: string | null = null;
+let lastTickAt: Date | null = null;
 
 // Store cron job references for cleanup
 const cronJobs: ScheduledTask[] = [];
+
+function updateAgentHeartbeat(): void {
+  lastTickAt = new Date();
+  metricsUpdateAgentHeartbeat();
+}
 
 /**
  * Get current agent status
@@ -40,6 +46,7 @@ export function getAgentStatus() {
     nextScheduledCheck: getNextCheckTime(),
     lastError,
     healthStatus: determineHealthStatus(),
+    lastTickAt,
   };
 }
 

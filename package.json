@@ -33,15 +33,21 @@
     "npm": ">=9.0.0"
   },
   "dependencies": {
+    "@prisma/client": "^7.8.0",
+    "@stellar/stellar-sdk": "^16.0.1",
+    "@types/node-cron": "^3.0.11",
+    "@types/supertest": "^7.2.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "ioredis": "^5.11.1"
   },
   "devDependencies": {
+    "@aws-sdk/client-ssm": "^3.1075.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/jest": "^29.5.10",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.10.6",
     "@typescript-eslint/eslint-plugin": "^6.16.0",
     "@typescript-eslint/parser": "^6.16.0",
