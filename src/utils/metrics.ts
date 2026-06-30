@@ -198,6 +198,15 @@ export const httpRequestDuration = new client.Histogram({
   registers: [register],
 })
 
+// ── Request Timeout Metrics ───────────────────────────────────────────────────
+
+export const requestTimeoutsTotal = new client.Counter({
+  name: 'request_timeouts_total',
+  help: 'Total number of HTTP requests that timed out before completing',
+  labelNames: ['route_group'] as const,
+  registers: [register],
+})
+
 // ── Analytics API Metrics ────────────────────────────────────────────────────────
 
 export const analyticsRequestsTotal = new client.Counter({
@@ -384,6 +393,13 @@ export function recordHttpRequest(
     { method, route, status_code: statusCode.toString() },
     durationSeconds
   )
+}
+
+/**
+ * Record a timed-out HTTP request
+ */
+export function recordRequestTimeout(routeGroup: string): void {
+  requestTimeoutsTotal.inc({ route_group: routeGroup })
 }
 
 /**
