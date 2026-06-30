@@ -32,6 +32,7 @@ import { scheduleSessionCleanup } from './jobs/sessionCleanup'
 import { scheduleDataRetention } from './jobs/dataRetention'
 import { schedulePoolMetrics } from './jobs/poolMetrics'
 import { startEventListener, stopEventListener } from './stellar/events'
+import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
 import agentRouter from './routes/agent'
 import authRouter from './routes/auth'
@@ -293,6 +294,9 @@ async function initServices(): Promise<void> {
     throw new Error(msg)
   }
   logger.info('[Startup] Twilio auth token configured ✓')
+
+  // 0. Validate Stellar network configuration
+  validateStellarNetworkReady()
 
   // 1. Database
   try {
