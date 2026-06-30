@@ -148,6 +148,39 @@ export const dbConnectionsActive = new client.Gauge({
   registers: [register],
 })
 
+// ── Prisma Connection Pool Metrics ──────────────────────────────────────────────
+// Sourced from prisma.$metrics.json() and refreshed by the poolMetrics job.
+
+export const dbPoolSize = new client.Gauge({
+  name: 'db_pool_size',
+  help: 'Total connections in the Prisma connection pool (open connections)',
+  registers: [register],
+})
+
+export const dbPoolActive = new client.Gauge({
+  name: 'db_pool_active',
+  help: 'Connections currently in use (busy)',
+  registers: [register],
+})
+
+export const dbPoolIdle = new client.Gauge({
+  name: 'db_pool_idle',
+  help: 'Idle connections available in the pool',
+  registers: [register],
+})
+
+export const dbPoolWaitCount = new client.Gauge({
+  name: 'db_pool_wait_count',
+  help: 'Number of queries currently waiting for a free connection',
+  registers: [register],
+})
+
+export const dbPoolWaitDurationMs = new client.Gauge({
+  name: 'db_pool_wait_duration_ms',
+  help: 'Cumulative time (ms) queries have spent waiting for a connection',
+  registers: [register],
+})
+
 // ── HTTP Request Metrics ─────────────────────────────────────────────────────────
 
 export const httpRequestsTotal = new client.Counter({
@@ -162,6 +195,15 @@ export const httpRequestDuration = new client.Histogram({
   help: 'Duration of HTTP requests in seconds',
   labelNames: ['method', 'route', 'status_code'] as const,
   buckets: [0.005, 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10],
+  registers: [register],
+})
+
+// ── Request Timeout Metrics ───────────────────────────────────────────────────
+
+export const requestTimeoutsTotal = new client.Counter({
+  name: 'request_timeouts_total',
+  help: 'Total number of HTTP requests that timed out before completing',
+  labelNames: ['route_group'] as const,
   registers: [register],
 })
 
@@ -351,6 +393,13 @@ export function recordHttpRequest(
     { method, route, status_code: statusCode.toString() },
     durationSeconds
   )
+}
+
+/**
+ * Record a timed-out HTTP request
+ */
+export function recordRequestTimeout(routeGroup: string): void {
+  requestTimeoutsTotal.inc({ route_group: routeGroup })
 }
 
 /**

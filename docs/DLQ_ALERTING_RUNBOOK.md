@@ -205,4 +205,4 @@ If queue continues to grow after recovery attempts:
 
 - [OBSERVABILITY.md](./OBSERVABILITY.md) - Complete metrics and alert thresholds
 - [API_REFERENCE.md](./API_REFERENCE.md) - Admin DLQ endpoints
-- [DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md) - Configuration and secrets management
+- [DEPLOYMENT.md](./DEPLOYMENT.md) - Configuration and secrets management

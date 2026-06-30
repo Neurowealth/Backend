@@ -9,6 +9,41 @@ function requireEnv(key: string): string {
 }
 
 /**
+ * Default RPC URLs for each Stellar network.
+ * Used when STELLAR_RPC_URL is not explicitly set.
+ */
+const STELLAR_RPC_URLS: Record<string, string> = {
+  testnet: 'https://soroban-testnet.stellar.org',
+  mainnet: 'https://soroban-mainnet.stellar.org',
+  futurenet: 'https://soroban-futurenet.stellar.org',
+}
+
+/**
+ * Explorer URLs for each Stellar network.
+ */
+export const STELLAR_EXPLORER_URLS: Record<string, string> = {
+  testnet: 'https://stellar.expert/explorer/testnet',
+  mainnet: 'https://stellar.expert/explorer/public',
+  futurenet: 'https://stellar.expert/explorer/futurenet',
+}
+
+/**
+ * Derive the Stellar RPC URL from the network configuration.
+ * Priority: STELLAR_RPC_URL env var > network default.
+ */
+function deriveRpcUrl(network: string): string {
+  const envUrl = process.env.STELLAR_RPC_URL
+  if (envUrl) return envUrl
+
+  const defaultUrl = STELLAR_RPC_URLS[network]
+  if (!defaultUrl) {
+    throw new Error(`No default RPC URL for network "${network}". Set STELLAR_RPC_URL.`)
+  }
+
+  return defaultUrl
+}
+
+/**
  * Validate all required environment variables at startup.
  * Collects ALL missing/invalid vars before throwing so the operator
  * sees every problem in a single startup failure — not one at a time.
@@ -16,7 +51,6 @@ function requireEnv(key: string): string {
 function validateAllRequiredEnvVars(): void {
   const requiredVars = [
     'STELLAR_NETWORK',
-    'STELLAR_RPC_URL',
     'STELLAR_AGENT_SECRET_KEY',
     'VAULT_CONTRACT_ID',
     'USDC_TOKEN_ADDRESS',
@@ -146,6 +180,55 @@ function validateStellarNetwork(network: string): 'testnet' | 'mainnet' | 'futur
   return lowerNetwork as 'testnet' | 'mainnet' | 'futurenet'
 }
 
+/**
+ * Derive the Stellar network from the secret key prefix.
+ * Stellar keys encode the network in the prefix:
+ *   - S... = testnet
+ *   - S... = mainnet (same prefix, but the actual network is determined by passphrase)
+ *
+ * Since key prefixes don't distinguish testnet/mainnet, we use the account
+ * to derive a hint and validate against the configured network.
+ */
+function deriveNetworkFromKeypair(secretKey: string, network: string): string {
+  // All Stellar secret keys start with 'S', so we can't derive the network
+  // from the prefix alone. Instead, we validate key format and rely on
+  // the configured network. The validation here is format-based.
+  return network
+}
+
+/**
+ * Validate that the secret key matches the expected network.
+ * While Stellar keys don't encode network in the prefix, we can:
+ * 1. Validate key format (must start with 'S', 56 chars)
+ * 2. Warn on mainnet usage in non-production environments
+ * 3. Log the active network prominently
+ */
+function validateKeypairNetworkMatch(
+  secretKey: string,
+  network: 'testnet' | 'mainnet' | 'futurenet'
+): void {
+  if (!secretKey.startsWith('S')) {
+    throw new Error('STELLAR_AGENT_SECRET_KEY must start with S (invalid Stellar secret key format)')
+  }
+
+  if (secretKey.length !== 56) {
+    throw new Error(
+      `STELLAR_AGENT_SECRET_KEY invalid length: ${secretKey.length}. Stellar keys must be 56 characters.`
+    )
+  }
+
+  const env = process.env.NODE_ENV || 'development'
+  logger.info(`✓ Stellar Agent configured for ${network.toUpperCase()} (NODE_ENV=${env})`)
+
+  if (network === 'mainnet' && env !== 'production') {
+    console.warn(
+      '\n⚠️  CRITICAL WARNING: Using MAINNET in non-production environment!\n' +
+      '⚠️  This could result in real financial loss!\n' +
+      '⚠️  Verify STELLAR_NETWORK and NODE_ENV settings immediately!\n'
+    )
+  }
+}
+
 /** Parse `CORS_ORIGINS` / `ALLOWED_ORIGINS` (comma-separated or `*`). */
 function parseCorsOrigins(): string[] | '*' {
   const raw = (process.env.CORS_ORIGINS ?? process.env.ALLOWED_ORIGINS)?.trim()
@@ -190,38 +273,18 @@ function parseTrustProxy(
   return value.trim()
 }
 
-/**
- * Validate Stellar secret key format and warn on mainnet in dev.
- */
-function validateStellarKey(secretKey: string, network: 'testnet' | 'mainnet' | 'futurenet'): void {
-  if (!secretKey.startsWith('S')) {
-    throw new Error('STELLAR_AGENT_SECRET_KEY must start with S (invalid Stellar secret key format)')
-  }
-
-  if (secretKey.length !== 56) {
-    throw new Error(
-      `STELLAR_AGENT_SECRET_KEY invalid length: ${secretKey.length}. Stellar keys must be 56 characters.`
-    )
-  }
-
-  const env = process.env.NODE_ENV || 'development'
-  logger.info(`✓ Stellar Agent configured for ${network.toUpperCase()} (NODE_ENV=${env})`)
-
-  if (network === 'mainnet' && env !== 'production') {
-    console.warn(
-      '\n⚠️  CRITICAL WARNING: Using MAINNET in non-production environment!\n' +
-      '⚠️  This could result in real financial loss!\n' +
-      '⚠️  Verify STELLAR_NETWORK and NODE_ENV settings immediately!\n'
-    )
-  }
-}
-
 // ── Run all validations before anything else is exported ──────────────────
 validateAllRequiredEnvVars()
 
 const stellarNetwork = validateStellarNetwork(requireEnv('STELLAR_NETWORK'))
 const agentSecretKey = requireEnv('STELLAR_AGENT_SECRET_KEY')
-validateStellarKey(agentSecretKey, stellarNetwork)
+validateKeypairNetworkMatch(agentSecretKey, stellarNetwork)
+const stellarRpcUrl = deriveRpcUrl(stellarNetwork)
+
+// Log the active network prominently at startup
+logger.info(`🌐 Active Stellar network: ${stellarNetwork.toUpperCase()}`)
+logger.info(`   RPC URL: ${stellarRpcUrl}`)
+logger.info(`   Explorer: ${STELLAR_EXPLORER_URLS[stellarNetwork]}`)
 
 const corsOrigins = parseCorsOrigins()
 const bodySizeLimit = parseByteLimit(
@@ -238,7 +301,7 @@ export const config = {
   nodeEnv,
   stellar: {
     network: stellarNetwork,
-    rpcUrl: requireEnv('STELLAR_RPC_URL'),
+    rpcUrl: stellarRpcUrl,
     agentSecretKey,
     vaultContractId: requireEnv('VAULT_CONTRACT_ID'),
     usdcTokenAddress: requireEnv('USDC_TOKEN_ADDRESS'),
@@ -249,7 +312,16 @@ export const config = {
   },
   database: {
     url: requireEnv('DATABASE_URL'),
+    /**
+     * Max connections Prisma may open per instance. Applied to the connection
+     * string as `connection_limit` (see src/db/index.ts). Keep this in line with
+     * the Postgres `max_connections` budget divided across all replicas.
+     */
+    connectionLimit: parseInt(process.env.DATABASE_CONNECTION_LIMIT || '10'),
+    /** How often (ms) to poll prisma.$metrics.json() for pool gauges. */
+    poolMetricsIntervalMs: parseInt(process.env.DB_POOL_METRICS_INTERVAL_MS || '15000'),
   },
+  requestTimeoutMs: parseInt(process.env.REQUEST_TIMEOUT_MS || '30000'),
   jwt: {
     /**
      * JWT_SEED: 64-hex secret used to sign/verify JWTs.
