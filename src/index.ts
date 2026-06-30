@@ -16,8 +16,12 @@ import './telemetry/sentry'  // 2. Sentry       — error reporting
 // ── Standard imports ──────────────────────────────────────────────────────────
 
 import { type Server } from 'node:http'
+import fs from 'node:fs'
+import path from 'node:path'
 import express, { Request, Response } from 'express'
 import * as Sentry from '@sentry/node'
+import swaggerUi from 'swagger-ui-express'
+import yaml from 'js-yaml'
 import { config } from './config/env'
 import { errorHandler } from './middleware/errorHandler'
 import { correlationIdMiddleware } from './middleware/correlationId'
@@ -163,6 +167,36 @@ app.use((_req: Request, res: Response, next) => {
   res.setHeader('X-API-Version', API_VERSION)
   next()
 })
+
+// ── OpenAPI / Swagger UI ──────────────────────────────────────────────────────
+
+let swaggerSpec: Record<string, unknown> | null = null
+const specPath = path.join(process.cwd(), 'docs', 'openapi.yaml')
+
+try {
+  const specFile = fs.readFileSync(specPath, 'utf8')
+  swaggerSpec = yaml.load(specFile) as Record<string, unknown>
+  logger.info(`[OpenAPI] Spec loaded from ${specPath}`)
+} catch (error) {
+  logger.error('[OpenAPI] Failed to load spec', { error: error instanceof Error ? error.message : String(error) })
+}
+
+if (swaggerSpec) {
+  const swaggerOpts = {
+    customSiteTitle: 'NeuroWealth API Docs',
+    customfavIcon: '/favicon.ico',
+  }
+  app.use('/api/v1/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerOpts))
+  app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerOpts))
+  app.use('/api/v1/openapi.yaml', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/yaml; charset=utf-8')
+    res.sendFile(specPath)
+  })
+  app.use('/openapi.yaml', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/yaml; charset=utf-8')
+    res.sendFile(specPath)
+  })
+}
 
 // Marks legacy unversioned /api/* responses as deprecated.
 function deprecatedApiWarning(req: Request, res: Response, next: express.NextFunction): void {
