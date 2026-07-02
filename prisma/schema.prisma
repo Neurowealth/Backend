@@ -65,8 +65,10 @@ model User {
   displayName   String?
   email         String?  @unique
   avatarUrl     String?
-  riskTolerance Int      @default(5)
-  isActive      Boolean  @default(true)
+  riskTolerance      Int      @default(5)
+  rebalanceStrategy  String?  // 'MAX_YIELD' | 'TARGET_ALLOCATION' | null (defaults to MAX_YIELD)
+  strategyConfig     Json?    // e.g. { "targetAllocations": { "Blend": 50, "Stellar DEX": 30, "Luma": 20 } }
+  isActive           Boolean  @default(true)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
