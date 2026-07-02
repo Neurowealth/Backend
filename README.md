@@ -19,6 +19,9 @@ It covers:
 | protocols | `/api/protocols` | None |
 | deposit | `/api/deposit` | Bearer JWT |
 | withdraw | `/api/withdraw` | Bearer JWT |
+| vault | `/api/vault` | Bearer JWT |
+| webhooks | `/api/webhooks` | Bearer JWT |
+| admin | `/api/admin` | `X-Admin-Token` header |
 | vault | `/api/vault` | Mixed (public + Bearer JWT) |
 | analytics | `/api/analytics` | Mixed (public + Bearer JWT) |
 | stellar | `/api/stellar` | None |

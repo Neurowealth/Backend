@@ -8,6 +8,10 @@
     "dev": "nodemon --exec ts-node src/app.ts",
     "build": "tsc",
     "test": "jest",
+    "test:unit": "jest tests/unit",
+    "test:integration": "jest tests/integration",
+    "prisma:generate": "npx prisma generate",
+    "prepare": "husky"
     "test:cors": "jest tests/cors.test.ts",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
@@ -34,6 +38,25 @@
     "node": ">=18.0.0",
     "npm": ">=9.0.0"
   },
+  "lint-staged": {
+    "src/**/*.ts": ["eslint --fix", "prettier --write"],
+    "tests/**/*.ts": ["eslint --fix", "prettier --write"]
+  },
+  "prisma": {
+    "schema": "prisma/schema.prisma",
+    "seed": "ts-node prisma/seed.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Neurowealth/Backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Neurowealth/Backend/issues"
+  },
+  "homepage": "https://github.com/Neurowealth/Backend#readme",
   "dependencies": {
     "@prisma/client": "^7.8.0",
     "@stellar/stellar-sdk": "^16.0.1",

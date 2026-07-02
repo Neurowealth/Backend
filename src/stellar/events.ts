@@ -23,6 +23,7 @@ import {
   updateLastProcessedLedger,
   recordDbOperation
 } from '../utils/metrics';
+import { dispatchWebhookEvent } from '../services/webhookDispatcher';
 
 const VAULT_CONTRACT_ID = config.stellar.vaultContractId;
 const POLL_INTERVAL_MS = 5000;
@@ -378,6 +379,7 @@ export async function handleEvent(event: ContractEvent, tx: any = db): Promise<v
         const depositData = parseDepositEvent(event);
         DepositEventSchema.parse(depositData);
         await handleDepositEvent(depositData, event, tx);
+        dispatchWebhookEvent('deposit.received', { txHash: event.txHash, ...depositData }).catch(() => {});
         break;
       }
 
@@ -385,6 +387,7 @@ export async function handleEvent(event: ContractEvent, tx: any = db): Promise<v
         const withdrawData = parseWithdrawEvent(event);
         WithdrawEventSchema.parse(withdrawData);
         await handleWithdrawEvent(withdrawData, event, tx);
+        dispatchWebhookEvent('withdraw.completed', { txHash: event.txHash, ...withdrawData }).catch(() => {});
         break;
       }
 
@@ -392,6 +395,7 @@ export async function handleEvent(event: ContractEvent, tx: any = db): Promise<v
         const rebalanceData = parseRebalanceEvent(event);
         RebalanceEventSchema.parse(rebalanceData);
         await handleRebalanceEvent(rebalanceData, event, tx);
+        dispatchWebhookEvent('agent.rebalanced', { txHash: event.txHash, ...rebalanceData }).catch(() => {});
         break;
       }
       default:

@@ -7,6 +7,7 @@ import { logger, logBackgroundJob } from '../utils/logger';
 import { generateCorrelationId, runWithCorrelationIdAsync } from '../utils/correlation';
 import { scanAllProtocols } from './scanner';
 import { executeRebalanceIfNeeded, getThresholds, logAgentAction } from './router';
+import { dispatchWebhookEvent } from '../services/webhookDispatcher';
 import { captureAllUserBalances, cleanupOldSnapshots } from './snapshotter';
 import db from '../db';
 import {
@@ -149,6 +150,14 @@ async function rebalanceCheckJob(): Promise<void> {
           currentProtocol = result.toProtocol;
           currentApy = result.improvedBy;
           recordRebalanceTriggered();
+          dispatchWebhookEvent('agent.rebalanced', {
+            fromProtocol: result.fromProtocol,
+            toProtocol: result.toProtocol,
+            amount: result.amount,
+            improvedBy: result.improvedBy,
+            txHash: result.txHash,
+            timestamp: result.timestamp,
+          }).catch(() => {});
         }
       }
 
