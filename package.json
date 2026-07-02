@@ -15,7 +15,9 @@
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist coverage",
-    "prebuild": "npm run clean",
+    "validate:spec": "npx @apidevtools/swagger-parser validate docs/openapi.yaml",
+    "build:spec": "mkdir -p dist/docs && cp docs/openapi.yaml dist/docs/openapi.yaml && npm run validate:spec",
+    "prebuild": "npm run clean && npm run build:spec",
     "prestart": "npm run build"
   },
   "keywords": [
@@ -47,8 +49,10 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/jest": "^29.5.10",
+    "@types/js-yaml": "^4.0.9",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.10.6",
+    "@types/swagger-ui-express": "^4.1.8",
     "@typescript-eslint/eslint-plugin": "^6.16.0",
     "@typescript-eslint/parser": "^6.16.0",
     "eslint": "^8.56.0",

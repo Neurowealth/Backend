@@ -20,22 +20,39 @@ It covers:
 |---|---|---|
 | health | `/health` | None |
 | auth | `/api/auth` | None (issues JWT) |
+| agent | `/api/agent` | Internal token |
+| whatsapp | `/api/whatsapp` | Twilio signature |
 | portfolio | `/api/portfolio` | Bearer JWT |
 | transactions | `/api/transactions` | Bearer JWT |
+| protocols | `/api/protocols` | None |
 | deposit | `/api/deposit` | Bearer JWT |
 | withdraw | `/api/withdraw` | Bearer JWT |
-| vault | `/api/vault` | Bearer JWT |
-| admin | `/api/admin` | `X-Admin-Token` header |
+| vault | `/api/vault` | Mixed (public + Bearer JWT) |
+| analytics | `/api/analytics` | Mixed (public + Bearer JWT) |
+| stellar | `/api/stellar` | None |
+| admin | `/api/admin` | Admin API key (Bearer or `X-Admin-Token`) |
+| metrics | `/metrics` | Internal token (strict) |
 
-### Viewing the docs locally
+### Viewing the docs
+
+**Swagger UI** (available when the server is running):
+
+| URL | Description |
+|---|---|
+| `http://localhost:3000/api/v1/docs` | Interactive API explorer |
+| `http://localhost:3000/docs` | Alias for the above |
+| `http://localhost:3000/api/v1/openapi.yaml` | Raw spec YAML |
+| `http://localhost:3000/openapi.yaml` | Alias for the above |
+
+### Validating the spec
 
 ```bash
-npx @redocly/cli preview-docs docs/openapi.yaml
+npm run validate:spec
 ```
 
 ### Updating the spec
 
-When you add or change a route, update `docs/openapi.yaml` in the same PR. The `api-contract` CI job will lint the spec and run smoke tests automatically.
+When you add or change a route, update `docs/openapi.yaml` in the same PR. Run `npm run validate:spec` to ensure the spec is valid before committing. The `prebuild` step also validates and copies the spec to `dist/docs/openapi.yaml` as a build artifact.
 
 ### Breaking-change policy
 
