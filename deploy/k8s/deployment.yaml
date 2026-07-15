@@ -52,6 +52,15 @@ spec:
           imagePullPolicy: IfNotPresent
           # Do NOT run migrations in the app container — initContainer handles that.
           command: ["node", "dist/index.js"]
+          lifecycle:
+            # preStop runs before SIGTERM. The sleep gives kube-proxy / the
+            # ingress time to remove this pod from the Service endpoints so new
+            # traffic stops arriving before the app begins draining in-flight
+            # requests. terminationGracePeriodSeconds (35s) covers this sleep
+            # plus the app's SHUTDOWN_DRAIN_TIMEOUT_MS (30s).
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
           ports:
             - name: http
               containerPort: 3001
@@ -70,9 +79,11 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
-            httpGet:
-              path: /health/ready
-              port: http
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "wget --spider -q --header=\"X-Internal-Token: $INTERNAL_SERVICE_TOKEN\" http://localhost:3001/health/deep"
             initialDelaySeconds: 15
             periodSeconds: 10
             timeoutSeconds: 5

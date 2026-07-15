@@ -711,4 +711,45 @@ router.get(
   },
 )
 
+/**
+ * GET /api/admin/wallets/rotation-status
+ * Reports the progress of wallet key rotation.
+ * Required scope: keys:read
+ */
+router.get(
+  '/wallets/rotation-status',
+  requireAdminScope('keys:read'),
+  async (req: Request, res: Response) => {
+    try {
+      const totalWallets = await prisma.custodialWallet.count()
+      const v1Wallets = await prisma.custodialWallet.count({ where: { keyVersion: 1 } })
+      const v2Wallets = await prisma.custodialWallet.count({ where: { keyVersion: 2 } })
+
+      const percentV1 = totalWallets === 0 ? 0 : (v1Wallets / totalWallets) * 100
+
+      auditLog(req, res, 'GET_ROTATION_STATUS', 'success', { totalWallets, v1Wallets, percentV1 })
+
+      res.status(200).json({
+        success: true,
+        data: {
+          totalWallets,
+          v1Wallets,
+          v2Wallets,
+          percentV1,
+          isRotationComplete: v1Wallets === 0,
+        },
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      logger.error('[Admin] Failed to get rotation status', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'GET_ROTATION_STATUS', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({ success: false, error: 'Failed to get rotation status' })
+    }
+  },
+)
+
 export default router

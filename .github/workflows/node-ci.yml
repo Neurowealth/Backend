@@ -29,6 +29,22 @@ jobs:
       NODE_ENV: test
       DATABASE_URL: postgresql://user:pass@localhost:5432/db
       WALLET_ENCRYPTION_KEY: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
+      # Non-secret stubs required by env.ts at module-load time
+      STELLAR_NETWORK: testnet
+      STELLAR_RPC_URL: https://rpc.example.com
+      STELLAR_AGENT_SECRET_KEY: SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      VAULT_CONTRACT_ID: CDUMMYVAULTCONTRACTID
+      USDC_TOKEN_ADDRESS: CDUMMYUSDC
+      ANTHROPIC_API_KEY: smoke-anthropic-key
+      JWT_SEED: smoke-jwt-seed
+      JWT_SESSION_TTL_HOURS: '24'
+      JWT_NONCE_TTL_MS: '300000'
+      JWT_CLEANUP_INTERVAL_MS: '86400000'
+      TWILIO_AUTH_TOKEN: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      INTERNAL_SERVICE_TOKEN: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      TRUSTED_IPS: 127.0.0.1
+      CORS_ORIGINS: '*'
+      HTTP_CLIENT_TIMEOUT_MS: '1000'
 
     steps:
       # Checkout repository
@@ -96,6 +112,14 @@ jobs:
       - name: Run npm audit (HIGH and CRITICAL only)
         run: npm audit --audit-level=high
         continue-on-error: false
+
+      - name: License check (block GPL/AGPL/LGPL)
+        # Prevents copyleft licences from entering the dependency tree.
+        # Allowed: MIT, ISC, Apache-2.0, BSD-2-Clause, BSD-3-Clause, 0BSD, BlueOak-1.0.0, CC0-1.0
+        run: |
+          npx license-checker --onlyAllow \
+            'MIT;ISC;Apache-2.0;BSD-2-Clause;BSD-3-Clause;0BSD;BlueOak-1.0.0;CC0-1.0' \
+            --excludePrivatePackages
 
   # ── Issue #100: migration smoke gate ──────────────────────────────────────
   # Isolated job that re-applies migrations against a clean DB and runs the
