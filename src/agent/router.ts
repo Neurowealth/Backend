@@ -15,6 +15,25 @@ const DEFAULT_THRESHOLDS: RebalanceThresholds = {
   maxGasPercent: 0.1,
 };
 
+/**
+ * Load current protocol risk scores keyed by protocol name.
+ *
+ * Only called when a user has actually configured a riskCeiling, so the default
+ * (no-ceiling) rebalancing path issues no extra query and is unaffected. A
+ * protocol absent from this map is treated as ineligible under a ceiling
+ * (fail-closed) by the strategy engine.
+ */
+async function loadProtocolRiskScores(): Promise<Record<string, number>> {
+  const rows = await db.protocolRiskScore.findMany({
+    select: { protocolName: true, score: true },
+  });
+  const map: Record<string, number> = {};
+  for (const row of rows as Array<{ protocolName: string; score: number }>) {
+    map[row.protocolName] = row.score;
+  }
+  return map;
+}
+
 function toApyBasisPoints(apyPercent: number): number {
   if (!Number.isFinite(apyPercent) || apyPercent < 0) {
     throw new Error('APY must be a non-negative number');
@@ -301,6 +320,13 @@ export async function executeRebalanceIfNeeded(
           ? new TargetAllocationStrategy()
           : new MaxYieldStrategy();
 
+      // Risk ceiling is opt-in per user. Only when a ceiling is set do we load
+      // the current ProtocolRiskScore rows and pass them to the strategy — the
+      // no-ceiling path issues no extra query and behaves exactly as before.
+      const riskCeiling = userStrategyPreferences[0]?.riskCeiling;
+      const protocolRiskScores =
+        riskCeiling !== undefined ? await loadProtocolRiskScores() : undefined;
+
       const decision = await strategy.analyze({
         currentProtocol,
         totalAmount,
@@ -308,6 +334,8 @@ export async function executeRebalanceIfNeeded(
         availableProtocols: allProtocols,
         thresholds: effectiveThresholds,
         userStrategyPreferences,
+        riskCeiling,
+        protocolRiskScores,
       });
 
       if (!decision.shouldRebalance) {

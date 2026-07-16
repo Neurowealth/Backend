@@ -36,6 +36,50 @@ router.get('/rates', async (req: Request, res: Response) => {
 })
 
 /**
+ * GET /api/protocols/risk
+ * Returns the current risk score for each protocol together with the
+ * contributing factors behind it (not an opaque number), plus the scoring
+ * methodology reference so a caller can reconcile the factors against the docs.
+ *
+ * Public (no auth): this is aggregate, non-user-specific data with no PII or
+ * per-user financial exposure — consistent with the public posture the issue
+ * specifies and with the aggregate nature of protocol data.
+ */
+router.get('/risk', async (_req: Request, res: Response) => {
+  try {
+    const scores = await db.protocolRiskScore.findMany({
+      orderBy: { score: 'desc' },
+    })
+
+    const items = scores.map((s: any) => ({
+      protocolName: s.protocolName,
+      score: s.score,
+      // Contributing factors — exposed so the score is transparent, not opaque.
+      factors: {
+        auditStatus: s.auditStatus,
+        protocolAgeDays: s.protocolAgeDays,
+        apyVolatilityFactor: Number(s.apyVolatilityFactor),
+        tvlTrendFactor: Number(s.tvlTrendFactor),
+        sampleCount: s.sampleCount,
+        insufficientHistory: s.insufficientHistory,
+      },
+      computedAt: s.computedAt.toISOString(),
+    }))
+
+    return res.status(200).json({
+      protocols: items,
+      methodology: 'docs/PROTOCOL_RISK_SCORING.md',
+    })
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    return res.status(500).json({
+      success: false,
+      error: errorMessage,
+    })
+  }
+})
+
+/**
  * GET /api/protocols/agent/status
  * Returns agent status information
  * Requires authentication to prevent information disclosure

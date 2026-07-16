@@ -1,4 +1,8 @@
-import { MaxYieldStrategy, TargetAllocationStrategy } from '../../../src/agent/strategies';
+import {
+  MaxYieldStrategy,
+  TargetAllocationStrategy,
+  NO_ELIGIBLE_PROTOCOLS_REASON,
+} from '../../../src/agent/strategies';
 import { StrategyParams, YieldProtocol } from '../../../src/agent/types';
 
 jest.mock('../../../src/utils/logger', () => ({
@@ -235,5 +239,159 @@ describe('TargetAllocationStrategy', () => {
     const decision = await strategy.analyze(params);
     expect(decision.shouldRebalance).toBe(false);
     expect(decision.reasoning).toContain('No target allocation set');
+  });
+});
+
+// ── Risk ceiling (issue #291) ────────────────────────────────────────────────
+//
+// The ceiling is a genuine safety control on where user funds can go. These
+// tests guard two things the issue calls out explicitly:
+//   1. Backward compatibility — a user who never sets a ceiling must see
+//      byte-for-byte identical decisions to before the parameter existed.
+//   2. The ceiling is NEVER silently bypassed: when it excludes every protocol
+//      the strategy surfaces an explicit "no eligible protocols" state rather
+//      than falling back to allocating somewhere the user disallowed.
+
+describe('MaxYieldStrategy — riskCeiling', () => {
+  const strategy = new MaxYieldStrategy();
+
+  const baseParams = (): StrategyParams => ({
+    currentProtocol: 'Blend',
+    totalAmount: '10000000000000000000000',
+    currentApy: 3.0,
+    availableProtocols: [
+      makeProtocol({ name: 'Luma', apy: 8.0 }),
+      makeProtocol({ name: 'Blend', apy: 3.0 }),
+    ],
+    thresholds: defaultThresholds,
+    userStrategyPreferences: [],
+  });
+
+  it('is a no-op when riskCeiling is undefined (identical decision to before)', async () => {
+    const params = baseParams();
+    // Even if scores are supplied, an unset ceiling must ignore them entirely.
+    params.protocolRiskScores = { Luma: 10, Blend: 10 };
+
+    const withoutCeiling = await strategy.analyze(baseParams());
+    const withScoresButNoCeiling = await strategy.analyze(params);
+
+    expect(withScoresButNoCeiling).toEqual(withoutCeiling);
+    expect(withScoresButNoCeiling.shouldRebalance).toBe(true);
+    expect(withScoresButNoCeiling.targetProtocol).toBe('Luma');
+  });
+
+  it('filters out protocols below the ceiling before optimizing for yield', async () => {
+    const params = baseParams();
+    params.riskCeiling = 50;
+    // Luma is the highest yield but too risky; a lower-yield protocol clears it.
+    params.availableProtocols = [
+      makeProtocol({ name: 'Luma', apy: 8.0 }),
+      makeProtocol({ name: 'Stellar DEX', apy: 6.0 }),
+      makeProtocol({ name: 'Blend', apy: 3.0 }),
+    ];
+    params.protocolRiskScores = { Luma: 20, 'Stellar DEX': 70, Blend: 80 };
+
+    const decision = await strategy.analyze(params);
+    expect(decision.shouldRebalance).toBe(true);
+    // Must NOT pick Luma even though it has the best APY.
+    expect(decision.targetProtocol).toBe('Stellar DEX');
+  });
+
+  it('surfaces an explicit "no eligible protocols" state rather than bypassing the ceiling', async () => {
+    const params = baseParams();
+    params.riskCeiling = 90;
+    params.protocolRiskScores = { Luma: 20, Blend: 30 }; // nothing clears 90
+
+    const decision = await strategy.analyze(params);
+    expect(decision.shouldRebalance).toBe(false);
+    expect(decision.targetProtocol).toBe('Blend'); // stays put, no silent move
+    expect(decision.reasoning).toBe(NO_ELIGIBLE_PROTOCOLS_REASON);
+  });
+
+  it('fail-closed: a protocol with no known score is excluded under a ceiling', async () => {
+    const params = baseParams();
+    params.riskCeiling = 50;
+    // Luma has a passing score; Blend (current) has no score at all.
+    params.protocolRiskScores = { Luma: 70 };
+
+    const decision = await strategy.analyze(params);
+    // Luma is eligible and higher yield -> rebalance to it.
+    expect(decision.shouldRebalance).toBe(true);
+    expect(decision.targetProtocol).toBe('Luma');
+  });
+
+  it('fail-closed: when scores are entirely absent, a ceiling excludes everything', async () => {
+    const params = baseParams();
+    params.riskCeiling = 50;
+    params.protocolRiskScores = undefined;
+
+    const decision = await strategy.analyze(params);
+    expect(decision.shouldRebalance).toBe(false);
+    expect(decision.reasoning).toBe(NO_ELIGIBLE_PROTOCOLS_REASON);
+  });
+});
+
+describe('TargetAllocationStrategy — riskCeiling', () => {
+  const strategy = new TargetAllocationStrategy();
+
+  const baseParams = (): StrategyParams => ({
+    currentProtocol: 'Blend',
+    totalAmount: '10000000000000000000000',
+    currentApy: 5.0,
+    availableProtocols: [
+      makeProtocol({ name: 'Luma', apy: 6.0 }),
+      makeProtocol({ name: 'Blend', apy: 5.0 }),
+    ],
+    thresholds: defaultThresholds,
+    userStrategyPreferences: [
+      {
+        userId: 'user-1',
+        strategyName: 'TARGET_ALLOCATION',
+        targetAllocations: { Blend: 30, 'Stellar DEX': 40, Luma: 30 },
+      },
+    ],
+  });
+
+  it('is a no-op when riskCeiling is undefined (identical decision to before)', async () => {
+    const params = baseParams();
+    params.protocolRiskScores = { Blend: 10, 'Stellar DEX': 10, Luma: 10 };
+
+    const withoutCeiling = await strategy.analyze(baseParams());
+    const withScoresButNoCeiling = await strategy.analyze(params);
+
+    expect(withScoresButNoCeiling).toEqual(withoutCeiling);
+    expect(withScoresButNoCeiling.shouldRebalance).toBe(true);
+    expect(withScoresButNoCeiling.targetProtocol).toBe('Stellar DEX');
+  });
+
+  it('excludes target protocols below the ceiling before choosing a rebalance target', async () => {
+    const params = baseParams();
+    params.riskCeiling = 50;
+    // Weight Luma above the current protocol so a rebalance is warranted once
+    // the higher-weighted Stellar DEX is excluded by the ceiling.
+    params.userStrategyPreferences = [
+      {
+        userId: 'user-1',
+        strategyName: 'TARGET_ALLOCATION',
+        targetAllocations: { Blend: 20, 'Stellar DEX': 40, Luma: 40 },
+      },
+    ];
+    // Stellar DEX has the highest target weight but fails the ceiling; Luma clears it.
+    params.protocolRiskScores = { Blend: 80, 'Stellar DEX': 20, Luma: 70 };
+
+    const decision = await strategy.analyze(params);
+    expect(decision.shouldRebalance).toBe(true);
+    expect(decision.targetProtocol).toBe('Luma');
+  });
+
+  it('surfaces "no eligible protocols" when the ceiling excludes every target', async () => {
+    const params = baseParams();
+    params.riskCeiling = 90;
+    params.protocolRiskScores = { Blend: 95, 'Stellar DEX': 20, Luma: 30 };
+
+    const decision = await strategy.analyze(params);
+    expect(decision.shouldRebalance).toBe(false);
+    expect(decision.targetProtocol).toBe('Blend');
+    expect(decision.reasoning).toBe(NO_ELIGIBLE_PROTOCOLS_REASON);
   });
 });

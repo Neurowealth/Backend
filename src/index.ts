@@ -35,6 +35,7 @@ import { connectDb } from './db'
 import { scheduleSessionCleanup } from './jobs/sessionCleanup'
 import { scheduleDataRetention } from './jobs/dataRetention'
 import { schedulePoolMetrics } from './jobs/poolMetrics'
+import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
@@ -73,6 +74,7 @@ let httpServer: Server | null = null
 let sessionCleanupHandle: NodeJS.Timeout | null = null
 let dataRetentionHandle: NodeJS.Timeout | null = null
 let poolMetricsHandle: NodeJS.Timeout | null = null
+let protocolRiskHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every(s => s.ready)
@@ -284,6 +286,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Pool metrics timer cleared')
   }
 
+  if (protocolRiskHandle) {
+    clearInterval(protocolRiskHandle)
+    protocolRiskHandle = null
+    logger.info('[Shutdown] Protocol risk scoring timer cleared')
+  }
+
   if (!httpServer) {
     logger.warn('[Shutdown] No HTTP server to close')
     process.exit(0)
@@ -417,6 +425,7 @@ async function main(): Promise<void> {
   sessionCleanupHandle = scheduleSessionCleanup()
   dataRetentionHandle = scheduleDataRetention()
   poolMetricsHandle = schedulePoolMetrics()
+  protocolRiskHandle = scheduleProtocolRiskScoring()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

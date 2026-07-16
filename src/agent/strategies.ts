@@ -3,8 +3,42 @@ import {
   StrategyName,
   StrategyDecision,
   StrategyParams,
+  YieldProtocol,
 } from './types';
 import { logger } from '../utils/logger';
+
+/**
+ * Reasoning emitted when a configured risk ceiling excludes every candidate
+ * protocol. This is an explicit, surfaced state — the ceiling is NEVER silently
+ * dropped to keep the agent allocating (see issue #291 acceptance criteria and
+ * the test that guards this in tests/unit/agent/strategies.test.ts).
+ */
+export const NO_ELIGIBLE_PROTOCOLS_REASON =
+  'No protocols currently meet your risk tolerance';
+
+/**
+ * Apply an optional risk ceiling to a candidate protocol set.
+ *
+ * Backward-compatibility contract: when `riskCeiling` is undefined this returns
+ * the SAME array reference unchanged, so a user who never sets a ceiling sees
+ * byte-for-byte identical behavior to before this parameter existed.
+ *
+ * Fail-closed: when a ceiling IS set, a protocol with no known score is treated
+ * as ineligible rather than given the benefit of the doubt — a risk control must
+ * not admit unknowns.
+ */
+function applyRiskCeiling(
+  protocols: YieldProtocol[],
+  riskCeiling: number | undefined,
+  scores: Record<string, number> | undefined,
+): YieldProtocol[] {
+  if (riskCeiling === undefined) return protocols;
+  const scoreMap = scores ?? {};
+  return protocols.filter((p) => {
+    const score = scoreMap[p.name];
+    return score !== undefined && score >= riskCeiling;
+  });
+}
 
 function estimateRebalanceCosts(
   amount: string,
@@ -26,7 +60,7 @@ export class MaxYieldStrategy implements RebalanceStrategy {
   readonly name: StrategyName = 'MAX_YIELD';
 
   async analyze(params: StrategyParams): Promise<StrategyDecision> {
-    const { currentProtocol, totalAmount, currentApy, availableProtocols, thresholds } = params;
+    const { currentProtocol, totalAmount, currentApy, availableProtocols, thresholds, riskCeiling, protocolRiskScores } = params;
 
     if (availableProtocols.length === 0) {
       return {
@@ -36,7 +70,24 @@ export class MaxYieldStrategy implements RebalanceStrategy {
       };
     }
 
-    const bestProtocol = availableProtocols[0];
+    // Enforce the risk ceiling BEFORE optimizing for yield. When no ceiling is
+    // set this is a no-op that preserves the original candidate set exactly.
+    const eligibleProtocols = applyRiskCeiling(availableProtocols, riskCeiling, protocolRiskScores);
+
+    if (riskCeiling !== undefined && eligibleProtocols.length === 0) {
+      logger.info('MaxYieldStrategy: no protocols meet risk ceiling', {
+        riskCeiling,
+        candidates: availableProtocols.map((p) => p.name),
+      });
+      return {
+        shouldRebalance: false,
+        targetProtocol: currentProtocol,
+        reasoning: NO_ELIGIBLE_PROTOCOLS_REASON,
+        details: { riskCeiling, eligibleCount: 0 },
+      };
+    }
+
+    const bestProtocol = eligibleProtocols[0];
 
     if (bestProtocol.name === currentProtocol) {
       return {
@@ -94,7 +145,7 @@ export class TargetAllocationStrategy implements RebalanceStrategy {
   private readonly targetDeviationThreshold = 0.2;
 
   async analyze(params: StrategyParams): Promise<StrategyDecision> {
-    const { currentProtocol, totalAmount, currentApy, availableProtocols, thresholds, userStrategyPreferences } = params;
+    const { currentProtocol, totalAmount, currentApy, availableProtocols, thresholds, userStrategyPreferences, riskCeiling, protocolRiskScores } = params;
 
     const relevantPrefs = userStrategyPreferences.filter(p => p.targetAllocations && Object.keys(p.targetAllocations!).length > 0);
     if (relevantPrefs.length === 0) {
@@ -120,11 +171,38 @@ export class TargetAllocationStrategy implements RebalanceStrategy {
     const totalTarget = Object.values(targets).reduce((sum, v) => sum + v, 0);
     const targetShare = totalTarget > 0 ? currentTarget / totalTarget : 0;
 
+    // Candidate rebalance targets are the configured protocols other than the
+    // current one. When a risk ceiling is set, exclude any candidate that does
+    // not clear it (fail-closed on unknown scores) BEFORE choosing a target.
+    // When no ceiling is set this filter is a no-op, preserving prior behavior.
+    const scoreMap = protocolRiskScores ?? {};
+    const passesCeiling = (name: string): boolean =>
+      riskCeiling === undefined ||
+      (scoreMap[name] !== undefined && scoreMap[name] >= riskCeiling);
+
     const bestTargetProtocol = Object.entries(targets)
       .filter(([name]) => name !== currentProtocol)
+      .filter(([name]) => passesCeiling(name))
       .sort(([, a], [, b]) => b - a);
 
     if (bestTargetProtocol.length === 0) {
+      // Distinguish "ceiling excluded everything" from "nothing else configured"
+      // so the user's stated risk tolerance is surfaced, never silently dropped.
+      if (riskCeiling !== undefined) {
+        const otherConfigured = Object.keys(targets).filter((name) => name !== currentProtocol);
+        if (otherConfigured.length > 0) {
+          logger.info('TargetAllocationStrategy: no target protocols meet risk ceiling', {
+            riskCeiling,
+            candidates: otherConfigured,
+          });
+          return {
+            shouldRebalance: false,
+            targetProtocol: currentProtocol,
+            reasoning: NO_ELIGIBLE_PROTOCOLS_REASON,
+            details: { riskCeiling, eligibleCount: 0 },
+          };
+        }
+      }
       return {
         shouldRebalance: false,
         targetProtocol: currentProtocol,

@@ -645,6 +645,57 @@ paths:
                     network: stellar
                     fetchedAt: '2026-06-29T12:00:00.000Z'
 
+  /api/v1/protocols/risk:
+    get:
+      tags: [protocols]
+      operationId: getProtocolRiskScores
+      summary: Get protocol risk scores and contributing factors
+      description: >
+        Returns the current risk score (0-100, higher = lower risk) for each
+        protocol together with the contributing factors behind it — audit status,
+        protocol age, APY volatility, TVL trend, sample count and an
+        insufficient-history flag — so the score is transparent rather than
+        opaque. Public: aggregate, non-user-specific data. See the scoring
+        methodology in docs/PROTOCOL_RISK_SCORING.md.
+      responses:
+        '200':
+          description: Protocol risk scores
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  protocols:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProtocolRiskScore'
+                  methodology:
+                    type: string
+                    description: Path to the methodology document backing the factors.
+              example:
+                protocols:
+                  - protocolName: Blend
+                    score: 82
+                    factors:
+                      auditStatus: THIRD_PARTY_AUDITED
+                      protocolAgeDays: 896
+                      apyVolatilityFactor: 0.91
+                      tvlTrendFactor: 0.63
+                      sampleCount: 42
+                      insufficientHistory: false
+                    computedAt: '2026-07-16T00:00:00.000Z'
+                  - protocolName: Luma
+                    score: 20
+                    factors:
+                      auditStatus: SELF_REPORTED
+                      protocolAgeDays: 411
+                      apyVolatilityFactor: 0
+                      tvlTrendFactor: 0.5
+                      sampleCount: 1
+                      insufficientHistory: true
+                    computedAt: '2026-07-16T00:00:00.000Z'
+                methodology: docs/PROTOCOL_RISK_SCORING.md
+
   /api/v1/protocols/agent/status:
     get:
       tags: [protocols]
@@ -2232,6 +2283,45 @@ components:
         network:
           type: string
         fetchedAt:
+          type: string
+          format: date-time
+
+    ProtocolRiskScore:
+      type: object
+      description: >-
+        A protocol's transparent risk score plus the contributing factors
+        behind it. See docs/PROTOCOL_RISK_SCORING.md for the methodology.
+      properties:
+        protocolName:
+          type: string
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Normalized 0-100, higher = lower risk.
+        factors:
+          type: object
+          properties:
+            auditStatus:
+              type: string
+              enum: [UNAUDITED, SELF_REPORTED, THIRD_PARTY_AUDITED]
+            protocolAgeDays:
+              type: integer
+            apyVolatilityFactor:
+              type: number
+              description: APY stability in [0,1]; 1 = very stable.
+            tvlTrendFactor:
+              type: number
+              description: TVL trend in [0,1]; >0.5 = growing, <0.5 = declining.
+            sampleCount:
+              type: integer
+              description: Number of rate samples the factors were computed from.
+            insufficientHistory:
+              type: boolean
+              description: >-
+                True when history is too sparse to characterize the protocol;
+                such protocols are scored conservatively low and flagged.
+        computedAt:
           type: string
           format: date-time
 

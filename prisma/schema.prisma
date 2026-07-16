@@ -58,6 +58,12 @@ enum DeadLetterEventStatus {
   RESOLVED
 }
 
+enum AuditStatus {
+  UNAUDITED
+  SELF_REPORTED
+  THIRD_PARTY_AUDITED
+}
+
 model User {
   id            String   @id @default(uuid())
   walletAddress String   @unique
@@ -231,6 +237,31 @@ model ProtocolRate {
   @@index([fetchedAt])
   @@index([protocolName, assetSymbol, fetchedAt])
   @@map("protocol_rates")
+}
+
+// ProtocolRiskScore — quantitative, transparent risk score per protocol.
+// Recomputed on a schedule from ProtocolRate history plus curated audit/age
+// metadata (see src/config/protocolRiskMetadata.ts). See
+// docs/PROTOCOL_RISK_SCORING.md for the scoring methodology.
+model ProtocolRiskScore {
+  id                  String      @id @default(uuid())
+  protocolName        String      @unique
+  score               Int // normalized 0-100, higher = lower risk
+  tvlTrendFactor      Float
+  apyVolatilityFactor Float
+  auditStatus         AuditStatus
+  protocolAgeDays     Int
+  // True when there is not enough rate history to compute volatility/trend
+  // meaningfully. Such protocols score conservatively low and are flagged
+  // rather than presented with a misleadingly neutral score.
+  insufficientHistory Boolean     @default(false)
+  // Number of ProtocolRate samples the factors were computed from — surfaced
+  // in the transparency endpoint so users can judge confidence in the score.
+  sampleCount         Int         @default(0)
+  computedAt          DateTime    @default(now())
+
+  @@index([score])
+  @@map("protocol_risk_scores")
 }
 
 model AgentLog {

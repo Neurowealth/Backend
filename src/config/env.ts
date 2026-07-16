@@ -424,4 +424,8 @@ export const config = {
     /** Interval between retention job runs in ms (default: 24 hours) */
     intervalMs: parseInt(process.env.RETENTION_INTERVAL_MS || '86400000'),
   },
+  protocolRisk: {
+    /** Interval between protocol risk-score recomputations in ms (default: 6 hours) */
+    intervalMs: parseInt(process.env.PROTOCOL_RISK_INTERVAL_MS || '21600000'),
+  },
 }

@@ -91,6 +91,22 @@ export interface StrategyParams {
   availableProtocols: YieldProtocol[];
   thresholds: RebalanceThresholds;
   userStrategyPreferences: UserStrategyPreferences[];
+  /**
+   * Optional per-protocol risk scores (0-100, higher = lower risk), keyed by
+   * protocol name. Supplied by the caller from ProtocolRiskScore. Only consulted
+   * when a strategy is given a riskCeiling; absent scores are treated as
+   * ineligible under a ceiling (fail-closed — see StrategyParams.riskCeiling).
+   */
+  protocolRiskScores?: Record<string, number>;
+  /**
+   * Optional minimum acceptable risk score. When set, candidate protocols are
+   * filtered to those with score >= riskCeiling BEFORE any yield/allocation
+   * optimization. Opt-in: when undefined, behavior is byte-for-byte identical to
+   * before this parameter existed. A ceiling that excludes every protocol
+   * surfaces an explicit "no eligible protocols" decision — it is never silently
+   * ignored to keep the agent allocating.
+   */
+  riskCeiling?: number;
 }
 
 export interface RebalanceStrategy {
@@ -103,4 +119,11 @@ export interface UserStrategyPreferences {
   strategyName?: StrategyName | null;
   targetAllocations?: Record<string, number>;
   riskTolerance?: number;
+  /**
+   * Optional minimum acceptable protocol risk score (0-100, higher = lower
+   * risk). When set, the strategy engine only considers protocols scoring at or
+   * above this value. Opt-in and backward compatible: unset means no risk
+   * filtering, identical to prior behavior.
+   */
+  riskCeiling?: number;
 }

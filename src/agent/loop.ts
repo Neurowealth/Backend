@@ -130,6 +130,9 @@ async function rebalanceCheckJob(): Promise<void> {
               strategyName: p.user.rebalanceStrategy || null,
               targetAllocations: p.user.strategyConfig?.targetAllocations || undefined,
               riskTolerance: p.user.riskTolerance,
+              // Opt-in risk ceiling (0-100 min protocol risk score). Absent for
+              // users who never configured one, keeping agent behavior unchanged.
+              riskCeiling: p.user.strategyConfig?.riskCeiling,
             }))
           : undefined;
 
