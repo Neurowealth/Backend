@@ -50,6 +50,8 @@ tags:
     description: Analytics — APY history, user yield, protocol performance
   - name: stellar
     description: Stellar event listener metrics
+  - name: fiat
+    description: Fiat on-ramp / off-ramp (buy and sell crypto with fiat via a payment provider)
   - name: admin
     description: Admin-only management endpoints
   - name: metrics
@@ -2003,6 +2005,156 @@ paths:
         '404':
           description: Not found (info hiding for unauthorized requests)
 
+  # ── Fiat on-ramp / off-ramp ──────────────────────────────────────────────
+  /api/v1/fiat/quote:
+    post:
+      tags: [fiat]
+      operationId: getFiatQuote
+      summary: Get a fiat buy/sell quote
+      description: >
+        Returns an indicative quote from the active fiat provider for buying
+        (ON_RAMP) or selling (OFF_RAMP) a crypto asset with fiat currency.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FiatQuoteRequest'
+      responses:
+        '200':
+          description: Quote
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiatQuote'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          description: Provider unavailable or returned an error
+
+  /api/v1/fiat/orders:
+    post:
+      tags: [fiat]
+      operationId: createFiatOrder
+      summary: Create a fiat order
+      description: >
+        Creates an on-ramp or off-ramp order with the active provider and
+        returns the order along with a provider checkout URL (and KYC URL if
+        the provider requires identity verification). The order settles only
+        after the on-chain crypto leg is independently confirmed.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateFiatOrderRequest'
+      responses:
+        '201':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiatOrder'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          description: Provider unavailable or returned an error
+    get:
+      tags: [fiat]
+      operationId: listFiatOrders
+      summary: List the caller's fiat orders
+      description: Returns the authenticated user's fiat orders, newest first.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Order history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FiatOrder'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/fiat/orders/{id}:
+    get:
+      tags: [fiat]
+      operationId: getFiatOrder
+      summary: Get a single fiat order
+      description: Returns one fiat order owned by the authenticated user.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Fiat order ID
+      responses:
+        '200':
+          description: Order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiatOrder'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/fiat/webhook/{provider}:
+    post:
+      tags: [fiat]
+      operationId: fiatProviderWebhook
+      summary: Fiat provider webhook callback
+      description: >
+        Signed callback delivered by the fiat provider on order state changes.
+        Authenticity is verified from the provider's HMAC signature over the
+        raw request body — no JWT is required. The endpoint is idempotent and
+        always ACKs a well-formed, verified delivery. A provider "completed"
+        signal advances the order to PROCESSING; settlement to SETTLED requires
+        independent on-chain confirmation.
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema:
+            type: string
+          description: Provider key (e.g. `moonpay`)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Provider-specific payload (opaque; verified by signature)
+      responses:
+        '200':
+          description: Delivery accepted (idempotent)
+        '400':
+          description: Malformed payload
+        '401':
+          description: Invalid or missing signature
+        '404':
+          description: Unknown provider
+        '500':
+          description: Processing error (provider should retry)
+
 components:
   securitySchemes:
     BearerAuth:
@@ -2249,6 +2401,140 @@ components:
             - type: array
               items: {}
             - type: object
+
+    # ── Fiat ──────────────────────────────────────────────────────────────
+    FiatDirection:
+      type: string
+      enum: [ON_RAMP, OFF_RAMP]
+      description: ON_RAMP buys crypto with fiat; OFF_RAMP sells crypto for fiat.
+    FiatOrderStatus:
+      type: string
+      enum: [PENDING, PROCESSING, SETTLED, FAILED, REFUNDED]
+      description: >
+        PENDING (awaiting payment), PROCESSING (provider reported payment;
+        awaiting on-chain confirmation), SETTLED (on-chain confirmed),
+        FAILED, REFUNDED.
+    FiatQuoteRequest:
+      type: object
+      required: [direction, fiatAmount, fiatCurrency, assetSymbol]
+      properties:
+        direction:
+          $ref: '#/components/schemas/FiatDirection'
+        fiatAmount:
+          type: number
+          format: double
+          minimum: 0
+          example: 100
+        fiatCurrency:
+          type: string
+          description: 3-letter ISO 4217 currency code
+          example: USD
+        assetSymbol:
+          type: string
+          example: USDC
+    FiatQuote:
+      type: object
+      properties:
+        direction:
+          $ref: '#/components/schemas/FiatDirection'
+        fiatAmount:
+          type: number
+          example: 100
+        fiatCurrency:
+          type: string
+          example: USD
+        cryptoAmount:
+          type: number
+          example: 98.5
+        assetSymbol:
+          type: string
+          example: USDC
+        feeAmount:
+          type: number
+          example: 1.5
+        exchangeRate:
+          type: number
+          example: 1.0
+        provider:
+          type: string
+          example: moonpay
+        expiresAt:
+          type: string
+          format: date-time
+    CreateFiatOrderRequest:
+      type: object
+      required: [userId, direction, fiatAmount, fiatCurrency, assetSymbol]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        direction:
+          $ref: '#/components/schemas/FiatDirection'
+        fiatAmount:
+          type: number
+          minimum: 0
+          example: 100
+        fiatCurrency:
+          type: string
+          example: USD
+        assetSymbol:
+          type: string
+          example: USDC
+    FiatOrder:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        provider:
+          type: string
+          example: moonpay
+        providerOrderId:
+          type: string
+        direction:
+          $ref: '#/components/schemas/FiatDirection'
+        fiatAmount:
+          type: number
+          example: 100
+        fiatCurrency:
+          type: string
+          example: USD
+        cryptoAmount:
+          type: number
+          nullable: true
+          example: 98.5
+        assetSymbol:
+          type: string
+          example: USDC
+        status:
+          $ref: '#/components/schemas/FiatOrderStatus'
+        checkoutUrl:
+          type: string
+          nullable: true
+        kycUrl:
+          type: string
+          nullable: true
+        transactionId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Linked on-chain transaction once settled
+        failureReason:
+          type: string
+          nullable: true
+        settledAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
 
   responses:
     Unauthorized:
