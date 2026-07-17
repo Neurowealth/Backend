@@ -58,10 +58,17 @@ enum DeadLetterEventStatus {
   RESOLVED
 }
 
-enum AuditStatus {
-  UNAUDITED
-  SELF_REPORTED
-  THIRD_PARTY_AUDITED
+enum FiatDirection {
+  ON_RAMP
+  OFF_RAMP
+}
+
+enum FiatOrderStatus {
+  PENDING
+  PROCESSING
+  SETTLED
+  FAILED
+  REFUNDED
 }
 
 model User {
@@ -83,6 +90,7 @@ model User {
   transactions          Transaction[]
   agentLogs             AgentLog[]
   webhookSubscriptions  WebhookSubscription[]
+  fiatOrders            FiatOrder[]
 
   @@map("users")
 }
@@ -196,6 +204,7 @@ model Transaction {
 
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   position Position? @relation(fields: [positionId], references: [id])
+  fiatOrders FiatOrder[]
 
   @@index([userId])
   @@index([positionId])
@@ -403,4 +412,40 @@ model WebhookDelivery {
   @@index([status])
   @@index([createdAt])
   @@map("webhook_deliveries")
+}
+
+/// Fiat on-ramp / off-ramp order (#290).
+/// Tracks the off-chain payment leg of a fiat<->crypto conversion handled by a
+/// third-party provider (e.g. MoonPay). The on-chain settlement is reconciled
+/// against the existing Stellar event listener rather than trusting the
+/// provider's webhook alone. No plaintext bank/card details are ever stored
+/// here — the provider's hosted checkout captures all PII/payment details.
+model FiatOrder {
+  id              String          @id @default(uuid())
+  userId          String
+  provider        String          // e.g. "moonpay" — provider key, no provider-specific logic elsewhere
+  providerOrderId String
+  direction       FiatDirection
+  fiatAmount      Decimal         @db.Decimal(36, 18)
+  fiatCurrency    String
+  cryptoAmount    Decimal?        @db.Decimal(36, 18)
+  assetSymbol     String
+  status          FiatOrderStatus @default(PENDING)
+  transactionId   String?         // linked once the resulting on-chain Transaction is matched
+  checkoutUrl     String?         // provider hosted checkout URL (on-ramp)
+  kycUrl          String?         // provider KYC next-step link, surfaced to the user when required
+  failureReason   String?         // populated on FAILED/REFUNDED for operator/user visibility
+  settledAt       DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@unique([provider, providerOrderId])
+  @@index([userId])
+  @@index([provider, providerOrderId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("fiat_orders")
 }

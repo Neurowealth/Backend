@@ -35,7 +35,7 @@ import { connectDb } from './db'
 import { scheduleSessionCleanup } from './jobs/sessionCleanup'
 import { scheduleDataRetention } from './jobs/dataRetention'
 import { schedulePoolMetrics } from './jobs/poolMetrics'
-import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
+import { scheduleFiatReconciliation } from './jobs/fiatReconciliation'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
@@ -53,6 +53,7 @@ import adminRouter from './routes/admin'
 import metricsRouter from './routes/metrics'
 import stellarRouter from './routes/stellar'
 import webhooksRouter from './routes/webhooks'
+import fiatRouter from './routes/fiat'
 import { corsMiddleware, jsonBodyParser, payloadSizeErrorHandler, urlencodedBodyParser, contentTypeRestrictionMiddleware } from './middleware/corsandbody'
 import { setSpanUser } from './telemetry/spans'
 
@@ -74,7 +75,7 @@ let httpServer: Server | null = null
 let sessionCleanupHandle: NodeJS.Timeout | null = null
 let dataRetentionHandle: NodeJS.Timeout | null = null
 let poolMetricsHandle: NodeJS.Timeout | null = null
-let protocolRiskHandle: NodeJS.Timeout | null = null
+let fiatReconciliationHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every(s => s.ready)
@@ -93,6 +94,14 @@ app.use(securityHeaders())
 app.use(permissionsPolicy())
 app.use(corsMiddleware)
 app.use(contentTypeRestrictionMiddleware)
+// Fiat provider webhooks are HMAC-signed over the raw request bytes. Capture the
+// raw body BEFORE the global JSON parser so signature verification sees the exact
+// payload — body-parser marks req._body here, so jsonBodyParser then skips these
+// paths. Must precede jsonBodyParser.
+app.use(
+  ['/api/v1/fiat/webhook', '/api/fiat/webhook'],
+  express.raw({ type: '*/*', limit: '1mb' }),
+)
 app.use(jsonBodyParser)
 app.use(urlencodedBodyParser)
 
@@ -226,6 +235,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'vault', handlers: [vaultRouter] },
   { path: 'analytics', handlers: [analyticsRouter] },
   { path: 'stellar', handlers: [stellarRouter] },
+  { path: 'fiat', handlers: [fiatRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
 
@@ -286,10 +296,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Pool metrics timer cleared')
   }
 
-  if (protocolRiskHandle) {
-    clearInterval(protocolRiskHandle)
-    protocolRiskHandle = null
-    logger.info('[Shutdown] Protocol risk scoring timer cleared')
+  if (fiatReconciliationHandle) {
+    clearInterval(fiatReconciliationHandle)
+    fiatReconciliationHandle = null
+    logger.info('[Shutdown] Fiat reconciliation timer cleared')
   }
 
   if (!httpServer) {
@@ -425,7 +435,7 @@ async function main(): Promise<void> {
   sessionCleanupHandle = scheduleSessionCleanup()
   dataRetentionHandle = scheduleDataRetention()
   poolMetricsHandle = schedulePoolMetrics()
-  protocolRiskHandle = scheduleProtocolRiskScoring()
+  fiatReconciliationHandle = scheduleFiatReconciliation()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────
