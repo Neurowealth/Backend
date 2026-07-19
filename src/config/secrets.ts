@@ -62,22 +62,34 @@ class AwsSsmSecretsProvider implements SecretsProvider {
 
   async refresh(): Promise<void> {
     const keys = [...this.cache.keys()]
-    await Promise.all(keys.map((k) => this.fetchOne(k).catch((err) => {
-      logger.warn(`[SecretsProvider] Failed to refresh SSM key "${k}": ${err.message}`)
-    })))
+    await Promise.all(
+      keys.map((k) =>
+        this.fetchOne(k).catch((err) => {
+          logger.warn(
+            `[SecretsProvider] Failed to refresh SSM key "${k}": ${err.message}`
+          )
+        })
+      )
+    )
   }
 
   /** Fetch a single parameter from SSM, update the cache, and return the value. */
   private async fetchOne(key: string): Promise<string> {
     // Dynamic import so the SDK is only loaded when the aws-ssm backend is active.
-    const { SSMClient, GetParameterCommand } = await import('@aws-sdk/client-ssm' as string) as typeof import('@aws-sdk/client-ssm')
+    // Loaded dynamically so the SDK is only pulled in when the aws-ssm backend is
+    // active. Typed as `any` because the static `typeof import(...)` type-query
+    // cannot resolve under the project's classic module resolution.
+    const { SSMClient, GetParameterCommand } = (await import(
+      '@aws-sdk/client-ssm' as string
+    )) as any
     const client = new SSMClient({})
     const paramName = `${this.ssmPrefix}/${key}`
     const result = await client.send(
-      new GetParameterCommand({ Name: paramName, WithDecryption: true }),
+      new GetParameterCommand({ Name: paramName, WithDecryption: true })
     )
     const value = result.Parameter?.Value
-    if (!value) throw new Error(`[SecretsProvider] SSM parameter not found: ${paramName}`)
+    if (!value)
+      throw new Error(`[SecretsProvider] SSM parameter not found: ${paramName}`)
     this.cache.set(key, value)
     return value
   }
@@ -87,7 +99,7 @@ class AwsSsmSecretsProvider implements SecretsProvider {
     if (this.refreshTimer) return
     this.refreshTimer = setInterval(() => {
       this.refresh().catch((err) =>
-        logger.error(`[SecretsProvider] Auto-refresh error: ${err.message}`),
+        logger.error(`[SecretsProvider] Auto-refresh error: ${err.message}`)
       )
     }, this.refreshIntervalMs)
     // Do not block process exit on this timer.
@@ -117,7 +129,9 @@ export function createSecretsProvider(): SecretsProvider {
     }
     default:
       if (backend !== 'env') {
-        logger.warn(`[SecretsProvider] Unknown SECRET_BACKEND "${backend}", falling back to env`)
+        logger.warn(
+          `[SecretsProvider] Unknown SECRET_BACKEND "${backend}", falling back to env`
+        )
       }
       return new EnvSecretsProvider()
   }
@@ -146,16 +160,18 @@ export async function bootstrapSecrets(): Promise<void> {
       } catch (err) {
         errors.push((err as Error).message)
       }
-    }),
+    })
   )
 
   if (errors.length > 0) {
     throw new Error(
-      `[SecretsProvider] Failed to load secrets at startup:\n${errors.join('\n')}`,
+      `[SecretsProvider] Failed to load secrets at startup:\n${errors.join('\n')}`
     )
   }
 
-  logger.info('[SecretsProvider] All secrets loaded from AWS SSM Parameter Store')
+  logger.info(
+    '[SecretsProvider] All secrets loaded from AWS SSM Parameter Store'
+  )
 }
 
 /** Return the shared SecretsProvider singleton (creates it if not yet initialised). */

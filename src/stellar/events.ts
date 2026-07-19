@@ -1,19 +1,28 @@
-import { rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
-import { TransactionType, TransactionStatus, Network } from '@prisma/client';
-import db from '../db';
-import { Decimal } from '@prisma/client/runtime/library';
-import { getRpcServer } from './client';
-import { ContractEvent, DepositEvent, WithdrawEvent, RebalanceEvent, EventMetrics } from './types';
-import { logger } from '../utils/logger';
-import { config } from '../config';
-import { DeadLetterQueue } from './dlq';
-import { generateCorrelationId, runWithCorrelationIdAsync } from '../utils/correlation';
+import { rpc, scValToNative, xdr } from '@stellar/stellar-sdk'
+import { TransactionType, TransactionStatus, Network } from '@prisma/client'
+import db from '../db'
+import { Decimal } from '@prisma/client/runtime/library'
+import { getRpcServer } from './client'
+import {
+  ContractEvent,
+  DepositEvent,
+  WithdrawEvent,
+  RebalanceEvent,
+  EventMetrics,
+} from './types'
+import { logger } from '../utils/logger'
+import { config } from '../config'
+import { DeadLetterQueue } from './dlq'
+import {
+  generateCorrelationId,
+  runWithCorrelationIdAsync,
+} from '../utils/correlation'
 import {
   ContractEventSchema,
   DepositEventSchema,
   WithdrawEventSchema,
-  RebalanceEventSchema
-} from '../validators/event-validator';
+  RebalanceEventSchema,
+} from '../validators/event-validator'
 import {
   recordEventProcessed,
   recordEventFailed,
@@ -21,15 +30,16 @@ import {
   updateDlqSize,
   updateCursorLag,
   updateLastProcessedLedger,
-  recordDbOperation
-} from '../utils/metrics';
-import { dispatchWebhookEvent } from '../services/webhookDispatcher';
+  recordDbOperation,
+} from '../utils/metrics'
+import { dispatchWebhookEvent } from '../services/webhookDispatcher'
+import { checkAndActivateOnDeposit } from '../referral/service'
 
-const VAULT_CONTRACT_ID = config.stellar.vaultContractId;
-const POLL_INTERVAL_MS = 5000;
+const VAULT_CONTRACT_ID = config.stellar.vaultContractId
+const POLL_INTERVAL_MS = 5000
 
-let lastProcessedLedger = 0;
-let isListening = false;
+let lastProcessedLedger = 0
+let isListening = false
 
 // --- Metrics state (Issue #50) ---
 const metrics: EventMetrics = {
@@ -40,48 +50,54 @@ const metrics: EventMetrics = {
   ledgerLag: 0,
   lastDbOperationMs: 0,
   lastUpdated: new Date(),
-};
+}
 
 // Rolling window for processing rate (events in last 60s)
-const processingTimestamps: number[] = [];
+const processingTimestamps: number[] = []
 
 function recordProcessed(): void {
-  const now = Date.now();
-  processingTimestamps.push(now);
+  const now = Date.now()
+  processingTimestamps.push(now)
   // Keep only last 60 seconds
-  const cutoff = now - 60_000;
+  const cutoff = now - 60_000
   while (processingTimestamps.length > 0 && processingTimestamps[0] < cutoff) {
-    processingTimestamps.shift();
+    processingTimestamps.shift()
   }
-  metrics.totalProcessed++;
-  metrics.processingRatePerMinute = processingTimestamps.length;
-  metrics.errorRate = metrics.totalProcessed > 0 ? metrics.totalErrors / metrics.totalProcessed : 0;
-  metrics.lastUpdated = new Date();
+  metrics.totalProcessed++
+  metrics.processingRatePerMinute = processingTimestamps.length
+  metrics.errorRate =
+    metrics.totalProcessed > 0
+      ? metrics.totalErrors / metrics.totalProcessed
+      : 0
+  metrics.lastUpdated = new Date()
 }
 
 function recordError(): void {
-  metrics.totalErrors++;
-  metrics.errorRate = metrics.totalProcessed > 0 ? metrics.totalErrors / metrics.totalProcessed : 0;
-  metrics.lastUpdated = new Date();
+  metrics.totalErrors++
+  metrics.errorRate =
+    metrics.totalProcessed > 0
+      ? metrics.totalErrors / metrics.totalProcessed
+      : 0
+  metrics.lastUpdated = new Date()
 }
 
 function recordLedgerLag(latestLedger: number): void {
-  metrics.ledgerLag = latestLedger - lastProcessedLedger;
-  metrics.lastUpdated = new Date();
+  metrics.ledgerLag = latestLedger - lastProcessedLedger
+  metrics.lastUpdated = new Date()
   // Update Prometheus metrics
-  updateCursorLag(metrics.ledgerLag);
+  updateCursorLag(metrics.ledgerLag)
 }
 
 async function timedDbOperation<T>(fn: () => Promise<T>): Promise<T> {
-  const start = Date.now();
+  const start = Date.now()
   try {
-    return await fn();
+    return await fn()
   } finally {
-    const duration = Date.now() - start;
-    metrics.lastDbOperationMs = duration;
-    metrics.lastUpdated = new Date();
+    const duration = Date.now() - start
+    metrics.lastDbOperationMs = duration
+    metrics.lastUpdated = new Date()
     // Record Prometheus metric for DB operation duration
-    recordDbOperation('event_processing', duration / 1000);
+    recordDbOperation('event_processing', duration / 1000)
   }
 }
 
@@ -89,7 +105,7 @@ async function timedDbOperation<T>(fn: () => Promise<T>): Promise<T> {
  * Get current event processing metrics (Issue #50)
  */
 export function getEventMetrics(): Readonly<EventMetrics> {
-  return { ...metrics };
+  return { ...metrics }
 }
 
 // --- Event context extraction helpers (Issues #51, #65) ---
@@ -108,24 +124,24 @@ function readStringTopic(
   if (event.topics.length <= index) {
     throw new Error(
       `[Event] Missing ${label} topic at index ${index} (txHash=${event.txHash}, type=${event.type})`
-    );
+    )
   }
-  let raw: unknown;
+  let raw: unknown
   try {
-    raw = scValToNative(event.topics[index]);
+    raw = scValToNative(event.topics[index])
   } catch (err) {
     throw new Error(
       `[Event] Failed to decode ${label} topic at index ${index} (txHash=${event.txHash}): ${
         err instanceof Error ? err.message : 'unknown decode error'
       }`
-    );
+    )
   }
   if (typeof raw !== 'string' || raw.length === 0) {
     throw new Error(
       `[Event] ${label} topic at index ${index} is not a non-empty string (txHash=${event.txHash}, got=${typeof raw})`
-    );
+    )
   }
-  return raw;
+  return raw
 }
 
 /**
@@ -133,7 +149,7 @@ function readStringTopic(
  * Throws when missing — see {@link readStringTopic}.
  */
 export function extractAssetSymbol(event: ContractEvent): string {
-  return readStringTopic(event, 1, 'asset symbol');
+  return readStringTopic(event, 1, 'asset symbol')
 }
 
 /**
@@ -141,7 +157,7 @@ export function extractAssetSymbol(event: ContractEvent): string {
  * Throws when missing — see {@link readStringTopic}.
  */
 export function extractProtocolName(event: ContractEvent): string {
-  return readStringTopic(event, 2, 'protocol name');
+  return readStringTopic(event, 2, 'protocol name')
 }
 
 /**
@@ -149,9 +165,12 @@ export function extractProtocolName(event: ContractEvent): string {
  */
 function extractNetwork(): Network {
   switch (config.stellar.network) {
-    case 'testnet': return Network.TESTNET;
-    case 'futurenet': return Network.FUTURENET;
-    case 'mainnet': return Network.MAINNET;
+    case 'testnet':
+      return Network.TESTNET
+    case 'futurenet':
+      return Network.FUTURENET
+    case 'mainnet':
+      return Network.MAINNET
   }
 }
 
@@ -159,7 +178,7 @@ function extractNetwork(): Network {
  * Parse deposit event
  */
 function parseDepositEvent(event: ContractEvent): DepositEvent {
-  const data = scValToNative(event.value);
+  const data = scValToNative(event.value)
   return {
     user: data.user,
     amount: data.amount?.toString() || '0',
@@ -167,14 +186,14 @@ function parseDepositEvent(event: ContractEvent): DepositEvent {
     assetSymbol: extractAssetSymbol(event),
     protocolName: extractProtocolName(event),
     network: extractNetwork(),
-  };
+  }
 }
 
 /**
  * Parse withdraw event
  */
 function parseWithdrawEvent(event: ContractEvent): WithdrawEvent {
-  const data = scValToNative(event.value);
+  const data = scValToNative(event.value)
   return {
     user: data.user,
     amount: data.amount?.toString() || '0',
@@ -182,37 +201,41 @@ function parseWithdrawEvent(event: ContractEvent): WithdrawEvent {
     assetSymbol: extractAssetSymbol(event),
     protocolName: extractProtocolName(event),
     network: extractNetwork(),
-  };
+  }
 }
 
 /**
  * Parse rebalance event
  */
 function parseRebalanceEvent(event: ContractEvent): RebalanceEvent {
-  const data = scValToNative(event.value);
+  const data = scValToNative(event.value)
   return {
     protocol: data.protocol,
     apy: data.apy / 100, // Convert basis points to percentage
     timestamp: data.timestamp,
     assetSymbol: extractAssetSymbol(event),
     network: extractNetwork(),
-  };
+  }
 }
 
 /**
  * Handle deposit event - persist to database
  */
-async function handleDepositEvent(depositData: DepositEvent, event: ContractEvent, tx: any = db): Promise<void> {
-  const user = await timedDbOperation(() =>
+async function handleDepositEvent(
+  depositData: DepositEvent,
+  event: ContractEvent,
+  tx: any = db
+): Promise<void> {
+  const user = (await timedDbOperation(() =>
     tx.user.findUnique({ where: { walletAddress: depositData.user } })
-  ) as any;
+  )) as any
 
   if (!user) {
-    logger.warn(`[Deposit] User not found for wallet: ${depositData.user}`);
-    throw new Error(`[Deposit] User not found for wallet: ${depositData.user}`);
+    logger.warn(`[Deposit] User not found for wallet: ${depositData.user}`)
+    throw new Error(`[Deposit] User not found for wallet: ${depositData.user}`)
   }
 
-  const transaction = await timedDbOperation(() =>
+  const transaction = (await timedDbOperation(() =>
     tx.transaction.upsert({
       where: { txHash: event.txHash },
       update: { status: TransactionStatus.CONFIRMED, confirmedAt: new Date() },
@@ -227,13 +250,18 @@ async function handleDepositEvent(depositData: DepositEvent, event: ContractEven
         confirmedAt: new Date(),
       },
     })
-  ) as any;
+  )) as any
 
-  const position = await timedDbOperation(() =>
+  const position = (await timedDbOperation(() =>
     tx.position.findFirst({
-      where: { userId: user.id, protocolName: depositData.protocolName, assetSymbol: depositData.assetSymbol, status: 'ACTIVE' },
+      where: {
+        userId: user.id,
+        protocolName: depositData.protocolName,
+        assetSymbol: depositData.assetSymbol,
+        status: 'ACTIVE',
+      },
     })
-  ) as any;
+  )) as any
 
   if (position) {
     await timedDbOperation(() =>
@@ -245,12 +273,15 @@ async function handleDepositEvent(depositData: DepositEvent, event: ContractEven
           updatedAt: new Date(),
         },
       })
-    );
+    )
     await timedDbOperation(() =>
-      tx.transaction.update({ where: { id: transaction.id }, data: { positionId: position.id } })
-    );
+      tx.transaction.update({
+        where: { id: transaction.id },
+        data: { positionId: position.id },
+      })
+    )
   } else {
-    const newPosition = await timedDbOperation(() =>
+    const newPosition = (await timedDbOperation(() =>
       tx.position.create({
         data: {
           userId: user.id,
@@ -261,27 +292,47 @@ async function handleDepositEvent(depositData: DepositEvent, event: ContractEven
           yieldEarned: 0,
         },
       })
-    ) as any;
+    )) as any
     await timedDbOperation(() =>
-      tx.transaction.update({ where: { id: transaction.id }, data: { positionId: newPosition.id } })
-    );
+      tx.transaction.update({
+        where: { id: transaction.id },
+        data: { positionId: newPosition.id },
+      })
+    )
   }
+
+  // Referral activation: verified strictly against this real, confirmed deposit
+  // Transaction — never a client claim. Runs on the same `tx` handle so it is
+  // part of the deposit's DB transaction. It never throws (a referral problem
+  // must not roll back the deposit). Payout happens later in the payout job.
+  await checkAndActivateOnDeposit(
+    user.id,
+    transaction.id,
+    depositData.amount,
+    tx
+  )
 }
 
 /**
  * Handle withdraw event - persist to database
  */
-async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractEvent, tx: any = db): Promise<void> {
-  const user = await timedDbOperation(() =>
+async function handleWithdrawEvent(
+  withdrawData: WithdrawEvent,
+  event: ContractEvent,
+  tx: any = db
+): Promise<void> {
+  const user = (await timedDbOperation(() =>
     tx.user.findUnique({ where: { walletAddress: withdrawData.user } })
-  ) as any;
+  )) as any
 
   if (!user) {
-    logger.warn(`[Withdraw] User not found for wallet: ${withdrawData.user}`);
-    throw new Error(`[Withdraw] User not found for wallet: ${withdrawData.user}`);
+    logger.warn(`[Withdraw] User not found for wallet: ${withdrawData.user}`)
+    throw new Error(
+      `[Withdraw] User not found for wallet: ${withdrawData.user}`
+    )
   }
 
-  const transaction = await timedDbOperation(() =>
+  const transaction = (await timedDbOperation(() =>
     tx.transaction.upsert({
       where: { txHash: event.txHash },
       update: { status: TransactionStatus.CONFIRMED, confirmedAt: new Date() },
@@ -296,34 +347,54 @@ async function handleWithdrawEvent(withdrawData: WithdrawEvent, event: ContractE
         confirmedAt: new Date(),
       },
     })
-  ) as any;
+  )) as any
 
-  const position = await timedDbOperation(() =>
+  const position = (await timedDbOperation(() =>
     tx.position.findFirst({
-      where: { userId: user.id, protocolName: withdrawData.protocolName, assetSymbol: withdrawData.assetSymbol, status: 'ACTIVE' },
+      where: {
+        userId: user.id,
+        protocolName: withdrawData.protocolName,
+        assetSymbol: withdrawData.assetSymbol,
+        status: 'ACTIVE',
+      },
     })
-  ) as any;
+  )) as any
 
   if (position) {
-    const newDepositedAmount = new Decimal(position.depositedAmount).minus(withdrawData.amount);
-    const newCurrentValue = new Decimal(position.currentValue).minus(withdrawData.amount);
+    const newDepositedAmount = new Decimal(position.depositedAmount).minus(
+      withdrawData.amount
+    )
+    const newCurrentValue = new Decimal(position.currentValue).minus(
+      withdrawData.amount
+    )
 
     await timedDbOperation(() =>
       tx.position.update({
         where: { id: position.id },
-        data: { depositedAmount: newDepositedAmount, currentValue: newCurrentValue, updatedAt: new Date() },
+        data: {
+          depositedAmount: newDepositedAmount,
+          currentValue: newCurrentValue,
+          updatedAt: new Date(),
+        },
       })
-    );
+    )
     await timedDbOperation(() =>
-      tx.transaction.update({ where: { id: transaction.id }, data: { positionId: position.id } })
-    );
+      tx.transaction.update({
+        where: { id: transaction.id },
+        data: { positionId: position.id },
+      })
+    )
   }
 }
 
 /**
  * Handle rebalance event - persist to database
  */
-async function handleRebalanceEvent(rebalanceData: RebalanceEvent, event: ContractEvent, tx: any = db): Promise<void> {
+async function handleRebalanceEvent(
+  rebalanceData: RebalanceEvent,
+  event: ContractEvent,
+  tx: any = db
+): Promise<void> {
   await timedDbOperation(() =>
     tx.protocolRate.create({
       data: {
@@ -334,138 +405,174 @@ async function handleRebalanceEvent(rebalanceData: RebalanceEvent, event: Contra
         fetchedAt: new Date(),
       },
     })
-  );
+  )
 
-  logger.info(`[Rebalance] Recorded protocol rate for ${rebalanceData.protocol} at ${rebalanceData.apy}%`);
+  logger.info(
+    `[Rebalance] Recorded protocol rate for ${rebalanceData.protocol} at ${rebalanceData.apy}%`
+  )
 }
 
 /**
  * Handle contract event with persistence, idempotency, and validation (Issue #53)
  */
-export async function handleEvent(event: ContractEvent, tx: any = db): Promise<void> {
-  const correlationId = generateCorrelationId();
+export async function handleEvent(
+  event: ContractEvent,
+  tx: any = db
+): Promise<void> {
+  const correlationId = generateCorrelationId()
   return runWithCorrelationIdAsync(correlationId, async () => {
-    const eventWithCorrelation = { ...event, correlationId };
-    const startTime = Date.now();
+    const eventWithCorrelation = { ...event, correlationId }
+    const startTime = Date.now()
     try {
-      logger.info(`[Event] ${event.type} detected at ledger ${event.ledger}, tx: ${event.txHash}`, {
-        correlationId,
-      });
+      logger.info(
+        `[Event] ${event.type} detected at ledger ${event.ledger}, tx: ${event.txHash}`,
+        {
+          correlationId,
+        }
+      )
 
-    // Issue #53: Event validation
-    ContractEventSchema.parse(event);
+      // Issue #53: Event validation
+      ContractEventSchema.parse(event)
 
-    // Check if event was already processed (idempotency)
-    const existingEvent = await timedDbOperation(() =>
-      tx.processedEvent.findUnique({
-        where: {
-          contractId_txHash_eventType_ledger: {
+      // Check if event was already processed (idempotency)
+      const existingEvent = await timedDbOperation(() =>
+        tx.processedEvent.findUnique({
+          where: {
+            contractId_txHash_eventType_ledger: {
+              contractId: event.contractId,
+              txHash: event.txHash,
+              eventType: event.type,
+              ledger: event.ledger,
+            },
+          },
+        })
+      )
+
+      if (existingEvent) {
+        logger.info(
+          `[Event] Skipping duplicate event: ${event.type} at ledger ${event.ledger}`
+        )
+        return
+      }
+
+      switch (event.type) {
+        case 'deposit': {
+          const depositData = parseDepositEvent(event)
+          DepositEventSchema.parse(depositData)
+          await handleDepositEvent(depositData, event, tx)
+          dispatchWebhookEvent('deposit.received', {
+            txHash: event.txHash,
+            ...depositData,
+          }).catch(() => {})
+          break
+        }
+
+        case 'withdraw': {
+          const withdrawData = parseWithdrawEvent(event)
+          WithdrawEventSchema.parse(withdrawData)
+          await handleWithdrawEvent(withdrawData, event, tx)
+          dispatchWebhookEvent('withdraw.completed', {
+            txHash: event.txHash,
+            ...withdrawData,
+          }).catch(() => {})
+          break
+        }
+
+        case 'rebalance': {
+          const rebalanceData = parseRebalanceEvent(event)
+          RebalanceEventSchema.parse(rebalanceData)
+          await handleRebalanceEvent(rebalanceData, event, tx)
+          dispatchWebhookEvent('agent.rebalanced', {
+            txHash: event.txHash,
+            ...rebalanceData,
+          }).catch(() => {})
+          break
+        }
+        default:
+          throw new Error(`Unknown event type: ${event.type}`)
+      }
+
+      // Mark event as processed
+      await timedDbOperation(() =>
+        tx.processedEvent.create({
+          data: {
             contractId: event.contractId,
             txHash: event.txHash,
             eventType: event.type,
             ledger: event.ledger,
           },
-        },
+        })
+      )
+
+      recordProcessed()
+      // Record Prometheus metrics
+      recordEventProcessed(event.type)
+      const duration = (Date.now() - startTime) / 1000
+      recordEventDuration(event.type, duration)
+      logger.info(`[Event] Successfully processed ${event.type} event`, {
+        correlationId,
       })
-    );
+    } catch (error) {
+      recordError()
+      // Record Prometheus metrics for failure
+      const errorType =
+        error instanceof Error ? error.constructor.name : 'Unknown'
+      recordEventFailed(event.type, errorType)
+      const duration = (Date.now() - startTime) / 1000
+      recordEventDuration(event.type, duration)
 
-    if (existingEvent) {
-      logger.info(`[Event] Skipping duplicate event: ${event.type} at ledger ${event.ledger}`);
-      return;
-    }
-
-    switch (event.type) {
-      case 'deposit': {
-        const depositData = parseDepositEvent(event);
-        DepositEventSchema.parse(depositData);
-        await handleDepositEvent(depositData, event, tx);
-        dispatchWebhookEvent('deposit.received', { txHash: event.txHash, ...depositData }).catch(() => {});
-        break;
-      }
-
-      case 'withdraw': {
-        const withdrawData = parseWithdrawEvent(event);
-        WithdrawEventSchema.parse(withdrawData);
-        await handleWithdrawEvent(withdrawData, event, tx);
-        dispatchWebhookEvent('withdraw.completed', { txHash: event.txHash, ...withdrawData }).catch(() => {});
-        break;
-      }
-
-      case 'rebalance': {
-        const rebalanceData = parseRebalanceEvent(event);
-        RebalanceEventSchema.parse(rebalanceData);
-        await handleRebalanceEvent(rebalanceData, event, tx);
-        dispatchWebhookEvent('agent.rebalanced', { txHash: event.txHash, ...rebalanceData }).catch(() => {});
-        break;
-      }
-      default:
-        throw new Error(`Unknown event type: ${event.type}`);
-    }
-
-    // Mark event as processed
-    await timedDbOperation(() =>
-      tx.processedEvent.create({
-        data: {
-          contractId: event.contractId,
-          txHash: event.txHash,
-          eventType: event.type,
-          ledger: event.ledger,
-        },
+      logger.error(`[Event Error] Failed to handle ${event.type}:`, {
+        correlationId,
+        error: error instanceof Error ? error.message : 'Unknown error',
       })
-    );
-
-    recordProcessed();
-    // Record Prometheus metrics
-    recordEventProcessed(event.type);
-    const duration = (Date.now() - startTime) / 1000;
-    recordEventDuration(event.type, duration);
-    logger.info(`[Event] Successfully processed ${event.type} event`, { correlationId });
-  } catch (error) {
-    recordError();
-    // Record Prometheus metrics for failure
-    const errorType = error instanceof Error ? error.constructor.name : 'Unknown';
-    recordEventFailed(event.type, errorType);
-    const duration = (Date.now() - startTime) / 1000;
-    recordEventDuration(event.type, duration);
-    
-    logger.error(`[Event Error] Failed to handle ${event.type}:`, {
-      correlationId,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    });
-    // Issue #54: Store in Dead-Letter Queue
-    await DeadLetterQueue.add(eventWithCorrelation, error instanceof Error ? error.message : 'Unknown error');
-    throw error; // Rethrow so transaction can rollback if running inside one
-  }
-  });
+      // Issue #54: Store in Dead-Letter Queue
+      await DeadLetterQueue.add(
+        eventWithCorrelation,
+        error instanceof Error ? error.message : 'Unknown error'
+      )
+      throw error // Rethrow so transaction can rollback if running inside one
+    }
+  })
 }
 
 /**
  * Process a batch of events in a single transaction (Issue #55)
  */
-export async function processEventBatch(events: ContractEvent[]): Promise<void> {
-  const start = Date.now();
-  let processedCount = 0;
+export async function processEventBatch(
+  events: ContractEvent[]
+): Promise<void> {
+  const start = Date.now()
+  let processedCount = 0
 
-  logger.info(`[Batch Processing] Attempting to process ${events.length} events`);
+  logger.info(
+    `[Batch Processing] Attempting to process ${events.length} events`
+  )
 
   try {
     // Multiple events processed in a single transaction
     await db.$transaction(async (tx) => {
       for (const event of events) {
-        await handleEvent(event, tx);
-        processedCount++;
+        await handleEvent(event, tx)
+        processedCount++
       }
-    });
-    const duration = Date.now() - start;
-    logger.info(`[Batch Processing] Throughput: Successfully processed batch of ${processedCount} events in ${duration}ms`);
+    })
+    const duration = Date.now() - start
+    logger.info(
+      `[Batch Processing] Throughput: Successfully processed batch of ${processedCount} events in ${duration}ms`
+    )
   } catch (batchError) {
-    logger.error(`[Batch Processing Error] Transaction failed, falling back to individual processing:`, batchError);
+    logger.error(
+      `[Batch Processing Error] Transaction failed, falling back to individual processing:`,
+      batchError
+    )
     // Fallback: Process individually so robust events succeed
     for (const event of events) {
       try {
-        await handleEvent(event, db);
+        await handleEvent(event, db)
       } catch (individualError) {
-        logger.error(`[Batch Fallback Error] Event processing completely failed for ${event.txHash}`);
+        logger.error(
+          `[Batch Fallback Error] Event processing completely failed for ${event.txHash}`
+        )
       }
     }
   }
@@ -477,19 +584,21 @@ export async function processEventBatch(events: ContractEvent[]): Promise<void> 
 async function loadLastProcessedLedger(): Promise<number> {
   const cursor = await db.eventCursor.findUnique({
     where: { contractId: VAULT_CONTRACT_ID },
-  });
+  })
 
   if (cursor) {
-    logger.info(`[Event Listener] Resuming from ledger ${cursor.lastProcessedLedger}`);
-    return cursor.lastProcessedLedger;
+    logger.info(
+      `[Event Listener] Resuming from ledger ${cursor.lastProcessedLedger}`
+    )
+    return cursor.lastProcessedLedger
   }
 
   // First time - start from one before latest so we catch recent events
-  const server = getRpcServer();
-  const latestLedger = await server.getLatestLedger();
-  const startLedger = Math.max(0, latestLedger.sequence - 1);
-  logger.info(`[Event Listener] First run, starting from ledger ${startLedger}`);
-  return startLedger;
+  const server = getRpcServer()
+  const latestLedger = await server.getLatestLedger()
+  const startLedger = Math.max(0, latestLedger.sequence - 1)
+  logger.info(`[Event Listener] First run, starting from ledger ${startLedger}`)
+  return startLedger
 }
 
 /**
@@ -506,23 +615,23 @@ async function persistLastProcessedLedger(ledger: number): Promise<void> {
       contractId: VAULT_CONTRACT_ID,
       lastProcessedLedger: ledger,
     },
-  });
+  })
 }
 
 /**
  * Fetch and process events from ledger range with Batching (Issue #55)
  */
 async function fetchEvents(startLedger: number): Promise<void> {
-  const server = getRpcServer();
+  const server = getRpcServer()
 
   try {
-    const latestLedger = await server.getLatestLedger();
+    const latestLedger = await server.getLatestLedger()
 
     if (startLedger > latestLedger.sequence) {
-      return; // No new ledgers
+      return // No new ledgers
     }
 
-    recordLedgerLag(latestLedger.sequence);
+    recordLedgerLag(latestLedger.sequence)
 
     const events = await server.getEvents({
       startLedger,
@@ -532,94 +641,121 @@ async function fetchEvents(startLedger: number): Promise<void> {
           contractIds: [VAULT_CONTRACT_ID],
         },
       ],
-    });
+    })
 
-    const contractEvents: ContractEvent[] = [];
+    const contractEvents: ContractEvent[] = []
     for (const event of events.events) {
-      const topics = event.topic;
-      const eventType = topics.length > 0 ? scValToNative(topics[0]) : null;
+      const topics = event.topic
+      const eventType = topics.length > 0 ? scValToNative(topics[0]) : null
 
       if (['deposit', 'withdraw', 'rebalance'].includes(eventType)) {
         contractEvents.push({
           type: eventType as 'deposit' | 'withdraw' | 'rebalance',
           ledger: event.ledger,
           txHash: event.txHash,
-          contractId: typeof event.contractId === 'string' ? event.contractId : VAULT_CONTRACT_ID,
+          contractId:
+            typeof event.contractId === 'string'
+              ? event.contractId
+              : VAULT_CONTRACT_ID,
           topics: topics,
           value: event.value,
-        });
+        })
       }
     }
 
     if (contractEvents.length > 0) {
       // Use batch processing
-      await processEventBatch(contractEvents);
+      await processEventBatch(contractEvents)
     }
 
     // Update cursor in database
-    await persistLastProcessedLedger(latestLedger.sequence);
-    lastProcessedLedger = latestLedger.sequence;
+    await persistLastProcessedLedger(latestLedger.sequence)
+    lastProcessedLedger = latestLedger.sequence
     // Update Prometheus metrics
-    updateLastProcessedLedger(latestLedger.sequence);
+    updateLastProcessedLedger(latestLedger.sequence)
   } catch (error) {
-    logger.error('[Event Listener] Error fetching events:', error instanceof Error ? error.message : 'Unknown error');
+    logger.error(
+      '[Event Listener] Error fetching events:',
+      error instanceof Error ? error.message : 'Unknown error'
+    )
   }
 }
 
 /**
  * Backfill events for range-based reprocessing (Issue #59)
  */
-export async function backfillEvents(startLedger: number, endLedger?: number): Promise<void> {
-  const server = getRpcServer();
-  const latestLedger = await server.getLatestLedger();
-  const finalLedger = endLedger && endLedger <= latestLedger.sequence ? endLedger : latestLedger.sequence;
+export async function backfillEvents(
+  startLedger: number,
+  endLedger?: number
+): Promise<void> {
+  const server = getRpcServer()
+  const latestLedger = await server.getLatestLedger()
+  const finalLedger =
+    endLedger && endLedger <= latestLedger.sequence
+      ? endLedger
+      : latestLedger.sequence
 
-  logger.info(`[Backfill] Starting range reprocessing from ${startLedger} to ${finalLedger}`);
+  logger.info(
+    `[Backfill] Starting range reprocessing from ${startLedger} to ${finalLedger}`
+  )
 
-  const CHUNK_SIZE = 100;
-  for (let current = startLedger; current <= finalLedger; current += CHUNK_SIZE) {
-    const chunkEnd = Math.min(current + CHUNK_SIZE - 1, finalLedger);
+  const CHUNK_SIZE = 100
+  for (
+    let current = startLedger;
+    current <= finalLedger;
+    current += CHUNK_SIZE
+  ) {
+    const chunkEnd = Math.min(current + CHUNK_SIZE - 1, finalLedger)
     try {
       const events = await server.getEvents({
         startLedger: current,
         filters: [{ type: 'contract', contractIds: [VAULT_CONTRACT_ID] }],
-      });
+      })
 
-      const contractEvents: ContractEvent[] = [];
+      const contractEvents: ContractEvent[] = []
       for (const event of events.events) {
-        const topics = event.topic;
-        const eventType = topics.length > 0 ? scValToNative(topics[0]) : null;
+        const topics = event.topic
+        const eventType = topics.length > 0 ? scValToNative(topics[0]) : null
 
-        if (['deposit', 'withdraw', 'rebalance'].includes(eventType) && event.ledger <= chunkEnd) {
+        if (
+          ['deposit', 'withdraw', 'rebalance'].includes(eventType) &&
+          event.ledger <= chunkEnd
+        ) {
           contractEvents.push({
             type: eventType as 'deposit' | 'withdraw' | 'rebalance',
             ledger: event.ledger,
             txHash: event.txHash,
-            contractId: typeof event.contractId === 'string' ? event.contractId : VAULT_CONTRACT_ID,
+            contractId:
+              typeof event.contractId === 'string'
+                ? event.contractId
+                : VAULT_CONTRACT_ID,
             topics: topics,
             value: event.value,
-          });
+          })
         }
       }
 
       if (contractEvents.length > 0) {
-        await processEventBatch(contractEvents);
+        await processEventBatch(contractEvents)
       }
     } catch (error) {
-      logger.error(`[Backfill Error] Failed range ${current}-${chunkEnd}:`, error instanceof Error ? error.message : 'Unknown error');
+      logger.error(
+        `[Backfill Error] Failed range ${current}-${chunkEnd}:`,
+        error instanceof Error ? error.message : 'Unknown error'
+      )
     }
   }
-  logger.info(`[Backfill] Range reprocessing completed.`);
+  logger.info(`[Backfill] Range reprocessing completed.`)
 }
 
 /**
  * Manual intervention: Retry failed events from DLQ (Issue #54)
  */
 export async function retryDeadLetterEvents(): Promise<void> {
-  logger.info(`[DLQ] Starting manual intervention retry for all DLQ events`);
+  logger.info(`[DLQ] Starting manual intervention retry for all DLQ events`)
   await DeadLetterQueue.retryAll(async (eventPayload) => {
-    await handleEvent(eventPayload, db);
-  });
+    await handleEvent(eventPayload, db)
+  })
 }
 
 /**
@@ -627,60 +763,68 @@ export async function retryDeadLetterEvents(): Promise<void> {
  */
 export async function startEventListener(): Promise<void> {
   if (isListening) {
-    logger.warn('[Event Listener] Already running');
-    return;
+    logger.warn('[Event Listener] Already running')
+    return
   }
 
   if (!VAULT_CONTRACT_ID) {
-    throw new Error('VAULT_CONTRACT_ID not configured');
+    throw new Error('VAULT_CONTRACT_ID not configured')
   }
 
-  isListening = true;
+  isListening = true
 
   // Load last processed ledger from database
-  lastProcessedLedger = await loadLastProcessedLedger();
+  lastProcessedLedger = await loadLastProcessedLedger()
 
-  logger.info(`[Event Listener] Started at ledger ${lastProcessedLedger}`);
+  logger.info(`[Event Listener] Started at ledger ${lastProcessedLedger}`)
 
   // Fault recovery: Check if we are lagging significantly behind latest ledger
   try {
-    const server = getRpcServer();
-    const latestLedger = await server.getLatestLedger();
+    const server = getRpcServer()
+    const latestLedger = await server.getLatestLedger()
     if (latestLedger.sequence > lastProcessedLedger + 1) {
-      logger.info(`[Fault Recovery] Downtime detected. Backfilling missed events from ${lastProcessedLedger + 1} to ${latestLedger.sequence}`);
-      await backfillEvents(lastProcessedLedger + 1, latestLedger.sequence);
+      logger.info(
+        `[Fault Recovery] Downtime detected. Backfilling missed events from ${lastProcessedLedger + 1} to ${latestLedger.sequence}`
+      )
+      await backfillEvents(lastProcessedLedger + 1, latestLedger.sequence)
     }
   } catch (error) {
-    logger.error('[Fault Recovery Error] Failed to perform backfill on startup:', error);
+    logger.error(
+      '[Fault Recovery Error] Failed to perform backfill on startup:',
+      error
+    )
   }
 
   // Poll loop
   const poll = async () => {
-    if (!isListening) return;
+    if (!isListening) return
 
     try {
-      await fetchEvents(lastProcessedLedger + 1);
+      await fetchEvents(lastProcessedLedger + 1)
     } catch (error) {
-      logger.error('[Event Listener] Poll error:', error instanceof Error ? error.message : 'Unknown error');
+      logger.error(
+        '[Event Listener] Poll error:',
+        error instanceof Error ? error.message : 'Unknown error'
+      )
     }
 
-    setTimeout(poll, POLL_INTERVAL_MS);
-  };
+    setTimeout(poll, POLL_INTERVAL_MS)
+  }
 
-  poll();
+  poll()
 }
 
 /**
  * Stop event listener
  */
 export function stopEventListener(): void {
-  isListening = false;
-  logger.info('[Event Listener] Stopped');
+  isListening = false
+  logger.info('[Event Listener] Stopped')
 }
 
 /**
  * Get last processed ledger
  */
 export function getLastProcessedLedger(): number {
-  return lastProcessedLedger;
+  return lastProcessedLedger
 }

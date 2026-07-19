@@ -37,7 +37,9 @@ function deriveRpcUrl(network: string): string {
 
   const defaultUrl = STELLAR_RPC_URLS[network]
   if (!defaultUrl) {
-    throw new Error(`No default RPC URL for network "${network}". Set STELLAR_RPC_URL.`)
+    throw new Error(
+      `No default RPC URL for network "${network}". Set STELLAR_RPC_URL.`
+    )
   }
 
   return defaultUrl
@@ -77,7 +79,7 @@ function validateAllRequiredEnvVars(): void {
   if (walletKey && !/^[0-9a-f]{64}$/i.test(walletKey)) {
     errors.push(
       `WALLET_ENCRYPTION_KEY is invalid: must be exactly 64 hexadecimal characters (32 bytes). ` +
-      `Got length ${walletKey.length}. Generate one with: openssl rand -hex 32`
+        `Got length ${walletKey.length}. Generate one with: openssl rand -hex 32`
     )
   }
 
@@ -86,7 +88,7 @@ function validateAllRequiredEnvVars(): void {
   if (jwtSeed && jwtSeed.length < 32) {
     errors.push(
       `JWT_SEED is too weak: must be at least 32 characters. ` +
-      `Got length ${jwtSeed.length}. Use a strong random string or generate with: openssl rand -base64 48`
+        `Got length ${jwtSeed.length}. Use a strong random string or generate with: openssl rand -base64 48`
     )
   }
 
@@ -95,7 +97,7 @@ function validateAllRequiredEnvVars(): void {
   if (anthropicKey && !anthropicKey.startsWith('sk-ant-')) {
     errors.push(
       `ANTHROPIC_API_KEY is invalid: must start with "sk-ant-". ` +
-      `Got prefix "${anthropicKey.substring(0, 7)}". Get your key from: https://console.anthropic.com/`
+        `Got prefix "${anthropicKey.substring(0, 7)}". Get your key from: https://console.anthropic.com/`
     )
   }
 
@@ -104,16 +106,20 @@ function validateAllRequiredEnvVars(): void {
   if (twilioToken && twilioToken.length < 32) {
     errors.push(
       `TWILIO_AUTH_TOKEN is too short: must be at least 32 characters. ` +
-      `Got length ${twilioToken.length}. Get your token from: https://console.twilio.com/`
+        `Got length ${twilioToken.length}. Get your token from: https://console.twilio.com/`
     )
   }
 
   // ── 6. DATABASE_URL: must be valid postgres:// connection string ────────
   const databaseUrl = process.env.DATABASE_URL
-  if (databaseUrl && !databaseUrl.startsWith('postgresql://') && !databaseUrl.startsWith('postgres://')) {
+  if (
+    databaseUrl &&
+    !databaseUrl.startsWith('postgresql://') &&
+    !databaseUrl.startsWith('postgres://')
+  ) {
     errors.push(
       `DATABASE_URL is invalid: must start with "postgresql://" or "postgres://". ` +
-      `Got: "${databaseUrl.substring(0, 20)}...". Example: postgresql://user:pass@localhost:5432/dbname`
+        `Got: "${databaseUrl.substring(0, 20)}...". Example: postgresql://user:pass@localhost:5432/dbname`
     )
   }
 
@@ -122,7 +128,7 @@ function validateAllRequiredEnvVars(): void {
   if (stellarRpcUrl && !stellarRpcUrl.startsWith('https://')) {
     errors.push(
       `STELLAR_RPC_URL is invalid: must be a valid HTTPS URL. ` +
-      `Got: "${stellarRpcUrl}". Example: https://soroban-testnet.stellar.org`
+        `Got: "${stellarRpcUrl}". Example: https://soroban-testnet.stellar.org`
     )
   }
 
@@ -131,7 +137,7 @@ function validateAllRequiredEnvVars(): void {
   if (vaultContractId && !vaultContractId.startsWith('C')) {
     errors.push(
       `VAULT_CONTRACT_ID is invalid: must start with "C" (Stellar contract ID format). ` +
-      `Got: "${vaultContractId}". Example: CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`
+        `Got: "${vaultContractId}". Example: CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`
     )
   }
 
@@ -140,13 +146,18 @@ function validateAllRequiredEnvVars(): void {
   if (usdcTokenAddress && !usdcTokenAddress.startsWith('C')) {
     errors.push(
       `USDC_TOKEN_ADDRESS is invalid: must start with "C" (Stellar contract ID format). ` +
-      `Got: "${usdcTokenAddress}". Example: CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`
+        `Got: "${usdcTokenAddress}". Example: CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`
     )
   }
 
   // ── 10. NODE_ENV: must be one of the known deployment environments ────────
   const nodeEnv = process.env.NODE_ENV
-  const validNodeEnvs = ['development', 'staging', 'production', 'test'] as const
+  const validNodeEnvs = [
+    'development',
+    'staging',
+    'production',
+    'test',
+  ] as const
   if (nodeEnv && !validNodeEnvs.includes(nodeEnv as any)) {
     errors.push(
       `NODE_ENV is invalid: "${nodeEnv}". Must be one of: ${validNodeEnvs.join(' | ')}`
@@ -154,11 +165,11 @@ function validateAllRequiredEnvVars(): void {
   }
 
   if (errors.length > 0) {
-    const list = errors.map(e => `  - ${e}`).join('\n')
+    const list = errors.map((e) => `  - ${e}`).join('\n')
     throw new Error(
       `Application cannot start — environment configuration errors:\n${list}\n\n` +
-      `Fix the variables above and restart the application.\n\n` +
-      `Reference: See .env.example for required variables and their formats.`
+        `Fix the variables above and restart the application.\n\n` +
+        `Reference: See .env.example for required variables and their formats.`
     )
   }
 }
@@ -167,7 +178,9 @@ function validateAllRequiredEnvVars(): void {
  * Validate Stellar network to prevent testnet/mainnet mix-ups.
  * Protects against accidental mainnet transactions with testnet keys.
  */
-function validateStellarNetwork(network: string): 'testnet' | 'mainnet' | 'futurenet' {
+function validateStellarNetwork(
+  network: string
+): 'testnet' | 'mainnet' | 'futurenet' {
   const validNetworks = ['testnet', 'mainnet', 'futurenet'] as const
   const lowerNetwork = network.toLowerCase()
 
@@ -208,7 +221,9 @@ function validateKeypairNetworkMatch(
   network: 'testnet' | 'mainnet' | 'futurenet'
 ): void {
   if (!secretKey.startsWith('S')) {
-    throw new Error('STELLAR_AGENT_SECRET_KEY must start with S (invalid Stellar secret key format)')
+    throw new Error(
+      'STELLAR_AGENT_SECRET_KEY must start with S (invalid Stellar secret key format)'
+    )
   }
 
   if (secretKey.length !== 56) {
@@ -218,13 +233,15 @@ function validateKeypairNetworkMatch(
   }
 
   const env = process.env.NODE_ENV || 'development'
-  logger.info(`✓ Stellar Agent configured for ${network.toUpperCase()} (NODE_ENV=${env})`)
+  logger.info(
+    `✓ Stellar Agent configured for ${network.toUpperCase()} (NODE_ENV=${env})`
+  )
 
   if (network === 'mainnet' && env !== 'production') {
     console.warn(
       '\n⚠️  CRITICAL WARNING: Using MAINNET in non-production environment!\n' +
-      '⚠️  This could result in real financial loss!\n' +
-      '⚠️  Verify STELLAR_NETWORK and NODE_ENV settings immediately!\n'
+        '⚠️  This could result in real financial loss!\n' +
+        '⚠️  Verify STELLAR_NETWORK and NODE_ENV settings immediately!\n'
     )
   }
 }
@@ -319,7 +336,9 @@ export const config = {
      */
     connectionLimit: parseInt(process.env.DATABASE_CONNECTION_LIMIT || '10'),
     /** How often (ms) to poll prisma.$metrics.json() for pool gauges. */
-    poolMetricsIntervalMs: parseInt(process.env.DB_POOL_METRICS_INTERVAL_MS || '15000'),
+    poolMetricsIntervalMs: parseInt(
+      process.env.DB_POOL_METRICS_INTERVAL_MS || '15000'
+    ),
   },
   requestTimeoutMs: parseInt(process.env.REQUEST_TIMEOUT_MS || '30000'),
   jwt: {
@@ -348,7 +367,10 @@ export const config = {
     bodySizeLimit,
     bodyLimits: {
       json: parseByteLimit(process.env.BODY_LIMIT_JSON, bodySizeLimit),
-      urlencoded: parseByteLimit(process.env.BODY_LIMIT_URLENCODED, bodySizeLimit),
+      urlencoded: parseByteLimit(
+        process.env.BODY_LIMIT_URLENCODED,
+        bodySizeLimit
+      ),
     },
     /** Global rate limiter — applied to every route */
     rateLimit: {
@@ -407,8 +429,12 @@ export const config = {
     maxRetries: parseInt(process.env.HTTP_CLIENT_MAX_RETRIES || '3'),
     baseDelayMs: parseInt(process.env.HTTP_CLIENT_BASE_DELAY_MS || '200'),
     maxDelayMs: parseInt(process.env.HTTP_CLIENT_MAX_DELAY_MS || '10000'),
-    circuitBreakerThreshold: parseInt(process.env.HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD || '5'),
-    circuitBreakerResetMs: parseInt(process.env.HTTP_CLIENT_CIRCUIT_BREAKER_RESET_MS || '30000'),
+    circuitBreakerThreshold: parseInt(
+      process.env.HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD || '5'
+    ),
+    circuitBreakerResetMs: parseInt(
+      process.env.HTTP_CLIENT_CIRCUIT_BREAKER_RESET_MS || '30000'
+    ),
   },
   shutdown: {
     /** Grace period (ms) for in-force requests to complete before force-exit */
@@ -416,9 +442,13 @@ export const config = {
   },
   retention: {
     /** How many days to keep processed_events rows (default: 90 days) */
-    processedEventsDays: parseInt(process.env.RETENTION_PROCESSED_EVENTS_DAYS || '90'),
+    processedEventsDays: parseInt(
+      process.env.RETENTION_PROCESSED_EVENTS_DAYS || '90'
+    ),
     /** How many days to keep RESOLVED dead_letter_events (default: 30 days) */
-    deadLetterEventsDays: parseInt(process.env.RETENTION_DEAD_LETTER_EVENTS_DAYS || '30'),
+    deadLetterEventsDays: parseInt(
+      process.env.RETENTION_DEAD_LETTER_EVENTS_DAYS || '30'
+    ),
     /** How many days to keep agent_logs rows (default: 60 days) */
     agentLogsDays: parseInt(process.env.RETENTION_AGENT_LOGS_DAYS || '60'),
     /** Interval between retention job runs in ms (default: 24 hours) */
@@ -427,5 +457,34 @@ export const config = {
   protocolRisk: {
     /** Interval between protocol risk-score recomputations in ms (default: 6 hours) */
     intervalMs: parseInt(process.env.PROTOCOL_RISK_INTERVAL_MS || '21600000'),
+  },
+  referral: {
+    /**
+     * Minimum confirmed deposit (in asset units) that a referred user must make
+     * for their referral to activate. Activation is single-deposit: one
+     * confirmed deposit Transaction must cross this threshold on its own. Guards
+     * against dust self-referral farming.
+     */
+    minActivationDeposit: parseFloat(
+      process.env.REFERRAL_MIN_ACTIVATION_DEPOSIT || '10'
+    ),
+    /** Reward paid to the referrer on activation (asset units). */
+    ownerReward: parseFloat(process.env.REFERRAL_OWNER_REWARD || '5'),
+    /** Reward paid to the referred user on activation (asset units). 0 disables. */
+    referredReward: parseFloat(process.env.REFERRAL_REFERRED_REWARD || '5'),
+    /** Asset symbol rewards are denominated in — must be a supported asset. */
+    rewardAsset: process.env.REFERRAL_REWARD_ASSET || 'USDC',
+    /**
+     * Vault/treasury contract method invoked to transfer a reward into a user's
+     * wallet, reusing executeWriteContractCall signed by the agent keypair. The
+     * on-chain method itself lives in the contract repo; kept configurable so
+     * this backend does not hard-code a method that may be renamed there.
+     */
+    rewardContractMethod:
+      process.env.REFERRAL_REWARD_CONTRACT_METHOD || 'transfer_reward',
+    /** Interval between referral payout sweeps in ms (default: 2 minutes). */
+    payoutIntervalMs: parseInt(
+      process.env.REFERRAL_PAYOUT_INTERVAL_MS || '120000'
+    ),
   },
 }

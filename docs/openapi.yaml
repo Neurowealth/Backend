@@ -1,4 +1,4 @@
-openapi: 3.1.0
+openapi: 3.0.3
 
 info:
   title: NeuroWealth API
@@ -52,10 +52,19 @@ tags:
     description: Stellar event listener metrics
   - name: fiat
     description: Fiat on-ramp / off-ramp (buy and sell crypto with fiat via a payment provider)
+  - name: referrals
+    description: Referral rewards program (share a code, earn when referred users deposit)
   - name: admin
     description: Admin-only management endpoints
   - name: metrics
     description: Prometheus-compatible metrics endpoint
+
+# Default: no auth. Operations that require a token declare their own
+# `security: [BearerAuth: []]`, which overrides this default. This satisfies
+# the OpenAPI `security-defined` lint rule for the public endpoints (health,
+# auth challenge/verify, webhooks, public protocol reads) without annotating
+# each one individually.
+security: []
 
 paths:
   # ── Health ─────────────────────────────────────────────────────────────────
@@ -792,7 +801,8 @@ paths:
                   description: User ID (UUID v4)
                 amount:
                   type: number
-                  exclusiveMinimum: 0
+                  minimum: 0
+                  exclusiveMinimum: true
                   description: Deposit amount
                 assetSymbol:
                   type: string
@@ -859,7 +869,8 @@ paths:
                   format: uuid
                 amount:
                   type: number
-                  exclusiveMinimum: 0
+                  minimum: 0
+                  exclusiveMinimum: true
                 assetSymbol:
                   type: string
                   minLength: 1
@@ -972,7 +983,8 @@ paths:
                   enum: [deposit, withdraw]
                 amount:
                   type: number
-                  exclusiveMinimum: 0
+                  minimum: 0
+                  exclusiveMinimum: true
                 assetSymbol:
                   type: string
                   minLength: 1
@@ -2206,6 +2218,61 @@ paths:
         '500':
           description: Processing error (provider should retry)
 
+  # ── Referrals ────────────────────────────────────────────────────────────────
+  /api/v1/referrals/code:
+    get:
+      tags: [referrals]
+      operationId: getMyReferralCode
+      summary: Get (or create) the caller's referral code
+      description: >
+        Returns the authenticated caller's referral code, creating one on the
+        first request. Idempotent — the same code is returned on every call.
+        Share this code; when a new user signs up with it and later makes a
+        qualifying deposit, both parties are rewarded.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: The caller's referral code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReferralCodeResponse'
+              example:
+                code: ABC123XY
+                createdAt: '2026-06-29T12:00:00.000Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/referrals/{userId}:
+    get:
+      tags: [referrals]
+      operationId: getReferrals
+      summary: List referrals attributed to a user
+      description: >
+        Lists the referrals attributed to the user's code, newest first.
+        Owner-scoped — a caller may only read their own referrals.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+          description: The owning user's id (must match the authenticated caller)
+      responses:
+        '200':
+          description: Referrals for the user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReferralListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Caller may only read their own referrals
+
 components:
   securitySchemes:
     BearerAuth:
@@ -2257,6 +2324,14 @@ components:
         signature:
           type: string
           description: Base64-encoded Stellar signature over the nonce
+        referralCode:
+          type: string
+          maxLength: 32
+          description: >
+            Optional referral code, captured for attribution. Applied only when
+            this call creates a brand-new user; invalid, self, or duplicate
+            codes are ignored and never fail signup.
+          example: ABC123XY
 
     AuthVerifyResponse:
       type: object
@@ -2625,6 +2700,61 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+    ReferralStatus:
+      type: string
+      enum: [PENDING, ACTIVATED, REWARDED, EXPIRED]
+      description: >
+        PENDING (attributed at signup), ACTIVATED (a confirmed deposit crossed
+        the threshold), REWARDED (both parties paid), EXPIRED.
+    ReferralCodeResponse:
+      type: object
+      required: [code, createdAt]
+      properties:
+        code:
+          type: string
+          example: ABC123XY
+        createdAt:
+          type: string
+          format: date-time
+    Referral:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ReferralStatus'
+        activatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        activationTxId:
+          type: string
+          nullable: true
+          description: The confirmed deposit Transaction that satisfied activation
+        ownerRewardTxId:
+          type: string
+          nullable: true
+        referredRewardTxId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    ReferralListResponse:
+      type: object
+      required: [code, referrals]
+      properties:
+        code:
+          type: string
+          nullable: true
+          description: The owner's referral code, or null if none has been created yet
+          example: ABC123XY
+        referrals:
+          type: array
+          items:
+            $ref: '#/components/schemas/Referral'
 
   responses:
     Unauthorized:

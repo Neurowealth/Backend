@@ -10,8 +10,8 @@
  * Sentry's init() must also run before route/middleware imports so the
  * automatic request/breadcrumb instrumentation is registered.
  */
-import './telemetry/otel'    // 1. OpenTelemetry — distributed tracing
-import './telemetry/sentry'  // 2. Sentry       — error reporting
+import './telemetry/otel' // 1. OpenTelemetry — distributed tracing
+import './telemetry/sentry' // 2. Sentry       — error reporting
 
 // ── Standard imports ──────────────────────────────────────────────────────────
 
@@ -27,8 +27,19 @@ import { errorHandler } from './middleware/errorHandler'
 import { correlationIdMiddleware } from './middleware/correlationId'
 import { requestLogger } from './middleware/logger'
 import { requestTimeoutMiddleware } from './middleware/requestTimeout'
-import { rateLimiter, authRateLimiter, adminRateLimiter, internalRateLimiter, webhookRateLimiter, trustedIpBypass } from './middleware/rateLimiter'
-import { configureTrustProxy, securityHeaders, permissionsPolicy } from './middleware/security'
+import {
+  rateLimiter,
+  authRateLimiter,
+  adminRateLimiter,
+  internalRateLimiter,
+  webhookRateLimiter,
+  trustedIpBypass,
+} from './middleware/rateLimiter'
+import {
+  configureTrustProxy,
+  securityHeaders,
+  permissionsPolicy,
+} from './middleware/security'
 import { logger } from './utils/logger'
 import { startAgentLoop, stopAgentLoop } from './agent/loop'
 import { connectDb } from './db'
@@ -36,6 +47,7 @@ import { scheduleSessionCleanup } from './jobs/sessionCleanup'
 import { scheduleDataRetention } from './jobs/dataRetention'
 import { schedulePoolMetrics } from './jobs/poolMetrics'
 import { scheduleFiatReconciliation } from './jobs/fiatReconciliation'
+import { scheduleReferralPayout } from './jobs/referralPayout'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
@@ -54,7 +66,14 @@ import metricsRouter from './routes/metrics'
 import stellarRouter from './routes/stellar'
 import webhooksRouter from './routes/webhooks'
 import fiatRouter from './routes/fiat'
-import { corsMiddleware, jsonBodyParser, payloadSizeErrorHandler, urlencodedBodyParser, contentTypeRestrictionMiddleware } from './middleware/corsandbody'
+import referralsRouter from './routes/referrals'
+import {
+  corsMiddleware,
+  jsonBodyParser,
+  payloadSizeErrorHandler,
+  urlencodedBodyParser,
+  contentTypeRestrictionMiddleware,
+} from './middleware/corsandbody'
 import { setSpanUser } from './telemetry/spans'
 
 // ── Readiness state ───────────────────────────────────────────────────────────
@@ -76,9 +95,10 @@ let sessionCleanupHandle: NodeJS.Timeout | null = null
 let dataRetentionHandle: NodeJS.Timeout | null = null
 let poolMetricsHandle: NodeJS.Timeout | null = null
 let fiatReconciliationHandle: NodeJS.Timeout | null = null
+let referralPayoutHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
-  return Object.values(serviceStatus).every(s => s.ready)
+  return Object.values(serviceStatus).every((s) => s.ready)
 }
 
 // ── Express app ───────────────────────────────────────────────────────────────
@@ -100,7 +120,7 @@ app.use(contentTypeRestrictionMiddleware)
 // paths. Must precede jsonBodyParser.
 app.use(
   ['/api/v1/fiat/webhook', '/api/fiat/webhook'],
-  express.raw({ type: '*/*', limit: '1mb' }),
+  express.raw({ type: '*/*', limit: '1mb' })
 )
 app.use(jsonBodyParser)
 app.use(urlencodedBodyParser)
@@ -172,7 +192,9 @@ app.get('/health/ready', (_req, res) => {
 const API_VERSION = '1'
 
 // Unversioned routes are supported for at least 6 months from this release.
-const UNVERSIONED_SUNSET = new Date(Date.now() + 182 * 24 * 60 * 60 * 1000).toUTCString()
+const UNVERSIONED_SUNSET = new Date(
+  Date.now() + 182 * 24 * 60 * 60 * 1000
+).toUTCString()
 
 // Advertise the served API version on every response.
 app.use((_req: Request, res: Response, next) => {
@@ -190,7 +212,9 @@ try {
   swaggerSpec = yaml.load(specFile) as Record<string, unknown>
   logger.info(`[OpenAPI] Spec loaded from ${specPath}`)
 } catch (error) {
-  logger.error('[OpenAPI] Failed to load spec', { error: error instanceof Error ? error.message : String(error) })
+  logger.error('[OpenAPI] Failed to load spec', {
+    error: error instanceof Error ? error.message : String(error),
+  })
 }
 
 if (swaggerSpec) {
@@ -198,7 +222,11 @@ if (swaggerSpec) {
     customSiteTitle: 'NeuroWealth API Docs',
     customfavIcon: '/favicon.ico',
   }
-  app.use('/api/v1/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerOpts))
+  app.use(
+    '/api/v1/docs',
+    swaggerUi.serve,
+    swaggerUi.setup(swaggerSpec, swaggerOpts)
+  )
   app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerOpts))
   app.use('/api/v1/openapi.yaml', (_req: Request, res: Response) => {
     res.setHeader('Content-Type', 'text/yaml; charset=utf-8')
@@ -211,10 +239,17 @@ if (swaggerSpec) {
 }
 
 // Marks legacy unversioned /api/* responses as deprecated.
-function deprecatedApiWarning(req: Request, res: Response, next: express.NextFunction): void {
+function deprecatedApiWarning(
+  req: Request,
+  res: Response,
+  next: express.NextFunction
+): void {
   res.setHeader('Deprecation', 'true')
   res.setHeader('Sunset', UNVERSIONED_SUNSET)
-  res.setHeader('Link', `<${req.baseUrl.replace('/api/', '/api/v1/')}>; rel="successor-version"`)
+  res.setHeader(
+    'Link',
+    `<${req.baseUrl.replace('/api/', '/api/v1/')}>; rel="successor-version"`
+  )
   next()
 }
 
@@ -236,6 +271,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'analytics', handlers: [analyticsRouter] },
   { path: 'stellar', handlers: [stellarRouter] },
   { path: 'fiat', handlers: [fiatRouter] },
+  { path: 'referrals', handlers: [referralsRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
 
@@ -302,6 +338,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Fiat reconciliation timer cleared')
   }
 
+  if (referralPayoutHandle) {
+    clearInterval(referralPayoutHandle)
+    referralPayoutHandle = null
+    logger.info('[Shutdown] Referral payout timer cleared')
+  }
+
   if (!httpServer) {
     logger.warn('[Shutdown] No HTTP server to close')
     process.exit(0)
@@ -319,7 +361,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
       await stopAgentLoop()
 
       logger.info('[Shutdown] Disconnecting Prisma...')
-      const db = await import('./db').then(m => m.default)
+      const db = await import('./db').then((m) => m.default)
       await db.$disconnect()
 
       // Flush Sentry queue before exiting so no error events are dropped
@@ -350,12 +392,18 @@ async function initServices(): Promise<void> {
   await bootstrapSecrets()
 
   if (config.nodeEnv === 'production') {
-    logger.info('[Startup] Admin access will use database-backed scoped credentials ✓')
+    logger.info(
+      '[Startup] Admin access will use database-backed scoped credentials ✓'
+    )
   }
 
   if (!process.env.TWILIO_AUTH_TOKEN) {
-    const msg = 'TWILIO_AUTH_TOKEN must be set — WhatsApp webhook signature validation requires it'
-    logger.error('[Startup] Configuration validation failed — cannot continue', { error: msg })
+    const msg =
+      'TWILIO_AUTH_TOKEN must be set — WhatsApp webhook signature validation requires it'
+    logger.error(
+      '[Startup] Configuration validation failed — cannot continue',
+      { error: msg }
+    )
     throw new Error(msg)
   }
   logger.info('[Startup] Twilio auth token configured ✓')
@@ -371,7 +419,9 @@ async function initServices(): Promise<void> {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
     serviceStatus.database = { ready: false, error: msg }
-    logger.error('[Startup] Database connection failed — cannot continue', { error: msg })
+    logger.error('[Startup] Database connection failed — cannot continue', {
+      error: msg,
+    })
     throw new Error(`Database: ${msg}`)
   }
 
@@ -383,7 +433,9 @@ async function initServices(): Promise<void> {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
     serviceStatus.eventListener = { ready: false, error: msg }
-    logger.error('[Startup] Event listener failed to start — cannot continue', { error: msg })
+    logger.error('[Startup] Event listener failed to start — cannot continue', {
+      error: msg,
+    })
     throw new Error(`EventListener: ${msg}`)
   }
 
@@ -395,14 +447,18 @@ async function initServices(): Promise<void> {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
     serviceStatus.agentLoop = { ready: false, error: msg }
-    logger.error('[Startup] Agent loop failed to start — cannot continue', { error: msg })
+    logger.error('[Startup] Agent loop failed to start — cannot continue', {
+      error: msg,
+    })
     throw new Error(`AgentLoop: ${msg}`)
   }
 }
 
 async function main(): Promise<void> {
   logger.info(`[Startup] NeuroWealth backend initialising`)
-  logger.info(`[Startup] NODE_ENV=${config.nodeEnv}  network=${config.stellar.network}  port=${config.port}`)
+  logger.info(
+    `[Startup] NODE_ENV=${config.nodeEnv}  network=${config.stellar.network}  port=${config.port}`
+  )
 
   try {
     await initServices()
@@ -410,11 +466,17 @@ async function main(): Promise<void> {
     // Report startup failures to Sentry before exiting
     Sentry.captureException(initError, {
       tags: { phase: 'startup' },
-      extra: { failedServices: Object.entries(serviceStatus).filter(([, s]) => !s.ready) },
+      extra: {
+        failedServices: Object.entries(serviceStatus).filter(
+          ([, s]) => !s.ready
+        ),
+      },
     })
     await Sentry.flush(2_000)
 
-    logger.error('[Startup] One or more critical services failed to initialise:')
+    logger.error(
+      '[Startup] One or more critical services failed to initialise:'
+    )
     logger.error(
       Object.entries(serviceStatus)
         .filter(([, s]) => !s.ready)
@@ -436,6 +498,7 @@ async function main(): Promise<void> {
   dataRetentionHandle = scheduleDataRetention()
   poolMetricsHandle = schedulePoolMetrics()
   fiatReconciliationHandle = scheduleFiatReconciliation()
+  referralPayoutHandle = scheduleReferralPayout()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────
@@ -451,10 +514,16 @@ process.on('uncaughtException', (error) => {
 })
 
 process.on('unhandledRejection', (reason) => {
-  logger.error('[Process] Unhandled promise rejection — exiting for safety:', reason)
-  Sentry.captureException(reason instanceof Error ? reason : new Error(String(reason)), {
-    tags: { type: 'unhandledRejection' },
-  })
+  logger.error(
+    '[Process] Unhandled promise rejection — exiting for safety:',
+    reason
+  )
+  Sentry.captureException(
+    reason instanceof Error ? reason : new Error(String(reason)),
+    {
+      tags: { type: 'unhandledRejection' },
+    }
+  )
   Sentry.flush(2_000).finally(() => process.exit(1))
 })
 

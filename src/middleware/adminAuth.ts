@@ -15,11 +15,23 @@ const prisma = db as any
  * Valid admin key scopes — ordered from least to most privileged.
  * A `super` key implicitly includes all other scopes.
  */
-export const ADMIN_SCOPES = ['read', 'write', 'wallet', 'agent', 'super'] as const;
-export type AdminScope = typeof ADMIN_SCOPES[number];
+export const ADMIN_SCOPES = [
+  'read',
+  'write',
+  'wallet',
+  'agent',
+  'metrics:read',
+  'dlq:read',
+  'dlq:write',
+  'backfill:write',
+  'keys:read',
+  'keys:write',
+  'super',
+] as const
+export type AdminScope = (typeof ADMIN_SCOPES)[number]
 
 /** Scopes that `super` implicitly grants. */
-const SUPER_GRANTS: Set<AdminScope> = new Set(ADMIN_SCOPES);
+const SUPER_GRANTS: Set<AdminScope> = new Set(ADMIN_SCOPES)
 
 export interface AdminAuthContext {
   id: string
@@ -41,38 +53,42 @@ function getTokenFromRequest(req: Request): string | undefined {
     if (token) return token
   }
   const legacyHeader = req.headers['x-admin-token']
-  if (Array.isArray(legacyHeader))  return legacyHeader[0]?.trim() || undefined
+  if (Array.isArray(legacyHeader)) return legacyHeader[0]?.trim() || undefined
   if (typeof legacyHeader === 'string') return legacyHeader.trim() || undefined
   return undefined
 }
 
 function unauthorized(res: Response): void {
-  res.status(401).json({ success: false, error: 'Admin authentication required' })
+  res
+    .status(401)
+    .json({ success: false, error: 'Admin authentication required' })
 }
 
 function forbidden(res: Response): void {
-  res.status(403).json({ success: false, error: 'Admin access revoked or expired' })
+  res
+    .status(403)
+    .json({ success: false, error: 'Admin access revoked or expired' })
 }
 
 async function logScopeMismatch(
   req: Request,
   auth: AdminAuthContext,
-  requiredScope: AdminScope,
+  requiredScope: AdminScope
 ): Promise<void> {
   try {
     await prisma.adminAuditLog.create({
       data: {
         adminKeyId: auth.id,
-        adminName:  auth.name,
-        adminRole:  auth.role,
-        action:     'scope_check',
-        target:     req.originalUrl || req.path,
-        result:     'denied',
-        details:    { requiredScope, grantedScopes: auth.scopes },
-        ipAddress:  req.ip ?? null,
-        userAgent:  req.headers['user-agent'] ?? null,
-        method:     req.method,
-        path:       req.originalUrl || req.path,
+        adminName: auth.name,
+        adminRole: auth.role,
+        action: 'scope_check',
+        target: req.originalUrl || req.path,
+        result: 'denied',
+        details: { requiredScope, grantedScopes: auth.scopes },
+        ipAddress: req.ip ?? null,
+        userAgent: req.headers['user-agent'] ?? null,
+        method: req.method,
+        path: req.originalUrl || req.path,
       },
     })
   } catch (err) {
@@ -85,7 +101,7 @@ async function logScopeMismatch(
 export async function requireAdminAuth(
   req: Request,
   res: Response,
-  next: NextFunction,
+  next: NextFunction
 ): Promise<void> {
   const rawToken = getTokenFromRequest(req)
 
@@ -96,7 +112,7 @@ export async function requireAdminAuth(
   }
 
   try {
-    const now         = new Date()
+    const now = new Date()
     const tokenPrefix = deriveTokenPrefix(rawToken)
 
     const candidates = await prisma.adminApiKey.findMany({
@@ -113,14 +129,21 @@ export async function requireAdminAuth(
     for (const candidate of candidates) {
       const isMatch = await bcrypt.compare(rawToken, candidate.hash)
       if (!isMatch) continue
-      matched = { id: candidate.id, name: candidate.name, role: candidate.role, scopes: candidate.scopes }
+      matched = {
+        id: candidate.id,
+        name: candidate.name,
+        role: candidate.role,
+        scopes: candidate.scopes,
+      }
       break
     }
 
     if (!matched) {
       recordAuthFailure(req.path, 'invalid_token')
       logger.warn('[AdminAuth] Invalid admin token attempt', {
-        ip: req.ip, path: req.originalUrl || req.path, method: req.method,
+        ip: req.ip,
+        path: req.originalUrl || req.path,
+        method: req.method,
       })
       forbidden(res)
       return
@@ -132,7 +155,7 @@ export async function requireAdminAuth(
         logger.warn('[AdminAuth] Failed to update lastUsedAt', {
           id: matched!.id,
           error: err instanceof Error ? err.message : String(err),
-        }),
+        })
       )
 
     res.locals.adminAuth = matched
@@ -161,11 +184,17 @@ export async function requireAdminAuth(
  *   )
  */
 export function requireAdminScope(scope: AdminScope) {
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  return async (
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
     const auth = res.locals.adminAuth as AdminAuthContext | undefined
 
     if (!auth) {
-      res.status(401).json({ success: false, error: 'Admin authentication required' })
+      res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
       return
     }
 
@@ -176,13 +205,15 @@ export function requireAdminScope(scope: AdminScope) {
       // #215 – audit log every scope-check failure
       await logScopeMismatch(req, auth, scope)
       logger.warn('[AdminAuth] Scope mismatch', {
-        adminId: auth.id, requiredScope: scope, grantedScopes: scopes,
+        adminId: auth.id,
+        requiredScope: scope,
+        grantedScopes: scopes,
         path: req.originalUrl || req.path,
       })
       res.status(403).json({
         success: false,
-        error:   `Admin scope '${scope}' required`,
-        reason:  `Key '${auth.name}' has scopes [${scopes.join(', ')}]; '${scope}' is not granted.`,
+        error: `Admin scope '${scope}' required`,
+        reason: `Key '${auth.name}' has scopes [${scopes.join(', ')}]; '${scope}' is not granted.`,
       })
       return
     }

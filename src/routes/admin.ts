@@ -24,11 +24,13 @@ function auditLog(
   res: Response,
   action: string,
   result: string,
-  details?: Record<string, any>,
+  details?: Record<string, any>
 ): void {
   const adminAuth = res.locals.adminAuth
   const auditPayload = {
-    adminIdentity: adminAuth ? `${adminAuth.name} (${adminAuth.role})` : 'unknown',
+    adminIdentity: adminAuth
+      ? `${adminAuth.name} (${adminAuth.role})`
+      : 'unknown',
     adminId: adminAuth?.id ?? null,
     action,
     target: req.originalUrl || req.path,
@@ -109,7 +111,7 @@ router.get(
         error: 'Failed to retrieve metrics',
       })
     }
-  },
+  }
 )
 
 /**
@@ -145,37 +147,47 @@ router.get(
 
       const maxLimit = Math.min(Number.parseInt(limit as string) || 50, 500)
       const pageOffset = Math.max(0, Number.parseInt(offset as string) || 0)
-      const minRetryCount = Math.max(0, Number.parseInt(retryCountMin as string) || 0)
-      const maxRetryCount = retryCountMax ? Number.parseInt(retryCountMax as string) : undefined
+      const minRetryCount = Math.max(
+        0,
+        Number.parseInt(retryCountMin as string) || 0
+      )
+      const maxRetryCount = retryCountMax
+        ? Number.parseInt(retryCountMax as string)
+        : undefined
 
       const allEvents = await DeadLetterQueue.getAll()
 
       let filtered = allEvents
 
-      if (status && ['PENDING', 'RETRIED', 'RESOLVED'].includes(status as string)) {
-        filtered = filtered.filter(e => e.status === status)
+      if (
+        status &&
+        ['PENDING', 'RETRIED', 'RESOLVED'].includes(status as string)
+      ) {
+        filtered = filtered.filter((e) => e.status === status)
       }
 
       if (eventType) {
-        filtered = filtered.filter(e => e.eventType === eventType)
+        filtered = filtered.filter((e) => e.eventType === eventType)
       }
 
-      filtered = filtered.filter(e => e.retryCount >= minRetryCount)
+      filtered = filtered.filter((e) => e.retryCount >= minRetryCount)
       if (maxRetryCount !== undefined) {
-        filtered = filtered.filter(e => e.retryCount <= maxRetryCount)
+        filtered = filtered.filter((e) => e.retryCount <= maxRetryCount)
       }
 
       if (timeRangeStart) {
         const startDate = new Date(timeRangeStart as string)
         if (!isNaN(startDate.getTime())) {
-          filtered = filtered.filter(e => e.createdAt >= startDate)
+          // e.createdAt is an ISO string (see DeadLetterQueue.toDomain) — parse
+          // before comparing against the Date bound.
+          filtered = filtered.filter((e) => new Date(e.createdAt) >= startDate)
         }
       }
 
       if (timeRangeEnd) {
         const endDate = new Date(timeRangeEnd as string)
         if (!isNaN(endDate.getTime())) {
-          filtered = filtered.filter(e => e.createdAt <= endDate)
+          filtered = filtered.filter((e) => new Date(e.createdAt) <= endDate)
         }
       }
 
@@ -203,7 +215,7 @@ router.get(
             limit: maxLimit,
             hasMore: pageOffset + maxLimit < filtered.length,
           },
-          items: items.map(event => ({
+          items: items.map((event) => ({
             id: event.id,
             contractId: event.contractId,
             txHash: event.txHash,
@@ -230,7 +242,7 @@ router.get(
         error: 'Failed to inspect DLQ',
       })
     }
-  },
+  }
 )
 
 /**
@@ -249,16 +261,20 @@ router.post(
 
       if (dryRun) {
         const events = await DeadLetterQueue.getAll()
-        const pending = events.filter(e => e.status === 'PENDING' || e.status === 'RETRIED')
+        const pending = events.filter(
+          (e) => e.status === 'PENDING' || e.status === 'RETRIED'
+        )
 
-        auditLog(req, res, 'DLQ_RETRY_DRY_RUN', 'success', { wouldRetry: pending.length })
+        auditLog(req, res, 'DLQ_RETRY_DRY_RUN', 'success', {
+          wouldRetry: pending.length,
+        })
 
         return res.status(200).json({
           success: true,
           data: {
             dryRun: true,
             wouldRetry: pending.length,
-            events: pending.map(e => ({
+            events: pending.map((e) => ({
               id: e.id,
               txHash: e.txHash,
               eventType: e.eventType,
@@ -276,8 +292,8 @@ router.post(
       await retryDeadLetterEvents()
 
       const result = await DeadLetterQueue.getAll()
-      const resolved = result.filter(e => e.status === 'RESOLVED').length
-      const failed = result.filter(e => e.status === 'RETRIED').length
+      const resolved = result.filter((e) => e.status === 'RESOLVED').length
+      const failed = result.filter((e) => e.status === 'RETRIED').length
 
       logger.info('[Admin] DLQ retry completed', { resolved, failed })
       auditLog(req, res, 'DLQ_RETRY_COMPLETED', 'success', {
@@ -303,7 +319,7 @@ router.post(
         error: 'DLQ retry operation failed',
       })
     }
-  },
+  }
 )
 
 /**
@@ -321,7 +337,9 @@ router.post(
       const { eventId } = req.body
 
       if (!eventId || typeof eventId !== 'string') {
-        auditLog(req, res, 'DLQ_RESOLVE', 'failure', { error: 'Missing or invalid eventId' })
+        auditLog(req, res, 'DLQ_RESOLVE', 'failure', {
+          error: 'Missing or invalid eventId',
+        })
         return res.status(400).json({
           success: false,
           error: 'eventId is required and must be a string',
@@ -331,7 +349,10 @@ router.post(
       const resolved = await DeadLetterQueue.resolve(eventId)
 
       if (!resolved) {
-        auditLog(req, res, 'DLQ_RESOLVE', 'failure', { eventId, error: 'not_found' })
+        auditLog(req, res, 'DLQ_RESOLVE', 'failure', {
+          eventId,
+          error: 'not_found',
+        })
         return res.status(404).json({
           success: false,
           error: `Event ${eventId} not found in DLQ`,
@@ -358,7 +379,7 @@ router.post(
         error: 'Failed to resolve event',
       })
     }
-  },
+  }
 )
 
 /**
@@ -377,7 +398,9 @@ router.post(
       const { eventIds, dryRun = false } = req.body
 
       if (!Array.isArray(eventIds) || eventIds.length === 0) {
-        auditLog(req, res, 'DLQ_REPLAY', 'failure', { error: 'eventIds must be a non-empty array' })
+        auditLog(req, res, 'DLQ_REPLAY', 'failure', {
+          error: 'eventIds must be a non-empty array',
+        })
         return res.status(400).json({
           success: false,
           error: 'eventIds must be a non-empty array',
@@ -385,7 +408,9 @@ router.post(
       }
 
       if (eventIds.length > 1000) {
-        auditLog(req, res, 'DLQ_REPLAY', 'failure', { error: 'Too many events to replay (max 1000)' })
+        auditLog(req, res, 'DLQ_REPLAY', 'failure', {
+          error: 'Too many events to replay (max 1000)',
+        })
         return res.status(400).json({
           success: false,
           error: 'Maximum 1000 events per replay operation',
@@ -393,8 +418,9 @@ router.post(
       }
 
       const allEvents = await DeadLetterQueue.getAll()
-      const targetEvents = allEvents.filter(e =>
-        eventIds.includes(e.id) && ['PENDING', 'RETRIED'].includes(e.status)
+      const targetEvents = allEvents.filter(
+        (e) =>
+          eventIds.includes(e.id) && ['PENDING', 'RETRIED'].includes(e.status)
       )
 
       if (targetEvents.length === 0) {
@@ -405,7 +431,8 @@ router.post(
         })
         return res.status(404).json({
           success: false,
-          error: 'No eligible events found for replay (only PENDING and RETRIED events can be replayed)',
+          error:
+            'No eligible events found for replay (only PENDING and RETRIED events can be replayed)',
         })
       }
 
@@ -423,7 +450,7 @@ router.post(
             requestedCount: eventIds.length,
             replayableCount: targetEvents.length,
             blockedCount: eventIds.length - targetEvents.length,
-            events: targetEvents.map(e => ({
+            events: targetEvents.map((e) => ({
               id: e.id,
               txHash: e.txHash,
               eventType: e.eventType,
@@ -443,8 +470,8 @@ router.post(
       await retryDeadLetterEvents()
 
       const result = await DeadLetterQueue.getAll()
-      const resolved = result.filter(e => e.status === 'RESOLVED').length
-      const failed = result.filter(e => e.status === 'RETRIED').length
+      const resolved = result.filter((e) => e.status === 'RESOLVED').length
+      const failed = result.filter((e) => e.status === 'RETRIED').length
 
       logger.info('[Admin] Selective DLQ replay completed', {
         replayedCount: targetEvents.length,
@@ -483,7 +510,7 @@ router.post(
         error: 'DLQ replay operation failed',
       })
     }
-  },
+  }
 )
 
 /**
@@ -501,23 +528,36 @@ router.post(
       const { startLedger, endLedger } = req.body
 
       if (!startLedger || typeof startLedger !== 'number' || startLedger < 0) {
-        auditLog(req, res, 'STELLAR_BACKFILL', 'failure', { error: 'Invalid startLedger' })
+        auditLog(req, res, 'STELLAR_BACKFILL', 'failure', {
+          error: 'Invalid startLedger',
+        })
         return res.status(400).json({
           success: false,
           error: 'startLedger is required and must be a non-negative number',
         })
       }
 
-      if (endLedger && (typeof endLedger !== 'number' || endLedger < startLedger)) {
-        auditLog(req, res, 'STELLAR_BACKFILL', 'failure', { error: 'Invalid endLedger' })
+      if (
+        endLedger &&
+        (typeof endLedger !== 'number' || endLedger < startLedger)
+      ) {
+        auditLog(req, res, 'STELLAR_BACKFILL', 'failure', {
+          error: 'Invalid endLedger',
+        })
         return res.status(400).json({
           success: false,
           error: 'endLedger must be a number >= startLedger',
         })
       }
 
-      logger.info('[Admin] Starting manual backfill', { startLedger, endLedger })
-      auditLog(req, res, 'STELLAR_BACKFILL', 'success', { startLedger, endLedger })
+      logger.info('[Admin] Starting manual backfill', {
+        startLedger,
+        endLedger,
+      })
+      auditLog(req, res, 'STELLAR_BACKFILL', 'success', {
+        startLedger,
+        endLedger,
+      })
 
       const { backfillEvents } = await import('../stellar/events')
       await backfillEvents(startLedger, endLedger)
@@ -544,7 +584,7 @@ router.post(
         error: 'Backfill operation failed',
       })
     }
-  },
+  }
 )
 
 /**
@@ -563,13 +603,19 @@ router.post(
       const { name, role, scopes, expiresAt } = req.body
 
       if (!name || typeof name !== 'string') {
-        return res.status(400).json({ success: false, error: 'name is required' })
+        return res
+          .status(400)
+          .json({ success: false, error: 'name is required' })
       }
       if (!role || typeof role !== 'string') {
-        return res.status(400).json({ success: false, error: 'role is required' })
+        return res
+          .status(400)
+          .json({ success: false, error: 'role is required' })
       }
       if (!Array.isArray(scopes) || scopes.length === 0) {
-        return res.status(400).json({ success: false, error: 'scopes must be a non-empty array' })
+        return res
+          .status(400)
+          .json({ success: false, error: 'scopes must be a non-empty array' })
       }
 
       const crypto = await import('node:crypto')
@@ -590,10 +636,22 @@ router.post(
           tokenPrefix,
           expiresAt: expiresAt ? new Date(expiresAt) : null,
         },
-        select: { id: true, name: true, role: true, scopes: true, expiresAt: true, createdAt: true },
+        select: {
+          id: true,
+          name: true,
+          role: true,
+          scopes: true,
+          expiresAt: true,
+          createdAt: true,
+        },
       })
 
-      auditLog(req, res, 'CREATE_ADMIN_KEY', 'success', { keyId: key.id, name, role, scopes })
+      auditLog(req, res, 'CREATE_ADMIN_KEY', 'success', {
+        keyId: key.id,
+        name,
+        role,
+        scopes,
+      })
 
       // Raw token returned ONCE — caller must store it securely.
       res.status(201).json({
@@ -608,7 +666,12 @@ router.post(
     } catch (error: any) {
       // Unique constraint violation — name already taken
       if (error?.code === 'P2002') {
-        return res.status(409).json({ success: false, error: 'A key with that name already exists' })
+        return res
+          .status(409)
+          .json({
+            success: false,
+            error: 'A key with that name already exists',
+          })
       }
       logger.error('[Admin] Failed to create admin key', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -616,9 +679,11 @@ router.post(
       auditLog(req, res, 'CREATE_ADMIN_KEY', 'failure', {
         error: error instanceof Error ? error.message : 'Unknown error',
       })
-      res.status(500).json({ success: false, error: 'Failed to create admin key' })
+      res
+        .status(500)
+        .json({ success: false, error: 'Failed to create admin key' })
     }
-  },
+  }
 )
 
 /**
@@ -639,11 +704,15 @@ router.delete(
       })
 
       if (!existing) {
-        return res.status(404).json({ success: false, error: 'Admin key not found' })
+        return res
+          .status(404)
+          .json({ success: false, error: 'Admin key not found' })
       }
 
       if (existing.revokedAt) {
-        return res.status(409).json({ success: false, error: 'Admin key is already revoked' })
+        return res
+          .status(409)
+          .json({ success: false, error: 'Admin key is already revoked' })
       }
 
       await prisma.adminApiKey.update({
@@ -651,8 +720,14 @@ router.delete(
         data: { revokedAt: new Date() },
       })
 
-      logger.info('[Admin] Admin key revoked', { keyId: id, name: existing.name })
-      auditLog(req, res, 'REVOKE_ADMIN_KEY', 'success', { keyId: id, name: existing.name })
+      logger.info('[Admin] Admin key revoked', {
+        keyId: id,
+        name: existing.name,
+      })
+      auditLog(req, res, 'REVOKE_ADMIN_KEY', 'success', {
+        keyId: id,
+        name: existing.name,
+      })
 
       res.status(200).json({
         success: true,
@@ -666,9 +741,11 @@ router.delete(
       auditLog(req, res, 'REVOKE_ADMIN_KEY', 'failure', {
         error: error instanceof Error ? error.message : 'Unknown error',
       })
-      res.status(500).json({ success: false, error: 'Failed to revoke admin key' })
+      res
+        .status(500)
+        .json({ success: false, error: 'Failed to revoke admin key' })
     }
-  },
+  }
 )
 
 /**
@@ -706,9 +783,11 @@ router.get(
       logger.error('[Admin] Failed to list admin keys', {
         error: error instanceof Error ? error.message : 'Unknown error',
       })
-      res.status(500).json({ success: false, error: 'Failed to list admin keys' })
+      res
+        .status(500)
+        .json({ success: false, error: 'Failed to list admin keys' })
     }
-  },
+  }
 )
 
 /**
@@ -722,12 +801,21 @@ router.get(
   async (req: Request, res: Response) => {
     try {
       const totalWallets = await prisma.custodialWallet.count()
-      const v1Wallets = await prisma.custodialWallet.count({ where: { keyVersion: 1 } })
-      const v2Wallets = await prisma.custodialWallet.count({ where: { keyVersion: 2 } })
+      const v1Wallets = await prisma.custodialWallet.count({
+        where: { keyVersion: 1 },
+      })
+      const v2Wallets = await prisma.custodialWallet.count({
+        where: { keyVersion: 2 },
+      })
 
-      const percentV1 = totalWallets === 0 ? 0 : (v1Wallets / totalWallets) * 100
+      const percentV1 =
+        totalWallets === 0 ? 0 : (v1Wallets / totalWallets) * 100
 
-      auditLog(req, res, 'GET_ROTATION_STATUS', 'success', { totalWallets, v1Wallets, percentV1 })
+      auditLog(req, res, 'GET_ROTATION_STATUS', 'success', {
+        totalWallets,
+        v1Wallets,
+        percentV1,
+      })
 
       res.status(200).json({
         success: true,
@@ -747,9 +835,11 @@ router.get(
       auditLog(req, res, 'GET_ROTATION_STATUS', 'failure', {
         error: error instanceof Error ? error.message : 'Unknown error',
       })
-      res.status(500).json({ success: false, error: 'Failed to get rotation status' })
+      res
+        .status(500)
+        .json({ success: false, error: 'Failed to get rotation status' })
     }
-  },
+  }
 )
 
 export default router

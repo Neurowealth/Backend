@@ -15,7 +15,6 @@ declare const beforeEach: any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 declare const expect: any
 
-
 import { createCustodialWallet } from '../../src/stellar/wallet'
 import { config } from '../../src/config/env'
 
@@ -23,7 +22,6 @@ function uuid(): string {
   // Deterministic enough for tests; avoids pulling in extra deps like "uuid".
   return `t-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
-
 
 // --- Mock Stellar contract calls used by the HTTP deposit/withdraw controller ----
 
@@ -95,7 +93,7 @@ jest.mock('../../src/stellar/events', () => {
 })
 
 function randomToken(): string {
-  return `it-token-${uuidv4()}`
+  return `it-token-${uuid()}`
 }
 
 async function seedAuthAndWallet(): Promise<{
@@ -106,8 +104,9 @@ async function seedAuthAndWallet(): Promise<{
   // Unique wallet address per test run to avoid uniqueness collisions.
   // Wallet encryption is deterministic only on WALLET_ENCRYPTION_KEY, so we just
   // need an actual custodial wallet row.
-  const userId = `it-user-${uuidv4()}`
-  const walletAddress = `G${uuidv4().replace(/-/g, '').slice(0, 47)}WALLETADDR`.slice(0, 56)
+  const userId = `it-user-${uuid()}`
+  const walletAddress =
+    `G${uuid().replace(/-/g, '').slice(0, 47)}WALLETADDR`.slice(0, 56)
 
   const user = await db.user.create({
     data: {
@@ -176,7 +175,7 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
       },
     })
 
-    const txHash = `tx-${uuidv4()}`
+    const txHash = `tx-${uuid()}`
     const depositAmount = 123.45
     const assetSymbol = 'USDC'
     const protocolName = 'Blend'
@@ -210,7 +209,7 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
         amount: depositAmount,
         assetSymbol,
         protocolName,
-      }),
+      })
     )
 
     // The HTTP controller wrote the Transaction row. Position update happens via event processing.
@@ -221,11 +220,7 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
       ledger: 50,
       txHash,
       contractId: config.stellar.vaultContractId,
-      topics: [
-        'deposit',
-        walletAddress,
-        protocolName,
-      ],
+      topics: ['deposit', walletAddress, protocolName],
       value: {
         user: walletAddress,
         amount: depositAmount.toString(),
@@ -233,10 +228,11 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
       },
     } as unknown as FakeContractEvent
 
-    // @ts-expect-error — allow partial contract event for test harness.
     await mockHandleEvent(depositEvent)
 
-    const transactionRow = await db.transaction.findUnique({ where: { txHash } })
+    const transactionRow = await db.transaction.findUnique({
+      where: { txHash },
+    })
     expect(transactionRow).toBeTruthy()
     expect(transactionRow?.status).toBe('CONFIRMED')
     expect(transactionRow?.confirmedAt).not.toBeNull()
@@ -283,7 +279,7 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
       },
     })
 
-    const txHash = `tx-${uuidv4()}`
+    const txHash = `tx-${uuid()}`
     const withdrawAmount = 123.0
 
     mockWithdrawForUser.mockResolvedValue({
@@ -319,15 +315,22 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
       },
     } as unknown as FakeContractEvent
 
-    // @ts-expect-error — allow partial contract event for test harness.
     await mockHandleEvent(withdrawEvent)
 
-    const updatedPosition = await db.position.findUnique({ where: { id: position.id } })
+    const updatedPosition = await db.position.findUnique({
+      where: { id: position.id },
+    })
     expect(updatedPosition).toBeTruthy()
-    expect(Number(updatedPosition!.depositedAmount)).toBeCloseTo(500 - withdrawAmount)
-    expect(Number(updatedPosition!.currentValue)).toBeCloseTo(500 - withdrawAmount)
+    expect(Number(updatedPosition!.depositedAmount)).toBeCloseTo(
+      500 - withdrawAmount
+    )
+    expect(Number(updatedPosition!.currentValue)).toBeCloseTo(
+      500 - withdrawAmount
+    )
 
-    const transactionRow = await db.transaction.findUnique({ where: { txHash } })
+    const transactionRow = await db.transaction.findUnique({
+      where: { txHash },
+    })
     expect(transactionRow).toBeTruthy()
     expect(transactionRow?.type).toBe('WITHDRAWAL')
     expect(transactionRow?.status).toBe('CONFIRMED')
@@ -341,7 +344,7 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
   it('POST /api/withdraw (error path): RPC/event processing failure → DLQ row created', async () => {
     const { userId, sessionToken } = await seedAuthAndWallet()
 
-    const txHash = `tx-${uuidv4()}`
+    const txHash = `tx-${uuid()}`
 
     // controller path: simulate RPC failure so HTTP returns FAILED transaction
     // (controller throws on-chain fn failures? In current code, it doesn't catch; but contract mock
@@ -374,16 +377,14 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
     mockHandleEvent.mockImplementation(async () => {
       const realEvents = await jest.requireActual('../../src/stellar/events')
       try {
-        await realEvents.handleEvent(
-          {
-            type: 'withdraw',
-            ledger: 90,
-            txHash,
-            contractId: config.stellar.vaultContractId,
-            topics: ['withdraw', 'bad-wallet', 'Blend'],
-            value: { user: 'bad-wallet', amount: '1', shares: '1' },
-          } as any,
-        )
+        await realEvents.handleEvent({
+          type: 'withdraw',
+          ledger: 90,
+          txHash,
+          contractId: config.stellar.vaultContractId,
+          topics: ['withdraw', 'bad-wallet', 'Blend'],
+          value: { user: 'bad-wallet', amount: '1', shares: '1' },
+        } as any)
       } catch {
         // Re-throw so DLQ logic runs inside real handleEvent.
         throw new Error('simulated rpc/event processing failure')
@@ -411,4 +412,3 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
     expect(dlqRows[0].eventType).toBe('withdrawal')
   })
 })
-

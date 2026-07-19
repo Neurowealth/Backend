@@ -22,6 +22,10 @@ enum TransactionType {
   YIELD_CLAIM
   REBALANCE
   SWAP
+  // Platform-funded referral reward payout. Distinct from user-initiated
+  // activity so it is auditable and, for tax purposes (#284), identifiable as
+  // realized income rather than a return on the user's own capital.
+  REFERRAL_REWARD
 }
 
 enum TransactionStatus {
@@ -71,6 +75,13 @@ enum FiatOrderStatus {
   REFUNDED
 }
 
+enum ReferralStatus {
+  PENDING
+  ACTIVATED
+  REWARDED
+  EXPIRED
+}
+
 model User {
   id            String   @id @default(uuid())
   walletAddress String   @unique
@@ -91,6 +102,8 @@ model User {
   agentLogs             AgentLog[]
   webhookSubscriptions  WebhookSubscription[]
   fiatOrders            FiatOrder[]
+  referralCode          ReferralCode?
+  referralConversion    ReferralConversion?
 
   @@map("users")
 }
@@ -102,6 +115,8 @@ model Session {
   walletAddress String
   network       Network
   expiresAt     DateTime
+  refreshTokenHash      String?
+  refreshTokenExpiresAt DateTime?
   ipAddress     String?
   userAgent     String?
   createdAt     DateTime @default(now())
@@ -239,6 +254,7 @@ model ProtocolRate {
   borrowApy    Decimal? @db.Decimal(10, 6)
   tvl          Decimal? @db.Decimal(36, 2)
   network      Network
+  rawResponse  String?
   fetchedAt    DateTime @default(now())
 
   @@unique([protocolName, assetSymbol, network, fetchedAt])
@@ -246,6 +262,15 @@ model ProtocolRate {
   @@index([fetchedAt])
   @@index([protocolName, assetSymbol, fetchedAt])
   @@map("protocol_rates")
+}
+
+// Audit posture of a protocol, mirrored from the AuditStatusValue string union
+// in src/config/protocolRiskMetadata.ts. Values must stay in sync with that
+// union since the scoring job persists it directly.
+enum AuditStatus {
+  UNAUDITED
+  SELF_REPORTED
+  THIRD_PARTY_AUDITED
 }
 
 // ProtocolRiskScore — quantitative, transparent risk score per protocol.
@@ -448,4 +473,49 @@ model FiatOrder {
   @@index([status])
   @@index([createdAt])
   @@map("fiat_orders")
+}
+
+/// A user's own single-level referral code (#growth). One code per user; the
+/// same code is returned on repeated requests. Sharing this code lets a new
+/// user attribute their signup to the owner.
+model ReferralCode {
+  id          String   @id @default(uuid())
+  ownerUserId String   @unique
+  code        String   @unique
+  createdAt   DateTime @default(now())
+
+  owner       User                 @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  conversions ReferralConversion[]
+
+  @@index([code])
+  @@map("referral_codes")
+}
+
+/// One referral attribution + its lifecycle. Created in PENDING at signup time
+/// (attribution at the source). Advances to ACTIVATED only when a real,
+/// on-chain-confirmed deposit Transaction crosses the activation threshold —
+/// never on a client-reported claim. The payout job then pays both parties and
+/// moves the row to REWARDED. A row stuck at ACTIVATED means a payout is still
+/// owed and retriable; it is never un-activated once ACTIVATED (on-chain
+/// finality). `referredUserId` is unique — one referral credit per user, ever.
+model ReferralConversion {
+  id                 String         @id @default(uuid())
+  referralCodeId     String
+  referredUserId     String         @unique
+  activatedAt        DateTime?
+  activationTxId     String?        // the confirmed deposit Transaction that satisfied activation
+  status             ReferralStatus @default(PENDING)
+  ownerRewardTxId    String?        // REFERRAL_REWARD Transaction paid to the referrer
+  referredRewardTxId String?        // REFERRAL_REWARD Transaction paid to the referred user
+  payoutError        String?        // last payout failure reason — kept for retriable visibility
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  referralCode ReferralCode @relation(fields: [referralCodeId], references: [id], onDelete: Cascade)
+  referredUser User         @relation(fields: [referredUserId], references: [id], onDelete: Cascade)
+
+  @@index([referralCodeId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("referral_conversions")
 }
