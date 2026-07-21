@@ -2,14 +2,17 @@
 // Express app with the auth middleware and service layer mocked, so it verifies
 // the HTTP wiring (validation, status codes, owner-scoping, and the raw-body
 // webhook signature path) without a live database or provider network calls.
+const mockUserId = '11111111-1111-4111-8111-111111111111'
+const mockOtherUserId = '22222222-2222-4222-8222-222222222222'
+
 import request from 'supertest'
 import express from 'express'
 
 // --- Auth: stub requireAuth/enforceUserAccess to inject a fixed identity ------
 jest.mock('../../src/middleware/authenticate', () => ({
   requireAuth: (req: any, _res: any, next: any) => {
-    req.userId = 'user-1'
-    req.auth = { userId: 'user-1', walletAddress: 'GWALLET_USER_1' }
+    req.userId = mockUserId
+    req.auth = { userId: mockUserId, walletAddress: 'GWALLET_USER_1' }
     next()
   },
   enforceUserAccess: (req: any, res: any, next: any) => {
@@ -22,7 +25,12 @@ jest.mock('../../src/middleware/authenticate', () => ({
 }))
 
 jest.mock('../../src/utils/logger', () => ({
-  logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+  logger: {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+  },
 }))
 
 // --- Service layer: mock so no DB / provider network is touched ---------------
@@ -79,50 +87,74 @@ beforeEach(() => {
 
 describe('POST /api/fiat/quote', () => {
   it('returns a quote for a valid request', async () => {
-    mockGetFiatQuote.mockResolvedValue({ provider: 'moonpay', cryptoAmount: 98.5 })
-    const res = await request(app)
-      .post('/api/fiat/quote')
-      .send({ direction: 'ON_RAMP', fiatAmount: 100, fiatCurrency: 'usd', assetSymbol: 'USDC' })
+    mockGetFiatQuote.mockResolvedValue({
+      provider: 'moonpay',
+      cryptoAmount: 98.5,
+    })
+    const res = await request(app).post('/api/fiat/quote').send({
+      direction: 'ON_RAMP',
+      fiatAmount: 100,
+      fiatCurrency: 'usd',
+      assetSymbol: 'USDC',
+    })
     expect(res.status).toBe(200)
     expect(res.body.cryptoAmount).toBe(98.5)
   })
 
   it('rejects an invalid body with 400', async () => {
-    const res = await request(app)
-      .post('/api/fiat/quote')
-      .send({ direction: 'SIDEWAYS', fiatAmount: -5, fiatCurrency: 'usd', assetSymbol: 'USDC' })
+    const res = await request(app).post('/api/fiat/quote').send({
+      direction: 'SIDEWAYS',
+      fiatAmount: -5,
+      fiatCurrency: 'usd',
+      assetSymbol: 'USDC',
+    })
     expect(res.status).toBe(400)
     expect(mockGetFiatQuote).not.toHaveBeenCalled()
   })
 
   it('returns 502 when the provider errors', async () => {
     mockGetFiatQuote.mockRejectedValue(new Error('provider down'))
-    const res = await request(app)
-      .post('/api/fiat/quote')
-      .send({ direction: 'ON_RAMP', fiatAmount: 100, fiatCurrency: 'USD', assetSymbol: 'USDC' })
+    const res = await request(app).post('/api/fiat/quote').send({
+      direction: 'ON_RAMP',
+      fiatAmount: 100,
+      fiatCurrency: 'USD',
+      assetSymbol: 'USDC',
+    })
     expect(res.status).toBe(502)
   })
 })
 
 describe('POST /api/fiat/orders', () => {
   it('creates an order for the authenticated user', async () => {
-    mockCreateFiatOrder.mockResolvedValue({ id: 'order-1', status: 'PENDING', checkoutUrl: 'https://pay' })
-    const res = await request(app)
-      .post('/api/fiat/orders')
-      .send({ userId: 'user-1', direction: 'ON_RAMP', fiatAmount: 100, fiatCurrency: 'USD', assetSymbol: 'USDC' })
+    mockCreateFiatOrder.mockResolvedValue({
+      id: 'order-1',
+      status: 'PENDING',
+      checkoutUrl: 'https://pay',
+    })
+    const res = await request(app).post('/api/fiat/orders').send({
+      userId: mockUserId,
+      direction: 'ON_RAMP',
+      fiatAmount: 100,
+      fiatCurrency: 'USD',
+      assetSymbol: 'USDC',
+    })
     expect(res.status).toBe(201)
     expect(res.body.checkoutUrl).toBe('https://pay')
     // The wallet address comes from the authenticated session, not the body.
     expect(mockCreateFiatOrder).toHaveBeenCalledWith(
       expect.any(Object),
-      expect.objectContaining({ walletAddress: 'GWALLET_USER_1' }),
+      expect.objectContaining({ walletAddress: 'GWALLET_USER_1' })
     )
   })
 
   it('forbids creating an order on behalf of another user', async () => {
-    const res = await request(app)
-      .post('/api/fiat/orders')
-      .send({ userId: 'someone-else', direction: 'ON_RAMP', fiatAmount: 100, fiatCurrency: 'USD', assetSymbol: 'USDC' })
+    const res = await request(app).post('/api/fiat/orders').send({
+      userId: mockOtherUserId,
+      direction: 'ON_RAMP',
+      fiatAmount: 100,
+      fiatCurrency: 'USD',
+      assetSymbol: 'USDC',
+    })
     expect(res.status).toBe(403)
     expect(mockCreateFiatOrder).not.toHaveBeenCalled()
   })
@@ -135,21 +167,27 @@ describe('GET /api/fiat/orders', () => {
     expect(res.status).toBe(200)
     expect(res.body.orders).toHaveLength(1)
     expect(mockDb.fiatOrder.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { userId: 'user-1' } }),
+      expect.objectContaining({ where: { userId: mockUserId } })
     )
   })
 })
 
 describe('GET /api/fiat/orders/:id', () => {
   it('returns the order when owned by the caller', async () => {
-    mockDb.fiatOrder.findUnique.mockResolvedValue({ id: 'order-1', userId: 'user-1' })
+    mockDb.fiatOrder.findUnique.mockResolvedValue({
+      id: 'order-1',
+      userId: mockUserId,
+    })
     const res = await request(app).get('/api/fiat/orders/order-1')
     expect(res.status).toBe(200)
     expect(res.body.id).toBe('order-1')
   })
 
   it("returns 404 for another user's order (no existence leak)", async () => {
-    mockDb.fiatOrder.findUnique.mockResolvedValue({ id: 'order-1', userId: 'other' })
+    mockDb.fiatOrder.findUnique.mockResolvedValue({
+      id: 'order-1',
+      userId: 'other',
+    })
     const res = await request(app).get('/api/fiat/orders/order-1')
     expect(res.status).toBe(404)
   })
@@ -174,14 +212,21 @@ describe('POST /api/fiat/webhook/:provider', () => {
   it('processes a verified delivery and ACKs 200', async () => {
     mockVerify.mockReturnValue(true)
     mockParse.mockReturnValue({ providerOrderId: 'mp_1', status: 'PROCESSING' })
-    mockProcessProviderWebhook.mockResolvedValue({ handled: true, orderId: 'order-1', status: 'PROCESSING' })
+    mockProcessProviderWebhook.mockResolvedValue({
+      handled: true,
+      orderId: 'order-1',
+      status: 'PROCESSING',
+    })
     const res = await request(app)
       .post('/api/fiat/webhook/moonpay')
       .set('Content-Type', 'application/json')
       .send({ data: { id: 'mp_1', status: 'pending' } })
     expect(res.status).toBe(200)
     expect(res.body.received).toBe(true)
-    expect(mockProcessProviderWebhook).toHaveBeenCalledWith('moonpay', { providerOrderId: 'mp_1', status: 'PROCESSING' })
+    expect(mockProcessProviderWebhook).toHaveBeenCalledWith('moonpay', {
+      providerOrderId: 'mp_1',
+      status: 'PROCESSING',
+    })
   })
 
   it('returns 400 on a malformed (unparseable) payload', async () => {

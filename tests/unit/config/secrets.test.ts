@@ -1,4 +1,9 @@
-import { createSecretsProvider, bootstrapSecrets, getSecretsProvider } from '../../../src/config/secrets'
+import {
+  createSecretsProvider,
+  bootstrapSecrets,
+  getSecretsProvider,
+} from '../../../src/config/secrets'
+import { logger } from '../../../src/utils/logger'
 
 jest.mock('../../../src/utils/logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
@@ -28,20 +33,23 @@ function deleteEnv(...keys: string[]) {
 describe('EnvSecretsProvider (SECRET_BACKEND=env)', () => {
   beforeEach(() => {
     deleteEnv('SECRET_BACKEND')
-    jest.resetModules()
   })
 
   it('returns the env var value', async () => {
     setEnv({ JWT_SEED: 'my-super-secret-seed-at-least-32-chars!!' })
     const provider = createSecretsProvider()
-    await expect(provider.get('JWT_SEED')).resolves.toBe('my-super-secret-seed-at-least-32-chars!!')
+    await expect(provider.get('JWT_SEED')).resolves.toBe(
+      'my-super-secret-seed-at-least-32-chars!!'
+    )
     deleteEnv('JWT_SEED')
   })
 
   it('throws when the env var is missing', async () => {
     deleteEnv('JWT_SEED')
     const provider = createSecretsProvider()
-    await expect(provider.get('JWT_SEED')).rejects.toThrow('Missing env var: JWT_SEED')
+    await expect(provider.get('JWT_SEED')).rejects.toThrow(
+      'Missing env var: JWT_SEED'
+    )
   })
 
   it('refresh() resolves without error', async () => {
@@ -63,7 +71,9 @@ describe('AwsSsmSecretsProvider (SECRET_BACKEND=aws-ssm)', () => {
   })
 
   it('fetches a secret from SSM and caches it', async () => {
-    mockSend.mockResolvedValueOnce({ Parameter: { Value: 'ssm-jwt-seed-value' } })
+    mockSend.mockResolvedValueOnce({
+      Parameter: { Value: 'ssm-jwt-seed-value' },
+    })
     const provider = createSecretsProvider()
 
     const val = await provider.get('JWT_SEED')
@@ -79,7 +89,9 @@ describe('AwsSsmSecretsProvider (SECRET_BACKEND=aws-ssm)', () => {
   it('throws when SSM returns no value', async () => {
     mockSend.mockResolvedValueOnce({ Parameter: {} })
     const provider = createSecretsProvider()
-    await expect(provider.get('WALLET_ENCRYPTION_KEY')).rejects.toThrow('SSM parameter not found')
+    await expect(provider.get('WALLET_ENCRYPTION_KEY')).rejects.toThrow(
+      'SSM parameter not found'
+    )
   })
 
   it('refresh() re-fetches all cached keys', async () => {
@@ -88,8 +100,8 @@ describe('AwsSsmSecretsProvider (SECRET_BACKEND=aws-ssm)', () => {
       .mockResolvedValueOnce({ Parameter: { Value: 'refreshed-value' } })
     const provider = createSecretsProvider()
 
-    await provider.get('JWT_SEED')                   // populates cache
-    await provider.refresh()                          // re-fetches
+    await provider.get('JWT_SEED') // populates cache
+    await provider.refresh() // re-fetches
 
     // After refresh the cache should hold the refreshed value.
     const afterRefresh = await provider.get('JWT_SEED')
@@ -98,17 +110,16 @@ describe('AwsSsmSecretsProvider (SECRET_BACKEND=aws-ssm)', () => {
   })
 
   it('refresh() logs a warning and continues if one key fails', async () => {
-    const { logger } = jest.requireMock('../../../src/utils/logger') as { logger: { warn: jest.Mock } }
     mockSend
-      .mockResolvedValueOnce({ Parameter: { Value: 'ok-value' } })  // initial get
-      .mockRejectedValueOnce(new Error('SSM throttled'))             // refresh fails
+      .mockResolvedValueOnce({ Parameter: { Value: 'ok-value' } }) // initial get
+      .mockRejectedValueOnce(new Error('SSM throttled')) // refresh fails
     const provider = createSecretsProvider()
 
     await provider.get('JWT_SEED')
     await provider.refresh()
 
     expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('Failed to refresh SSM key'),
+      expect.stringContaining('Failed to refresh SSM key')
     )
   })
 })
@@ -118,7 +129,6 @@ describe('AwsSsmSecretsProvider (SECRET_BACKEND=aws-ssm)', () => {
 describe('bootstrapSecrets()', () => {
   afterEach(() => {
     deleteEnv('SECRET_BACKEND')
-    jest.resetModules()
   })
 
   it('is a no-op when SECRET_BACKEND=env', async () => {

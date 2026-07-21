@@ -1,17 +1,15 @@
 import express from 'express'
 import request from 'supertest'
-import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals'
-import { requestTimeoutMiddleware, resolveRequestTimeout } from '../../../src/middleware/requestTimeout'
+import { afterEach, describe, expect, it, jest } from '@jest/globals'
+import {
+  requestTimeoutMiddleware,
+  resolveRequestTimeout,
+} from '../../../src/middleware/requestTimeout'
 import { register } from '../../../src/utils/metrics'
+import { config } from '../../../src/config/env'
 
 describe('requestTimeout middleware', () => {
-  beforeEach(() => {
-    jest.useFakeTimers()
-    register.resetMetrics()
-  })
-
   afterEach(() => {
-    jest.useRealTimers()
     register.resetMetrics()
     jest.restoreAllMocks()
   })
@@ -36,6 +34,10 @@ describe('requestTimeout middleware', () => {
   })
 
   it('returns 504 when a route exceeds the configured timeout', async () => {
+    // Fake timers can't drive a real supertest socket round-trip — shrink the
+    // configured window instead and let the timeout fire for real.
+    jest.replaceProperty(config, 'requestTimeoutMs', 100)
+
     const app = express()
     app.use(requestTimeoutMiddleware)
     app.get('/slow', async () => {
@@ -44,15 +46,15 @@ describe('requestTimeout middleware', () => {
       })
     })
 
-    const pending = request(app).get('/slow')
-    jest.advanceTimersByTime(30_000)
-    await Promise.resolve()
-    const res = await pending
+    const res = await request(app).get('/slow')
 
     expect(res.status).toBe(504)
     expect(res.body).toEqual({ error: 'Request timed out' })
 
     const metrics = await register.metrics()
-    expect(metrics).toContain('request_timeouts_total{route_group="general"} 1')
+    // The registry appends default labels (e.g. env), so match loosely.
+    expect(metrics).toMatch(
+      /request_timeouts_total\{[^}]*route_group="general"[^}]*\} 1/
+    )
   })
 })
