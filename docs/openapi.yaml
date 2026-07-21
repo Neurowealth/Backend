@@ -54,6 +54,8 @@ tags:
     description: Fiat on-ramp / off-ramp (buy and sell crypto with fiat via a payment provider)
   - name: referrals
     description: Referral rewards program (share a code, earn when referred users deposit)
+  - name: alerts
+    description: User-defined price & yield alert rules (notify on protocol APY, portfolio value, or drawdown conditions)
   - name: admin
     description: Admin-only management endpoints
   - name: metrics
@@ -2273,6 +2275,131 @@ paths:
         '403':
           description: Caller may only read their own referrals
 
+  # ── Custom price & yield alert rules (#289) ──────────────────────────────
+  /api/v1/alerts:
+    post:
+      tags: [alerts]
+      operationId: createAlertRule
+      summary: Create an alert rule
+      description: >
+        Creates a user-defined price/yield alert rule owned by the authenticated
+        caller. The rule is evaluated on a schedule; when its comparator
+        condition holds against the live metric and it is outside its cooldown
+        window, a notification is delivered over the chosen channel(s). A
+        `PROTOCOL_APY` rule must name a `protocolName`; the other metrics must
+        not. See `docs/ALERTS.md` for metric semantics and the drawdown window.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAlertRuleRequest'
+      responses:
+        '201':
+          description: The created alert rule
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # GET is keyed by the owning user id; PATCH/DELETE by the rule id. They share
+  # one URL template (disambiguated only by HTTP method in the Express router),
+  # so OpenAPI represents them under a single path item with a generic {id}
+  # whose meaning is documented per-operation.
+  /api/v1/alerts/{id}:
+    get:
+      tags: [alerts]
+      operationId: listAlertRules
+      summary: List a user's alert rules
+      description: >
+        Lists the alert rules owned by the user, newest first. Owner-scoped — a
+        caller may only read their own rules. Here the path parameter is the
+        owning **user id** (must match the authenticated caller).
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The owning user's id (must match the authenticated caller)
+      responses:
+        '200':
+          description: Alert rules for the user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRuleListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    patch:
+      tags: [alerts]
+      operationId: updateAlertRule
+      summary: Update an alert rule
+      description: >
+        Updates a rule the caller owns. Here the path parameter is the **rule
+        id**. The `PROTOCOL_APY` ↔ `protocolName` pairing is enforced against
+        the merged (stored + patch) state.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Alert rule id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAlertRuleRequest'
+      responses:
+        '200':
+          description: The updated alert rule
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [alerts]
+      operationId: deleteAlertRule
+      summary: Delete an alert rule
+      description: Deletes a rule the caller owns. Future evaluations stop immediately.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Alert rule id
+      responses:
+        '204':
+          description: Deleted (no content)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   securitySchemes:
     BearerAuth:
@@ -2755,6 +2882,131 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Referral'
+
+    AlertMetric:
+      type: string
+      enum: [PROTOCOL_APY, PORTFOLIO_VALUE, POSITION_DRAWDOWN]
+      description: >
+        What the rule watches. PROTOCOL_APY = a named protocol's supply APY in
+        percent; PORTFOLIO_VALUE = the user's total active-position value in USD;
+        POSITION_DRAWDOWN = percentage decline of that portfolio value from its
+        rolling 30-day peak (see docs/ALERTS.md).
+    AlertComparator:
+      type: string
+      enum: [LT, LTE, GT, GTE]
+      description: Comparison of the observed value against the threshold.
+    AlertDeliveryChannel:
+      type: string
+      enum: [WEBHOOK, WHATSAPP, BOTH]
+      description: Where a triggered alert is delivered.
+    AlertRule:
+      type: object
+      required:
+        - id
+        - userId
+        - metric
+        - comparator
+        - threshold
+        - deliveryChannel
+        - cooldownMinutes
+        - isActive
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        metric:
+          $ref: '#/components/schemas/AlertMetric'
+        protocolName:
+          type: string
+          nullable: true
+          description: Required when metric is PROTOCOL_APY; null otherwise.
+          example: Blend
+        comparator:
+          $ref: '#/components/schemas/AlertComparator'
+        threshold:
+          type: number
+          description: >
+            Percent for PROTOCOL_APY/POSITION_DRAWDOWN, USD for PORTFOLIO_VALUE.
+          example: 5
+        deliveryChannel:
+          $ref: '#/components/schemas/AlertDeliveryChannel'
+        cooldownMinutes:
+          type: integer
+          minimum: 1
+          maximum: 10080
+          default: 60
+          description: Minimum minutes between repeat notifications while the condition holds.
+        lastFiredAt:
+          type: string
+          format: date-time
+          nullable: true
+        isActive:
+          type: boolean
+          description: >
+            A PROTOCOL_APY rule is auto-set to false if its protocol is delisted
+            (no rate data), rather than evaluating against stale data.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateAlertRuleRequest:
+      type: object
+      required: [metric, comparator, threshold, deliveryChannel]
+      properties:
+        metric:
+          $ref: '#/components/schemas/AlertMetric'
+        protocolName:
+          type: string
+          description: Required when metric is PROTOCOL_APY; rejected otherwise.
+          example: Blend
+        comparator:
+          $ref: '#/components/schemas/AlertComparator'
+        threshold:
+          type: number
+          example: 5
+        deliveryChannel:
+          $ref: '#/components/schemas/AlertDeliveryChannel'
+        cooldownMinutes:
+          type: integer
+          minimum: 1
+          maximum: 10080
+          default: 60
+    UpdateAlertRuleRequest:
+      type: object
+      minProperties: 1
+      description: Partial update — at least one field must be provided.
+      properties:
+        metric:
+          $ref: '#/components/schemas/AlertMetric'
+        protocolName:
+          type: string
+          nullable: true
+        comparator:
+          $ref: '#/components/schemas/AlertComparator'
+        threshold:
+          type: number
+        deliveryChannel:
+          $ref: '#/components/schemas/AlertDeliveryChannel'
+        cooldownMinutes:
+          type: integer
+          minimum: 1
+          maximum: 10080
+        isActive:
+          type: boolean
+    AlertRuleListResponse:
+      type: object
+      required: [rules]
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertRule'
 
   responses:
     Unauthorized:

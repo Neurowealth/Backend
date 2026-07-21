@@ -82,6 +82,28 @@ enum ReferralStatus {
   EXPIRED
 }
 
+// User-defined alert rules (#289). Distinct from the operator-facing
+// Prometheus/Grafana alerting in docs/OBSERVABILITY.md — these watch
+// portfolio/market conditions the end user cares about.
+enum AlertMetric {
+  PROTOCOL_APY
+  PORTFOLIO_VALUE
+  POSITION_DRAWDOWN
+}
+
+enum Comparator {
+  LT
+  LTE
+  GT
+  GTE
+}
+
+enum DeliveryChannel {
+  WEBHOOK
+  WHATSAPP
+  BOTH
+}
+
 model User {
   id            String   @id @default(uuid())
   walletAddress String   @unique
@@ -89,6 +111,11 @@ model User {
   displayName   String?
   email         String?  @unique
   avatarUrl     String?
+  // E.164 WhatsApp number, when known. Nullable because most users onboard via
+  // wallet auth and never link a number. Used as the WhatsApp delivery
+  // destination for alert rules (#289); alerts on the WHATSAPP/BOTH channel are
+  // skipped (logged, not errored) for users without a number on file.
+  phone         String?  @unique
   riskTolerance      Int      @default(5)
   rebalanceStrategy  String?  // 'MAX_YIELD' | 'TARGET_ALLOCATION' | null (defaults to MAX_YIELD)
   strategyConfig     Json?    // e.g. { "targetAllocations": { "Blend": 50, "Stellar DEX": 30, "Luma": 20 } }
@@ -104,6 +131,7 @@ model User {
   fiatOrders            FiatOrder[]
   referralCode          ReferralCode?
   referralConversion    ReferralConversion?
+  alertRules            AlertRule[]
 
   @@map("users")
 }
@@ -437,6 +465,37 @@ model WebhookDelivery {
   @@index([status])
   @@index([createdAt])
   @@map("webhook_deliveries")
+}
+
+/// User-defined price & yield alert rule (#289).
+///
+/// Evaluated on a schedule by src/jobs/alertRules.ts against the latest
+/// ProtocolRate (PROTOCOL_APY) or the user's Position/YieldSnapshot data
+/// (PORTFOLIO_VALUE, POSITION_DRAWDOWN). Fires only when the comparator
+/// condition holds AND lastFiredAt is outside the cooldown window, so a rule
+/// sitting at its threshold notifies once per cooldown rather than every tick.
+model AlertRule {
+  id              String          @id @default(uuid())
+  userId          String
+  metric          AlertMetric
+  protocolName    String? // required when metric = PROTOCOL_APY
+  comparator      Comparator
+  // Compared against APY as a percentage (e.g. 5 == 5%) for PROTOCOL_APY,
+  // against USD value for PORTFOLIO_VALUE, and against percentage drawdown
+  // from the rolling 30-day peak for POSITION_DRAWDOWN.
+  threshold       Decimal         @db.Decimal(36, 18)
+  deliveryChannel DeliveryChannel
+  cooldownMinutes Int             @default(60)
+  lastFiredAt     DateTime?
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isActive, metric])
+  @@map("alert_rules")
 }
 
 /// Fiat on-ramp / off-ramp order (#290).

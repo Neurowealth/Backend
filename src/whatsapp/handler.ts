@@ -9,6 +9,16 @@ import {
   getPortfolioYieldSummary,
   decrementBalance,
 } from './userManager'
+import {
+  createAlertRuleForWallet,
+  listAlertRulesForWallet,
+  deleteAlertRuleForWallet,
+} from './alertManager'
+import {
+  formatAlertCreatedReply,
+  formatAlertListReply,
+  formatAlertDeletedReply,
+} from './formatters'
 
 export type WhatsAppResponse = {
   body: string
@@ -21,6 +31,9 @@ function formatHelpMessage(): string {
     '- "deposit <amount>" → get deposit instructions',
     '- "withdraw <amount>" → withdraw funds (if available)',
     '- "earnings" → see your performance',
+    '- "alert me when Blend apy < 5" → create a price/yield alert',
+    '- "list my alerts" → see your alert rules',
+    '- "delete alert <id>" → remove an alert rule',
     '- "help" → show this message again',
   ].join('\n')
 }
@@ -145,6 +158,46 @@ export async function handleWhatsAppMessage(
       }
 
       return { body: formatEarnings(summary) }
+    }
+
+    case 'alert_create': {
+      const walletAddress = getUserWalletAddress(normalizedPhone)
+      if (!walletAddress) {
+        return { body: 'I could not find your account. Please try again.' }
+      }
+      const result = await createAlertRuleForWallet(walletAddress, {
+        metric: intent.metric,
+        protocolName: intent.protocolName,
+        comparator: intent.comparator,
+        threshold: intent.threshold,
+        // WhatsApp-originated rules deliver over WhatsApp by default.
+        deliveryChannel: 'WHATSAPP',
+      })
+      if (!result.ok) {
+        return { body: result.error }
+      }
+      return { body: formatAlertCreatedReply(result.rule) }
+    }
+
+    case 'alert_list': {
+      const walletAddress = getUserWalletAddress(normalizedPhone)
+      if (!walletAddress) {
+        return { body: 'I could not find your account. Please try again.' }
+      }
+      const rules = await listAlertRulesForWallet(walletAddress)
+      return { body: formatAlertListReply(rules) }
+    }
+
+    case 'alert_delete': {
+      const walletAddress = getUserWalletAddress(normalizedPhone)
+      if (!walletAddress) {
+        return { body: 'I could not find your account. Please try again.' }
+      }
+      if (!intent.alertId) {
+        return { body: 'Please tell me which alert to delete, e.g. "delete alert <id>".' }
+      }
+      const deleted = await deleteAlertRuleForWallet(walletAddress, intent.alertId)
+      return { body: formatAlertDeletedReply(deleted) }
     }
 
     case 'unknown':
