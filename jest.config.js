@@ -15,6 +15,12 @@ module.exports = {
   testMatch: ['**/*.test.ts'],
   transform: {
     '^.+\\.ts$': ['ts-jest', { tsconfig: 'tsconfig.test.json' }],
+    // @stellar/stellar-sdk's CJS build requires vendored @stellar/js-xdr
+    // *source* files, which are ESM — transpile them so jest (CJS) can load them.
+    '^.+\\.js$': ['ts-jest', { tsconfig: { allowJs: true } }],
   },
+  transformIgnorePatterns: [
+    '/node_modules/(?!(@stellar|\\.pnpm|@noble|uint8array-extras|smol-toml|eventsource|feaxios|base32\\.js))',
+  ],
   clearMocks: true,
 };
