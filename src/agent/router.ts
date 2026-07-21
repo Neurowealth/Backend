@@ -7,7 +7,7 @@ import { getCorrelationId } from '../utils/correlation';
 import { ProtocolComparison, RebalanceDetails, RebalanceThresholds, RebalanceStrategy, UserStrategyPreferences } from './types';
 import { scanAllProtocols, getCurrentOnChainApy } from './scanner';
 import { triggerRebalance as submitRebalance } from '../stellar/contract';
-import { MaxYieldStrategy, TargetAllocationStrategy } from './strategies';
+import { MaxYieldStrategy, TargetAllocationStrategy, GoalTrackingStrategy } from './strategies';
 import db from '../db';
 
 const DEFAULT_THRESHOLDS: RebalanceThresholds = {
@@ -32,6 +32,24 @@ async function loadProtocolRiskScores(): Promise<Record<string, number>> {
     map[row.protocolName] = row.score;
   }
   return map;
+}
+
+/**
+ * Load a user's ACTIVE savings goal (#281), if any. Only called when
+ * userStrategyPreferences are present, so users who never create a goal issue
+ * no extra query beyond this single lookup.
+ */
+async function loadActiveGoal(
+  userId: string,
+): Promise<{ targetAmount: number; startingAmount: number; targetDate: Date; riskCeiling: number | null } | null> {
+  const goal = await db.savingsGoal.findFirst({ where: { userId, status: 'ACTIVE' } });
+  if (!goal) return null;
+  return {
+    targetAmount: Number(goal.targetAmount),
+    startingAmount: Number(goal.startingAmount),
+    targetDate: goal.targetDate,
+    riskCeiling: goal.riskCeiling,
+  };
 }
 
 function toApyBasisPoints(apyPercent: number): number {
@@ -314,16 +332,26 @@ export async function executeRebalanceIfNeeded(
         return null;
       }
 
+      // An ACTIVE savings goal (#281) takes priority over the stored strategy
+      // preference — a user working toward a stated target/date should have
+      // the agent chase whatever rate that goal actually needs, not a static
+      // preference that predates the goal. Users with no goal fall through to
+      // the existing preference logic completely unchanged.
+      const goalUserId = userStrategyPreferences[0]?.userId;
+      const activeGoal = goalUserId ? await loadActiveGoal(goalUserId) : null;
+
       const preferredStrategy = userStrategyPreferences[0]?.strategyName;
-      const strategy: RebalanceStrategy =
-        preferredStrategy === 'TARGET_ALLOCATION'
+      const strategy: RebalanceStrategy = activeGoal
+        ? new GoalTrackingStrategy()
+        : preferredStrategy === 'TARGET_ALLOCATION'
           ? new TargetAllocationStrategy()
           : new MaxYieldStrategy();
 
-      // Risk ceiling is opt-in per user. Only when a ceiling is set do we load
-      // the current ProtocolRiskScore rows and pass them to the strategy — the
-      // no-ceiling path issues no extra query and behaves exactly as before.
-      const riskCeiling = userStrategyPreferences[0]?.riskCeiling;
+      // Risk ceiling is opt-in per user (or per goal). Only when a ceiling is
+      // set do we load the current ProtocolRiskScore rows and pass them to the
+      // strategy — the no-ceiling path issues no extra query and behaves
+      // exactly as before.
+      const riskCeiling = activeGoal?.riskCeiling ?? userStrategyPreferences[0]?.riskCeiling ?? undefined;
       const protocolRiskScores =
         riskCeiling !== undefined ? await loadProtocolRiskScores() : undefined;
 
@@ -336,6 +364,13 @@ export async function executeRebalanceIfNeeded(
         userStrategyPreferences,
         riskCeiling,
         protocolRiskScores,
+        goal: activeGoal
+          ? {
+              targetAmount: activeGoal.targetAmount,
+              startingAmount: activeGoal.startingAmount,
+              targetDate: activeGoal.targetDate,
+            }
+          : undefined,
       });
 
       if (!decision.shouldRebalance) {

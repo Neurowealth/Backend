@@ -48,6 +48,11 @@ enum AgentAction {
   ANALYZE
   ALERT
   CLAIM_YIELD
+  // Progress snapshot for an ACTIVE SavingsGoal (#281) — logged whenever the
+  // goal progress endpoint or strategy engine recomputes trajectory, so a
+  // goal's trend is inspectable via AgentLog the same way rebalance decisions
+  // already are.
+  GOAL_PROGRESS
 }
 
 enum AgentStatus {
@@ -82,6 +87,13 @@ enum ReferralStatus {
   EXPIRED
 }
 
+enum GoalStatus {
+  ACTIVE
+  ACHIEVED
+  MISSED
+  CANCELLED
+}
+
 model User {
   id            String   @id @default(uuid())
   walletAddress String   @unique
@@ -104,6 +116,7 @@ model User {
   fiatOrders            FiatOrder[]
   referralCode          ReferralCode?
   referralConversion    ReferralConversion?
+  savingsGoals          SavingsGoal[]
 
   @@map("users")
 }
@@ -190,6 +203,7 @@ model Position {
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   transactions   Transaction[]
   yieldSnapshots YieldSnapshot[]
+  savingsGoals   SavingsGoal[]
 
   @@index([userId])
   @@index([status])
@@ -518,4 +532,32 @@ model ReferralConversion {
   @@index([status])
   @@index([createdAt])
   @@map("referral_conversions")
+}
+
+/// Goal-based investing (#281). A user-stated target amount + date the agent's
+/// strategy selection is driven by. Required-rate projection reuses the same
+/// simple (non-compounding) APY convention as YieldSnapshot/calculateApy for
+/// consistency with live APY reporting — compounding-aware modeling is tracked
+/// separately (#225). One ACTIVE goal per user is enforced at the API layer,
+/// not via a DB constraint, since past goals (ACHIEVED/MISSED/CANCELLED) are
+/// kept for history.
+model SavingsGoal {
+  id             String     @id @default(uuid())
+  userId         String
+  positionId     String?
+  targetAmount   Decimal    @db.Decimal(36, 18)
+  startingAmount Decimal    @db.Decimal(36, 18)
+  targetDate     DateTime
+  riskCeiling    Int?       // optional min protocol risk score (0-100), matches UserStrategyPreferences.riskCeiling
+  status         GoalStatus @default(ACTIVE)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  position Position? @relation(fields: [positionId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([userId, status])
+  @@map("savings_goals")
 }
