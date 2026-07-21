@@ -27,7 +27,7 @@ export const NO_ELIGIBLE_PROTOCOLS_REASON =
  * as ineligible rather than given the benefit of the doubt — a risk control must
  * not admit unknowns.
  */
-function applyRiskCeiling(
+export function applyRiskCeiling(
   protocols: YieldProtocol[],
   riskCeiling: number | undefined,
   scores: Record<string, number> | undefined,
@@ -262,6 +262,133 @@ export class TargetAllocationStrategy implements RebalanceStrategy {
         highestTarget,
         ratio,
       },
+    };
+  }
+}
+
+/**
+ * Years remaining between now and a future target date. Mirrors the
+ * non-compounding convention of calculateYearsActive in snapshotter.ts, but
+ * for a future date rather than a past one. Zero or negative means the target
+ * date has already passed.
+ */
+export function calculateYearsRemaining(targetDate: Date, from: Date = new Date()): number {
+  const msPerYear = 365.25 * 24 * 60 * 60 * 1000;
+  return (targetDate.getTime() - from.getTime()) / msPerYear;
+}
+
+/**
+ * Required simple annualized rate (as a percentage, e.g. 8.0 = 8%) to grow
+ * startingAmount into targetAmount over yearsRemaining. Intentionally the same
+ * simple-rate math as calculateApy in snapshotter.ts — this issue reuses that
+ * convention for consistency with live APY reporting rather than introducing a
+ * second, compounding-aware model (that work is tracked separately in #225).
+ *
+ * Returns Infinity when the target date has already passed and the goal is
+ * not yet met (no finite rate can close the gap in zero or negative time).
+ */
+export function calculateRequiredApy(
+  startingAmount: number,
+  targetAmount: number,
+  yearsRemaining: number,
+): number {
+  if (targetAmount <= startingAmount) return 0;
+  if (yearsRemaining <= 0) return Infinity;
+  return ((targetAmount - startingAmount) / startingAmount / yearsRemaining) * 100;
+}
+
+/**
+ * Goal-tracking strategy (#281). Computes the simple annualized rate required
+ * to hit a user's SavingsGoal by its target date, then delegates to
+ * MaxYieldStrategy (bounded by riskCeiling) when behind schedule, or holds
+ * position when already on track. It NEVER silently exceeds the configured
+ * risk ceiling to chase an unrealistic goal — when the required rate exceeds
+ * the best APY available among risk-eligible protocols, it surfaces that as an
+ * explicit "unreachable" decision instead of overriding the ceiling.
+ */
+export class GoalTrackingStrategy implements RebalanceStrategy {
+  readonly name: StrategyName = 'GOAL_TRACKING';
+
+  async analyze(params: StrategyParams): Promise<StrategyDecision> {
+    const { currentProtocol, currentApy, availableProtocols, goal, riskCeiling, protocolRiskScores } = params;
+
+    if (!goal) {
+      return {
+        shouldRebalance: false,
+        targetProtocol: currentProtocol,
+        reasoning: 'No active savings goal configured',
+      };
+    }
+
+    if (goal.targetAmount <= goal.startingAmount) {
+      return {
+        shouldRebalance: false,
+        targetProtocol: currentProtocol,
+        reasoning: 'Savings goal is already achieved',
+        details: { goal },
+      };
+    }
+
+    const yearsRemaining = calculateYearsRemaining(goal.targetDate);
+
+    if (yearsRemaining <= 0) {
+      return {
+        shouldRebalance: false,
+        targetProtocol: currentProtocol,
+        reasoning: 'Savings goal target date has passed without being met',
+        details: { goal },
+      };
+    }
+
+    const requiredApy = calculateRequiredApy(goal.startingAmount, goal.targetAmount, yearsRemaining);
+
+    const eligibleProtocols = applyRiskCeiling(availableProtocols, riskCeiling, protocolRiskScores);
+
+    if (riskCeiling !== undefined && eligibleProtocols.length === 0) {
+      logger.info('GoalTrackingStrategy: no protocols meet risk ceiling', {
+        riskCeiling,
+        requiredApy: requiredApy.toFixed(2),
+      });
+      return {
+        shouldRebalance: false,
+        targetProtocol: currentProtocol,
+        reasoning: NO_ELIGIBLE_PROTOCOLS_REASON,
+        details: { requiredApy, riskCeiling, eligibleCount: 0 },
+      };
+    }
+
+    const candidateApys = eligibleProtocols.map((p) => p.apy);
+    const maxEligibleApy = candidateApys.length > 0 ? Math.max(...candidateApys) : currentApy;
+
+    if (requiredApy > maxEligibleApy) {
+      // Required rate is unreachable within the user's risk tolerance. Surface
+      // this explicitly rather than quietly overriding the risk ceiling.
+      return {
+        shouldRebalance: false,
+        targetProtocol: currentProtocol,
+        reasoning: `Target requires ${requiredApy.toFixed(2)}% APY, which exceeds the best available within your risk tolerance (${maxEligibleApy.toFixed(2)}%) — target not reachable within your risk tolerance`,
+        details: { requiredApy, maxEligibleApy, riskCeiling, unreachable: true },
+      };
+    }
+
+    if (currentApy >= requiredApy) {
+      return {
+        shouldRebalance: false,
+        targetProtocol: currentProtocol,
+        reasoning: `On track — current ${currentApy.toFixed(2)}% APY meets the ${requiredApy.toFixed(2)}% required to reach your goal by ${goal.targetDate.toISOString().slice(0, 10)}`,
+        details: { requiredApy, currentApy, onTrack: true },
+      };
+    }
+
+    // Behind schedule and reachable: delegate to MaxYieldStrategy (already
+    // bounded by the same riskCeiling) to chase the best eligible yield.
+    const maxYield = new MaxYieldStrategy();
+    const decision = await maxYield.analyze(params);
+
+    return {
+      ...decision,
+      reasoning: `Behind schedule (need ${requiredApy.toFixed(2)}% APY to reach your goal) — ${decision.reasoning}`,
+      details: { ...decision.details, requiredApy, goalDriven: true },
     };
   }
 }

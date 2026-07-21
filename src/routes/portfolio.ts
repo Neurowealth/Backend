@@ -11,8 +11,13 @@ import {
   formatPortfolioReply,
 } from '../whatsapp/formatters'
 import { userIdParamSchema } from '../validators/common-validators'
+import goalsRouter from './goals'
 
 const router = Router()
+
+// Mounted before the /:userId route below so a literal "goals" first segment
+// is never captured as a userId.
+router.use('/goals', goalsRouter)
 
 const portfolioSchema = z.object({
   params: z.object({

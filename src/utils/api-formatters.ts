@@ -17,3 +17,16 @@ export const mapPositionToResponse = (position: any) => ({
   yieldEarned: Number(position.yieldEarned),
   status: position.status,
 })
+
+export const mapGoalToResponse = (goal: any) => ({
+  id: goal.id,
+  userId: goal.userId,
+  positionId: goal.positionId,
+  targetAmount: Number(goal.targetAmount),
+  startingAmount: Number(goal.startingAmount),
+  targetDate: goal.targetDate.toISOString(),
+  riskCeiling: goal.riskCeiling,
+  status: goal.status,
+  createdAt: goal.createdAt.toISOString(),
+  updatedAt: goal.updatedAt.toISOString(),
+})

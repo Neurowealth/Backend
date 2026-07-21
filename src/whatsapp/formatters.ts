@@ -126,6 +126,54 @@ export function formatDepositReply(input: {
   ].join('\n')
 }
 
+export function formatGoalProgressReply(input: {
+  status: string
+  targetAmount: number
+  currentAmount: number
+  targetDate: string
+  requiredApy: number
+  actualApy: number
+  onTrack: boolean
+  reachable: boolean
+  projectedCompletionDate: string | null
+}): string {
+  if (input.status === 'ACHIEVED') {
+    return ['🎯 *Savings Goal*', `You've reached your goal of $${input.targetAmount.toFixed(2)}! 🎉`].join('\n')
+  }
+
+  if (input.status === 'MISSED') {
+    return [
+      '🎯 *Savings Goal*',
+      `Target date passed at $${input.currentAmount.toFixed(2)} of $${input.targetAmount.toFixed(2)}.`,
+    ].join('\n')
+  }
+
+  if (input.status === 'CANCELLED') {
+    return ['🎯 *Savings Goal*', 'This goal has been cancelled.'].join('\n')
+  }
+
+  const lines = [
+    '🎯 *Savings Goal Progress*',
+    `Progress: *$${input.currentAmount.toFixed(2)}* of *$${input.targetAmount.toFixed(2)}*`,
+    `Target date: _${input.targetDate.slice(0, 10)}_`,
+    `Required APY: *${input.requiredApy.toFixed(2)}%* | Actual APY: *${input.actualApy.toFixed(2)}%*`,
+  ]
+
+  if (!input.reachable) {
+    lines.push('⚠️ Target not reachable within your risk tolerance.')
+  } else if (input.onTrack) {
+    lines.push('✅ On track to reach your goal.')
+  } else {
+    lines.push('⏳ Behind schedule, but still reachable.')
+  }
+
+  if (input.projectedCompletionDate) {
+    lines.push(`Projected completion: _${input.projectedCompletionDate.slice(0, 10)}_`)
+  }
+
+  return lines.join('\n')
+}
+
 export function formatWithdrawReply(input: {
   amount: number
   assetSymbol: string
