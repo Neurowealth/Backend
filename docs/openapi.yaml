@@ -478,6 +478,95 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/portfolio/{userId}/tax-report:
+    get:
+      tags: [portfolio]
+      operationId: getPortfolioTaxReport
+      summary: Get realized gain/loss tax report
+      description: |
+        Returns the user's realized gain/loss report for a calendar year (UTC
+        boundaries), computed with FIFO cost-basis lot accounting over
+        confirmed on-chain withdrawals. Totals include only fully priced
+        disposals; unpriced assets are flagged in `caveats`, never zeroed.
+        See docs/TAX_REPORT.md for methodology and known limitations. The
+        authenticated user can only access their own report
+        (enforceUserAccess). With `format=csv` the report's disposal rows are
+        returned as an RFC 4180 CSV attachment with spreadsheet
+        formula-injection guarding.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: User ID (UUID v4)
+        - in: query
+          name: year
+          required: true
+          schema:
+            type: integer
+            minimum: 2000
+            maximum: 2100
+          description: Calendar year (UTC) the report covers
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+          description: Response format
+      responses:
+        '200':
+          description: Tax report for the requested year
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaxReport'
+              example:
+                userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                year: 2026
+                method: FIFO
+                disposals:
+                  - disposedAt: '2026-06-15T00:00:00.000Z'
+                    assetSymbol: USDC
+                    amount: '40'
+                    withdrawalTxHash: c1d2e3f4a5b6c7d8e9f0
+                    acquiredAt: '2026-01-15T00:00:00.000Z'
+                    acquisitionTxHash: a1b2c3d4e5f6a7b8c9d0
+                    acquisitionPrice: '1'
+                    disposalPrice: '1'
+                    costBasis: '40'
+                    proceeds: '40'
+                    realizedGain: '0'
+                    priced: true
+                totals:
+                  proceeds: '40'
+                  costBasis: '40'
+                  realizedGain: '0'
+                  pricedDisposalCount: 1
+                caveats:
+                  unpricedDisposalCount: 0
+                  unpricedAssets: []
+                  stablecoinAssumption: USDC is priced at 1.00 USD by assumption (STABLECOIN_ASSUMPTION); no market price feed is used.
+                  rebalancesNotIncluded: Protocol rebalances are same-asset transfers and are not treated as taxable disposals in this report.
+            text/csv:
+              schema:
+                type: string
+                description: |
+                  One header row plus one row per disposal, CRLF line endings.
+                  Cells beginning with `=`, `+`, `-`, `@`, tab, or CR are
+                  prefixed with `'` to prevent spreadsheet formula injection.
+              example: |
+                disposedAt,assetSymbol,amount,withdrawalTxHash,acquiredAt,acquisitionTxHash,acquisitionPrice,disposalPrice,costBasis,proceeds,realizedGain,priced
+                2026-06-15T00:00:00.000Z,USDC,40,c1d2e3f4a5b6c7d8e9f0,2026-01-15T00:00:00.000Z,a1b2c3d4e5f6a7b8c9d0,1,1,40,40,0,true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   # ── Transactions ───────────────────────────────────────────────────────────
   /api/v1/transactions/detail/{txHash}:
     get:
@@ -2441,6 +2530,89 @@ components:
         status:
           type: string
           enum: [ACTIVE, CLOSED]
+
+    # ── Tax report (#284) ─────────────────────────────────────────────────
+    # Money fields are decimal strings (never floats) and null means
+    # "unpriced" — never zero. Totals sum only fully priced disposals.
+    TaxReport:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        year:
+          type: integer
+        method:
+          type: string
+          enum: [FIFO]
+        disposals:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaxReportDisposal'
+        totals:
+          type: object
+          properties:
+            proceeds:
+              type: string
+            costBasis:
+              type: string
+            realizedGain:
+              type: string
+            pricedDisposalCount:
+              type: integer
+        caveats:
+          type: object
+          properties:
+            unpricedDisposalCount:
+              type: integer
+            unpricedAssets:
+              type: array
+              items:
+                type: string
+            stablecoinAssumption:
+              type: string
+            rebalancesNotIncluded:
+              type: string
+
+    TaxReportDisposal:
+      type: object
+      properties:
+        disposedAt:
+          type: string
+          format: date-time
+        assetSymbol:
+          type: string
+          example: USDC
+        amount:
+          type: string
+          description: Decimal string in asset units
+        withdrawalTxHash:
+          type: string
+          nullable: true
+        acquiredAt:
+          type: string
+          format: date-time
+        acquisitionTxHash:
+          type: string
+          nullable: true
+        acquisitionPrice:
+          type: string
+          nullable: true
+        disposalPrice:
+          type: string
+          nullable: true
+        costBasis:
+          type: string
+          nullable: true
+        proceeds:
+          type: string
+          nullable: true
+        realizedGain:
+          type: string
+          nullable: true
+        priced:
+          type: boolean
+          description: True when every money field is present; only priced disposals enter totals
 
     # ── Transaction ───────────────────────────────────────────────────────
     Transaction:

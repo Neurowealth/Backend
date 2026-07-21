@@ -11,12 +11,28 @@ import {
   formatPortfolioReply,
 } from '../whatsapp/formatters'
 import { userIdParamSchema } from '../validators/common-validators'
+import {
+  buildTaxReport,
+  taxReportToCsvRows,
+  TAX_REPORT_CSV_HEADERS,
+} from '../tax/report'
+import { toCsv } from '../utils/csv'
 
 const router = Router()
 
 const portfolioSchema = z.object({
   params: z.object({
     userId: z.string().uuid(),
+  }),
+})
+
+const taxReportSchema = z.object({
+  params: z.object({
+    userId: z.string().uuid(),
+  }),
+  query: z.object({
+    year: z.coerce.number().int().min(2000).max(2100),
+    format: z.enum(['json', 'csv']).default('json'),
   }),
 })
 
@@ -29,44 +45,52 @@ const historySchema = z.object({
   }),
 })
 
-router.get('/:userId', requireAuth, enforceUserAccess, validate(portfolioSchema), async (req: Request, res: Response) => {
-  const userId = req.params.userId as string
-  const user = await db.user.findUnique({
-    where: { id: userId },
-  })
+router.get(
+  '/:userId',
+  requireAuth,
+  enforceUserAccess,
+  validate(portfolioSchema),
+  async (req: Request, res: Response) => {
+    const userId = req.params.userId as string
+    const user = await db.user.findUnique({
+      where: { id: userId },
+    })
 
-  if (!user) {
-    return sendNotFound(res, 'User')
-  }
+    if (!user) {
+      return sendNotFound(res, 'User')
+    }
 
-  const userPositions = await db.position.findMany({
-    where: { userId },
-  })
+    const userPositions = await db.position.findMany({
+      where: { userId },
+    })
 
-  const totalBalance = userPositions.reduce((sum: number, position: any) => {
-    return sum + Number(position.currentValue)
-  }, 0)
-  const totalEarnings = userPositions.reduce((sum: number, position: any) => {
-    return sum + Number(position.yieldEarned)
-  }, 0)
-  const activePositions = userPositions.filter((p: any) => p.status === 'ACTIVE').length
+    const totalBalance = userPositions.reduce((sum: number, position: any) => {
+      return sum + Number(position.currentValue)
+    }, 0)
+    const totalEarnings = userPositions.reduce((sum: number, position: any) => {
+      return sum + Number(position.yieldEarned)
+    }, 0)
+    const activePositions = userPositions.filter(
+      (p: any) => p.status === 'ACTIVE'
+    ).length
 
-  const positions = userPositions.map(mapPositionToResponse)
+    const positions = userPositions.map(mapPositionToResponse)
 
-  return res.status(200).json({
-    userId: user.id,
-    totalBalance,
-    totalEarnings,
-    activePositions,
-    positions,
-    whatsappReply: formatPortfolioReply({
+    return res.status(200).json({
+      userId: user.id,
       totalBalance,
       totalEarnings,
       activePositions,
       positions,
-    }),
-  })
-})
+      whatsappReply: formatPortfolioReply({
+        totalBalance,
+        totalEarnings,
+        activePositions,
+        positions,
+      }),
+    })
+  }
+)
 
 router.get(
   '/:userId/history',
@@ -87,11 +111,7 @@ router.get(
     const now = Date.now()
     const dayMs = 24 * 60 * 60 * 1000
     const periodDays =
-      req.query.period === '7d'
-        ? 7
-        : req.query.period === '30d'
-          ? 30
-          : 90
+      req.query.period === '7d' ? 7 : req.query.period === '30d' ? 30 : 90
     const fromDate = new Date(now - periodDays * dayMs)
 
     const snapshots = await db.yieldSnapshot.findMany({
@@ -114,7 +134,7 @@ router.get(
         points,
       }),
     })
-  },
+  }
 )
 
 router.get(
@@ -153,8 +173,7 @@ router.get(
         ? snapshots.reduce(
             (sum: number, snapshot: any) => sum + Number(snapshot.apy),
             0
-          ) /
-          snapshots.length
+          ) / snapshots.length
         : 0
 
     return res.status(200).json({
@@ -168,7 +187,41 @@ router.get(
         averageApy,
       }),
     })
-  },
+  }
+)
+
+router.get(
+  '/:userId/tax-report',
+  requireAuth,
+  enforceUserAccess,
+  validate(taxReportSchema),
+  async (req: Request, res: Response) => {
+    const userId = req.params.userId as string
+    const user = await db.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    })
+
+    if (!user) {
+      return sendNotFound(res, 'User')
+    }
+
+    const year = req.query.year as unknown as number
+    const report = await buildTaxReport(userId, year)
+
+    if (req.query.format === 'csv') {
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="tax-report-${year}.csv"`
+      )
+      return res
+        .status(200)
+        .send(toCsv(TAX_REPORT_CSV_HEADERS, taxReportToCsvRows(report)))
+    }
+
+    return res.status(200).json(report)
+  }
 )
 
 export default router

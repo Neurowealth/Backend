@@ -8,6 +8,7 @@
 - **[CODE_STRUCTURE.md](CODE_STRUCTURE.md)** - Understand code organization and design
 - **[IMPLEMENTATION_DETAILS.md](IMPLEMENTATION_DETAILS.md)** - Deep dive into implementation
 - **[API_REFERENCE.md](API_REFERENCE.md)** - Complete backend endpoint reference
+- **[TAX_REPORT.md](TAX_REPORT.md)** - Tax reporting & FIFO cost-basis lot tracking (#284)
 
 ### For DevOps/Deployment
 
