@@ -152,6 +152,14 @@ app.use(trustedIpBypass)
 app.use(rateLimiter)
 app.use(requestTimeoutMiddleware)
 
+// Advertise the served API version on every response — must be registered
+// before the first route (including the health probes below).
+const API_VERSION = '1'
+app.use((_req: Request, res: Response, next) => {
+  res.setHeader('X-API-Version', API_VERSION)
+  next()
+})
+
 // ── Readiness / liveness probes ───────────────────────────────────────────────
 
 app.get('/health/live', (_req, res) => {
@@ -189,18 +197,10 @@ app.get('/health/ready', (_req, res) => {
 // existing clients keep working; they emit RFC 8594 Deprecation/Sunset headers
 // announcing the removal date. See docs/api-versioning.md for the policy.
 
-const API_VERSION = '1'
-
 // Unversioned routes are supported for at least 6 months from this release.
 const UNVERSIONED_SUNSET = new Date(
   Date.now() + 182 * 24 * 60 * 60 * 1000
 ).toUTCString()
-
-// Advertise the served API version on every response.
-app.use((_req: Request, res: Response, next) => {
-  res.setHeader('X-API-Version', API_VERSION)
-  next()
-})
 
 // ── OpenAPI / Swagger UI ──────────────────────────────────────────────────────
 
@@ -278,17 +278,6 @@ const apiRoutes: ApiRoute[] = [
 // ── Application routes ────────────────────────────────────────────────────────
 
 app.use('/health', healthRouter)
-app.use('/api/agent', internalRateLimiter, agentRouter)
-app.use('/api/auth', authRateLimiter, authRouter)
-app.use('/api/whatsapp', webhookRateLimiter, whatsappRouter)
-app.use('/api/portfolio', portfolioRouter)
-app.use('/api/transactions', transactionsRouter)
-app.use('/api/protocols', protocolsRouter)
-app.use('/api/deposit', depositRouter)
-app.use('/api/withdraw', withdrawRouter)
-app.use('/api/vault', vaultRouter)
-app.use('/api/analytics', analyticsRouter)
-app.use('/api/stellar', stellarRouter)
 app.use('/api/webhooks', webhooksRouter)
 app.use('/metrics', metricsRouter)
 
