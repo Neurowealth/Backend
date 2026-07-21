@@ -11,7 +11,7 @@
     "test:unit": "jest tests/unit",
     "test:integration": "jest tests/integration",
     "prisma:generate": "npx prisma generate",
-    "prepare": "husky",
+    "prepare": "husky || true",
     "test:cors": "jest tests/cors.test.ts",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",

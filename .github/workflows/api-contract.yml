@@ -76,12 +76,26 @@ jobs:
         run: |
           cp .env.test .env
           npm run build
-          node dist/index.js &
-          # Wait up to 15 seconds for the server to accept connections
-          for i in $(seq 1 15); do
-            curl -sf http://localhost:3000/health && break
+          node dist/index.js > /tmp/server.log 2>&1 &
+          echo $! > /tmp/server.pid
+          # initServices() boots the DB, event listener, and agent loop before
+          # app.listen(), so allow generous time — and fail loudly with the
+          # server log rather than letting a later step report a bare failure.
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3000/health > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              exit 0
+            fi
+            if ! kill -0 "$(cat /tmp/server.pid)" 2>/dev/null; then
+              echo "::error::Server process exited during startup"
+              cat /tmp/server.log
+              exit 1
+            fi
             sleep 1
           done
+          echo "::error::Server did not become ready within 60s"
+          cat /tmp/server.log
+          exit 1
         env:
           NODE_ENV: test
 

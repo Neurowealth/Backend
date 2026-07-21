@@ -178,8 +178,11 @@ jobs:
       - name: Prisma generate
         run: npx prisma generate
 
-      - name: Check migration status (staging gate)
-        run: npx prisma migrate status
+      # Informational only: on a fresh smoke database every migration is
+      # pending, and `migrate status` exits non-zero whenever that is true.
+      # The real gate is "Confirm no pending migrations after deploy" below.
+      - name: Check migration status (pre-deploy, informational)
+        run: npx prisma migrate status || true
 
       - name: Apply migrations to smoke DB
         run: npx prisma migrate deploy
