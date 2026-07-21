@@ -157,6 +157,11 @@ model AdminApiKey {
   role      String
   scopes    String[]
   hash      String
+  // SHA-256 of the raw token ("sha256:<hex>"). A deterministic lookup key that
+  // narrows candidates before the expensive bcrypt compare against `hash`.
+  // Nullable only so the migration is safe on pre-existing rows; keys without
+  // one cannot be authenticated and must be re-issued.
+  tokenPrefix String?
   expiresAt DateTime?
   revokedAt DateTime?
   createdAt DateTime  @default(now())
@@ -168,6 +173,7 @@ model AdminApiKey {
   @@index([role])
   @@index([revokedAt])
   @@index([expiresAt])
+  @@index([tokenPrefix])
   @@map("admin_api_keys")
 }
 
