@@ -8,46 +8,50 @@
  * decisions and this endpoint's "on track" reporting never disagree.
  * Compounding-aware modeling is tracked separately in #225.
  */
-import { Prisma } from '@prisma/client';
-import db from '../db';
-import { logger } from '../utils/logger';
-import { logAgentAction } from '../agent/router';
-import { scanAllProtocols } from '../agent/scanner';
-import { applyRiskCeiling, calculateRequiredApy, calculateYearsRemaining } from '../agent/strategies';
+import { Prisma } from '@prisma/client'
+import db from '../db'
+import { logger } from '../utils/logger'
+import { logAgentAction } from '../agent/router'
+import { scanAllProtocols } from '../agent/scanner'
+import {
+  applyRiskCeiling,
+  calculateRequiredApy,
+  calculateYearsRemaining,
+} from '../agent/strategies'
 
-type Db = typeof db | Prisma.TransactionClient;
+type Db = typeof db | Prisma.TransactionClient
 
 export class GoalConflictError extends Error {}
 export class GoalNotFoundError extends Error {}
 export class GoalValidationError extends Error {}
 
 export interface CreateGoalInput {
-  targetAmount: number;
-  targetDate: Date;
-  startingAmount?: number;
-  positionId?: string;
-  riskCeiling?: number;
+  targetAmount: number
+  targetDate: Date
+  startingAmount?: number
+  positionId?: string
+  riskCeiling?: number
 }
 
 export interface UpdateGoalInput {
-  targetAmount?: number;
-  targetDate?: Date;
-  riskCeiling?: number;
+  targetAmount?: number
+  targetDate?: Date
+  riskCeiling?: number
 }
 
 export interface GoalProgress {
-  goalId: string;
-  status: string;
-  targetAmount: number;
-  startingAmount: number;
-  currentAmount: number;
-  targetDate: string;
-  requiredApy: number;
-  actualApy: number;
-  onTrack: boolean;
-  reachable: boolean;
-  projectedCompletionDate: string | null;
-  note?: string;
+  goalId: string
+  status: string
+  targetAmount: number
+  startingAmount: number
+  currentAmount: number
+  targetDate: string
+  requiredApy: number
+  actualApy: number
+  onTrack: boolean
+  reachable: boolean
+  projectedCompletionDate: string | null
+  note?: string
 }
 
 /**
@@ -58,18 +62,23 @@ export interface GoalProgress {
 async function resolveCurrentAmount(
   userId: string,
   positionId: string | null | undefined,
-  database: Db,
+  database: Db
 ): Promise<number> {
   if (positionId) {
-    const position = await (database as any).position.findUnique({ where: { id: positionId } });
-    if (!position || position.userId !== userId) return 0;
-    return Number(position.currentValue);
+    const position = await (database as any).position.findUnique({
+      where: { id: positionId },
+    })
+    if (!position || position.userId !== userId) return 0
+    return Number(position.currentValue)
   }
 
   const positions = await (database as any).position.findMany({
     where: { userId, status: 'ACTIVE' },
-  });
-  return positions.reduce((sum: number, p: any) => sum + Number(p.currentValue), 0);
+  })
+  return positions.reduce(
+    (sum: number, p: any) => sum + Number(p.currentValue),
+    0
+  )
 }
 
 /**
@@ -85,19 +94,22 @@ async function resolveCurrentAmount(
 export async function createGoal(
   userId: string,
   input: CreateGoalInput,
-  database: Db = db,
+  database: Db = db
 ): Promise<any> {
   const existingActive = await (database as any).savingsGoal.findFirst({
     where: { userId, status: 'ACTIVE' },
-  });
+  })
   if (existingActive) {
-    throw new GoalConflictError('An active savings goal already exists for this user');
+    throw new GoalConflictError(
+      'An active savings goal already exists for this user'
+    )
   }
 
   const startingAmount =
-    input.startingAmount ?? (await resolveCurrentAmount(userId, input.positionId, database));
+    input.startingAmount ??
+    (await resolveCurrentAmount(userId, input.positionId, database))
 
-  const status = input.targetAmount <= startingAmount ? 'ACHIEVED' : 'ACTIVE';
+  const status = input.targetAmount <= startingAmount ? 'ACHIEVED' : 'ACTIVE'
 
   const goal = await (database as any).savingsGoal.create({
     data: {
@@ -109,11 +121,11 @@ export async function createGoal(
       riskCeiling: input.riskCeiling ?? null,
       status,
     },
-  });
+  })
 
-  logger.info('Savings goal created', { userId, goalId: goal.id, status });
+  logger.info('Savings goal created', { userId, goalId: goal.id, status })
 
-  return goal;
+  return goal
 }
 
 /**
@@ -121,20 +133,26 @@ export async function createGoal(
  * most recently created goal (so a just-cancelled/achieved goal is still
  * visible), otherwise null.
  */
-export async function getGoalForUser(userId: string, database: Db = db): Promise<any | null> {
+export async function getGoalForUser(
+  userId: string,
+  database: Db = db
+): Promise<any | null> {
   const active = await (database as any).savingsGoal.findFirst({
     where: { userId, status: 'ACTIVE' },
-  });
-  if (active) return active;
+  })
+  if (active) return active
 
   return (database as any).savingsGoal.findFirst({
     where: { userId },
     orderBy: { createdAt: 'desc' },
-  });
+  })
 }
 
-export async function getGoalById(id: string, database: Db = db): Promise<any | null> {
-  return (database as any).savingsGoal.findUnique({ where: { id } });
+export async function getGoalById(
+  id: string,
+  database: Db = db
+): Promise<any | null> {
+  return (database as any).savingsGoal.findUnique({ where: { id } })
 }
 
 /**
@@ -148,39 +166,49 @@ export async function getGoalById(id: string, database: Db = db): Promise<any | 
  * targetDate/targetAmount is automatically reflected in the next progress
  * calculation without a separate "recompute" step.
  */
-export async function updateGoal(id: string, updates: UpdateGoalInput, database: Db = db): Promise<any> {
-  const goal = await getGoalById(id, database);
+export async function updateGoal(
+  id: string,
+  updates: UpdateGoalInput,
+  database: Db = db
+): Promise<any> {
+  const goal = await getGoalById(id, database)
   if (!goal) {
-    throw new GoalNotFoundError('Savings goal not found');
+    throw new GoalNotFoundError('Savings goal not found')
   }
   if (goal.status !== 'ACTIVE') {
-    throw new GoalValidationError('Only an ACTIVE goal can be updated');
+    throw new GoalValidationError('Only an ACTIVE goal can be updated')
   }
 
   return (database as any).savingsGoal.update({
     where: { id },
     data: {
-      ...(updates.targetAmount !== undefined ? { targetAmount: updates.targetAmount } : {}),
-      ...(updates.targetDate !== undefined ? { targetDate: updates.targetDate } : {}),
-      ...(updates.riskCeiling !== undefined ? { riskCeiling: updates.riskCeiling } : {}),
+      ...(updates.targetAmount !== undefined
+        ? { targetAmount: updates.targetAmount }
+        : {}),
+      ...(updates.targetDate !== undefined
+        ? { targetDate: updates.targetDate }
+        : {}),
+      ...(updates.riskCeiling !== undefined
+        ? { riskCeiling: updates.riskCeiling }
+        : {}),
     },
-  });
+  })
 }
 
 /** Soft-cancel: sets status = CANCELLED, never hard-deletes. */
 export async function cancelGoal(id: string, database: Db = db): Promise<any> {
-  const goal = await getGoalById(id, database);
+  const goal = await getGoalById(id, database)
   if (!goal) {
-    throw new GoalNotFoundError('Savings goal not found');
+    throw new GoalNotFoundError('Savings goal not found')
   }
   if (goal.status !== 'ACTIVE') {
-    return goal;
+    return goal
   }
 
   return (database as any).savingsGoal.update({
     where: { id },
     data: { status: 'CANCELLED' },
-  });
+  })
 }
 
 /**
@@ -190,14 +218,15 @@ export async function cancelGoal(id: string, database: Db = db): Promise<any> {
  * getting".
  */
 async function resolveActualApy(userId: string, database: Db): Promise<number> {
-  const fromDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const fromDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
   const snapshots = await (database as any).yieldSnapshot.findMany({
     where: { position: { is: { userId } }, snapshotAt: { gte: fromDate } },
-  });
-  if (snapshots.length === 0) return 0;
+  })
+  if (snapshots.length === 0) return 0
   return (
-    snapshots.reduce((sum: number, s: any) => sum + Number(s.apy), 0) / snapshots.length
-  );
+    snapshots.reduce((sum: number, s: any) => sum + Number(s.apy), 0) /
+    snapshots.length
+  )
 }
 
 /**
@@ -208,27 +237,33 @@ async function resolveActualApy(userId: string, database: Db): Promise<number> {
  */
 async function resolveReachability(
   requiredApy: number,
-  riskCeiling: number | null,
+  riskCeiling: number | null
 ): Promise<{ reachable: boolean; maxEligibleApy: number }> {
-  if (requiredApy <= 0) return { reachable: true, maxEligibleApy: requiredApy };
+  if (requiredApy <= 0) return { reachable: true, maxEligibleApy: requiredApy }
 
-  const allProtocols = await scanAllProtocols();
+  const allProtocols = await scanAllProtocols()
   if (allProtocols.length === 0) {
-    return { reachable: false, maxEligibleApy: 0 };
+    return { reachable: false, maxEligibleApy: 0 }
   }
 
-  let eligible = allProtocols;
+  let eligible = allProtocols
   if (riskCeiling !== null && riskCeiling !== undefined) {
-    const scores: Record<string, number> = {};
-    const riskRows = await db.protocolRiskScore.findMany({ select: { protocolName: true, score: true } });
-    for (const row of riskRows as Array<{ protocolName: string; score: number }>) {
-      scores[row.protocolName] = row.score;
+    const scores: Record<string, number> = {}
+    const riskRows = await db.protocolRiskScore.findMany({
+      select: { protocolName: true, score: true },
+    })
+    for (const row of riskRows as Array<{
+      protocolName: string
+      score: number
+    }>) {
+      scores[row.protocolName] = row.score
     }
-    eligible = applyRiskCeiling(allProtocols, riskCeiling, scores);
+    eligible = applyRiskCeiling(allProtocols, riskCeiling, scores)
   }
 
-  const maxEligibleApy = eligible.length > 0 ? Math.max(...eligible.map((p) => p.apy)) : 0;
-  return { reachable: requiredApy <= maxEligibleApy, maxEligibleApy };
+  const maxEligibleApy =
+    eligible.length > 0 ? Math.max(...eligible.map((p) => p.apy)) : 0
+  return { reachable: requiredApy <= maxEligibleApy, maxEligibleApy }
 }
 
 /**
@@ -244,22 +279,29 @@ async function resolveReachability(
  * linked position has disappeared or is no longer ACTIVE, the goal is
  * cancelled on next read rather than left dangling as ACTIVE.
  */
-export async function computeGoalProgress(goalId: string, database: Db = db): Promise<GoalProgress> {
-  const goal = await getGoalById(goalId, database);
+export async function computeGoalProgress(
+  goalId: string,
+  database: Db = db
+): Promise<GoalProgress> {
+  const goal = await getGoalById(goalId, database)
   if (!goal) {
-    throw new GoalNotFoundError('Savings goal not found');
+    throw new GoalNotFoundError('Savings goal not found')
   }
 
-  const targetAmount = Number(goal.targetAmount);
-  const startingAmount = Number(goal.startingAmount);
+  const targetAmount = Number(goal.targetAmount)
+  const startingAmount = Number(goal.startingAmount)
   const requiredApy = calculateRequiredApy(
     startingAmount,
     targetAmount,
-    calculateYearsRemaining(goal.targetDate),
-  );
+    calculateYearsRemaining(goal.targetDate)
+  )
 
   if (goal.status !== 'ACTIVE') {
-    const currentAmount = await resolveCurrentAmount(goal.userId, goal.positionId, database);
+    const currentAmount = await resolveCurrentAmount(
+      goal.userId,
+      goal.positionId,
+      database
+    )
     return {
       goalId: goal.id,
       status: goal.status,
@@ -272,37 +314,52 @@ export async function computeGoalProgress(goalId: string, database: Db = db): Pr
       onTrack: goal.status === 'ACHIEVED',
       reachable: goal.status === 'ACHIEVED',
       projectedCompletionDate: null,
-    };
+    }
   }
 
   if (goal.positionId) {
-    const position = await (database as any).position.findUnique({ where: { id: goal.positionId } });
+    const position = await (database as any).position.findUnique({
+      where: { id: goal.positionId },
+    })
     if (!position || position.status !== 'ACTIVE') {
-      await (database as any).savingsGoal.update({ where: { id: goal.id }, data: { status: 'CANCELLED' } });
+      await (database as any).savingsGoal.update({
+        where: { id: goal.id },
+        data: { status: 'CANCELLED' },
+      })
       await logAgentAction(
         'GOAL_PROGRESS',
         'SKIPPED',
         { reasoning: 'Linked position is no longer active — goal cancelled' },
         goal.userId,
-        goal.positionId,
-      );
-      return computeGoalProgress(goalId, database);
+        goal.positionId
+      )
+      return computeGoalProgress(goalId, database)
     }
   }
 
-  const currentAmount = await resolveCurrentAmount(goal.userId, goal.positionId, database);
-  const actualApy = await resolveActualApy(goal.userId, database);
-  const yearsRemaining = calculateYearsRemaining(goal.targetDate);
+  const currentAmount = await resolveCurrentAmount(
+    goal.userId,
+    goal.positionId,
+    database
+  )
+  const actualApy = await resolveActualApy(goal.userId, database)
+  const yearsRemaining = calculateYearsRemaining(goal.targetDate)
 
   if (currentAmount >= targetAmount) {
-    await (database as any).savingsGoal.update({ where: { id: goal.id }, data: { status: 'ACHIEVED' } });
+    await (database as any).savingsGoal.update({
+      where: { id: goal.id },
+      data: { status: 'ACHIEVED' },
+    })
     await logAgentAction(
       'GOAL_PROGRESS',
       'SUCCESS',
-      { reasoning: 'Savings goal achieved', outputData: { currentAmount, targetAmount } },
+      {
+        reasoning: 'Savings goal achieved',
+        outputData: { currentAmount, targetAmount },
+      },
       goal.userId,
-      goal.positionId ?? undefined,
-    );
+      goal.positionId ?? undefined
+    )
     return {
       goalId: goal.id,
       status: 'ACHIEVED',
@@ -315,18 +372,24 @@ export async function computeGoalProgress(goalId: string, database: Db = db): Pr
       onTrack: true,
       reachable: true,
       projectedCompletionDate: new Date().toISOString(),
-    };
+    }
   }
 
   if (yearsRemaining <= 0) {
-    await (database as any).savingsGoal.update({ where: { id: goal.id }, data: { status: 'MISSED' } });
+    await (database as any).savingsGoal.update({
+      where: { id: goal.id },
+      data: { status: 'MISSED' },
+    })
     await logAgentAction(
       'GOAL_PROGRESS',
       'FAILED',
-      { reasoning: 'Savings goal target date passed without being met', outputData: { currentAmount, targetAmount } },
+      {
+        reasoning: 'Savings goal target date passed without being met',
+        outputData: { currentAmount, targetAmount },
+      },
       goal.userId,
-      goal.positionId ?? undefined,
-    );
+      goal.positionId ?? undefined
+    )
     return {
       goalId: goal.id,
       status: 'MISSED',
@@ -339,18 +402,21 @@ export async function computeGoalProgress(goalId: string, database: Db = db): Pr
       onTrack: false,
       reachable: false,
       projectedCompletionDate: null,
-    };
+    }
   }
 
-  const { reachable } = await resolveReachability(requiredApy, goal.riskCeiling);
-  const onTrack = actualApy >= requiredApy;
+  const { reachable } = await resolveReachability(requiredApy, goal.riskCeiling)
+  const onTrack = actualApy >= requiredApy
 
-  let projectedCompletionDate: string | null = null;
+  let projectedCompletionDate: string | null = null
   if (actualApy > 0 && currentAmount > 0 && currentAmount < targetAmount) {
-    const yearsToComplete = (targetAmount - currentAmount) / currentAmount / (actualApy / 100);
-    const projected = new Date();
-    projected.setDate(projected.getDate() + Math.round(yearsToComplete * 365.25));
-    projectedCompletionDate = projected.toISOString();
+    const yearsToComplete =
+      (targetAmount - currentAmount) / currentAmount / (actualApy / 100)
+    const projected = new Date()
+    projected.setDate(
+      projected.getDate() + Math.round(yearsToComplete * 365.25)
+    )
+    projectedCompletionDate = projected.toISOString()
   }
 
   await logAgentAction(
@@ -358,13 +424,22 @@ export async function computeGoalProgress(goalId: string, database: Db = db): Pr
     'SUCCESS',
     {
       reasoning: reachable
-        ? (onTrack ? 'On track toward savings goal' : 'Behind schedule but still reachable within risk tolerance')
+        ? onTrack
+          ? 'On track toward savings goal'
+          : 'Behind schedule but still reachable within risk tolerance'
         : 'Target not reachable within your risk tolerance',
-      outputData: { currentAmount, targetAmount, requiredApy, actualApy, reachable, onTrack },
+      outputData: {
+        currentAmount,
+        targetAmount,
+        requiredApy,
+        actualApy,
+        reachable,
+        onTrack,
+      },
     },
     goal.userId,
-    goal.positionId ?? undefined,
-  );
+    goal.positionId ?? undefined
+  )
 
   return {
     goalId: goal.id,
@@ -378,6 +453,8 @@ export async function computeGoalProgress(goalId: string, database: Db = db): Pr
     onTrack,
     reachable,
     projectedCompletionDate,
-    note: reachable ? undefined : 'Target not reachable within your risk tolerance',
-  };
+    note: reachable
+      ? undefined
+      : 'Target not reachable within your risk tolerance',
+  }
 }

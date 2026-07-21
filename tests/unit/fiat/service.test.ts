@@ -18,7 +18,12 @@ import type { ParsedWebhook } from '../../../src/fiat/types'
 
 jest.mock('../../../src/db', () => ({ __esModule: true, default: {} }))
 jest.mock('../../../src/utils/logger', () => ({
-  logger: { warn: jest.fn(), error: jest.fn(), info: jest.fn(), debug: jest.fn() },
+  logger: {
+    warn: jest.fn(),
+    error: jest.fn(),
+    info: jest.fn(),
+    debug: jest.fn(),
+  },
 }))
 jest.mock('../../../src/services/webhookDispatcher', () => ({
   dispatchWebhookEvent: jest.fn().mockResolvedValue(undefined),
@@ -63,7 +68,10 @@ beforeEach(() => {
 describe('processProviderWebhook', () => {
   it('advances a PROCESSING/completed signal to PROCESSING, never SETTLED', async () => {
     mockDb.fiatOrder.findUnique.mockResolvedValue(baseOrder())
-    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({ ...baseOrder(), ...data }))
+    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({
+      ...baseOrder(),
+      ...data,
+    }))
 
     const parsed: ParsedWebhook = { providerOrderId: 'mp_1', status: 'SETTLED' }
     const res = await processProviderWebhook('moonpay', parsed)
@@ -75,9 +83,14 @@ describe('processProviderWebhook', () => {
   })
 
   it('is idempotent — a terminal order is not mutated by a later delivery', async () => {
-    mockDb.fiatOrder.findUnique.mockResolvedValue(baseOrder({ status: 'SETTLED' }))
+    mockDb.fiatOrder.findUnique.mockResolvedValue(
+      baseOrder({ status: 'SETTLED' })
+    )
 
-    const res = await processProviderWebhook('moonpay', { providerOrderId: 'mp_1', status: 'FAILED' })
+    const res = await processProviderWebhook('moonpay', {
+      providerOrderId: 'mp_1',
+      status: 'FAILED',
+    })
 
     expect(res.handled).toBe(true)
     expect(res.reason).toBe('already terminal')
@@ -87,7 +100,10 @@ describe('processProviderWebhook', () => {
   it('acknowledges but does not act on an unknown order', async () => {
     mockDb.fiatOrder.findUnique.mockResolvedValue(null)
 
-    const res = await processProviderWebhook('moonpay', { providerOrderId: 'nope', status: 'FAILED' })
+    const res = await processProviderWebhook('moonpay', {
+      providerOrderId: 'nope',
+      status: 'FAILED',
+    })
 
     expect(res.handled).toBe(false)
     expect(res.reason).toBe('unknown order')
@@ -96,7 +112,10 @@ describe('processProviderWebhook', () => {
 
   it('marks FAILED with a reason and emits an outbound webhook', async () => {
     mockDb.fiatOrder.findUnique.mockResolvedValue(baseOrder())
-    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({ ...baseOrder(), ...data }))
+    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({
+      ...baseOrder(),
+      ...data,
+    }))
 
     await processProviderWebhook('moonpay', {
       providerOrderId: 'mp_1',
@@ -107,11 +126,17 @@ describe('processProviderWebhook', () => {
     const updateArg = mockDb.fiatOrder.update.mock.calls[0][0]
     expect(updateArg.data.status).toBe('FAILED')
     expect(updateArg.data.failureReason).toBe('card_declined')
-    expect(mockDispatch).toHaveBeenCalledWith('fiat.order.failed', expect.objectContaining({ status: 'FAILED' }))
+    expect(mockDispatch).toHaveBeenCalledWith(
+      'fiat.order.failed',
+      expect.objectContaining({ status: 'FAILED' })
+    )
   })
 
   it('rejects a webhook with no providerOrderId', async () => {
-    const res = await processProviderWebhook('moonpay', { providerOrderId: '', status: 'PENDING' })
+    const res = await processProviderWebhook('moonpay', {
+      providerOrderId: '',
+      status: 'PENDING',
+    })
     expect(res.handled).toBe(false)
     expect(mockDb.fiatOrder.findUnique).not.toHaveBeenCalled()
   })
@@ -120,15 +145,28 @@ describe('processProviderWebhook', () => {
     mockDb.fiatOrder.findUnique
       .mockResolvedValueOnce(baseOrder()) // webhook lookup
       .mockResolvedValueOnce(baseOrder({ status: 'PROCESSING' })) // reconcileSingleOrder lookup
-    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({ ...baseOrder(), ...data }))
+    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({
+      ...baseOrder(),
+      ...data,
+    }))
     mockDb.transaction.findUnique.mockResolvedValue({
-      id: 'tx-1', txHash: '0xabc', status: 'CONFIRMED', userId: 'user-1', amount: 98.5,
+      id: 'tx-1',
+      txHash: '0xabc',
+      status: 'CONFIRMED',
+      userId: 'user-1',
+      amount: 98.5,
     })
 
-    await processProviderWebhook('moonpay', { providerOrderId: 'mp_1', status: 'SETTLED', txHash: '0xabc' })
+    await processProviderWebhook('moonpay', {
+      providerOrderId: 'mp_1',
+      status: 'SETTLED',
+      txHash: '0xabc',
+    })
 
     // Second update is the settlement.
-    const settleCall = mockDb.fiatOrder.update.mock.calls.find((c: any) => c[0].data.status === 'SETTLED')
+    const settleCall = mockDb.fiatOrder.update.mock.calls.find(
+      (c: any) => c[0].data.status === 'SETTLED'
+    )
     expect(settleCall).toBeDefined()
     expect(settleCall[0].data.transactionId).toBe('tx-1')
   })
@@ -136,25 +174,48 @@ describe('processProviderWebhook', () => {
 
 describe('reconcileSingleOrder', () => {
   it('settles only when a CONFIRMED transaction exists for the same user', async () => {
-    mockDb.fiatOrder.findUnique.mockResolvedValue(baseOrder({ status: 'PROCESSING' }))
+    mockDb.fiatOrder.findUnique.mockResolvedValue(
+      baseOrder({ status: 'PROCESSING' })
+    )
     mockDb.transaction.findUnique.mockResolvedValue({
-      id: 'tx-1', txHash: '0xabc', status: 'CONFIRMED', userId: 'user-1', amount: 100,
+      id: 'tx-1',
+      txHash: '0xabc',
+      status: 'CONFIRMED',
+      userId: 'user-1',
+      amount: 100,
     })
-    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({ ...baseOrder(), ...data }))
+    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({
+      ...baseOrder(),
+      ...data,
+    }))
 
     const ok = await reconcileSingleOrder('order-1', '0xabc')
 
     expect(ok).toBe(true)
     expect(mockDb.fiatOrder.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: 'SETTLED', transactionId: 'tx-1' }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'SETTLED',
+          transactionId: 'tx-1',
+        }),
+      })
     )
-    expect(mockDispatch).toHaveBeenCalledWith('fiat.order.settled', expect.objectContaining({ txHash: '0xabc' }))
+    expect(mockDispatch).toHaveBeenCalledWith(
+      'fiat.order.settled',
+      expect.objectContaining({ txHash: '0xabc' })
+    )
   })
 
   it('does not settle when the transaction is not yet CONFIRMED', async () => {
-    mockDb.fiatOrder.findUnique.mockResolvedValue(baseOrder({ status: 'PROCESSING' }))
+    mockDb.fiatOrder.findUnique.mockResolvedValue(
+      baseOrder({ status: 'PROCESSING' })
+    )
     mockDb.transaction.findUnique.mockResolvedValue({
-      id: 'tx-1', txHash: '0xabc', status: 'PENDING', userId: 'user-1', amount: 100,
+      id: 'tx-1',
+      txHash: '0xabc',
+      status: 'PENDING',
+      userId: 'user-1',
+      amount: 100,
     })
 
     const ok = await reconcileSingleOrder('order-1', '0xabc')
@@ -164,9 +225,15 @@ describe('reconcileSingleOrder', () => {
   })
 
   it('refuses to link a tx hash that belongs to a different user', async () => {
-    mockDb.fiatOrder.findUnique.mockResolvedValue(baseOrder({ status: 'PROCESSING' }))
+    mockDb.fiatOrder.findUnique.mockResolvedValue(
+      baseOrder({ status: 'PROCESSING' })
+    )
     mockDb.transaction.findUnique.mockResolvedValue({
-      id: 'tx-1', txHash: '0xabc', status: 'CONFIRMED', userId: 'attacker', amount: 100,
+      id: 'tx-1',
+      txHash: '0xabc',
+      status: 'CONFIRMED',
+      userId: 'attacker',
+      amount: 100,
     })
 
     const ok = await reconcileSingleOrder('order-1', '0xabc')
@@ -176,7 +243,9 @@ describe('reconcileSingleOrder', () => {
   })
 
   it('is a no-op for an already-terminal order', async () => {
-    mockDb.fiatOrder.findUnique.mockResolvedValue(baseOrder({ status: 'SETTLED' }))
+    mockDb.fiatOrder.findUnique.mockResolvedValue(
+      baseOrder({ status: 'SETTLED' })
+    )
     const ok = await reconcileSingleOrder('order-1', '0xabc')
     expect(ok).toBe(false)
     expect(mockDb.transaction.findUnique).not.toHaveBeenCalled()
@@ -185,16 +254,31 @@ describe('reconcileSingleOrder', () => {
 
 describe('reconcileFiatOrders', () => {
   it('settles PROCESSING orders that now have a confirmed on-chain match', async () => {
-    mockDb.fiatOrder.findMany.mockResolvedValue([baseOrder({ status: 'PROCESSING' })])
+    mockDb.fiatOrder.findMany.mockResolvedValue([
+      baseOrder({ status: 'PROCESSING' }),
+    ])
     mockDb.transaction.findFirst.mockResolvedValue({
-      id: 'tx-1', txHash: '0xabc', status: 'CONFIRMED', userId: 'user-1', amount: 100,
+      id: 'tx-1',
+      txHash: '0xabc',
+      status: 'CONFIRMED',
+      userId: 'user-1',
+      amount: 100,
     })
     // reconcileSingleOrder re-reads the order + tx.
-    mockDb.fiatOrder.findUnique.mockResolvedValue(baseOrder({ status: 'PROCESSING' }))
+    mockDb.fiatOrder.findUnique.mockResolvedValue(
+      baseOrder({ status: 'PROCESSING' })
+    )
     mockDb.transaction.findUnique.mockResolvedValue({
-      id: 'tx-1', txHash: '0xabc', status: 'CONFIRMED', userId: 'user-1', amount: 100,
+      id: 'tx-1',
+      txHash: '0xabc',
+      status: 'CONFIRMED',
+      userId: 'user-1',
+      amount: 100,
     })
-    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({ ...baseOrder(), ...data }))
+    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({
+      ...baseOrder(),
+      ...data,
+    }))
 
     const res = await reconcileFiatOrders()
 
@@ -214,15 +298,21 @@ describe('reconcileFiatOrders', () => {
 
     expect(res.settled).toBe(0)
     expect(mockEmit).toHaveBeenCalledWith(
-      expect.objectContaining({ severity: 'critical', component: 'fiat-reconciliation' }),
-      expect.stringContaining('fiat:stuck:'),
+      expect.objectContaining({
+        severity: 'critical',
+        component: 'fiat-reconciliation',
+      }),
+      expect.stringContaining('fiat:stuck:')
     )
   })
 })
 
 describe('ageOutStaleFiatOrders', () => {
   it('fails PENDING orders older than the stale threshold', async () => {
-    mockDb.fiatOrder.findMany.mockResolvedValue([{ id: 'order-1' }, { id: 'order-2' }])
+    mockDb.fiatOrder.findMany.mockResolvedValue([
+      { id: 'order-1' },
+      { id: 'order-2' },
+    ])
     mockDb.fiatOrder.update.mockResolvedValue({})
 
     const res = await ageOutStaleFiatOrders()

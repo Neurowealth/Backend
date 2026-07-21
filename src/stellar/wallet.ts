@@ -1,10 +1,10 @@
-import { Keypair } from '@stellar/stellar-sdk';
-import * as crypto from 'crypto';
-import db from '../db';
-import { logger } from '../utils/logger';
+import { Keypair } from '@stellar/stellar-sdk'
+import * as crypto from 'crypto'
+import db from '../db'
+import { logger } from '../utils/logger'
 
-const ALGORITHM = 'aes-256-gcm';
-const HEX_64_REGEX = /^[0-9a-fA-F]{64}$/;
+const ALGORITHM = 'aes-256-gcm'
+const HEX_64_REGEX = /^[0-9a-fA-F]{64}$/
 
 /**
  * Validate that a value is exactly 64 hex characters (32 bytes).
@@ -19,10 +19,12 @@ const HEX_64_REGEX = /^[0-9a-fA-F]{64}$/;
  */
 function assertValidHexKey(value: string, label: string): void {
   if (!value || value.length !== 64) {
-    throw new Error(`${label} must be 64 hex characters (32 bytes)`);
+    throw new Error(`${label} must be 64 hex characters (32 bytes)`)
   }
   if (!HEX_64_REGEX.test(value)) {
-    throw new Error(`${label} must contain only hexadecimal characters (0-9, a-f, A-F)`);
+    throw new Error(
+      `${label} must contain only hexadecimal characters (0-9, a-f, A-F)`
+    )
   }
 }
 
@@ -31,9 +33,9 @@ function assertValidHexKey(value: string, label: string): void {
  * Must be 64 hex characters (32 bytes).
  */
 function getEncryptionKey(): string {
-  const key = process.env.WALLET_ENCRYPTION_KEY || '';
-  assertValidHexKey(key, 'WALLET_ENCRYPTION_KEY');
-  return key;
+  const key = process.env.WALLET_ENCRYPTION_KEY || ''
+  assertValidHexKey(key, 'WALLET_ENCRYPTION_KEY')
+  return key
 }
 
 /**
@@ -43,34 +45,38 @@ function getEncryptionKey(): string {
  * rather than throwing, since a bad fallback key shouldn't break primary reads).
  */
 function getFallbackEncryptionKey(): string | undefined {
-  const key = process.env.WALLET_ENCRYPTION_KEY_OLD;
-  if (!key) return undefined;
+  const key = process.env.WALLET_ENCRYPTION_KEY_OLD
+  if (!key) return undefined
 
   try {
-    assertValidHexKey(key, 'WALLET_ENCRYPTION_KEY_OLD');
+    assertValidHexKey(key, 'WALLET_ENCRYPTION_KEY_OLD')
   } catch (err) {
     logger.warn(
       `WALLET_ENCRYPTION_KEY_OLD invalid; ignoring fallback key: ${err instanceof Error ? err.message : 'unknown error'}`
-    );
-    return undefined;
+    )
+    return undefined
   }
 
-  return key;
+  return key
 }
 
-function encryptSecret(secret: string): { encrypted: string; iv: string; authTag: string } {
-  const key = Buffer.from(getEncryptionKey(), 'hex');
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+function encryptSecret(secret: string): {
+  encrypted: string
+  iv: string
+  authTag: string
+} {
+  const key = Buffer.from(getEncryptionKey(), 'hex')
+  const iv = crypto.randomBytes(16)
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv)
 
-  let encrypted = cipher.update(secret, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
+  let encrypted = cipher.update(secret, 'utf8', 'hex')
+  encrypted += cipher.final('hex')
 
   return {
     encrypted,
     iv: iv.toString('hex'),
     authTag: cipher.getAuthTag().toString('hex'),
-  };
+  }
 }
 
 /**
@@ -78,14 +84,18 @@ function encryptSecret(secret: string): { encrypted: string; iv: string; authTag
  * Throws if decryption fails.
  */
 function decryptSecret(encrypted: string, iv: string, authTag: string): string {
-  const key = Buffer.from(getEncryptionKey(), 'hex');
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, Buffer.from(iv, 'hex'));
-  decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+  const key = Buffer.from(getEncryptionKey(), 'hex')
+  const decipher = crypto.createDecipheriv(
+    ALGORITHM,
+    key,
+    Buffer.from(iv, 'hex')
+  )
+  decipher.setAuthTag(Buffer.from(authTag, 'hex'))
 
-  let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
+  let decrypted = decipher.update(encrypted, 'hex', 'utf8')
+  decrypted += decipher.final('utf8')
 
-  return decrypted;
+  return decrypted
 }
 
 /**
@@ -103,35 +113,47 @@ function decryptSecretDualKey(
 ): { secret: string; keyUsed: 'primary' | 'fallback' } {
   // Try primary key
   try {
-    const key = Buffer.from(getEncryptionKey(), 'hex');
-    const decipher = crypto.createDecipheriv(ALGORITHM, key, Buffer.from(iv, 'hex'));
-    decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+    const key = Buffer.from(getEncryptionKey(), 'hex')
+    const decipher = crypto.createDecipheriv(
+      ALGORITHM,
+      key,
+      Buffer.from(iv, 'hex')
+    )
+    decipher.setAuthTag(Buffer.from(authTag, 'hex'))
 
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
+    let decrypted = decipher.update(encrypted, 'hex', 'utf8')
+    decrypted += decipher.final('utf8')
 
-    return { secret: decrypted, keyUsed: 'primary' };
+    return { secret: decrypted, keyUsed: 'primary' }
   } catch (err) {
     // Try fallback key if available
-    const fallbackKey = getFallbackEncryptionKey();
+    const fallbackKey = getFallbackEncryptionKey()
     if (!fallbackKey) {
-      throw new Error(`Decryption with primary key failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+      throw new Error(
+        `Decryption with primary key failed: ${err instanceof Error ? err.message : 'unknown error'}`
+      )
     }
 
     try {
-      const key = Buffer.from(fallbackKey, 'hex');
-      const decipher = crypto.createDecipheriv(ALGORITHM, key, Buffer.from(iv, 'hex'));
-      decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+      const key = Buffer.from(fallbackKey, 'hex')
+      const decipher = crypto.createDecipheriv(
+        ALGORITHM,
+        key,
+        Buffer.from(iv, 'hex')
+      )
+      decipher.setAuthTag(Buffer.from(authTag, 'hex'))
 
-      let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-      decrypted += decipher.final('utf8');
+      let decrypted = decipher.update(encrypted, 'hex', 'utf8')
+      decrypted += decipher.final('utf8')
 
-      logger.info('[Wallet] Decrypted with fallback key; consider re-encrypting with primary key');
-      return { secret: decrypted, keyUsed: 'fallback' };
+      logger.info(
+        '[Wallet] Decrypted with fallback key; consider re-encrypting with primary key'
+      )
+      return { secret: decrypted, keyUsed: 'fallback' }
     } catch (fallbackErr) {
       throw new Error(
         `Decryption failed with both primary and fallback keys: ${fallbackErr instanceof Error ? fallbackErr.message : 'unknown error'}`
-      );
+      )
     }
   }
 }
@@ -150,13 +172,13 @@ function decryptSecretDualKey(
  * key means wallets cannot be recovered.
  */
 export async function createCustodialWallet(userId: string) {
-  const existing = await db.custodialWallet.findUnique({ where: { userId } });
+  const existing = await db.custodialWallet.findUnique({ where: { userId } })
   if (existing) {
-    throw new Error(`Wallet already exists for user ${userId}`);
+    throw new Error(`Wallet already exists for user ${userId}`)
   }
 
-  const keypair = Keypair.random();
-  const { encrypted, iv, authTag } = encryptSecret(keypair.secret());
+  const keypair = Keypair.random()
+  const { encrypted, iv, authTag } = encryptSecret(keypair.secret())
 
   const wallet = await db.custodialWallet.create({
     data: {
@@ -167,17 +189,17 @@ export async function createCustodialWallet(userId: string) {
       authTag,
       keyVersion: 2,
     },
-  });
+  })
 
-  logger.info(`[Wallet] Created for user ${userId}: ${wallet.publicKey}`);
-  return wallet;
+  logger.info(`[Wallet] Created for user ${userId}: ${wallet.publicKey}`)
+  return wallet
 }
 
 /**
  * Get wallet record by user ID.
  */
 export async function getWalletByUserId(userId: string) {
-  return db.custodialWallet.findUnique({ where: { userId } });
+  return db.custodialWallet.findUnique({ where: { userId } })
 }
 
 /**
@@ -185,10 +207,10 @@ export async function getWalletByUserId(userId: string) {
  * Supports dual-key reads if WALLET_ENCRYPTION_KEY_OLD is configured.
  */
 export async function getKeypairForUser(userId: string): Promise<Keypair> {
-  const wallet = await getWalletByUserId(userId);
+  const wallet = await getWalletByUserId(userId)
 
   if (!wallet) {
-    throw new Error(`No wallet found for user ${userId}`);
+    throw new Error(`No wallet found for user ${userId}`)
   }
 
   // Use dual-key decryption for smooth key rotation support
@@ -196,16 +218,18 @@ export async function getKeypairForUser(userId: string): Promise<Keypair> {
     wallet.encryptedSecret,
     wallet.iv,
     wallet.authTag
-  );
+  )
 
   if (keyUsed === 'fallback') {
-    logger.debug(`[Wallet] User ${userId} decrypted with fallback key; schedule re-encryption`);
+    logger.debug(
+      `[Wallet] User ${userId} decrypted with fallback key; schedule re-encryption`
+    )
   }
 
   // Lazy re-encryption for wallets on v1
   if (wallet.keyVersion === 1) {
     try {
-      const { encrypted, iv, authTag } = encryptSecret(secret);
+      const { encrypted, iv, authTag } = encryptSecret(secret)
       await db.custodialWallet.update({
         where: { id: wallet.id },
         data: {
@@ -214,23 +238,29 @@ export async function getKeypairForUser(userId: string): Promise<Keypair> {
           authTag,
           keyVersion: 2,
         },
-      });
-      logger.info(`[Wallet] Upgraded user ${userId} to keyVersion 2 via lazy re-encryption`);
+      })
+      logger.info(
+        `[Wallet] Upgraded user ${userId} to keyVersion 2 via lazy re-encryption`
+      )
     } catch (err) {
-      logger.error(`[Wallet] Failed to lazy re-encrypt user ${userId}: ${err instanceof Error ? err.message : 'unknown error'}`);
+      logger.error(
+        `[Wallet] Failed to lazy re-encrypt user ${userId}: ${err instanceof Error ? err.message : 'unknown error'}`
+      )
       // Non-fatal, we still return the keypair
     }
   }
 
-  return Keypair.fromSecret(secret);
+  return Keypair.fromSecret(secret)
 }
 
 /**
  * List all wallet public keys (for admin/debugging).
  */
 export async function listWallets(): Promise<string[]> {
-  const wallets = await db.custodialWallet.findMany({ select: { publicKey: true } });
-  return wallets.map(w => w.publicKey);
+  const wallets = await db.custodialWallet.findMany({
+    select: { publicKey: true },
+  })
+  return wallets.map((w) => w.publicKey)
 }
 
 /**
@@ -242,7 +272,7 @@ export function decryptSecretWithPrimaryKey(
   iv: string,
   authTag: string
 ): string {
-  return decryptSecret(encrypted, iv, authTag);
+  return decryptSecret(encrypted, iv, authTag)
 }
 
 /**
@@ -258,7 +288,7 @@ export function decryptSecretWithFallback(
   iv: string,
   authTag: string
 ): { secret: string; keyUsed: 'primary' | 'fallback' } {
-  return decryptSecretDualKey(encrypted, iv, authTag);
+  return decryptSecretDualKey(encrypted, iv, authTag)
 }
 
 /**
@@ -275,18 +305,18 @@ export function createEncryptedSecretWithKey(
   secret: string,
   keyHex: string
 ): { encrypted: string; iv: string; authTag: string } {
-  assertValidHexKey(keyHex, 'Key');
+  assertValidHexKey(keyHex, 'Key')
 
-  const key = Buffer.from(keyHex, 'hex');
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+  const key = Buffer.from(keyHex, 'hex')
+  const iv = crypto.randomBytes(16)
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv)
 
-  let encrypted = cipher.update(secret, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
+  let encrypted = cipher.update(secret, 'utf8', 'hex')
+  encrypted += cipher.final('hex')
 
   return {
     encrypted,
     iv: iv.toString('hex'),
     authTag: cipher.getAuthTag().toString('hex'),
-  };
+  }
 }

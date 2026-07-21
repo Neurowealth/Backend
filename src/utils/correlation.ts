@@ -14,7 +14,10 @@ export function generateCorrelationId(): string {
 }
 
 export function isValidCorrelationId(value: string): boolean {
-  return VALID_CORRELATION_ID.test(value) && value.length <= MAX_CORRELATION_ID_LENGTH
+  return (
+    VALID_CORRELATION_ID.test(value) &&
+    value.length <= MAX_CORRELATION_ID_LENGTH
+  )
 }
 
 export function resolveCorrelationId(

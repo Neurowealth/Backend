@@ -46,7 +46,7 @@ router.post(
       })
       return sendError(res, 502, 'Failed to fetch quote from provider')
     }
-  },
+  }
 )
 
 // ── Create order ────────────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ router.post(
       })
       return sendError(res, 502, 'Failed to create order with provider')
     }
-  },
+  }
 )
 
 // ── Order history (caller-scoped) ─────────────────────────────────────────────
@@ -131,7 +131,9 @@ router.post(
     }
 
     if (!provider.verifyWebhookSignature(rawBody, headers)) {
-      logger.warn('[Fiat] Webhook signature verification failed', { provider: providerName })
+      logger.warn('[Fiat] Webhook signature verification failed', {
+        provider: providerName,
+      })
       return sendError(res, 401, 'Invalid signature')
     }
 
@@ -159,7 +161,7 @@ router.post(
       })
       return sendError(res, 500, 'Webhook processing failed')
     }
-  },
+  }
 )
 
 export default router

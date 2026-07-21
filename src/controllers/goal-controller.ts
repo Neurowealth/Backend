@@ -3,7 +3,12 @@
 // report its progress.
 import { Request, Response } from 'express'
 import { logger } from '../utils/logger'
-import { sendError, sendNotFound, sendUnauthorized, sendConflict } from '../utils/errors'
+import {
+  sendError,
+  sendNotFound,
+  sendUnauthorized,
+  sendConflict,
+} from '../utils/errors'
 import { mapGoalToResponse } from '../utils/api-formatters'
 import { formatGoalProgressReply } from '../whatsapp/formatters'
 import {
@@ -24,7 +29,10 @@ import {
  * Create the caller's savings goal. Rejects if the caller already has an
  * ACTIVE goal (single active goal per user, for now).
  */
-export async function createGoalHandler(req: Request, res: Response): Promise<void> {
+export async function createGoalHandler(
+  req: Request,
+  res: Response
+): Promise<void> {
   const userId = req.userId
   if (!userId) {
     sendUnauthorized(res)
@@ -54,7 +62,10 @@ export async function createGoalHandler(req: Request, res: Response): Promise<vo
  * The user's current goal: their ACTIVE goal if one exists, otherwise their
  * most recent goal. enforceUserAccess guarantees req.auth.userId === :userId.
  */
-export async function getGoalHandler(req: Request, res: Response): Promise<void> {
+export async function getGoalHandler(
+  req: Request,
+  res: Response
+): Promise<void> {
   const userId = String(req.params.userId)
 
   try {
@@ -76,7 +87,10 @@ export async function getGoalHandler(req: Request, res: Response): Promise<void>
  * Update target amount/date/riskCeiling. Keyed by goal id (not :userId), so
  * enforceUserAccess doesn't apply — ownership is checked explicitly here.
  */
-export async function updateGoalHandler(req: Request, res: Response): Promise<void> {
+export async function updateGoalHandler(
+  req: Request,
+  res: Response
+): Promise<void> {
   const authUserId = req.auth?.userId
   if (!authUserId) {
     sendUnauthorized(res)
@@ -118,7 +132,10 @@ export async function updateGoalHandler(req: Request, res: Response): Promise<vo
  * Soft-cancel: sets status = CANCELLED, never hard-deletes. Ownership is
  * checked explicitly since this route is keyed by goal id.
  */
-export async function cancelGoalHandler(req: Request, res: Response): Promise<void> {
+export async function cancelGoalHandler(
+  req: Request,
+  res: Response
+): Promise<void> {
   const authUserId = req.auth?.userId
   if (!authUserId) {
     sendUnauthorized(res)
@@ -157,7 +174,10 @@ export async function cancelGoalHandler(req: Request, res: Response): Promise<vo
  * whether the target is reachable within the user's risk tolerance. Ownership
  * is checked explicitly since this route is keyed by goal id.
  */
-export async function getGoalProgressHandler(req: Request, res: Response): Promise<void> {
+export async function getGoalProgressHandler(
+  req: Request,
+  res: Response
+): Promise<void> {
   const authUserId = req.auth?.userId
   if (!authUserId) {
     sendUnauthorized(res)

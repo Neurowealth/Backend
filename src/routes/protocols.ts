@@ -71,7 +71,8 @@ router.get('/risk', async (_req: Request, res: Response) => {
       methodology: 'docs/PROTOCOL_RISK_SCORING.md',
     })
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    const errorMessage =
+      error instanceof Error ? error.message : 'Unknown error'
     return res.status(500).json({
       success: false,
       error: errorMessage,
@@ -99,14 +100,18 @@ router.get('/agent/status', async (req: Request, res: Response) => {
       healthStatus: agentStatus.healthStatus,
       lastRebalanceAt: agentStatus.lastRebalanceAt?.toISOString() || null,
       currentProtocol: agentStatus.currentProtocol,
-      currentApy: agentStatus.currentApy ? Number(agentStatus.currentApy.toFixed(2)) : null,
+      currentApy: agentStatus.currentApy
+        ? Number(agentStatus.currentApy.toFixed(2))
+        : null,
       nextScheduledCheck: agentStatus.nextScheduledCheck.toISOString(),
       lastError: agentStatus.lastError,
-      latestLog: latestLog ? {
-        status: latestLog.status,
-        action: latestLog.action,
-        createdAt: latestLog.createdAt.toISOString(),
-      } : null,
+      latestLog: latestLog
+        ? {
+            status: latestLog.status,
+            action: latestLog.action,
+            createdAt: latestLog.createdAt.toISOString(),
+          }
+        : null,
       timestamp: new Date().toISOString(),
     }
 
@@ -120,7 +125,8 @@ router.get('/agent/status', async (req: Request, res: Response) => {
       }),
     })
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    const errorMessage =
+      error instanceof Error ? error.message : 'Unknown error'
     return res.status(500).json({
       success: false,
       error: errorMessage,

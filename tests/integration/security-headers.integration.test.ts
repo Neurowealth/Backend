@@ -1,6 +1,9 @@
 import express from 'express'
 import request from 'supertest'
-import { securityHeaders, permissionsPolicy } from '../../src/middleware/security'
+import {
+  securityHeaders,
+  permissionsPolicy,
+} from '../../src/middleware/security'
 
 jest.mock('../../src/config/env', () => ({
   config: {
@@ -97,8 +100,9 @@ describe('security headers — non-production (CSP and HSTS disabled)', () => {
     jest.doMock('../../src/config/env', () => ({
       config: { nodeEnv: 'test', security: { trustProxy: 1 } },
     }))
-    const { securityHeaders: sh, permissionsPolicy: pp } =
-      jest.requireActual('../../src/middleware/security') as typeof import('../../src/middleware/security')
+    const { securityHeaders: sh, permissionsPolicy: pp } = jest.requireActual(
+      '../../src/middleware/security'
+    ) as typeof import('../../src/middleware/security')
     app = express()
     app.use(sh())
     app.use(pp())

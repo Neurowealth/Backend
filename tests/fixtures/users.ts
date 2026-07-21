@@ -9,7 +9,7 @@ export const FIXTURE_USER_1 = {
   isActive: true,
   createdAt: new Date('2024-01-01T00:00:00Z'),
   updatedAt: new Date('2024-01-01T00:00:00Z'),
-};
+}
 
 export const FIXTURE_USER_2 = {
   id: 'a1b2c3d4-0002-0002-0002-000000000002',
@@ -22,7 +22,7 @@ export const FIXTURE_USER_2 = {
   isActive: true,
   createdAt: new Date('2024-01-02T00:00:00Z'),
   updatedAt: new Date('2024-01-02T00:00:00Z'),
-};
+}
 
 export const FIXTURE_USER_TESTNET = {
   id: 'a1b2c3d4-0003-0003-0003-000000000003',
@@ -35,8 +35,8 @@ export const FIXTURE_USER_TESTNET = {
   isActive: true,
   createdAt: new Date('2024-01-03T00:00:00Z'),
   updatedAt: new Date('2024-01-03T00:00:00Z'),
-};
+}
 
 export function makeUser(overrides: Partial<typeof FIXTURE_USER_1> = {}) {
-  return { ...FIXTURE_USER_1, ...overrides };
+  return { ...FIXTURE_USER_1, ...overrides }
 }

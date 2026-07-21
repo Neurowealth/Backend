@@ -1,12 +1,15 @@
 import { logger, logBackgroundJob } from '../utils/logger'
-import { generateCorrelationId, runWithCorrelationIdAsync } from '../utils/correlation'
+import {
+  generateCorrelationId,
+  runWithCorrelationIdAsync,
+} from '../utils/correlation'
 import { recordBackgroundJob } from '../utils/metrics'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
 import { reconcileFiatOrders, ageOutStaleFiatOrders } from '../fiat/service'
 
 /** Interval between reconciliation sweeps (default: 5 minutes). */
 const FIAT_RECONCILE_INTERVAL_MS = Number(
-  process.env.FIAT_RECONCILE_INTERVAL_MS || 5 * 60 * 1000,
+  process.env.FIAT_RECONCILE_INTERVAL_MS || 5 * 60 * 1000
 )
 
 /**
@@ -37,7 +40,8 @@ export async function runFiatReconciliation(): Promise<void> {
     } catch (error) {
       const durationMs = Date.now() - startTime
       const duration = durationMs / 1000
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error'
 
       logBackgroundJob(jobName, 'failed', duration, correlationId, {
         error: errorMessage,

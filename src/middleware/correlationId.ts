@@ -1,5 +1,8 @@
 import { Request, Response, NextFunction } from 'express'
-import { resolveCorrelationId, runWithCorrelationId } from '../utils/correlation'
+import {
+  resolveCorrelationId,
+  runWithCorrelationId,
+} from '../utils/correlation'
 
 export const REQUEST_ID_HEADER = 'X-Request-ID'
 
@@ -12,7 +15,9 @@ export function correlationIdMiddleware(
   res: Response,
   next: NextFunction
 ): void {
-  const correlationId = resolveCorrelationId(req.headers as Record<string, string | string[] | undefined>)
+  const correlationId = resolveCorrelationId(
+    req.headers as Record<string, string | string[] | undefined>
+  )
 
   req.correlationId = correlationId
   res.locals.correlationId = correlationId

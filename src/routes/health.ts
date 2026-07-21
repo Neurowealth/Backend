@@ -14,7 +14,7 @@ router.get('/', (req: Request, res: Response) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     version: pkg.version || '1.0.0',
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
   })
 })
 
@@ -31,17 +31,26 @@ router.get('/ready', (req: Request, res: Response) => {
   })
 })
 
-const withTimeout = <T>(promise: Promise<T>, timeoutMs: number, name: string): Promise<T> => {
+const withTimeout = <T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  name: string
+): Promise<T> => {
   return Promise.race([
     promise,
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`${name} check timed out after ${timeoutMs}ms`)), timeoutMs)
-    )
+      setTimeout(
+        () => reject(new Error(`${name} check timed out after ${timeoutMs}ms`)),
+        timeoutMs
+      )
+    ),
   ])
 }
 
 router.get('/deep', async (req: Request, res: Response) => {
-  const token = req.headers['x-internal-token'] || req.headers['authorization']?.replace('Bearer ', '')
+  const token =
+    req.headers['x-internal-token'] ||
+    req.headers['authorization']?.replace('Bearer ', '')
   const expectedToken = process.env.INTERNAL_SERVICE_TOKEN
 
   if (!expectedToken || token !== expectedToken) {
@@ -49,32 +58,57 @@ router.get('/deep', async (req: Request, res: Response) => {
   }
 
   const startDb = Date.now()
-  const checkDatabase = async (): Promise<{ status: 'healthy' | 'degraded' | 'unhealthy'; latencyMs: number; error?: string }> => {
+  const checkDatabase = async (): Promise<{
+    status: 'healthy' | 'degraded' | 'unhealthy'
+    latencyMs: number
+    error?: string
+  }> => {
     try {
       await withTimeout(db.$queryRaw`SELECT 1`, 3000, 'database')
       return { status: 'healthy', latencyMs: Date.now() - startDb }
     } catch (error: any) {
-      return { status: 'unhealthy', latencyMs: Date.now() - startDb, error: error.message }
+      return {
+        status: 'unhealthy',
+        latencyMs: Date.now() - startDb,
+        error: error.message,
+      }
     }
   }
 
   const startStellar = Date.now()
-  const checkStellarRpc = async (): Promise<{ status: 'healthy' | 'degraded' | 'unhealthy'; latencyMs: number; ledger?: number; error?: string }> => {
+  const checkStellarRpc = async (): Promise<{
+    status: 'healthy' | 'degraded' | 'unhealthy'
+    latencyMs: number
+    ledger?: number
+    error?: string
+  }> => {
     try {
       const client = getResilientClient()
       const latestLedger = await withTimeout(
-        client.execute(server => server.getLatestLedger(), 'health-check'),
+        client.execute((server) => server.getLatestLedger(), 'health-check'),
         3000,
         'stellarRpc'
       )
-      return { status: 'healthy', latencyMs: Date.now() - startStellar, ledger: latestLedger.sequence }
+      return {
+        status: 'healthy',
+        latencyMs: Date.now() - startStellar,
+        ledger: latestLedger.sequence,
+      }
     } catch (error: any) {
-      return { status: 'unhealthy', latencyMs: Date.now() - startStellar, error: error.message }
+      return {
+        status: 'unhealthy',
+        latencyMs: Date.now() - startStellar,
+        error: error.message,
+      }
     }
   }
 
   const startTwilio = Date.now()
-  const checkTwilio = async (): Promise<{ status: 'healthy' | 'degraded' | 'unhealthy'; latencyMs: number; error?: string }> => {
+  const checkTwilio = async (): Promise<{
+    status: 'healthy' | 'degraded' | 'unhealthy'
+    latencyMs: number
+    error?: string
+  }> => {
     try {
       const sid = config.whatsapp.twilioSid
       const twilioToken = config.whatsapp.twilioToken
@@ -82,14 +116,14 @@ router.get('/deep', async (req: Request, res: Response) => {
         throw new Error('Twilio credentials not configured')
       }
       const client = twilio(sid, twilioToken)
-      await withTimeout(
-        client.api.accounts(sid).fetch(),
-        3000,
-        'twilio'
-      )
+      await withTimeout(client.api.accounts(sid).fetch(), 3000, 'twilio')
       return { status: 'healthy', latencyMs: Date.now() - startTwilio }
     } catch (error: any) {
-      return { status: 'unhealthy', latencyMs: Date.now() - startTwilio, error: error.message }
+      return {
+        status: 'unhealthy',
+        latencyMs: Date.now() - startTwilio,
+        error: error.message,
+      }
     }
   }
 
@@ -104,7 +138,8 @@ router.get('/deep', async (req: Request, res: Response) => {
       } else if (!status.lastTickAt) {
         checkStatus = 'unhealthy'
       } else {
-        const timeSinceLastTick = Date.now() - new Date(status.lastTickAt).getTime()
+        const timeSinceLastTick =
+          Date.now() - new Date(status.lastTickAt).getTime()
         if (timeSinceLastTick > 2 * TICK_INTERVAL_MS) {
           checkStatus = 'unhealthy'
         } else if (status.lastError || status.healthStatus === 'degraded') {
@@ -114,17 +149,21 @@ router.get('/deep', async (req: Request, res: Response) => {
 
       return {
         status: checkStatus,
-        lastTickAt: status.lastTickAt ? status.lastTickAt.toISOString() : null
+        lastTickAt: status.lastTickAt ? status.lastTickAt.toISOString() : null,
       }
     } catch (error: any) {
-      return { status: 'unhealthy' as const, lastTickAt: null, error: error.message }
+      return {
+        status: 'unhealthy' as const,
+        lastTickAt: null,
+        error: error.message,
+      }
     }
   }
 
   const [dbResult, stellarResult, twilioResult] = await Promise.all([
     checkDatabase(),
     checkStellarRpc(),
-    checkTwilio()
+    checkTwilio(),
   ])
   const agentResult = checkAgentLoop()
 
@@ -157,8 +196,8 @@ router.get('/deep', async (req: Request, res: Response) => {
       database: dbResult,
       stellarRpc: stellarResult,
       twilio: twilioResult,
-      agentLoop: agentResult
-    }
+      agentLoop: agentResult,
+    },
   })
 })
 

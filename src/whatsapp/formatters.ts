@@ -138,7 +138,10 @@ export function formatGoalProgressReply(input: {
   projectedCompletionDate: string | null
 }): string {
   if (input.status === 'ACHIEVED') {
-    return ['🎯 *Savings Goal*', `You've reached your goal of $${input.targetAmount.toFixed(2)}! 🎉`].join('\n')
+    return [
+      '🎯 *Savings Goal*',
+      `You've reached your goal of $${input.targetAmount.toFixed(2)}! 🎉`,
+    ].join('\n')
   }
 
   if (input.status === 'MISSED') {
@@ -168,7 +171,9 @@ export function formatGoalProgressReply(input: {
   }
 
   if (input.projectedCompletionDate) {
-    lines.push(`Projected completion: _${input.projectedCompletionDate.slice(0, 10)}_`)
+    lines.push(
+      `Projected completion: _${input.projectedCompletionDate.slice(0, 10)}_`
+    )
   }
 
   return lines.join('\n')
