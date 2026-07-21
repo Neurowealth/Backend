@@ -1,10 +1,18 @@
 import { Request, Response, NextFunction } from 'express'
-import { correlationIdMiddleware, REQUEST_ID_HEADER } from '../../../src/middleware/correlationId'
-import { isValidCorrelationId, generateCorrelationId } from '../../../src/utils/correlation'
+import {
+  correlationIdMiddleware,
+  REQUEST_ID_HEADER,
+} from '../../../src/middleware/correlationId'
+import {
+  isValidCorrelationId,
+  generateCorrelationId,
+} from '../../../src/utils/correlation'
 
 describe('correlation utilities', () => {
   it('accepts UUID-shaped IDs', () => {
-    expect(isValidCorrelationId('550e8400-e29b-41d4-a716-446655440000')).toBe(true)
+    expect(isValidCorrelationId('550e8400-e29b-41d4-a716-446655440000')).toBe(
+      true
+    )
   })
 
   it('accepts alphanumeric request IDs up to 128 chars', () => {
@@ -66,7 +74,10 @@ describe('correlationIdMiddleware', () => {
 
     expect(req.correlationId).toBeDefined()
     expect(isValidCorrelationId(req.correlationId!)).toBe(true)
-    expect(res.setHeader).toHaveBeenCalledWith(REQUEST_ID_HEADER, req.correlationId)
+    expect(res.setHeader).toHaveBeenCalledWith(
+      REQUEST_ID_HEADER,
+      req.correlationId
+    )
   })
 
   it('generates a new ID when the client header is invalid', () => {

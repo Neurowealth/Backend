@@ -65,12 +65,7 @@ export interface CreateOrderResult {
  * the system never depends on a provider's raw status strings.
  */
 export type NormalizedWebhookStatus =
-  | 'PENDING'
-  | 'PROCESSING'
-  | 'SETTLED'
-  | 'FAILED'
-  | 'REFUNDED'
-  | 'KYC_REQUIRED'
+  'PENDING' | 'PROCESSING' | 'SETTLED' | 'FAILED' | 'REFUNDED' | 'KYC_REQUIRED'
 
 export interface ParsedWebhook {
   providerOrderId: string
@@ -105,7 +100,10 @@ export interface FiatRampProvider {
    * @param rawBody The exact raw request body bytes as received.
    * @param headers Incoming request headers (lower-cased keys).
    */
-  verifyWebhookSignature(rawBody: string, headers: Record<string, string | undefined>): boolean
+  verifyWebhookSignature(
+    rawBody: string,
+    headers: Record<string, string | undefined>
+  ): boolean
 
   /** Parse a verified webhook body into the normalized shape. */
   parseWebhookPayload(rawBody: string): ParsedWebhook

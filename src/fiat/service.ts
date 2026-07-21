@@ -34,7 +34,7 @@ import type { NormalizedWebhookStatus, ParsedWebhook } from './types'
 
 /** How long a PENDING/PROCESSING order may sit before the age-out job fails it. */
 export const STALE_ORDER_MAX_AGE_MS = Number(
-  process.env.FIAT_STALE_ORDER_MAX_AGE_MS || 24 * 60 * 60 * 1000,
+  process.env.FIAT_STALE_ORDER_MAX_AGE_MS || 24 * 60 * 60 * 1000
 )
 
 type Db = typeof db
@@ -61,7 +61,7 @@ export interface CreateOrderContext {
 export async function createFiatOrder(
   input: CreateFiatOrderInput,
   ctx: CreateOrderContext,
-  database: Db = db,
+  database: Db = db
 ) {
   const provider = getDefaultProvider()
 
@@ -123,7 +123,7 @@ export interface ProcessWebhookResult {
 export async function processProviderWebhook(
   providerName: string,
   parsed: ParsedWebhook,
-  database: Db = db,
+  database: Db = db
 ): Promise<ProcessWebhookResult> {
   if (!parsed.providerOrderId) {
     return { handled: false, reason: 'missing providerOrderId' }
@@ -150,7 +150,12 @@ export async function processProviderWebhook(
 
   // Terminal states are immutable — drop duplicate/late deliveries.
   if (isTerminal(order.status)) {
-    return { handled: true, reason: 'already terminal', orderId: order.id, status: order.status }
+    return {
+      handled: true,
+      reason: 'already terminal',
+      orderId: order.id,
+      status: order.status,
+    }
   }
 
   const data: Record<string, unknown> = { updatedAt: new Date() }
@@ -207,12 +212,14 @@ export async function processProviderWebhook(
   // If the provider handed us a tx hash, try an immediate reconciliation pass
   // for this single order so settlement isn't delayed to the next sweep.
   if (parsed.txHash && updated.status === 'PROCESSING') {
-    await reconcileSingleOrder(updated.id, parsed.txHash, database).catch((err) => {
-      logger.error('[Fiat] Inline reconciliation failed', {
-        orderId: updated.id,
-        error: err instanceof Error ? err.message : String(err),
-      })
-    })
+    await reconcileSingleOrder(updated.id, parsed.txHash, database).catch(
+      (err) => {
+        logger.error('[Fiat] Inline reconciliation failed', {
+          orderId: updated.id,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    )
   }
 
   return { handled: true, orderId: updated.id, status: updated.status }
@@ -228,12 +235,16 @@ export async function processProviderWebhook(
 export async function reconcileSingleOrder(
   orderId: string,
   txHash: string,
-  database: Db = db,
+  database: Db = db
 ): Promise<boolean> {
-  const order = await (database as any).fiatOrder.findUnique({ where: { id: orderId } })
+  const order = await (database as any).fiatOrder.findUnique({
+    where: { id: orderId },
+  })
   if (!order || isTerminal(order.status)) return false
 
-  const tx = await (database as any).transaction.findUnique({ where: { txHash } })
+  const tx = await (database as any).transaction.findUnique({
+    where: { txHash },
+  })
   if (!tx || tx.status !== 'CONFIRMED') return false
   if (tx.userId !== order.userId) {
     // Hash belongs to a different user — never cross-link funds.
@@ -305,7 +316,11 @@ export async function reconcileFiatOrders(database: Db = db): Promise<{
     })
 
     if (candidate) {
-      const ok = await reconcileSingleOrder(order.id, candidate.txHash, database).catch(() => false)
+      const ok = await reconcileSingleOrder(
+        order.id,
+        candidate.txHash,
+        database
+      ).catch(() => false)
       if (ok) settled++
       continue
     }
@@ -330,7 +345,7 @@ export async function reconcileFiatOrders(database: Db = db): Promise<{
               userId: order.userId,
             },
           },
-          `fiat:stuck:${order.id}`,
+          `fiat:stuck:${order.id}`
         )
         .catch(() => {})
     }
@@ -344,7 +359,9 @@ export async function reconcileFiatOrders(database: Db = db): Promise<{
  * so they don't linger forever. PROCESSING orders are left to reconciliation +
  * alerting, because funds may still be in flight.
  */
-export async function ageOutStaleFiatOrders(database: Db = db): Promise<{ failed: number }> {
+export async function ageOutStaleFiatOrders(
+  database: Db = db
+): Promise<{ failed: number }> {
   const cutoff = new Date(Date.now() - STALE_ORDER_MAX_AGE_MS)
 
   const stale = await (database as any).fiatOrder.findMany({

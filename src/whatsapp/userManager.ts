@@ -1,7 +1,11 @@
 import crypto from 'crypto'
 import db from '../db'
 import { createCustodialWallet, getWalletByUserId } from '../stellar/wallet'
-import { getGoalForUser, computeGoalProgress, GoalProgress } from '../goals/service'
+import {
+  getGoalForUser,
+  computeGoalProgress,
+  GoalProgress,
+} from '../goals/service'
 
 export type WhatsAppUser = {
   id: string
@@ -232,7 +236,9 @@ export async function getPortfolioYieldSummary(
  * custodial wallet address the same way getPortfolioYieldSummary is.
  * Returns null when the user has no DB record yet or no goal at all.
  */
-export async function getGoalStatus(phone: string): Promise<GoalProgress | null> {
+export async function getGoalStatus(
+  phone: string
+): Promise<GoalProgress | null> {
   const user = getUserByPhone(phone)
   if (!user) {
     return null

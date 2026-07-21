@@ -26,7 +26,9 @@ describe('HttpClientAdapter', () => {
 
     it('should throw on a failing function', async () => {
       await expect(
-        adapter.execute(async () => { throw new Error('fail') })
+        adapter.execute(async () => {
+          throw new Error('fail')
+        })
       ).rejects.toThrow('fail')
     })
 
@@ -80,7 +82,7 @@ describe('HttpClientAdapter', () => {
 
       await expect(
         slowAdapter.execute(async () => {
-          await new Promise(r => setTimeout(r, 200))
+          await new Promise((r) => setTimeout(r, 200))
           return 'too late'
         })
       ).rejects.toThrow(TimeoutError)
@@ -196,10 +198,10 @@ describe('HttpClientAdapter', () => {
       })
 
       await expect(
-        fastTimeoutAdapter.execute(
-          async () => { await new Promise(r => setTimeout(r, 100)); return 'x' },
-          'myService.myMethod',
-        )
+        fastTimeoutAdapter.execute(async () => {
+          await new Promise((r) => setTimeout(r, 100))
+          return 'x'
+        }, 'myService.myMethod')
       ).rejects.toThrow(/myService\.myMethod/)
     })
 
@@ -210,9 +212,9 @@ describe('HttpClientAdapter', () => {
         await expect(adapter.execute(fn)).rejects.toThrow()
       }
 
-      await expect(
-        adapter.execute(fn, 'myService.myMethod')
-      ).rejects.toThrow(/myService\.myMethod/)
+      await expect(adapter.execute(fn, 'myService.myMethod')).rejects.toThrow(
+        /myService\.myMethod/
+      )
     })
   })
 })

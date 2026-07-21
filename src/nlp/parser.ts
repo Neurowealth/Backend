@@ -3,7 +3,14 @@ import { HttpClientAdapter } from '../utils/http-client'
 import { config } from '../config'
 
 export interface Intent {
-  action: 'deposit' | 'withdraw' | 'balance' | 'earnings' | 'goal' | 'help' | 'unknown'
+  action:
+    | 'deposit'
+    | 'withdraw'
+    | 'balance'
+    | 'earnings'
+    | 'goal'
+    | 'help'
+    | 'unknown'
   amount?: number
   currency?: string
   all?: boolean
@@ -99,9 +106,14 @@ Return ONLY a JSON object representing the intent, matching this TypeScript inte
       if (jsonStr) {
         const parsed = JSON.parse(jsonStr)
         if (
-          ['deposit', 'withdraw', 'balance', 'earnings', 'goal', 'help'].includes(
-            parsed.action
-          )
+          [
+            'deposit',
+            'withdraw',
+            'balance',
+            'earnings',
+            'goal',
+            'help',
+          ].includes(parsed.action)
         ) {
           return parsed as Intent
         }

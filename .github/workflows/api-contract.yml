@@ -21,7 +21,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install Redocly CLI
         run: npm install -g @redocly/cli@latest
@@ -36,30 +36,74 @@ jobs:
     name: Contract smoke tests
     runs-on: ubuntu-latest
     needs: validate-spec
+    services:
+      postgres:
+        image: postgres:14.4
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: pass
+          POSTGRES_DB: db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U user"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
 
+      - name: Prisma generate
+        run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://user:pass@localhost:5432/db
+
+      - name: Prisma migrate deploy
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://user:pass@localhost:5432/db
+
       - name: Start server
         run: |
           cp .env.test .env
           npm run build
-          node dist/index.js &
-          # Wait up to 15 seconds for the server to accept connections
-          for i in $(seq 1 15); do
-            curl -sf http://localhost:3000/health && break
+          node dist/index.js > /tmp/server.log 2>&1 &
+          echo $! > /tmp/server.pid
+          # initServices() boots the DB, event listener, and agent loop before
+          # app.listen(), so allow generous time — and fail loudly with the
+          # server log rather than letting a later step report a bare failure.
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3000/health > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              exit 0
+            fi
+            if ! kill -0 "$(cat /tmp/server.pid)" 2>/dev/null; then
+              echo "::error::Server process exited during startup"
+              cat /tmp/server.log
+              exit 1
+            fi
             sleep 1
           done
+          echo "::error::Server did not become ready within 60s"
+          cat /tmp/server.log
+          exit 1
         env:
           NODE_ENV: test
+          # This job boots the real server, and startEventListener() calls
+          # getLatestLedger() with no client timeout before app.listen(). Point
+          # it at a reachable RPC (as production-smoke.yml does) so an
+          # unresolvable host cannot stall startup. dotenv does not override
+          # ambient vars, so this wins over .env.test.
+          STELLAR_RPC_URL: https://soroban-testnet.stellar.org
 
       - name: Health liveness check
         run: |

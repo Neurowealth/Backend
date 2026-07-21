@@ -87,6 +87,13 @@ enum ReferralStatus {
   EXPIRED
 }
 
+// Where an acquisition/disposal USD price came from (#284). Only stablecoins
+// are priced in v1; anything else is stored with a null price and surfaced as
+// unpriced in the tax report — never silently zeroed.
+enum PriceSource {
+  STABLECOIN_ASSUMPTION
+}
+
 enum GoalStatus {
   ACTIVE
   ACHIEVED
@@ -116,6 +123,8 @@ model User {
   fiatOrders            FiatOrder[]
   referralCode          ReferralCode?
   referralConversion    ReferralConversion?
+  costBasisLots         CostBasisLot[]
+  lotDisposals          LotDisposal[]
   savingsGoals          SavingsGoal[]
 
   @@map("users")
@@ -148,6 +157,11 @@ model AdminApiKey {
   role      String
   scopes    String[]
   hash      String
+  // SHA-256 of the raw token ("sha256:<hex>"). A deterministic lookup key that
+  // narrows candidates before the expensive bcrypt compare against `hash`.
+  // Nullable only so the migration is safe on pre-existing rows; keys without
+  // one cannot be authenticated and must be re-issued.
+  tokenPrefix String?
   expiresAt DateTime?
   revokedAt DateTime?
   createdAt DateTime  @default(now())
@@ -159,6 +173,7 @@ model AdminApiKey {
   @@index([role])
   @@index([revokedAt])
   @@index([expiresAt])
+  @@index([tokenPrefix])
   @@map("admin_api_keys")
 }
 
@@ -234,6 +249,8 @@ model Transaction {
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   position Position? @relation(fields: [positionId], references: [id])
   fiatOrders FiatOrder[]
+  costBasisLot CostBasisLot?
+  lotDisposals LotDisposal[]
 
   @@index([userId])
   @@index([positionId])
@@ -532,6 +549,64 @@ model ReferralConversion {
   @@index([status])
   @@index([createdAt])
   @@map("referral_conversions")
+}
+
+/// Cost-basis lot for tax reporting (#284). Exactly one lot per confirmed
+/// on-chain DEPOSIT Transaction (`transactionId` unique — the idempotency
+/// anchor under event replay). `remainingAmount` is decremented by FIFO
+/// disposals and must never go negative. Prices are nullable: an unpriced
+/// asset stays null and is excluded from report totals with a caveat — never
+/// silently zeroed. The schema carries no accounting-method column; FIFO
+/// consumption order lives in src/tax/fifo.ts so LIFO could be added later
+/// without a schema change.
+model CostBasisLot {
+  id               String       @id @default(uuid())
+  userId           String
+  transactionId    String       @unique
+  assetSymbol      String
+  originalAmount   Decimal      @db.Decimal(36, 18)
+  remainingAmount  Decimal      @db.Decimal(36, 18)
+  acquisitionPrice Decimal?     @db.Decimal(36, 18)
+  priceSource      PriceSource?
+  acquiredAt       DateTime
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction   @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  disposals   LotDisposal[]
+
+  @@index([userId, assetSymbol, acquiredAt])
+  @@map("cost_basis_lots")
+}
+
+/// One lot's share of a withdrawal (#284). A withdrawal Transaction may span
+/// many lots, so `transactionId` is NOT unique — idempotency comes from
+/// `@@unique([transactionId, lotId])` plus an exists-check in the recorder.
+/// `userId`/`assetSymbol` are denormalized so the tax report reads without
+/// joins. Money fields snapshot values at disposal time, making the report an
+/// immutable ledger read; null money fields mean "unpriced", never zero.
+model LotDisposal {
+  id            String       @id @default(uuid())
+  lotId         String
+  userId        String
+  assetSymbol   String
+  transactionId String
+  amount        Decimal      @db.Decimal(36, 18)
+  disposalPrice Decimal?     @db.Decimal(36, 18)
+  costBasis     Decimal?     @db.Decimal(36, 18)
+  proceeds      Decimal?     @db.Decimal(36, 18)
+  realizedGain  Decimal?     @db.Decimal(36, 18)
+  disposedAt    DateTime
+  createdAt     DateTime     @default(now())
+
+  lot         CostBasisLot @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction  @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@unique([transactionId, lotId])
+  @@index([userId, disposedAt])
+  @@map("lot_disposals")
 }
 
 /// Goal-based investing (#281). A user-stated target amount + date the agent's

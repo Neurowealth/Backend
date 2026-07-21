@@ -50,7 +50,8 @@ export async function processOnChainTransaction(
     status: onChainTransaction.status,
   })
 
-  const transactionStatus = onChainTransaction.status === 'success' ? 'CONFIRMED' : 'FAILED'
+  const transactionStatus =
+    onChainTransaction.status === 'success' ? 'CONFIRMED' : 'FAILED'
 
   const existing = await db.transaction.findUnique({
     where: { txHash: onChainTransaction.hash },
@@ -76,7 +77,8 @@ export async function processOnChainTransaction(
     },
   })
 
-  const formatter = type === 'DEPOSIT' ? formatDepositReply : formatWithdrawReply
+  const formatter =
+    type === 'DEPOSIT' ? formatDepositReply : formatWithdrawReply
 
   if (transactionStatus === 'CONFIRMED') {
     dispatchWebhookEvent('transaction.confirmed', {

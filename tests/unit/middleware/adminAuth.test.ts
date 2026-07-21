@@ -73,7 +73,10 @@ describe('admin auth middleware', () => {
     await requireAdminAuth(req as Request, res as Response, next)
 
     expect((db as any).adminApiKey.findMany).toHaveBeenCalled()
-    expect(mockBcryptCompare).toHaveBeenCalledWith('valid-admin-token', '$2a$12$fakehash')
+    expect(mockBcryptCompare).toHaveBeenCalledWith(
+      'valid-admin-token',
+      '$2a$12$fakehash'
+    )
     expect(res.status).not.toHaveBeenCalled()
     expect(next).toHaveBeenCalled()
     expect(res.locals?.adminAuth).toEqual(
@@ -82,7 +85,7 @@ describe('admin auth middleware', () => {
         name: 'ops-token',
         role: 'OPS_ADMIN',
         scopes: ['metrics:read'],
-      }),
+      })
     )
   })
 
@@ -107,13 +110,13 @@ describe('admin auth middleware', () => {
     await requireAdminAuth(req as Request, res as Response, next)
 
     // Give the fire-and-forget update a tick to run
-    await new Promise(resolve => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
 
     expect(mockUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'token-1' },
         data: expect.objectContaining({ lastUsedAt: expect.any(Date) }),
-      }),
+      })
     )
   })
 
@@ -183,7 +186,10 @@ describe('admin auth middleware', () => {
 
     await requireAdminAuth(req as Request, res as Response, next)
 
-    expect(mockBcryptCompare).toHaveBeenCalledWith('legacy-token', '$2a$12$fakehash')
+    expect(mockBcryptCompare).toHaveBeenCalledWith(
+      'legacy-token',
+      '$2a$12$fakehash'
+    )
     expect(next).toHaveBeenCalled()
   })
 

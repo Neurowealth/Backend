@@ -1,10 +1,13 @@
-import db from '../db';
-import { logger, logBackgroundJob } from '../utils/logger';
-import { generateCorrelationId, runWithCorrelationIdAsync } from '../utils/correlation';
-import { config } from '../config/env';
-import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics';
-import { computeRiskScore, RateSample } from '../agent/riskScoring';
-import { PROTOCOL_RISK_METADATA } from '../config/protocolRiskMetadata';
+import db from '../db'
+import { logger, logBackgroundJob } from '../utils/logger'
+import {
+  generateCorrelationId,
+  runWithCorrelationIdAsync,
+} from '../utils/correlation'
+import { config } from '../config/env'
+import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { computeRiskScore, RateSample } from '../agent/riskScoring'
+import { PROTOCOL_RISK_METADATA } from '../config/protocolRiskMetadata'
 
 /**
  * Protocol risk scoring job.
@@ -19,41 +22,43 @@ import { PROTOCOL_RISK_METADATA } from '../config/protocolRiskMetadata';
  * protocol still gets a (conservative) score, and a scanned-but-uncurated one is
  * scored with the conservative UNAUDITED/unknown-age default.
  */
-export async function computeProtocolRiskScores(now: Date = new Date()): Promise<void> {
-  const correlationId = generateCorrelationId();
+export async function computeProtocolRiskScores(
+  now: Date = new Date()
+): Promise<void> {
+  const correlationId = generateCorrelationId()
   return runWithCorrelationIdAsync(correlationId, async () => {
-    const start = Date.now();
-    const jobName = 'protocol_risk_scoring';
+    const start = Date.now()
+    const jobName = 'protocol_risk_scoring'
 
     try {
       // Distinct protocol names from rate history…
       const rateProtocols = await db.protocolRate.findMany({
         distinct: ['protocolName'],
         select: { protocolName: true },
-      });
+      })
 
       const protocolNames = new Set<string>([
         ...rateProtocols.map((r: { protocolName: string }) => r.protocolName),
         ...PROTOCOL_RISK_METADATA.map((m) => m.protocolName),
-      ]);
+      ])
 
-      let scored = 0;
+      let scored = 0
       for (const protocolName of protocolNames) {
         const rates = await db.protocolRate.findMany({
           where: { protocolName },
           orderBy: { fetchedAt: 'asc' },
           select: { supplyApy: true, tvl: true, fetchedAt: true },
-        });
+        })
 
         const samples: RateSample[] = rates.map(
           (r: { supplyApy: unknown; tvl: unknown; fetchedAt: Date }) => ({
             supplyApy: Number(r.supplyApy),
             tvl: r.tvl === null || r.tvl === undefined ? null : Number(r.tvl),
             fetchedAt: r.fetchedAt,
-          }),
-        );
+          })
+        )
 
-        const result = computeRiskScore(protocolName, samples, now);
+        const result = computeRiskScore(protocolName, samples, now)
 
         await db.protocolRiskScore.upsert({
           where: { protocolName },
@@ -78,25 +83,26 @@ export async function computeProtocolRiskScores(now: Date = new Date()): Promise
             sampleCount: result.sampleCount,
             computedAt: now,
           },
-        });
-        scored++;
+        })
+        scored++
       }
 
-      const durationMs = Date.now() - start;
+      const durationMs = Date.now() - start
       logBackgroundJob(jobName, 'success', durationMs / 1000, correlationId, {
         protocolsScored: scored,
-      });
-      recordJobSuccess(jobName, durationMs);
+      })
+      recordJobSuccess(jobName, durationMs)
     } catch (error) {
-      const durationMs = Date.now() - start;
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const durationMs = Date.now() - start
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error'
 
       logBackgroundJob(jobName, 'failed', durationMs / 1000, correlationId, {
         error: errorMessage,
-      });
-      recordJobFailure(jobName, durationMs);
+      })
+      recordJobFailure(jobName, durationMs)
     }
-  });
+  })
 }
 
 /**
@@ -106,17 +112,17 @@ export async function computeProtocolRiskScores(now: Date = new Date()): Promise
  * @returns NodeJS.Timeout handle — pass to clearInterval() on shutdown.
  */
 export function scheduleProtocolRiskScoring(): NodeJS.Timeout {
-  void computeProtocolRiskScores();
+  void computeProtocolRiskScores()
 
-  const intervalMs = config.protocolRisk.intervalMs;
+  const intervalMs = config.protocolRisk.intervalMs
   const handle = setInterval(() => {
-    void computeProtocolRiskScores();
-  }, intervalMs);
+    void computeProtocolRiskScores()
+  }, intervalMs)
 
-  handle.unref?.();
+  handle.unref?.()
 
   logger.info(
-    `[ProtocolRiskScoring] Risk scoring scheduled every ${intervalMs / 3600000}h`,
-  );
-  return handle;
+    `[ProtocolRiskScoring] Risk scoring scheduled every ${intervalMs / 3600000}h`
+  )
+  return handle
 }

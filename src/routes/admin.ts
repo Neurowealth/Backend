@@ -666,12 +666,10 @@ router.post(
     } catch (error: any) {
       // Unique constraint violation — name already taken
       if (error?.code === 'P2002') {
-        return res
-          .status(409)
-          .json({
-            success: false,
-            error: 'A key with that name already exists',
-          })
+        return res.status(409).json({
+          success: false,
+          error: 'A key with that name already exists',
+        })
       }
       logger.error('[Admin] Failed to create admin key', {
         error: error instanceof Error ? error.message : 'Unknown error',

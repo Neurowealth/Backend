@@ -1,4 +1,9 @@
-import { type Express, type Request, type Response, type NextFunction } from 'express'
+import {
+  type Express,
+  type Request,
+  type Response,
+  type NextFunction,
+} from 'express'
 import helmet from 'helmet'
 import { config } from '../config/env'
 
@@ -69,7 +74,7 @@ export function permissionsPolicy() {
   return (_req: Request, res: Response, next: NextFunction): void => {
     res.setHeader(
       'Permissions-Policy',
-      'geolocation=(), camera=(), microphone=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()',
+      'geolocation=(), camera=(), microphone=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()'
     )
     next()
   }

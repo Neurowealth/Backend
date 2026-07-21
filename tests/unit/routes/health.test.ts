@@ -24,25 +24,25 @@ const mockQueryRaw = jest.fn()
 jest.mock('../../../src/db', () => ({
   __esModule: true,
   default: {
-    $queryRaw: (...args: any[]) => mockQueryRaw(...args)
-  }
+    $queryRaw: (...args: any[]) => mockQueryRaw(...args),
+  },
 }))
 
 const mockStellarExecute = jest.fn()
 jest.mock('../../../src/stellar/client', () => ({
   __esModule: true,
   getResilientClient: () => ({
-    execute: mockStellarExecute
-  })
+    execute: mockStellarExecute,
+  }),
 }))
 
 const mockTwilioFetch = jest.fn()
 const mockTwilioClient = {
   api: {
     accounts: () => ({
-      fetch: mockTwilioFetch
-    })
-  }
+      fetch: mockTwilioFetch,
+    }),
+  },
 }
 jest.mock('twilio', () => {
   return jest.fn().mockImplementation(() => mockTwilioClient)
@@ -51,12 +51,12 @@ jest.mock('twilio', () => {
 const mockGetAgentStatus = jest.fn()
 jest.mock('../../../src/agent/loop', () => ({
   __esModule: true,
-  getAgentStatus: () => mockGetAgentStatus()
+  getAgentStatus: () => mockGetAgentStatus(),
 }))
 
 describe('GET /health/deep', () => {
   const token = 'test-internal-token'
-  
+
   beforeEach(() => {
     jest.clearAllMocks()
     process.env.INTERNAL_SERVICE_TOKEN = token
@@ -77,7 +77,7 @@ describe('GET /health/deep', () => {
       isRunning: true,
       lastTickAt: new Date(),
       lastError: null,
-      healthStatus: 'healthy'
+      healthStatus: 'healthy',
     })
 
     const res = await request(app)
@@ -101,7 +101,7 @@ describe('GET /health/deep', () => {
       isRunning: true,
       lastTickAt: new Date(),
       lastError: null,
-      healthStatus: 'healthy'
+      healthStatus: 'healthy',
     })
 
     const res = await request(app)
@@ -122,7 +122,7 @@ describe('GET /health/deep', () => {
       isRunning: true,
       lastTickAt: new Date(),
       lastError: null,
-      healthStatus: 'healthy'
+      healthStatus: 'healthy',
     })
 
     const res = await request(app)
@@ -142,7 +142,7 @@ describe('GET /health/deep', () => {
       isRunning: true,
       lastTickAt: new Date(),
       lastError: null,
-      healthStatus: 'healthy'
+      healthStatus: 'healthy',
     })
 
     const res = await request(app)
@@ -163,7 +163,7 @@ describe('GET /health/deep', () => {
       isRunning: true,
       lastTickAt: oldDate,
       lastError: null,
-      healthStatus: 'healthy'
+      healthStatus: 'healthy',
     })
 
     const res = await request(app)
@@ -183,7 +183,7 @@ describe('GET /health/deep', () => {
       isRunning: true,
       lastTickAt: new Date(),
       lastError: 'Some warning',
-      healthStatus: 'degraded'
+      healthStatus: 'degraded',
     })
 
     const res = await request(app)
@@ -196,14 +196,16 @@ describe('GET /health/deep', () => {
   })
 
   it('should timeout individual dependency checks after 3s', async () => {
-    mockQueryRaw.mockImplementation(() => new Promise(resolve => setTimeout(resolve, 5000)))
+    mockQueryRaw.mockImplementation(
+      () => new Promise((resolve) => setTimeout(resolve, 5000))
+    )
     mockStellarExecute.mockResolvedValue({ sequence: 12345 })
     mockTwilioFetch.mockResolvedValue({})
     mockGetAgentStatus.mockReturnValue({
       isRunning: true,
       lastTickAt: new Date(),
       lastError: null,
-      healthStatus: 'healthy'
+      healthStatus: 'healthy',
     })
 
     const res = await request(app)

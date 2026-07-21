@@ -144,12 +144,14 @@ export function createSecretsProvider(): SecretsProvider {
  * Call this once at process startup, before importing any config module.
  */
 export async function bootstrapSecrets(): Promise<void> {
+  // Only the SSM backend needs to pre-populate process.env.
+  // The env backend already reads from process.env, so this is a no-op there —
+  // return before touching the singleton so a later backend switch (tests,
+  // re-exec) still constructs the right provider.
+  if (process.env.SECRET_BACKEND !== 'aws-ssm') return
+
   // Lazily create the singleton provider.
   if (!_provider) _provider = createSecretsProvider()
-
-  // Only the SSM backend needs to pre-populate process.env.
-  // The env backend already reads from process.env, so this is a no-op there.
-  if (process.env.SECRET_BACKEND !== 'aws-ssm') return
 
   const errors: string[] = []
   await Promise.all(

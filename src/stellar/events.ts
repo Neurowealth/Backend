@@ -34,6 +34,10 @@ import {
 } from '../utils/metrics'
 import { dispatchWebhookEvent } from '../services/webhookDispatcher'
 import { checkAndActivateOnDeposit } from '../referral/service'
+import {
+  createLotForDeposit,
+  recordDisposalsForWithdrawal,
+} from '../tax/service'
 
 const VAULT_CONTRACT_ID = config.stellar.vaultContractId
 const POLL_INTERVAL_MS = 5000
@@ -311,6 +315,19 @@ async function handleDepositEvent(
     depositData.amount,
     tx
   )
+
+  // Tax cost-basis lot (#284): one lot per confirmed deposit Transaction,
+  // created on the same `tx` handle so it is part of the deposit's DB
+  // transaction. Never throws (a tax-bookkeeping problem must not roll back
+  // the deposit) — failures log + alert and are backfillable.
+  await createLotForDeposit(
+    user.id,
+    transaction.id,
+    depositData.assetSymbol,
+    depositData.amount,
+    transaction.confirmedAt ?? new Date(),
+    tx
+  )
 }
 
 /**
@@ -385,6 +402,19 @@ async function handleWithdrawEvent(
       })
     )
   }
+
+  // Tax FIFO disposals (#284): recorded on the same `tx` handle, even when no
+  // Position matched — the confirmed Transaction, not the Position, is the
+  // disposal source of truth. Never throws; a shortfall alerts critically and
+  // writes nothing (idempotent re-run after backfill repairs the ledger).
+  await recordDisposalsForWithdrawal(
+    user.id,
+    transaction.id,
+    withdrawData.assetSymbol,
+    withdrawData.amount,
+    transaction.confirmedAt ?? new Date(),
+    tx
+  )
 }
 
 /**

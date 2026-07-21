@@ -65,7 +65,9 @@ describe('corsandbody middleware', () => {
     })
 
     it('should reject multipart/form-data', () => {
-      req.headers = { 'content-type': 'multipart/form-data; boundary=----WebKitFormBoundary' }
+      req.headers = {
+        'content-type': 'multipart/form-data; boundary=----WebKitFormBoundary',
+      }
       contentTypeRestrictionMiddleware(req as Request, res as Response, next)
       expect(next).not.toHaveBeenCalled()
       expect(res.status).toHaveBeenCalledWith(415)
@@ -85,7 +87,8 @@ describe('corsandbody middleware', () => {
       expect(res.json).toHaveBeenCalledWith({
         success: false,
         error: 'Unsupported Media Type',
-        reason: 'Content type "application/x-www-form-urlencoded" is not allowed.',
+        reason:
+          'Content type "application/x-www-form-urlencoded" is not allowed.',
       })
       expect(recordRejectedRequest).toHaveBeenCalledWith('content_type')
     })

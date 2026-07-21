@@ -14,7 +14,11 @@ import { Router } from 'express'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
 import { validate } from '../middleware/validate'
 import { userIdParamSchema } from '../validators/common-validators'
-import { createGoalSchema, updateGoalSchema, goalIdParamSchema } from '../validators/goal-validators'
+import {
+  createGoalSchema,
+  updateGoalSchema,
+  goalIdParamSchema,
+} from '../validators/goal-validators'
 import {
   createGoalHandler,
   getGoalHandler,
@@ -25,30 +29,40 @@ import {
 
 const router = Router()
 
-router.post('/', requireAuth, validate({ body: createGoalSchema }), createGoalHandler)
+router.post(
+  '/',
+  requireAuth,
+  validate({ body: createGoalSchema }),
+  createGoalHandler
+)
 
 router.get(
   '/:userId',
   requireAuth,
   enforceUserAccess,
   validate({ params: userIdParamSchema }),
-  getGoalHandler,
+  getGoalHandler
 )
 
 router.patch(
   '/:id',
   requireAuth,
   validate({ params: goalIdParamSchema, body: updateGoalSchema }),
-  updateGoalHandler,
+  updateGoalHandler
 )
 
-router.delete('/:id', requireAuth, validate({ params: goalIdParamSchema }), cancelGoalHandler)
+router.delete(
+  '/:id',
+  requireAuth,
+  validate({ params: goalIdParamSchema }),
+  cancelGoalHandler
+)
 
 router.get(
   '/:id/progress',
   requireAuth,
   validate({ params: goalIdParamSchema }),
-  getGoalProgressHandler,
+  getGoalProgressHandler
 )
 
 export default router

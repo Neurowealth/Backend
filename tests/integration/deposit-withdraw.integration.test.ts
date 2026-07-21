@@ -16,6 +16,7 @@ declare const beforeEach: any
 declare const expect: any
 
 import { createCustodialWallet } from '../../src/stellar/wallet'
+import { JwtAdapter } from '../../src/config'
 import { config } from '../../src/config/env'
 
 function uuid(): string {
@@ -27,6 +28,13 @@ function uuid(): string {
 
 const mockDepositForUser = jest.fn()
 const mockWithdrawForUser = jest.fn()
+
+// The fake contract events below carry plain JS objects, not XDR ScVals —
+// pass them straight through the parser.
+jest.mock('@stellar/stellar-sdk', () => {
+  const actual = jest.requireActual('@stellar/stellar-sdk')
+  return { ...actual, scValToNative: (v: unknown) => v }
+})
 
 jest.mock('../../src/stellar/contract', () => ({
   __esModule: true,
@@ -44,11 +52,15 @@ jest.mock('../../src/utils/metrics', () => ({
   recordEventDuration: jest.fn(),
   recordEventFailed: jest.fn(),
   recordEventProcessed: jest.fn(),
+  recordHttpRequest: jest.fn(),
+  recordRequestTimeout: jest.fn(),
+  recordRejectedRequest: jest.fn(),
 }))
 
 // Avoid external alerting side effects
 jest.mock('../../src/services/alerting', () => ({
   alertingService: {
+    emit: jest.fn(async () => {}),
     emitDLQAlert: jest.fn(),
     clearDLQAlertState: jest.fn(),
   },
@@ -92,10 +104,6 @@ jest.mock('../../src/stellar/events', () => {
   }
 })
 
-function randomToken(): string {
-  return `it-token-${uuid()}`
-}
-
 async function seedAuthAndWallet(): Promise<{
   userId: string
   walletAddress: string
@@ -121,7 +129,11 @@ async function seedAuthAndWallet(): Promise<{
 
   await createCustodialWallet(user.id)
 
-  const sessionToken = randomToken()
+  // requireAuth verifies the JWT signature before the DB session lookup, so
+  // the session token must be a real signed JWT — a random string 401s.
+  const sessionToken = (await JwtAdapter.generateToken({
+    id: user.id,
+  })) as string
 
   await db.session.create({
     data: {
@@ -168,8 +180,10 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
     const { userId, walletAddress, sessionToken } = await seedAuthAndWallet()
 
     // Seed cursor row so we can assert it advances.
-    await db.eventCursor.create({
-      data: {
+    await db.eventCursor.upsert({
+      where: { contractId: config.stellar.vaultContractId },
+      update: { lastProcessedLedger: 10 },
+      create: {
         contractId: config.stellar.vaultContractId,
         lastProcessedLedger: 10,
       },
@@ -220,7 +234,7 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
       ledger: 50,
       txHash,
       contractId: config.stellar.vaultContractId,
-      topics: ['deposit', walletAddress, protocolName],
+      topics: ['deposit', assetSymbol, protocolName],
       value: {
         user: walletAddress,
         amount: depositAmount.toString(),
@@ -249,11 +263,19 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
     expect(Number(position!.depositedAmount)).toBeCloseTo(depositAmount)
     expect(Number(position!.currentValue)).toBeCloseTo(depositAmount)
 
-    const cursor = await db.eventCursor.findUnique({
-      where: { contractId: config.stellar.vaultContractId },
+    // The cursor advances in the polling loop (fetchEvents), not per-event —
+    // handleEvent's completion marker is the ProcessedEvent dedup row.
+    const processed = await db.processedEvent.findUnique({
+      where: {
+        contractId_txHash_eventType_ledger: {
+          contractId: config.stellar.vaultContractId,
+          txHash,
+          eventType: 'deposit',
+          ledger: 50,
+        },
+      },
     })
-    expect(cursor).toBeTruthy()
-    expect(cursor!.lastProcessedLedger).toBe(50)
+    expect(processed).toBeTruthy()
   })
 
   it('POST /api/withdraw (happy path): verifies balance deduction + transaction record', async () => {
@@ -272,8 +294,10 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
       },
     })
 
-    await db.eventCursor.create({
-      data: {
+    await db.eventCursor.upsert({
+      where: { contractId: config.stellar.vaultContractId },
+      update: { lastProcessedLedger: 10 },
+      create: {
         contractId: config.stellar.vaultContractId,
         lastProcessedLedger: 10,
       },
@@ -307,7 +331,7 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
       ledger: 70,
       txHash,
       contractId: config.stellar.vaultContractId,
-      topics: ['withdraw', walletAddress, 'Blend'],
+      topics: ['withdraw', 'USDC', 'Blend'],
       value: {
         user: walletAddress,
         amount: withdrawAmount.toString(),
@@ -335,10 +359,19 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
     expect(transactionRow?.type).toBe('WITHDRAWAL')
     expect(transactionRow?.status).toBe('CONFIRMED')
 
-    const cursor = await db.eventCursor.findUnique({
-      where: { contractId: config.stellar.vaultContractId },
+    // Cursor advancement is the polling loop's job — assert the per-event
+    // ProcessedEvent marker instead.
+    const processed = await db.processedEvent.findUnique({
+      where: {
+        contractId_txHash_eventType_ledger: {
+          contractId: config.stellar.vaultContractId,
+          txHash,
+          eventType: 'withdraw',
+          ledger: 70,
+        },
+      },
     })
-    expect(cursor!.lastProcessedLedger).toBe(70)
+    expect(processed).toBeTruthy()
   })
 
   it('POST /api/withdraw (error path): RPC/event processing failure → DLQ row created', async () => {
@@ -382,7 +415,7 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
           ledger: 90,
           txHash,
           contractId: config.stellar.vaultContractId,
-          topics: ['withdraw', 'bad-wallet', 'Blend'],
+          topics: ['withdraw', 'USDC', 'Blend'],
           value: { user: 'bad-wallet', amount: '1', shares: '1' },
         } as any)
       } catch {
@@ -396,7 +429,7 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
       ledger: 90,
       txHash,
       contractId: config.stellar.vaultContractId,
-      topics: ['withdraw', 'bad-wallet', 'Blend'],
+      topics: ['withdraw', 'USDC', 'Blend'],
       value: {
         user: 'bad-wallet',
         amount: '1',
@@ -409,6 +442,6 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
     const dlqRows = await db.deadLetterEvent.findMany({ where: { txHash } })
     expect(dlqRows.length).toBeGreaterThanOrEqual(1)
     expect(dlqRows[0].status).toBe('PENDING')
-    expect(dlqRows[0].eventType).toBe('withdrawal')
+    expect(dlqRows[0].eventType).toBe('withdraw')
   })
 })

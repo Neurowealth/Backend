@@ -59,30 +59,70 @@ export function buildErrorResponse(
  * Error response builders for common HTTP status codes.
  */
 export const ErrorResponses = {
-  badRequest: (message: string, requestId: string, details?: Record<string, any>) =>
-    buildErrorResponse(ErrorCodes.BAD_REQUEST, message, requestId, details),
+  badRequest: (
+    message: string,
+    requestId: string,
+    details?: Record<string, any>
+  ) => buildErrorResponse(ErrorCodes.BAD_REQUEST, message, requestId, details),
 
-  unauthorized: (message: string, requestId: string, details?: Record<string, any>) =>
-    buildErrorResponse(ErrorCodes.UNAUTHORIZED, message, requestId, details),
+  unauthorized: (
+    message: string,
+    requestId: string,
+    details?: Record<string, any>
+  ) => buildErrorResponse(ErrorCodes.UNAUTHORIZED, message, requestId, details),
 
-  forbidden: (message: string, requestId: string, details?: Record<string, any>) =>
-    buildErrorResponse(ErrorCodes.FORBIDDEN, message, requestId, details),
+  forbidden: (
+    message: string,
+    requestId: string,
+    details?: Record<string, any>
+  ) => buildErrorResponse(ErrorCodes.FORBIDDEN, message, requestId, details),
 
-  notFound: (message: string, requestId: string, details?: Record<string, any>) =>
-    buildErrorResponse(ErrorCodes.NOT_FOUND, message, requestId, details),
+  notFound: (
+    message: string,
+    requestId: string,
+    details?: Record<string, any>
+  ) => buildErrorResponse(ErrorCodes.NOT_FOUND, message, requestId, details),
 
-  conflict: (message: string, requestId: string, details?: Record<string, any>) =>
-    buildErrorResponse(ErrorCodes.CONFLICT, message, requestId, details),
+  conflict: (
+    message: string,
+    requestId: string,
+    details?: Record<string, any>
+  ) => buildErrorResponse(ErrorCodes.CONFLICT, message, requestId, details),
 
-  rateLimited: (message: string, requestId: string, details?: Record<string, any>) =>
-    buildErrorResponse(ErrorCodes.RATE_LIMITED, message, requestId, details),
+  rateLimited: (
+    message: string,
+    requestId: string,
+    details?: Record<string, any>
+  ) => buildErrorResponse(ErrorCodes.RATE_LIMITED, message, requestId, details),
 
-  validationError: (message: string, requestId: string, details?: Record<string, any>) =>
-    buildErrorResponse(ErrorCodes.VALIDATION_ERROR, message, requestId, details),
+  validationError: (
+    message: string,
+    requestId: string,
+    details?: Record<string, any>
+  ) =>
+    buildErrorResponse(
+      ErrorCodes.VALIDATION_ERROR,
+      message,
+      requestId,
+      details
+    ),
 
-  internalError: (message: string, requestId: string, details?: Record<string, any>) =>
+  internalError: (
+    message: string,
+    requestId: string,
+    details?: Record<string, any>
+  ) =>
     buildErrorResponse(ErrorCodes.INTERNAL_ERROR, message, requestId, details),
 
-  serviceUnavailable: (message: string, requestId: string, details?: Record<string, any>) =>
-    buildErrorResponse(ErrorCodes.SERVICE_UNAVAILABLE, message, requestId, details),
+  serviceUnavailable: (
+    message: string,
+    requestId: string,
+    details?: Record<string, any>
+  ) =>
+    buildErrorResponse(
+      ErrorCodes.SERVICE_UNAVAILABLE,
+      message,
+      requestId,
+      details
+    ),
 }

@@ -24,14 +24,24 @@ describe('Stellar Network Configuration', () => {
     })
 
     it('should handle case-insensitive network names', () => {
-      expect(resolveNetworkPassphrase('TESTNET')).toBe('Test SDF Network ; September 2015')
-      expect(resolveNetworkPassphrase('Mainnet')).toBe('Public Global Stellar Network ; September 2015')
+      expect(resolveNetworkPassphrase('TESTNET')).toBe(
+        'Test SDF Network ; September 2015'
+      )
+      expect(resolveNetworkPassphrase('Mainnet')).toBe(
+        'Public Global Stellar Network ; September 2015'
+      )
     })
 
     it('should throw for unknown network', () => {
-      expect(() => resolveNetworkPassphrase('unknown')).toThrow('Unknown STELLAR_NETWORK')
-      expect(() => resolveNetworkPassphrase('devnet')).toThrow('Unknown STELLAR_NETWORK')
-      expect(() => resolveNetworkPassphrase(undefined)).toThrow('Unknown STELLAR_NETWORK')
+      expect(() => resolveNetworkPassphrase('unknown')).toThrow(
+        'Unknown STELLAR_NETWORK'
+      )
+      expect(() => resolveNetworkPassphrase('devnet')).toThrow(
+        'Unknown STELLAR_NETWORK'
+      )
+      expect(() => resolveNetworkPassphrase(undefined)).toThrow(
+        'Unknown STELLAR_NETWORK'
+      )
     })
   })
 
@@ -43,7 +53,7 @@ describe('Stellar Network Configuration', () => {
     })
 
     it('should have valid HTTPS URLs', () => {
-      Object.values(STELLAR_EXPLORER_URLS).forEach(url => {
+      Object.values(STELLAR_EXPLORER_URLS).forEach((url) => {
         expect(url).toMatch(/^https:\/\/stellar\.expert/)
       })
     })
@@ -63,6 +73,8 @@ describe('Stellar Network Configuration', () => {
 
     it('should derive testnet RPC URL when not explicitly set', () => {
       process.env.STELLAR_NETWORK = 'testnet'
+      // CI's job env sets STELLAR_RPC_URL — clear it so derivation is exercised
+      delete process.env.STELLAR_RPC_URL
       process.env.STELLAR_AGENT_SECRET_KEY = 'S' + 'A'.repeat(55)
       process.env.VAULT_CONTRACT_ID = 'C' + 'B'.repeat(55)
       process.env.USDC_TOKEN_ADDRESS = 'C' + 'C'.repeat(55)
@@ -98,7 +110,9 @@ describe('Stellar Network Configuration', () => {
       process.env.STELLAR_NETWORK = 'invalid'
       process.env.STELLAR_AGENT_SECRET_KEY = 'S' + 'A'.repeat(55)
 
-      expect(() => require('../../../src/config/env')).toThrow('Invalid STELLAR_NETWORK')
+      expect(() => require('../../../src/config/env')).toThrow(
+        'Invalid STELLAR_NETWORK'
+      )
     })
   })
 })

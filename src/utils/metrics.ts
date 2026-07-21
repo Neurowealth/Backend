@@ -318,7 +318,10 @@ export function recordEventFailed(eventType: string, errorType: string): void {
 /**
  * Record event processing duration
  */
-export function recordEventDuration(eventType: string, durationSeconds: number): void {
+export function recordEventDuration(
+  eventType: string,
+  durationSeconds: number
+): void {
   eventsProcessingDuration.observe({ event_type: eventType }, durationSeconds)
 }
 
@@ -353,7 +356,9 @@ export function updateAgentHeartbeat(): void {
 /**
  * Update agent loop status
  */
-export function updateAgentStatus(status: 'stopped' | 'running' | 'degraded'): void {
+export function updateAgentStatus(
+  status: 'stopped' | 'running' | 'degraded'
+): void {
   const statusValue = status === 'stopped' ? 0 : status === 'running' ? 1 : 2
   agentLoopStatus.set(statusValue)
 }
@@ -375,7 +380,10 @@ export function recordRebalanceTriggered(): void {
 /**
  * Record database operation duration
  */
-export function recordDbOperation(operation: string, durationSeconds: number): void {
+export function recordDbOperation(
+  operation: string,
+  durationSeconds: number
+): void {
   dbOperationDuration.observe({ operation }, durationSeconds)
 }
 
@@ -447,7 +455,10 @@ export function recordExternalServiceError(
 /**
  * Record a rate limit hit
  */
-export function recordRateLimitHit(routeGroup: string, limiterType: string): void {
+export function recordRateLimitHit(
+  routeGroup: string,
+  limiterType: string
+): void {
   rateLimitHitsTotal.inc({ route_group: routeGroup, limiter_type: limiterType })
 }
 
@@ -461,14 +472,19 @@ export function recordAuthFailure(endpoint: string, failureType: string): void {
 /**
  * Update active rate limit violations
  */
-export function updateRateLimitViolations(routeGroup: string, count: number): void {
+export function updateRateLimitViolations(
+  routeGroup: string,
+  count: number
+): void {
   rateLimitActiveViolations.set({ route_group: routeGroup }, count)
 }
 
 /**
  * Record a rejected request due to size or content-type
  */
-export function recordRejectedRequest(reason: 'oversized' | 'content_type'): void {
+export function recordRejectedRequest(
+  reason: 'oversized' | 'content_type'
+): void {
   rejectedRequestsTotal.inc({ reason })
 }
 
