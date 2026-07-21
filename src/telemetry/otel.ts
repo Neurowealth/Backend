@@ -15,11 +15,17 @@ import { NodeSDK } from '@opentelemetry/sdk-node'
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { resourceFromAttributes } from '@opentelemetry/resources'
-import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions'
-import { SimpleSpanProcessor, ConsoleSpanExporter, BatchSpanProcessor } from '@opentelemetry/sdk-trace-node'
+import {
+  ATTR_SERVICE_NAME,
+  ATTR_SERVICE_VERSION,
+} from '@opentelemetry/semantic-conventions'
+import {
+  SimpleSpanProcessor,
+  ConsoleSpanExporter,
+  BatchSpanProcessor,
+} from '@opentelemetry/sdk-trace-node'
 import { diag, DiagConsoleLogger, DiagLogLevel } from '@opentelemetry/api'
 import { PrismaInstrumentation } from '@prisma/instrumentation'
-
 
 // ---------------------------------------------------------------------------
 // Guard: no-op when OTEL is explicitly disabled or endpoint is not configured
@@ -30,6 +36,7 @@ const OTEL_ENABLED = process.env.OTEL_ENABLED !== 'false' && !!OTEL_ENDPOINT
 
 if (!OTEL_ENABLED) {
   // Emit a single info line so ops knows tracing is off — not an error
+  // eslint-disable-next-line no-console -- telemetry bootstraps before the winston logger can be instrumented
   console.info(
     '[OTel] OTEL_EXPORTER_OTLP_ENDPOINT not set or OTEL_ENABLED=false — distributed tracing disabled'
   )
@@ -39,7 +46,10 @@ if (!OTEL_ENABLED) {
 // Debug logging (only in development)
 // ---------------------------------------------------------------------------
 
-if (process.env.NODE_ENV === 'development' && process.env.OTEL_DEBUG === 'true') {
+if (
+  process.env.NODE_ENV === 'development' &&
+  process.env.OTEL_DEBUG === 'true'
+) {
   diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.DEBUG)
 }
 
@@ -51,10 +61,10 @@ const serviceName = process.env.OTEL_SERVICE_NAME ?? 'backend'
 const serviceVersion = process.env.npm_package_version ?? '0.0.0'
 
 const resource = resourceFromAttributes({
-    [ATTR_SERVICE_NAME]: serviceName,
-    [ATTR_SERVICE_VERSION]: serviceVersion,
-    'deployment.environment': process.env.NODE_ENV ?? 'development',
-  })
+  [ATTR_SERVICE_NAME]: serviceName,
+  [ATTR_SERVICE_VERSION]: serviceVersion,
+  'deployment.environment': process.env.NODE_ENV ?? 'development',
+})
 
 /**
  * Build the span processor to use.
@@ -68,7 +78,7 @@ function buildSpanProcessor() {
       url: `${OTEL_ENDPOINT}/v1/traces`,
       headers: process.env.OTEL_EXPORTER_OTLP_HEADERS
         ? Object.fromEntries(
-            process.env.OTEL_EXPORTER_OTLP_HEADERS.split(',').map(h => {
+            process.env.OTEL_EXPORTER_OTLP_HEADERS.split(',').map((h) => {
               const [k, ...v] = h.split('=')
               return [k.trim(), v.join('=').trim()]
             })
@@ -104,7 +114,7 @@ const sdk = new NodeSDK({
         },
       },
     }),
-    new PrismaInstrumentation(),   // ✅ separate, properly typed
+    new PrismaInstrumentation(), // ✅ separate, properly typed
   ],
 })
 
@@ -115,7 +125,10 @@ const sdk = new NodeSDK({
 if (spanProcessor) {
   try {
     sdk.start()
-    console.info(`[OTel] Tracing initialised → service=${serviceName}@${serviceVersion}`)
+    // eslint-disable-next-line no-console -- telemetry bootstraps before the winston logger can be instrumented
+    console.info(
+      `[OTel] Tracing initialised → service=${serviceName}@${serviceVersion}`
+    )
   } catch (err) {
     console.error('[OTel] Failed to start OpenTelemetry SDK:', err)
     // Non-fatal — tracing failure must never crash the server
@@ -123,7 +136,9 @@ if (spanProcessor) {
 
   // Flush remaining spans before the process exits
   process.on('SIGTERM', () => {
-    sdk.shutdown().catch((err) => console.error('[OTel] SDK shutdown error:', err))
+    sdk
+      .shutdown()
+      .catch((err) => console.error('[OTel] SDK shutdown error:', err))
   })
 }
 

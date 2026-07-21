@@ -25,6 +25,22 @@ import { priceForAsset } from './pricing'
 type Db = typeof db | Prisma.TransactionClient
 
 /**
+ * Fire-and-forget alert. Alerting must never break the money path, so both
+ * synchronous throws (e.g. a broken/stubbed alerting module) and rejected
+ * promises are swallowed.
+ */
+function safeAlert(
+  payload: Parameters<typeof alertingService.emit>[0],
+  dedupeKey: string
+): void {
+  try {
+    void alertingService.emit(payload, dedupeKey).catch(() => {})
+  } catch {
+    // deliberately ignored
+  }
+}
+
+/**
  * Create the cost-basis lot for a confirmed deposit Transaction. Idempotent
  * under event replay via the unique constraint on transactionId (P2002 is a
  * benign duplicate and only debug-logged).
@@ -80,18 +96,16 @@ export async function createLotForDeposit(
       assetSymbol,
       error: message,
     })
-    void alertingService
-      .emit(
-        {
-          title: 'Cost-basis lot creation failed',
-          description: `Lot creation for deposit transaction ${transactionId} (user ${userId}) failed: ${message}. The deposit is unaffected; run scripts/backfill-cost-basis-lots.ts to reconcile.`,
-          severity: 'warning',
-          component: 'tax-lot-tracking',
-          metadata: { userId, transactionId, assetSymbol },
-        },
-        `tax:lot-create:${transactionId}`
-      )
-      .catch(() => {})
+    safeAlert(
+      {
+        title: 'Cost-basis lot creation failed',
+        description: `Lot creation for deposit transaction ${transactionId} (user ${userId}) failed: ${message}. The deposit is unaffected; run scripts/backfill-cost-basis-lots.ts to reconcile.`,
+        severity: 'warning',
+        component: 'tax-lot-tracking',
+        metadata: { userId, transactionId, assetSymbol },
+      },
+      `tax:lot-create:${transactionId}`
+    )
   }
 }
 
@@ -200,19 +214,17 @@ export async function recordDisposalsForWithdrawal(
         shortfall: (err as InsufficientLotsError).shortfall.toString(),
       }),
     })
-    void alertingService
-      .emit(
-        {
-          title: isShortfall
-            ? 'Withdrawal exceeds tracked cost-basis lots'
-            : 'Disposal recording failed',
-          description: `Recording disposals for withdrawal transaction ${transactionId} (user ${userId}) failed: ${message}. Nothing was written; the withdrawal is unaffected. Backfill/repair lots (scripts/backfill-cost-basis-lots.ts) — the recorder is idempotent and safe to re-run.`,
-          severity: 'critical',
-          component: 'tax-lot-tracking',
-          metadata: { userId, transactionId, assetSymbol },
-        },
-        `tax:disposal:${transactionId}`
-      )
-      .catch(() => {})
+    safeAlert(
+      {
+        title: isShortfall
+          ? 'Withdrawal exceeds tracked cost-basis lots'
+          : 'Disposal recording failed',
+        description: `Recording disposals for withdrawal transaction ${transactionId} (user ${userId}) failed: ${message}. Nothing was written; the withdrawal is unaffected. Backfill/repair lots (scripts/backfill-cost-basis-lots.ts) — the recorder is idempotent and safe to re-run.`,
+        severity: 'critical',
+        component: 'tax-lot-tracking',
+        metadata: { userId, transactionId, assetSymbol },
+      },
+      `tax:disposal:${transactionId}`
+    )
   }
 }
