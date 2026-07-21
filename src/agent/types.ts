@@ -74,7 +74,7 @@ export interface RebalanceThresholds {
   maxGasPercent: number; // 0.1% default
 }
 
-export type StrategyName = 'MAX_YIELD' | 'TARGET_ALLOCATION';
+export type StrategyName = 'MAX_YIELD' | 'TARGET_ALLOCATION' | 'GOAL_TRACKING';
 
 export interface StrategyDecision {
   shouldRebalance: boolean;
@@ -107,6 +107,16 @@ export interface StrategyParams {
    * ignored to keep the agent allocating.
    */
   riskCeiling?: number;
+  /**
+   * Optional active SavingsGoal (#281) driving GoalTrackingStrategy. Only
+   * consulted by that strategy — absent for MaxYieldStrategy/TargetAllocationStrategy
+   * callers, which are unaffected by this field's presence.
+   */
+  goal?: {
+    targetAmount: number;
+    startingAmount: number;
+    targetDate: Date;
+  };
 }
 
 export interface RebalanceStrategy {

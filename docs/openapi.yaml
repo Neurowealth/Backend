@@ -54,6 +54,8 @@ tags:
     description: Fiat on-ramp / off-ramp (buy and sell crypto with fiat via a payment provider)
   - name: referrals
     description: Referral rewards program (share a code, earn when referred users deposit)
+  - name: goals
+    description: Goal-based investing — a target amount + date driving the agent's strategy selection
   - name: admin
     description: Admin-only management endpoints
   - name: metrics
@@ -562,6 +564,217 @@ paths:
               example: |
                 disposedAt,assetSymbol,amount,withdrawalTxHash,acquiredAt,acquisitionTxHash,acquisitionPrice,disposalPrice,costBasis,proceeds,realizedGain,priced
                 2026-06-15T00:00:00.000Z,USDC,40,c1d2e3f4a5b6c7d8e9f0,2026-01-15T00:00:00.000Z,a1b2c3d4e5f6a7b8c9d0,1,1,40,40,0,true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Goal-based investing (#281) ─────────────────────────────────────────────
+  /api/v1/portfolio/goals:
+    post:
+      tags: [goals]
+      operationId: createGoal
+      summary: Create the caller's savings goal
+      description: |
+        Creates a savings goal for the authenticated user. Only one ACTIVE goal
+        per user is allowed at a time — returns 409 if one already exists.
+        `startingAmount` defaults to the current value of `positionId` (or the
+        sum of the user's active positions if omitted). If the target is
+        already met by the starting amount, the goal is created directly with
+        status ACHIEVED.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetAmount, targetDate]
+              properties:
+                targetAmount:
+                  type: number
+                  description: Must be greater than startingAmount
+                targetDate:
+                  type: string
+                  format: date-time
+                  description: Must be in the future
+                startingAmount:
+                  type: number
+                positionId:
+                  type: string
+                  format: uuid
+                riskCeiling:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+              example:
+                targetAmount: 10000
+                targetDate: '2027-07-21T00:00:00.000Z'
+      responses:
+        '201':
+          description: Goal created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  goal:
+                    $ref: '#/components/schemas/SavingsGoal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/portfolio/goals/{id}:
+    get:
+      tags: [goals]
+      operationId: getGoal
+      summary: Get the user's current savings goal
+      description: |
+        Returns the user's ACTIVE goal if one exists, otherwise their most
+        recently created goal. The authenticated user can only access their
+        own goal (enforceUserAccess). NOTE: for this operation only, `id` is
+        the **user's** ID, not a goal ID — documented under the same path
+        item as PATCH/DELETE below (which take a goal ID) since they share the
+        same route shape, differentiated by HTTP method.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: User ID (UUID v4) — see note above
+      responses:
+        '200':
+          description: Savings goal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  goal:
+                    $ref: '#/components/schemas/SavingsGoal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [goals]
+      operationId: updateGoal
+      summary: Update a savings goal
+      description: |
+        Updates target amount/date/riskCeiling on an ACTIVE goal. This route is
+        keyed by goal id rather than :userId, so ownership is checked
+        explicitly (goal.userId must match the authenticated caller) instead of
+        via enforceUserAccess.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Goal ID (UUID v4)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetAmount:
+                  type: number
+                targetDate:
+                  type: string
+                  format: date-time
+                riskCeiling:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+      responses:
+        '200':
+          description: Updated goal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  goal:
+                    $ref: '#/components/schemas/SavingsGoal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [goals]
+      operationId: cancelGoal
+      summary: Cancel a savings goal
+      description: |
+        Soft-cancels a goal (sets status = CANCELLED) — never hard-deletes.
+        Ownership is checked explicitly, as with PATCH.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Goal ID (UUID v4)
+      responses:
+        '200':
+          description: Cancelled goal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  goal:
+                    $ref: '#/components/schemas/SavingsGoal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/portfolio/goals/{id}/progress:
+    get:
+      tags: [goals]
+      operationId: getGoalProgress
+      summary: Get a savings goal's trajectory
+      description: |
+        Returns current progress, the simple annualized rate required to reach
+        the target by its date, the user's recent actual APY, a projected
+        completion date, and whether the target is reachable within the user's
+        configured risk ceiling. Ownership is checked explicitly, as with
+        PATCH/DELETE.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Goal ID (UUID v4)
+      responses:
+        '200':
+          description: Goal progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalProgress'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -2512,6 +2725,77 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Position'
+
+    SavingsGoal:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        positionId:
+          type: string
+          format: uuid
+          nullable: true
+        targetAmount:
+          type: number
+        startingAmount:
+          type: number
+        targetDate:
+          type: string
+          format: date-time
+        riskCeiling:
+          type: integer
+          nullable: true
+        status:
+          type: string
+          enum: [ACTIVE, ACHIEVED, MISSED, CANCELLED]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    GoalProgress:
+      type: object
+      properties:
+        goalId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [ACTIVE, ACHIEVED, MISSED, CANCELLED]
+        targetAmount:
+          type: number
+        startingAmount:
+          type: number
+        currentAmount:
+          type: number
+        targetDate:
+          type: string
+          format: date-time
+        requiredApy:
+          type: number
+          description: Simple annualized rate needed to reach the target by targetDate
+        actualApy:
+          type: number
+          description: Recent (30d) simple average APY the user is actually getting
+        onTrack:
+          type: boolean
+        reachable:
+          type: boolean
+          description: False when requiredApy exceeds the best APY available within the goal's risk ceiling
+        projectedCompletionDate:
+          type: string
+          format: date-time
+          nullable: true
+        note:
+          type: string
+        whatsappReply:
+          type: string
 
     Position:
       type: object

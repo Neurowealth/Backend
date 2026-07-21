@@ -3,7 +3,7 @@ import { HttpClientAdapter } from '../utils/http-client'
 import { config } from '../config'
 
 export interface Intent {
-  action: 'deposit' | 'withdraw' | 'balance' | 'earnings' | 'help' | 'unknown'
+  action: 'deposit' | 'withdraw' | 'balance' | 'earnings' | 'goal' | 'help' | 'unknown'
   amount?: number
   currency?: string
   all?: boolean
@@ -57,6 +57,11 @@ export function parseWithRegex(message: string): Intent | null {
     return { action: 'earnings' }
   }
 
+  // Savings goal (progress/status query — creation happens via the REST API)
+  if (/goal/i.test(lowerMsg)) {
+    return { action: 'goal' }
+  }
+
   // Help
   if (/help|what can you do|commands/i.test(lowerMsg)) {
     return { action: 'help' }
@@ -72,10 +77,10 @@ export async function parseWithClaude(message: string): Promise<Intent> {
       return anthropic.messages.create({
         model: 'claude-3-haiku-20240307',
         max_tokens: 150,
-        system: `You are an intent parser for a financial bot. Determine if the user wants to deposit, withdraw, check balance, view earnings/performance, or needs help.
+        system: `You are an intent parser for a financial bot. Determine if the user wants to deposit, withdraw, check balance, view earnings/performance, check their savings goal progress, or needs help.
 Return ONLY a JSON object representing the intent, matching this TypeScript interface exactly without any wrapper text or markdown:
 {
-  "action": "deposit" | "withdraw" | "balance" | "earnings" | "help" | "unknown",
+  "action": "deposit" | "withdraw" | "balance" | "earnings" | "goal" | "help" | "unknown",
   "amount": number, // optional
   "currency": string, // optional
   "all": boolean // for "withdraw everything"
@@ -94,7 +99,7 @@ Return ONLY a JSON object representing the intent, matching this TypeScript inte
       if (jsonStr) {
         const parsed = JSON.parse(jsonStr)
         if (
-          ['deposit', 'withdraw', 'balance', 'earnings', 'help'].includes(
+          ['deposit', 'withdraw', 'balance', 'earnings', 'goal', 'help'].includes(
             parsed.action
           )
         ) {
