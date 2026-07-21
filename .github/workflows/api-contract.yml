@@ -98,6 +98,12 @@ jobs:
           exit 1
         env:
           NODE_ENV: test
+          # This job boots the real server, and startEventListener() calls
+          # getLatestLedger() with no client timeout before app.listen(). Point
+          # it at a reachable RPC (as production-smoke.yml does) so an
+          # unresolvable host cannot stall startup. dotenv does not override
+          # ambient vars, so this wins over .env.test.
+          STELLAR_RPC_URL: https://soroban-testnet.stellar.org
 
       - name: Health liveness check
         run: |
