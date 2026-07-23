@@ -65,8 +65,22 @@ router.post(
     const from = (req.body.From as string) || ''
     const body = (req.body.Body as string) || ''
 
+    // Voice notes (and other media) arrive with NumMedia > 0 and MediaUrl0 /
+    // MediaContentType0. We only act on audio; non-audio media falls through to
+    // text handling (empty body → 'unknown').
+    const numMedia = parseInt((req.body.NumMedia as string) || '0', 10)
+    const mediaUrl = req.body.MediaUrl0 as string | undefined
+    const mediaContentType = req.body.MediaContentType0 as string | undefined
+    const media =
+      numMedia > 0 &&
+      mediaUrl &&
+      mediaContentType &&
+      mediaContentType.startsWith('audio/')
+        ? { url: mediaUrl, contentType: mediaContentType }
+        : undefined
+
     try {
-      const response = await handleWhatsAppMessage(from, body)
+      const response = await handleWhatsAppMessage(from, body, media)
       const responseTwiml = new twiml.MessagingResponse()
       responseTwiml.message(response.body)
       res.type('text/xml').send(responseTwiml.toString())

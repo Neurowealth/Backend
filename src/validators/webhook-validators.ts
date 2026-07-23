@@ -1,9 +1,22 @@
 import { z } from 'zod'
 
-export const whatsappWebhookSchema = z.object({
-  From: z.string().min(1, 'From is required'),
-  Body: z.string().min(1, 'Body is required'),
-})
+/**
+ * Twilio inbound WhatsApp webhook. `Body` is optional because a voice note
+ * arrives with media fields and an empty/absent body (#288). `NumMedia`/
+ * `MediaUrl0`/`MediaContentType0` are Twilio's media fields; we read the first
+ * attachment. `.passthrough()` keeps Twilio's other fields and — crucially — we
+ * add NO defaulted keys, so the object still matches the exact params Twilio
+ * signed (signature validation runs on req.body after this parse).
+ */
+export const whatsappWebhookSchema = z
+  .object({
+    From: z.string().min(1, 'From is required'),
+    Body: z.string().optional(),
+    NumMedia: z.string().optional(),
+    MediaUrl0: z.string().url().optional(),
+    MediaContentType0: z.string().optional(),
+  })
+  .passthrough();
 
 const WEBHOOK_EVENTS = [
   'transaction.confirmed',
