@@ -62,27 +62,33 @@ const buildTransactionSchema = z.object({
  * Builds an unsigned XDR transaction for the user to sign client-side (non-custodial).
  * The backend never holds or decrypts private keys for this flow.
  */
-router.post('/build-transaction', requireAuth, async (req: Request, res: Response) => {
-  const parsed = buildTransactionSchema.safeParse(req.body)
-  if (!parsed.success) {
-    return res.status(400).json({ error: 'Validation error', details: parsed.error.flatten() })
+router.post(
+  '/build-transaction',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const parsed = buildTransactionSchema.safeParse(req.body)
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'Validation error', details: parsed.error.flatten() })
+    }
+
+    const walletAddress = req.auth!.walletAddress
+
+    const unsignedXdr = await buildUnsignedVaultTransaction(
+      parsed.data.type,
+      walletAddress,
+      parsed.data.amount,
+      parsed.data.assetSymbol
+    )
+
+    return res.status(200).json({
+      xdr: unsignedXdr,
+      type: parsed.data.type,
+      amount: parsed.data.amount,
+      walletAddress,
+    })
   }
-
-  const walletAddress = req.auth!.walletAddress
-
-  const unsignedXdr = await buildUnsignedVaultTransaction(
-    parsed.data.type,
-    walletAddress,
-    parsed.data.amount,
-    parsed.data.assetSymbol,
-  )
-
-  return res.status(200).json({
-    xdr: unsignedXdr,
-    type: parsed.data.type,
-    amount: parsed.data.amount,
-    walletAddress,
-  })
-})
+)
 
 export default router

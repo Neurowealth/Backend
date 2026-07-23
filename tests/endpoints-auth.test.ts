@@ -31,7 +31,7 @@ describe('Internal Endpoint Authentication', () => {
     it('should return 200 with valid X-Internal-Token', async () => {
       const token = process.env.INTERNAL_SERVICE_TOKEN
       if (!token) {
-        console.log('Skipping: INTERNAL_SERVICE_TOKEN not set')
+        console.warn('Skipping: INTERNAL_SERVICE_TOKEN not set')
         return
       }
       const res = await request(app)
@@ -44,7 +44,7 @@ describe('Internal Endpoint Authentication', () => {
     it('should return 200 with valid Bearer token', async () => {
       const token = process.env.ADMIN_API_TOKEN
       if (!token) {
-        console.log('Skipping: ADMIN_API_TOKEN not set')
+        console.warn('Skipping: ADMIN_API_TOKEN not set')
         return
       }
       const res = await request(app)
@@ -79,7 +79,7 @@ describe('Internal Endpoint Authentication', () => {
     it('should return 200 with valid X-Internal-Token', async () => {
       const token = process.env.INTERNAL_SERVICE_TOKEN
       if (!token) {
-        console.log('Skipping: INTERNAL_SERVICE_TOKEN not set')
+        console.warn('Skipping: INTERNAL_SERVICE_TOKEN not set')
         return
       }
       const res = await request(app)
@@ -93,7 +93,7 @@ describe('Internal Endpoint Authentication', () => {
     it('should return 200 with valid Bearer token', async () => {
       const token = process.env.ADMIN_API_TOKEN
       if (!token) {
-        console.log('Skipping: ADMIN_API_TOKEN not set')
+        console.warn('Skipping: ADMIN_API_TOKEN not set')
         return
       }
       const res = await request(app)

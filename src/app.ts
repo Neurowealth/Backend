@@ -1,5 +1,6 @@
 import express, { NextFunction, Request, Response } from 'express'
 import { setupCors, validateCorsConfig } from './middleware/corsandbody'
+import { logger } from './utils/logger'
 import dotenv from 'dotenv'
 
 dotenv.config()
@@ -31,7 +32,7 @@ app.use(
 app.use((req: Request, res: Response, next: NextFunction) => {
   const origin = req.get('origin') || 'no-origin'
   const timestamp = new Date().toISOString()
-  console.log(`[${timestamp}] ${req.method} ${req.path} (origin: ${origin})`)
+  logger.info(`[${timestamp}] ${req.method} ${req.path} (origin: ${origin})`)
   next()
 })
 
@@ -110,18 +111,18 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 
 // Start server
 const server = app.listen(PORT, () => {
-  console.log(`✓ Server running on http://localhost:${PORT}`)
-  console.log(
+  logger.info(`✓ Server running on http://localhost:${PORT}`)
+  logger.info(
     `✓ CORS enabled for: ${process.env.CORS_ALLOWED_ORIGINS || 'development'}`
   )
-  console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`)
+  logger.info(`✓ Environment: ${process.env.NODE_ENV || 'development'}`)
 })
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('SIGTERM received, closing server...')
+  logger.info('SIGTERM received, closing server...')
   server.close(() => {
-    console.log('Server closed')
+    logger.info('Server closed')
     process.exit(0)
   })
 })

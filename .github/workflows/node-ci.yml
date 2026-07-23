@@ -35,8 +35,8 @@ jobs:
       STELLAR_AGENT_SECRET_KEY: SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
       VAULT_CONTRACT_ID: CDUMMYVAULTCONTRACTID
       USDC_TOKEN_ADDRESS: CDUMMYUSDC
-      ANTHROPIC_API_KEY: smoke-anthropic-key
-      JWT_SEED: smoke-jwt-seed
+      ANTHROPIC_API_KEY: sk-ant-smoke-key
+      JWT_SEED: smoke-jwt-seed-0123456789abcdef0123456789
       JWT_SESSION_TTL_HOURS: '24'
       JWT_NONCE_TTL_MS: '300000'
       JWT_CLEANUP_INTERVAL_MS: '86400000'
@@ -55,7 +55,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       # Install dependencies
@@ -103,7 +103,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies
@@ -115,10 +115,13 @@ jobs:
 
       - name: License check (block GPL/AGPL/LGPL)
         # Prevents copyleft licences from entering the dependency tree.
-        # Allowed: MIT, ISC, Apache-2.0, BSD-2-Clause, BSD-3-Clause, 0BSD, BlueOak-1.0.0, CC0-1.0
+        # Allowed: MIT, ISC, Apache-2.0, BSD-2-Clause, BSD-3-Clause, 0BSD, BlueOak-1.0.0, CC0-1.0,
+        # Python-2.0 (PSF — permissive, transitive argparse@2),
+        # CC-BY-4.0 (attribution-only, transitive caniuse-lite data),
+        # Unlicense (public-domain dedication, transitive fast-sha256)
         run: |
           npx license-checker --onlyAllow \
-            'MIT;ISC;Apache-2.0;BSD-2-Clause;BSD-3-Clause;0BSD;BlueOak-1.0.0;CC0-1.0' \
+            'MIT;ISC;Apache-2.0;BSD-2-Clause;BSD-3-Clause;0BSD;BlueOak-1.0.0;CC0-1.0;Python-2.0;CC-BY-4.0;Unlicense' \
             --excludePrivatePackages
 
   # ── Issue #100: migration smoke gate ──────────────────────────────────────
@@ -145,19 +148,26 @@ jobs:
           --health-retries=5
     env:
       NODE_ENV: test
+      # scripts/smoke-health.sh probes port 3001 — the server must listen there.
+      PORT: '3001'
       DATABASE_URL: postgresql://smoke_user:smoke_pass@localhost:5433/smoke_db
       # Non-secret stubs required by env.ts at module-load time
       STELLAR_NETWORK: testnet
-      STELLAR_RPC_URL: https://rpc.example.com
+      # This job boots the real server; startEventListener() calls
+      # getLatestLedger() with no client timeout before app.listen(), so the
+      # endpoint must resolve or startup stalls.
+      STELLAR_RPC_URL: https://soroban-testnet.stellar.org
       STELLAR_AGENT_SECRET_KEY: SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
       VAULT_CONTRACT_ID: CDUMMYVAULTCONTRACTID
       USDC_TOKEN_ADDRESS: CDUMMYUSDC
-      ANTHROPIC_API_KEY: smoke-anthropic-key
-      JWT_SEED: smoke-jwt-seed
+      ANTHROPIC_API_KEY: sk-ant-smoke-key
+      JWT_SEED: smoke-jwt-seed-0123456789abcdef0123456789
       JWT_SESSION_TTL_HOURS: '24'
       JWT_NONCE_TTL_MS: '300000'
       JWT_CLEANUP_INTERVAL_MS: '86400000'
       WALLET_ENCRYPTION_KEY: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
+      # Required by env.ts and asserted again by initServices().
+      TWILIO_AUTH_TOKEN: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
     steps:
       - name: Checkout repository
@@ -166,7 +176,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies
@@ -175,8 +185,11 @@ jobs:
       - name: Prisma generate
         run: npx prisma generate
 
-      - name: Check migration status (staging gate)
-        run: npx prisma migrate status
+      # Informational only: on a fresh smoke database every migration is
+      # pending, and `migrate status` exits non-zero whenever that is true.
+      # The real gate is "Confirm no pending migrations after deploy" below.
+      - name: Check migration status (pre-deploy, informational)
+        run: npx prisma migrate status || true
 
       - name: Apply migrations to smoke DB
         run: npx prisma migrate deploy
@@ -188,6 +201,10 @@ jobs:
             echo "::error::Pending migrations remain after migrate deploy"
             exit 1
           fi
+
+      # smoke-health.sh runs the compiled server, so the artifact must exist.
+      - name: Build project
+        run: npm run build
 
       - name: Run smoke test
         run: npm run smoke
@@ -205,7 +222,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install markdown-link-check
         run: npm install -g markdown-link-check
@@ -229,7 +246,7 @@ jobs:
           for file in docs/*.md; do
             if [ -f "$file" ]; then
               # Count opening and closing code fences
-              open=$(grep -c '^\`\`\`' "$file" || true)
+              open=$(grep -c '^```' "$file" || true)
               if [ $((open % 2)) -ne 0 ]; then
                 echo "::error file=$file::Unclosed code fence detected"
                 exit 1
@@ -237,23 +254,10 @@ jobs:
             fi
           done
 
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: 'v1.29.0'
-
-      - name: Validate Kubernetes manifests
-        run: |
-          # Validate all YAML manifests in deploy/k8s
-          for manifest in deploy/k8s/*.yaml; do
-            if [ -f "$manifest" ]; then
-              echo "Validating $manifest"
-              kubectl apply --dry-run=client -f "$manifest" || {
-                echo "::error file=$manifest::Kubernetes manifest validation failed"
-                exit 1
-              }
-            fi
-          done
+      # Kubernetes manifest validation lives in k8s-validate.yml (kubeconform,
+      # fully offline) and triggers whenever deploy/k8s changes. kubectl's
+      # client dry-run needs a live cluster for API discovery, so it can never
+      # pass on a bare runner and was removed from this job.
 
       - name: Check referenced file paths in docs
         run: |

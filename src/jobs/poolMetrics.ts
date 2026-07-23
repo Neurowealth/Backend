@@ -30,14 +30,20 @@ interface PrismaMetric<T> {
 interface PrismaMetricsJson {
   counters: PrismaMetric<number>[]
   gauges: PrismaMetric<number>[]
-  histograms: PrismaMetric<{ buckets: [number, number][]; sum: number; count: number }>[]
+  histograms: PrismaMetric<{
+    buckets: [number, number][]
+    sum: number
+    count: number
+  }>[]
 }
 
 type MetricsCapableClient = {
   $metrics?: { json: () => Promise<PrismaMetricsJson> }
 }
 
-function hasMetricsApi(client: unknown): client is Required<MetricsCapableClient> {
+function hasMetricsApi(
+  client: unknown
+): client is Required<MetricsCapableClient> {
   const candidate = client as MetricsCapableClient
   return typeof candidate.$metrics?.json === 'function'
 }
@@ -63,7 +69,9 @@ export async function collectPoolMetrics(): Promise<void> {
     dbPoolActive.set(gauge('prisma_pool_connections_busy'))
     dbPoolIdle.set(gauge('prisma_pool_connections_idle'))
     dbPoolWaitCount.set(gauge('prisma_client_queries_wait'))
-    dbPoolWaitDurationMs.set(histogramSum('prisma_client_queries_wait_histogram_ms'))
+    dbPoolWaitDurationMs.set(
+      histogramSum('prisma_client_queries_wait_histogram_ms')
+    )
   } catch (error) {
     logger.warn('[PoolMetrics] Failed to collect Prisma pool metrics', {
       error: error instanceof Error ? error.message : String(error),
@@ -89,6 +97,8 @@ export function schedulePoolMetrics(): NodeJS.Timeout {
   // Don't keep the event loop alive solely for metrics polling
   handle.unref?.()
 
-  logger.info(`[PoolMetrics] Prisma pool metrics polling scheduled (every ${intervalMs}ms)`)
+  logger.info(
+    `[PoolMetrics] Prisma pool metrics polling scheduled (every ${intervalMs}ms)`
+  )
   return handle
 }

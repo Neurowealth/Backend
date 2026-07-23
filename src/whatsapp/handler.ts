@@ -1,4 +1,5 @@
 import { parseIntent } from '../nlp/parser'
+import { formatGoalProgressReply } from './formatters'
 import {
   normalizePhone,
   createOrGetUser,
@@ -7,6 +8,7 @@ import {
   getBalance,
   getUserWalletAddress,
   getPortfolioYieldSummary,
+  getGoalStatus,
   decrementBalance,
 } from './userManager'
 import {
@@ -144,6 +146,16 @@ export async function handleWhatsAppMessage(
       }
       const newBalance = decrementBalance(normalizedPhone, amount)
       return { body: formatWithdrawConfirmation(amount, newBalance) }
+    }
+
+    case 'goal': {
+      const progress = await getGoalStatus(normalizedPhone)
+      if (!progress) {
+        return {
+          body: "You don't have a savings goal set up yet. Set one up in the app to start tracking progress.",
+        }
+      }
+      return { body: formatGoalProgressReply(progress) }
     }
 
     case 'help':

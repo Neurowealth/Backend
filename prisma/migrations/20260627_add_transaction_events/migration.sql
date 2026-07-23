@@ -21,11 +21,11 @@ CREATE INDEX "TransactionEvent_transactionId_occurredAt_idx"
 -- AddForeignKey
 ALTER TABLE "TransactionEvent"
   ADD CONSTRAINT "TransactionEvent_transactionId_fkey"
-  FOREIGN KEY ("transactionId") REFERENCES "Transaction"("id")
+  FOREIGN KEY ("transactionId") REFERENCES "transactions"("id")
   ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- Backfill: create CONFIRMED events for already-completed transactions
 INSERT INTO "TransactionEvent" ("id", "transactionId", "event", "occurredAt")
 SELECT gen_random_uuid()::text, id, 'CONFIRMED', "updatedAt"
-FROM "Transaction"
-WHERE status = 'confirmed';
+FROM "transactions"
+WHERE status = 'CONFIRMED';

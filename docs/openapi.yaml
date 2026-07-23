@@ -54,8 +54,8 @@ tags:
     description: Fiat on-ramp / off-ramp (buy and sell crypto with fiat via a payment provider)
   - name: referrals
     description: Referral rewards program (share a code, earn when referred users deposit)
-  - name: alerts
-    description: User-defined price & yield alert rules (notify on protocol APY, portfolio value, or drawdown conditions)
+  - name: goals
+    description: Goal-based investing — a target amount + date driving the agent's strategy selection
   - name: admin
     description: Admin-only management endpoints
   - name: metrics
@@ -475,6 +475,306 @@ paths:
                 totalEarnings: 523.40
                 periodEarnings: 85.20
                 averageApy: 4.23
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/portfolio/{userId}/tax-report:
+    get:
+      tags: [portfolio]
+      operationId: getPortfolioTaxReport
+      summary: Get realized gain/loss tax report
+      description: |
+        Returns the user's realized gain/loss report for a calendar year (UTC
+        boundaries), computed with FIFO cost-basis lot accounting over
+        confirmed on-chain withdrawals. Totals include only fully priced
+        disposals; unpriced assets are flagged in `caveats`, never zeroed.
+        See docs/TAX_REPORT.md for methodology and known limitations. The
+        authenticated user can only access their own report
+        (enforceUserAccess). With `format=csv` the report's disposal rows are
+        returned as an RFC 4180 CSV attachment with spreadsheet
+        formula-injection guarding.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: User ID (UUID v4)
+        - in: query
+          name: year
+          required: true
+          schema:
+            type: integer
+            minimum: 2000
+            maximum: 2100
+          description: Calendar year (UTC) the report covers
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+          description: Response format
+      responses:
+        '200':
+          description: Tax report for the requested year
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaxReport'
+              example:
+                userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                year: 2026
+                method: FIFO
+                disposals:
+                  - disposedAt: '2026-06-15T00:00:00.000Z'
+                    assetSymbol: USDC
+                    amount: '40'
+                    withdrawalTxHash: c1d2e3f4a5b6c7d8e9f0
+                    acquiredAt: '2026-01-15T00:00:00.000Z'
+                    acquisitionTxHash: a1b2c3d4e5f6a7b8c9d0
+                    acquisitionPrice: '1'
+                    disposalPrice: '1'
+                    costBasis: '40'
+                    proceeds: '40'
+                    realizedGain: '0'
+                    priced: true
+                totals:
+                  proceeds: '40'
+                  costBasis: '40'
+                  realizedGain: '0'
+                  pricedDisposalCount: 1
+                caveats:
+                  unpricedDisposalCount: 0
+                  unpricedAssets: []
+                  stablecoinAssumption: USDC is priced at 1.00 USD by assumption (STABLECOIN_ASSUMPTION); no market price feed is used.
+                  rebalancesNotIncluded: Protocol rebalances are same-asset transfers and are not treated as taxable disposals in this report.
+            text/csv:
+              schema:
+                type: string
+                description: |
+                  One header row plus one row per disposal, CRLF line endings.
+                  Cells beginning with `=`, `+`, `-`, `@`, tab, or CR are
+                  prefixed with `'` to prevent spreadsheet formula injection.
+              example: |
+                disposedAt,assetSymbol,amount,withdrawalTxHash,acquiredAt,acquisitionTxHash,acquisitionPrice,disposalPrice,costBasis,proceeds,realizedGain,priced
+                2026-06-15T00:00:00.000Z,USDC,40,c1d2e3f4a5b6c7d8e9f0,2026-01-15T00:00:00.000Z,a1b2c3d4e5f6a7b8c9d0,1,1,40,40,0,true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Goal-based investing (#281) ─────────────────────────────────────────────
+  /api/v1/portfolio/goals:
+    post:
+      tags: [goals]
+      operationId: createGoal
+      summary: Create the caller's savings goal
+      description: |
+        Creates a savings goal for the authenticated user. Only one ACTIVE goal
+        per user is allowed at a time — returns 409 if one already exists.
+        `startingAmount` defaults to the current value of `positionId` (or the
+        sum of the user's active positions if omitted). If the target is
+        already met by the starting amount, the goal is created directly with
+        status ACHIEVED.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetAmount, targetDate]
+              properties:
+                targetAmount:
+                  type: number
+                  description: Must be greater than startingAmount
+                targetDate:
+                  type: string
+                  format: date-time
+                  description: Must be in the future
+                startingAmount:
+                  type: number
+                positionId:
+                  type: string
+                  format: uuid
+                riskCeiling:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+              example:
+                targetAmount: 10000
+                targetDate: '2027-07-21T00:00:00.000Z'
+      responses:
+        '201':
+          description: Goal created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  goal:
+                    $ref: '#/components/schemas/SavingsGoal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/portfolio/goals/{id}:
+    get:
+      tags: [goals]
+      operationId: getGoal
+      summary: Get the user's current savings goal
+      description: |
+        Returns the user's ACTIVE goal if one exists, otherwise their most
+        recently created goal. The authenticated user can only access their
+        own goal (enforceUserAccess). NOTE: for this operation only, `id` is
+        the **user's** ID, not a goal ID — documented under the same path
+        item as PATCH/DELETE below (which take a goal ID) since they share the
+        same route shape, differentiated by HTTP method.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: User ID (UUID v4) — see note above
+      responses:
+        '200':
+          description: Savings goal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  goal:
+                    $ref: '#/components/schemas/SavingsGoal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [goals]
+      operationId: updateGoal
+      summary: Update a savings goal
+      description: |
+        Updates target amount/date/riskCeiling on an ACTIVE goal. This route is
+        keyed by goal id rather than :userId, so ownership is checked
+        explicitly (goal.userId must match the authenticated caller) instead of
+        via enforceUserAccess.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Goal ID (UUID v4)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetAmount:
+                  type: number
+                targetDate:
+                  type: string
+                  format: date-time
+                riskCeiling:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+      responses:
+        '200':
+          description: Updated goal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  goal:
+                    $ref: '#/components/schemas/SavingsGoal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [goals]
+      operationId: cancelGoal
+      summary: Cancel a savings goal
+      description: |
+        Soft-cancels a goal (sets status = CANCELLED) — never hard-deletes.
+        Ownership is checked explicitly, as with PATCH.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Goal ID (UUID v4)
+      responses:
+        '200':
+          description: Cancelled goal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  goal:
+                    $ref: '#/components/schemas/SavingsGoal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/portfolio/goals/{id}/progress:
+    get:
+      tags: [goals]
+      operationId: getGoalProgress
+      summary: Get a savings goal's trajectory
+      description: |
+        Returns current progress, the simple annualized rate required to reach
+        the target by its date, the user's recent actual APY, a projected
+        completion date, and whether the target is reachable within the user's
+        configured risk ceiling. Ownership is checked explicitly, as with
+        PATCH/DELETE.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Goal ID (UUID v4)
+      responses:
+        '200':
+          description: Goal progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalProgress'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -2551,6 +2851,77 @@ components:
           items:
             $ref: '#/components/schemas/Position'
 
+    SavingsGoal:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        positionId:
+          type: string
+          format: uuid
+          nullable: true
+        targetAmount:
+          type: number
+        startingAmount:
+          type: number
+        targetDate:
+          type: string
+          format: date-time
+        riskCeiling:
+          type: integer
+          nullable: true
+        status:
+          type: string
+          enum: [ACTIVE, ACHIEVED, MISSED, CANCELLED]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    GoalProgress:
+      type: object
+      properties:
+        goalId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [ACTIVE, ACHIEVED, MISSED, CANCELLED]
+        targetAmount:
+          type: number
+        startingAmount:
+          type: number
+        currentAmount:
+          type: number
+        targetDate:
+          type: string
+          format: date-time
+        requiredApy:
+          type: number
+          description: Simple annualized rate needed to reach the target by targetDate
+        actualApy:
+          type: number
+          description: Recent (30d) simple average APY the user is actually getting
+        onTrack:
+          type: boolean
+        reachable:
+          type: boolean
+          description: False when requiredApy exceeds the best APY available within the goal's risk ceiling
+        projectedCompletionDate:
+          type: string
+          format: date-time
+          nullable: true
+        note:
+          type: string
+        whatsappReply:
+          type: string
+
     Position:
       type: object
       properties:
@@ -2568,6 +2939,89 @@ components:
         status:
           type: string
           enum: [ACTIVE, CLOSED]
+
+    # ── Tax report (#284) ─────────────────────────────────────────────────
+    # Money fields are decimal strings (never floats) and null means
+    # "unpriced" — never zero. Totals sum only fully priced disposals.
+    TaxReport:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        year:
+          type: integer
+        method:
+          type: string
+          enum: [FIFO]
+        disposals:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaxReportDisposal'
+        totals:
+          type: object
+          properties:
+            proceeds:
+              type: string
+            costBasis:
+              type: string
+            realizedGain:
+              type: string
+            pricedDisposalCount:
+              type: integer
+        caveats:
+          type: object
+          properties:
+            unpricedDisposalCount:
+              type: integer
+            unpricedAssets:
+              type: array
+              items:
+                type: string
+            stablecoinAssumption:
+              type: string
+            rebalancesNotIncluded:
+              type: string
+
+    TaxReportDisposal:
+      type: object
+      properties:
+        disposedAt:
+          type: string
+          format: date-time
+        assetSymbol:
+          type: string
+          example: USDC
+        amount:
+          type: string
+          description: Decimal string in asset units
+        withdrawalTxHash:
+          type: string
+          nullable: true
+        acquiredAt:
+          type: string
+          format: date-time
+        acquisitionTxHash:
+          type: string
+          nullable: true
+        acquisitionPrice:
+          type: string
+          nullable: true
+        disposalPrice:
+          type: string
+          nullable: true
+        costBasis:
+          type: string
+          nullable: true
+        proceeds:
+          type: string
+          nullable: true
+        realizedGain:
+          type: string
+          nullable: true
+        priced:
+          type: boolean
+          description: True when every money field is present; only priced disposals enter totals
 
     # ── Transaction ───────────────────────────────────────────────────────
     Transaction:

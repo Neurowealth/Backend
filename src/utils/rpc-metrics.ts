@@ -11,32 +11,32 @@
  *   stellar_rpc_request_duration_seconds — latency histogram, labelled by endpoint / context / success
  */
 
-import { Counter, Histogram, Registry } from 'prom-client';
+import { Counter, Histogram, Registry } from 'prom-client'
 
 // Re-use the default registry so the existing getMetrics() picks these up
 // automatically — no changes needed in metrics.ts or the /metrics route.
-import { register } from './metrics-registry';
+import { register } from './metrics-registry'
 
 export const rpcAttemptCounter = new Counter({
   name: 'stellar_rpc_attempts_total',
   help: 'Total Stellar RPC call attempts',
   labelNames: ['endpoint', 'context', 'primary'] as const,
   registers: [register],
-});
+})
 
 export const rpcFailoverCounter = new Counter({
   name: 'stellar_rpc_failovers_total',
   help: 'Number of times a call failed over to a secondary RPC endpoint',
   labelNames: ['endpoint', 'context'] as const,
   registers: [register],
-});
+})
 
 export const rpcCircuitOpenCounter = new Counter({
   name: 'stellar_rpc_circuit_open_total',
   help: 'Number of requests blocked because the circuit breaker was OPEN',
   labelNames: ['endpoint', 'context'] as const,
   registers: [register],
-});
+})
 
 export const rpcLatencyHistogram = new Histogram({
   name: 'stellar_rpc_request_duration_seconds',
@@ -44,4 +44,4 @@ export const rpcLatencyHistogram = new Histogram({
   labelNames: ['endpoint', 'context', 'success'] as const,
   buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
   registers: [register],
-});
+})

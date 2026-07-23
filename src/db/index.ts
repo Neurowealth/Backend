@@ -51,8 +51,12 @@ export async function connectDb(): Promise<void> {
     logger.info('[DB] Connected to database')
   } catch (error) {
     logger.error('[DB] Cannot connect to database — server will not start')
-    logger.error(`[DB] ${error instanceof Error ? error.message : String(error)}`)
-    logger.error('[DB] Check that DATABASE_URL is correct and the database is running')
+    logger.error(
+      `[DB] ${error instanceof Error ? error.message : String(error)}`
+    )
+    logger.error(
+      '[DB] Check that DATABASE_URL is correct and the database is running'
+    )
     await db.$disconnect()
     process.exit(1)
   }

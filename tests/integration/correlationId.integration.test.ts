@@ -1,3 +1,8 @@
+// requestLogger samples healthy requests (LOG_SAMPLE_RATE, default 0.1) and
+// reads the rate at module load — force full logging BEFORE the import below
+// so the log assertion is deterministic.
+process.env.LOG_SAMPLE_RATE = '1'
+
 import express from 'express'
 import request from 'supertest'
 import { correlationIdMiddleware } from '../../src/middleware/correlationId'

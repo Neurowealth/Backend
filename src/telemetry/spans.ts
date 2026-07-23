@@ -16,7 +16,13 @@
  *   })
  */
 
-import { trace, context, SpanStatusCode, Span, SpanKind } from '@opentelemetry/api'
+import {
+  trace,
+  context,
+  SpanStatusCode,
+  Span,
+  SpanKind,
+} from '@opentelemetry/api'
 
 const tracer = trace.getTracer('neurowealth-backend')
 
@@ -215,7 +221,10 @@ export async function withDlqSpan<T>(
         return result
       } catch (err) {
         span.recordException(err as Error)
-        span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message })
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: (err as Error).message,
+        })
         throw err
       } finally {
         span.end()

@@ -41,13 +41,16 @@ describe('HttpClientAdapter Integration — simulated failures', () => {
       const simulateTimeoutThenSuccess = async (): Promise<string> => {
         callCount++
         if (callCount <= 1) {
-          await new Promise(r => setTimeout(r, 600))
+          await new Promise((r) => setTimeout(r, 600))
           throw new TimeoutError(500, 'simulated')
         }
         return 'data'
       }
 
-      const result = await adapter.execute(simulateTimeoutThenSuccess, 'timeoutApi.fetch')
+      const result = await adapter.execute(
+        simulateTimeoutThenSuccess,
+        'timeoutApi.fetch'
+      )
       expect(result).toBe('data')
       expect(callCount).toBe(2)
     })
@@ -55,7 +58,9 @@ describe('HttpClientAdapter Integration — simulated failures', () => {
 
   describe('persistent failures — circuit breaker opens', () => {
     it('should open circuit after consecutive failures', async () => {
-      const simulateDownstream = jest.fn().mockRejectedValue(new Error('HTTP 502 Bad Gateway'))
+      const simulateDownstream = jest
+        .fn()
+        .mockRejectedValue(new Error('HTTP 502 Bad Gateway'))
 
       // First execute exhausts all retries (1 initial + 2 retries = 3 failures)
       // After 3 failures circuit breaker opens
@@ -77,7 +82,9 @@ describe('HttpClientAdapter Integration — simulated failures', () => {
     })
 
     it('should block requests with CircuitBreakerError after threshold', async () => {
-      const simulateDownstream = jest.fn().mockRejectedValue(new Error('Service Down'))
+      const simulateDownstream = jest
+        .fn()
+        .mockRejectedValue(new Error('Service Down'))
 
       // Exhaust all retries for first execute (should consume all 3 failure slots)
       await expect(
@@ -139,13 +146,16 @@ describe('HttpClientAdapter Integration — simulated failures', () => {
       const simulateSlowThenFast = async (): Promise<string> => {
         callCount++
         if (callCount <= 1) {
-          await new Promise(r => setTimeout(r, 100))
+          await new Promise((r) => setTimeout(r, 100))
           throw new TimeoutError(30, 'simulated')
         }
         return 'fast response'
       }
 
-      const result = await fastTimeoutAdapter.execute(simulateSlowThenFast, 'slowApi.get')
+      const result = await fastTimeoutAdapter.execute(
+        simulateSlowThenFast,
+        'slowApi.get'
+      )
       expect(result).toBe('fast response')
       expect(callCount).toBe(2)
     })
@@ -168,7 +178,7 @@ describe('HttpClientAdapter Integration — simulated failures', () => {
         callCount++
         switch (callCount) {
           case 1:
-            await new Promise(r => setTimeout(r, 100))
+            await new Promise((r) => setTimeout(r, 100))
             throw new TimeoutError(50, 'simulated timeout')
           case 2:
             throw new Error('HTTP 500 Internal Server Error')
@@ -179,7 +189,10 @@ describe('HttpClientAdapter Integration — simulated failures', () => {
         }
       }
 
-      const result = await mixedAdapter.execute(simulateChaoticApi, 'chaoticApi.fetch')
+      const result = await mixedAdapter.execute(
+        simulateChaoticApi,
+        'chaoticApi.fetch'
+      )
       expect(result).toBe('success after chaos')
       expect(callCount).toBe(3)
     })
@@ -214,7 +227,10 @@ describe('HttpClientAdapter Integration — simulated failures', () => {
       jest.advanceTimersByTime(600)
 
       simulateStellarRpc.mockResolvedValue('tx_hash_abc')
-      const hash = await stellarAdapter.execute(simulateStellarRpc, 'stellar.submitTransaction')
+      const hash = await stellarAdapter.execute(
+        simulateStellarRpc,
+        'stellar.submitTransaction'
+      )
       expect(hash).toBe('tx_hash_abc')
 
       jest.useRealTimers()
@@ -237,10 +253,17 @@ describe('HttpClientAdapter Integration — simulated failures', () => {
       // Transient failure then success
       simulateAnthropicApi
         .mockRejectedValueOnce(new Error('anthropic: rate limited'))
-        .mockResolvedValueOnce({ content: [{ type: 'text', text: '{"action":"balance"}' }] })
+        .mockResolvedValueOnce({
+          content: [{ type: 'text', text: '{"action":"balance"}' }],
+        })
 
-      const result = await anthropicAdapter.execute(simulateAnthropicApi, 'anthropic.parseIntent')
-      expect(result).toEqual({ content: [{ type: 'text', text: '{"action":"balance"}' }] })
+      const result = await anthropicAdapter.execute(
+        simulateAnthropicApi,
+        'anthropic.parseIntent'
+      )
+      expect(result).toEqual({
+        content: [{ type: 'text', text: '{"action":"balance"}' }],
+      })
       expect(simulateAnthropicApi).toHaveBeenCalledTimes(2)
     })
   })
@@ -263,7 +286,10 @@ describe('HttpClientAdapter Integration — simulated failures', () => {
         .mockRejectedValueOnce(new Error('twilio: upstream timeout'))
         .mockResolvedValueOnce({ sid: 'SM12345' })
 
-      const result = await twilioAdapter.execute(simulateTwilioApi, 'twilio.sendWhatsAppMessage')
+      const result = await twilioAdapter.execute(
+        simulateTwilioApi,
+        'twilio.sendWhatsAppMessage'
+      )
       expect(result).toEqual({ sid: 'SM12345' })
       expect(simulateTwilioApi).toHaveBeenCalledTimes(2)
     })

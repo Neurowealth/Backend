@@ -57,9 +57,15 @@ export function errorHandler(
   }
 
   if (isClientError(statusCode)) {
-    logger.warn(`[ErrorHandler] Client error ${statusCode}: ${err.message}`, logMeta)
+    logger.warn(
+      `[ErrorHandler] Client error ${statusCode}: ${err.message}`,
+      logMeta
+    )
   } else {
-    logger.error(`[ErrorHandler] Server error ${statusCode}: ${err.message}`, logMeta)
+    logger.error(
+      `[ErrorHandler] Server error ${statusCode}: ${err.message}`,
+      logMeta
+    )
   }
 
   // ── OpenTelemetry — mark the active span as failed ────────────────────────
@@ -98,13 +104,14 @@ export function errorHandler(
   if (!isClientError(statusCode)) {
     // Attach request context so the Sentry issue shows who was affected
     Sentry.withScope((scope) => {
-      const user = (req as Request & { user?: { id: string; phone?: string } }).user
+      const user = (req as Request & { user?: { id: string; phone?: string } })
+        .user
 
       if (user?.id) {
         scope.setUser({ id: user.id, phone: user.phone })
       }
 
-      scope.setTag('correlation_id', requestId ?? 'unknown')  
+      scope.setTag('correlation_id', requestId ?? 'unknown')
       scope.setTag('http.method', req.method)
       scope.setTag('http.route', req.route?.path ?? req.path)
       scope.setTag('status_code', String(statusCode))

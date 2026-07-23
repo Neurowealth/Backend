@@ -43,10 +43,10 @@ function validateNetworkConsistency(): void {
   }
 
   const patterns = expectedPatterns[network]
-  if (patterns && !patterns.some(p => rpcUrl.toLowerCase().includes(p))) {
+  if (patterns && !patterns.some((p) => rpcUrl.toLowerCase().includes(p))) {
     logger.warn(
       `⚠️  Network/RPC mismatch: STELLAR_NETWORK=${network} but RPC URL "${rpcUrl}" ` +
-      `does not appear to be a ${network} endpoint. Verify your configuration.`
+        `does not appear to be a ${network} endpoint. Verify your configuration.`
     )
   } else {
     logger.info(`✓ Stellar network consistency validated: ${network}`)

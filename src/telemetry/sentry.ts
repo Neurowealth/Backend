@@ -23,12 +23,14 @@ import { nodeProfilingIntegration } from '@sentry/profiling-node'
 const SENTRY_DSN = process.env.SENTRY_DSN
 
 if (!SENTRY_DSN) {
+  // eslint-disable-next-line no-console -- telemetry bootstraps before the winston logger can be instrumented
   console.info('[Sentry] SENTRY_DSN not set — error reporting disabled')
 } else {
   Sentry.init({
     dsn: SENTRY_DSN,
 
-    environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? 'development',
+    environment:
+      process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? 'development',
 
     // Attach the Git SHA / package version as the release so Sentry can link
     // errors to the exact deployment and show source maps.
@@ -51,7 +53,9 @@ if (!SENTRY_DSN) {
 
     // Performance tracing — set to a low value in production to control costs.
     // Override via SENTRY_TRACES_SAMPLE_RATE env var.
-    tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE ?? '0.1'),
+    tracesSampleRate: parseFloat(
+      process.env.SENTRY_TRACES_SAMPLE_RATE ?? '0.1'
+    ),
 
     // ---------------------------------------------------------------------------
     // Event filtering
@@ -93,7 +97,14 @@ if (!SENTRY_DSN) {
 
       // Rule 3 — scrub sensitive fields from the request body
       if (event.request?.data && typeof event.request.data === 'object') {
-        const sensitiveKeys = ['password', 'secret', 'token', 'pin', 'mnemonic', 'privateKey']
+        const sensitiveKeys = [
+          'password',
+          'secret',
+          'token',
+          'pin',
+          'mnemonic',
+          'privateKey',
+        ]
         const data = { ...(event.request.data as Record<string, unknown>) }
         for (const key of sensitiveKeys) {
           if (key in data) data[key] = '[Filtered]'
@@ -105,6 +116,7 @@ if (!SENTRY_DSN) {
     },
   })
 
+  // eslint-disable-next-line no-console -- telemetry bootstraps before the winston logger can be instrumented
   console.info(
     `[Sentry] Initialised → env=${process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV} dsn=***${SENTRY_DSN.slice(-6)}`
   )

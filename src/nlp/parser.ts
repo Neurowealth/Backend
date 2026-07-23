@@ -159,6 +159,11 @@ export function parseWithRegex(message: string): Intent | null {
     return { action: 'earnings' }
   }
 
+  // Savings goal (progress/status query — creation happens via the REST API)
+  if (/goal/i.test(lowerMsg)) {
+    return { action: 'goal' }
+  }
+
   // Help
   if (/help|what can you do|commands/i.test(lowerMsg)) {
     return { action: 'help' }
@@ -174,10 +179,10 @@ export async function parseWithClaude(message: string): Promise<Intent> {
       return anthropic.messages.create({
         model: 'claude-3-haiku-20240307',
         max_tokens: 150,
-        system: `You are an intent parser for a financial bot. Determine what the user wants: deposit, withdraw, check balance, view earnings/performance, manage price/yield alert rules, or get help.
+        system: `You are an intent parser for a financial bot. Determine if the user wants to deposit, withdraw, check balance, view earnings/performance, check their savings goal progress, or needs help.
 Return ONLY a JSON object representing the intent, matching this TypeScript interface exactly without any wrapper text or markdown:
 {
-  "action": "deposit" | "withdraw" | "balance" | "earnings" | "help" | "alert_create" | "alert_list" | "alert_delete" | "unknown",
+  "action": "deposit" | "withdraw" | "balance" | "earnings" | "goal" | "help" | "unknown",
   "amount": number, // optional
   "currency": string, // optional
   "all": boolean, // for "withdraw everything"
@@ -202,7 +207,16 @@ Examples: "alert me if Blend APY drops below 5" -> {"action":"alert_create","met
       )
       if (jsonStr) {
         const parsed = JSON.parse(jsonStr)
-        if ((KNOWN_ACTIONS as readonly string[]).includes(parsed.action)) {
+        if (
+          [
+            'deposit',
+            'withdraw',
+            'balance',
+            'earnings',
+            'goal',
+            'help',
+          ].includes(parsed.action)
+        ) {
           return parsed as Intent
         }
       }

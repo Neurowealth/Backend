@@ -15,12 +15,17 @@ import { logger } from '../utils/logger'
  *   TRUSTED_IPS            — comma-separated IPv4/IPv6 addresses
  *   INTERNAL_SERVICE_TOKEN — opaque token sent in the X-Internal-Token header
  */
-export function trustedIpBypass(req: Request, res: Response, next: NextFunction): void {
+export function trustedIpBypass(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void {
   const ip = req.ip ?? ''
   const token = req.headers['x-internal-token']
 
   const ipTrusted =
-    config.security.trustedIps.length > 0 && config.security.trustedIps.includes(ip)
+    config.security.trustedIps.length > 0 &&
+    config.security.trustedIps.includes(ip)
   const tokenTrusted =
     config.security.internalServiceToken.length > 0 &&
     token === config.security.internalServiceToken
@@ -116,7 +121,9 @@ export function buildRateLimiter(
     standardHeaders: true,
     legacyHeaders: false,
     skip: opts.skip,
-    message: { error: opts.message ?? 'Too many requests. Please try again later.' },
+    message: {
+      error: opts.message ?? 'Too many requests. Please try again later.',
+    },
     handler: (req: any, res: any) =>
       handleRateLimitExceeded(req, res, {
         limiterType: opts.limiterType,
