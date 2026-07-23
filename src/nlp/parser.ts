@@ -8,6 +8,7 @@ export interface Intent {
     | 'withdraw'
     | 'balance'
     | 'earnings'
+    | 'goal'
     | 'help'
     | 'alert_create'
     | 'alert_list'

@@ -87,6 +87,20 @@ enum ReferralStatus {
   EXPIRED
 }
 
+// Where an acquisition/disposal USD price came from (#284). Only stablecoins
+// are priced in v1; anything else is stored with a null price and surfaced as
+// unpriced in the tax report — never silently zeroed.
+enum PriceSource {
+  STABLECOIN_ASSUMPTION
+}
+
+enum GoalStatus {
+  ACTIVE
+  ACHIEVED
+  MISSED
+  CANCELLED
+}
+
 // User-defined alert rules (#289). Distinct from the operator-facing
 // Prometheus/Grafana alerting in docs/OBSERVABILITY.md — these watch
 // portfolio/market conditions the end user cares about.
