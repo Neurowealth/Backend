@@ -12,7 +12,8 @@ const WEBHOOK_EVENTS = [
   'withdraw.completed',
   'fiat.order.settled',
   'fiat.order.failed',
-] as const
+  'alert_rule.triggered',
+] as const;
 
 export const createWebhookSchema = z.object({
   url: z.string().url('Must be a valid URL'),

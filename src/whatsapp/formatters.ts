@@ -191,3 +191,113 @@ export function formatWithdrawReply(input: {
     '_You will receive a confirmation once settled._',
   ].join('\n')
 }
+
+const ALERT_METRIC_LABELS: Record<string, string> = {
+  PROTOCOL_APY: 'Protocol APY',
+  PORTFOLIO_VALUE: 'Portfolio value',
+  POSITION_DRAWDOWN: 'Position drawdown',
+}
+
+const ALERT_COMPARATOR_LABELS: Record<string, string> = {
+  LT: 'below',
+  LTE: 'at or below',
+  GT: 'above',
+  GTE: 'at or above',
+}
+
+/**
+ * WhatsApp message sent when a user's alert rule fires (#289). Units follow the
+ * rule's metric: APY and drawdown are percentages, portfolio value is USD.
+ */
+export function formatAlertTriggeredReply(input: {
+  metric: string
+  protocolName?: string | null
+  comparator: string
+  threshold: number
+  observedValue: number
+}): string {
+  const metricLabel = ALERT_METRIC_LABELS[input.metric] ?? input.metric
+  const comparatorLabel =
+    ALERT_COMPARATOR_LABELS[input.comparator] ?? input.comparator
+  const isPercent =
+    input.metric === 'PROTOCOL_APY' || input.metric === 'POSITION_DRAWDOWN'
+  const unit = isPercent ? '%' : ''
+  const prefix = isPercent ? '' : '$'
+  const subject =
+    input.metric === 'PROTOCOL_APY' && input.protocolName
+      ? `${metricLabel} (${input.protocolName})`
+      : metricLabel
+
+  const fmt = (n: number): string =>
+    `${prefix}${n.toFixed(2)}${unit}`
+
+  return [
+    '🔔 *Alert triggered*',
+    `${subject} is ${comparatorLabel} *${fmt(input.threshold)}*.`,
+    `Current: *${fmt(input.observedValue)}*`,
+  ].join('\n')
+}
+
+function describeAlertRule(rule: {
+  metric: string
+  protocolName?: string | null
+  comparator: string
+  threshold: number
+}): string {
+  const metricLabel = ALERT_METRIC_LABELS[rule.metric] ?? rule.metric
+  const comparatorLabel =
+    ALERT_COMPARATOR_LABELS[rule.comparator] ?? rule.comparator
+  const isPercent =
+    rule.metric === 'PROTOCOL_APY' || rule.metric === 'POSITION_DRAWDOWN'
+  const value = isPercent
+    ? `${rule.threshold}%`
+    : `$${rule.threshold.toFixed(2)}`
+  const subject =
+    rule.metric === 'PROTOCOL_APY' && rule.protocolName
+      ? `${metricLabel} (${rule.protocolName})`
+      : metricLabel
+  return `${subject} ${comparatorLabel} ${value}`
+}
+
+/** Confirmation shown after a user creates an alert rule over WhatsApp (#289). */
+export function formatAlertCreatedReply(rule: {
+  id: string
+  metric: string
+  protocolName?: string | null
+  comparator: string
+  threshold: number
+}): string {
+  return [
+    '✅ *Alert created*',
+    describeAlertRule(rule),
+    `_ID: ${rule.id}_`,
+  ].join('\n')
+}
+
+/** Lists a user's alert rules over WhatsApp (#289). */
+export function formatAlertListReply(
+  rules: Array<{
+    id: string
+    metric: string
+    protocolName?: string | null
+    comparator: string
+    threshold: number
+    isActive: boolean
+  }>,
+): string {
+  if (rules.length === 0) {
+    return '🔕 You have no alert rules yet. Try "alert me when Blend apy < 5".'
+  }
+  const lines = rules.slice(0, 10).map((rule) => {
+    const state = rule.isActive ? '' : ' _(inactive)_'
+    return `• ${describeAlertRule(rule)}${state}\n  _${rule.id}_`
+  })
+  return ['🔔 *Your alert rules*', lines.join('\n')].join('\n')
+}
+
+/** Confirmation shown after deleting an alert rule over WhatsApp (#289). */
+export function formatAlertDeletedReply(found: boolean): string {
+  return found
+    ? '🗑️ *Alert deleted.*'
+    : "I couldn't find an alert with that ID that belongs to you."
+}

@@ -458,6 +458,10 @@ export const config = {
     /** Interval between protocol risk-score recomputations in ms (default: 6 hours) */
     intervalMs: parseInt(process.env.PROTOCOL_RISK_INTERVAL_MS || '21600000'),
   },
+  alertRules: {
+    /** Interval between user alert-rule evaluation sweeps in ms (default: 1 minute). */
+    intervalMs: parseInt(process.env.ALERT_RULES_INTERVAL_MS || '60000'),
+  },
   referral: {
     /**
      * Minimum confirmed deposit (in asset units) that a referred user must make
