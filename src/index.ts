@@ -27,6 +27,7 @@ import adminRouter from './routes/admin'
 import metricsRouter from './routes/metrics'
 import stellarRouter from './routes/stellar'
 import { corsMiddleware, jsonBodyParser, payloadSizeErrorHandler, urlencodedBodyParser } from './middleware/corsandbody'
+import compressionMiddleware from './middleware/compression'
 
 // ── Readiness state ───────────────────────────────────────────────────────────
 //
@@ -78,6 +79,11 @@ app.use(requestLogger)
 // Trusted-IP / service-token bypass must run before any rate limiter
 app.use(trustedIpBypass)
 app.use(rateLimiter)
+
+// ── Response compression (brotli/gzip) ────────────────────────────────────────
+// Compresses responses > 1 KB. Excludes /metrics (Prometheus scraper format).
+// Must be before route handlers but after security/parsing/rate-limit middleware.
+app.use(compressionMiddleware)
 
 // ── Readiness / liveness probes ───────────────────────────────────────────────
 //
