@@ -82,6 +82,7 @@ import {
   urlencodedBodyParser,
   contentTypeRestrictionMiddleware,
 } from './middleware/corsandbody'
+import compressionMiddleware from './middleware/compression'
 import { setSpanUser } from './telemetry/spans'
 
 // ── Readiness state ───────────────────────────────────────────────────────────
@@ -170,6 +171,11 @@ app.use((_req: Request, res: Response, next) => {
   res.setHeader('X-API-Version', API_VERSION)
   next()
 })
+
+// ── Response compression (brotli/gzip) ────────────────────────────────────────
+// Compresses responses > 1 KB. Excludes /metrics (Prometheus scraper format).
+// Must be before route handlers but after security/parsing/rate-limit middleware.
+app.use(compressionMiddleware)
 
 // ── Readiness / liveness probes ───────────────────────────────────────────────
 

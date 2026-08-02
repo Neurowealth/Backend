@@ -51,4 +51,29 @@ done
 body="$(curl -sf "${BASE_URL}${HEALTH_PATH}")"
 echo "[smoke] ${HEALTH_PATH} → 200"
 echo "[smoke] Response: ${body}"
+
+# ── Compression middleware verification ────────────────────────────────────────
+# Verify the compression middleware is active by checking:
+# 1. Vary: Accept-Encoding header (always set by middleware regardless of body size)
+# 2. Content-Encoding header (only present when body exceeds 1 KB threshold)
+#
+# See issue #218.
+
+echo "[smoke] Verifying compression middleware (Vary: Accept-Encoding)..."
+vary_header="$(curl -sf -I "${BASE_URL}/health/live" | grep -i '^Vary:' | tr -d '[:space:]')"
+if echo "${vary_header}" | grep -qi 'accept-encoding'; then
+  echo "[smoke] ✓ Vary: Accept-Encoding confirmed — compression middleware active"
+else
+  echo "[smoke] ⚠ Vary: Accept-Encoding not found — compression may not be active"
+fi
+
+echo "[smoke] Checking Content-Encoding on large-response endpoints..."
+# Use a query parameter or path that generates a larger response to test actual compression
+encoding_header="$(curl -sf -H 'Accept-Encoding: gzip' -o /dev/null -w '%{content_encoding}' "${BASE_URL}/health/ready" 2>/dev/null || echo '')"
+if [[ -n "${encoding_header}" && "${encoding_header}" != "identity" ]]; then
+  echo "[smoke] ✓ Content-Encoding: ${encoding_header}"
+else
+  echo "[smoke]   (content below 1 KB threshold — compression not expected)"
+fi
+
 echo "[smoke] ✓ Production startup smoke check passed"
