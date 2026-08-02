@@ -11,6 +11,7 @@ declare global {
         sessionId: string
         walletAddress: string
         network: Network
+        actingAsUserId?: string // set by requireSubAccountPermission when parent acts on child
       }
     }
   }

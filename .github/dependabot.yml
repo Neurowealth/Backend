@@ -1,34 +1,48 @@
 version: 2
 updates:
-  # Enable version updates for npm
+  # ── npm dependencies ────────────────────────────────────────────────────────
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
     open-pull-requests-limit: 10
     groups:
-      # Group dev dependencies together
-      dev-dependencies:
-        dependency-type: "development"
-        update-types:
-          - "minor"
-          - "patch"
-      # Group production dependencies together
       production-dependencies:
         dependency-type: "production"
         update-types:
           - "minor"
           - "patch"
-    # Automatically approve and merge patch updates for dev dependencies
+      dev-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+    # Block major-version bumps — they require a deliberate upgrade PR.
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
     labels:
       - "dependencies"
       - "automated"
+    reviewers:
+      - "Neurowealth/backend-maintainers"
 
-  # Enable version updates for GitHub Actions
+  # ── GitHub Actions ───────────────────────────────────────────────────────────
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "monthly"
+    # Block major-version bumps for Actions as well.
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
     labels:
       - "dependencies"
       - "github-actions"
+    reviewers:
+      - "Neurowealth/backend-maintainers"

@@ -1,5 +1,8 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  // "metrics" exposes prisma.$metrics.json() — used to export connection-pool
+  // utilisation to Prometheus (see src/jobs/poolMetrics.ts).
+  previewFeatures = ["metrics"]
 }
 
 datasource db {
@@ -19,6 +22,10 @@ enum TransactionType {
   YIELD_CLAIM
   REBALANCE
   SWAP
+  // Platform-funded referral reward payout. Distinct from user-initiated
+  // activity so it is auditable and, for tax purposes (#284), identifiable as
+  // realized income rather than a return on the user's own capital.
+  REFERRAL_REWARD
 }
 
 enum TransactionStatus {
@@ -41,6 +48,11 @@ enum AgentAction {
   ANALYZE
   ALERT
   CLAIM_YIELD
+  // Progress snapshot for an ACTIVE SavingsGoal (#281) — logged whenever the
+  // goal progress endpoint or strategy engine recomputes trajectory, so a
+  // goal's trend is inspectable via AgentLog the same way rebalance decisions
+  // already are.
+  GOAL_PROGRESS
 }
 
 enum AgentStatus {
@@ -55,6 +67,86 @@ enum DeadLetterEventStatus {
   RESOLVED
 }
 
+enum FiatDirection {
+  ON_RAMP
+  OFF_RAMP
+}
+
+enum FiatOrderStatus {
+  PENDING
+  PROCESSING
+  SETTLED
+  FAILED
+  REFUNDED
+}
+
+enum ReferralStatus {
+  PENDING
+  ACTIVATED
+  REWARDED
+  EXPIRED
+}
+
+enum DepositCadence {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+}
+
+enum RecurringDepositPlanStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+// Where an acquisition/disposal USD price came from (#284). Only stablecoins
+// are priced in v1; anything else is stored with a null price and surfaced as
+// unpriced in the tax report — never silently zeroed.
+enum PriceSource {
+  STABLECOIN_ASSUMPTION
+}
+
+enum GoalStatus {
+  ACTIVE
+  ACHIEVED
+  MISSED
+  CANCELLED
+}
+
+// User-defined alert rules (#289). Distinct from the operator-facing
+// Prometheus/Grafana alerting in docs/OBSERVABILITY.md — these watch
+// portfolio/market conditions the end user cares about.
+enum AlertMetric {
+  PROTOCOL_APY
+  PORTFOLIO_VALUE
+  POSITION_DRAWDOWN
+}
+
+enum Comparator {
+  LT
+  LTE
+  GT
+  GTE
+}
+
+enum DeliveryChannel {
+  WEBHOOK
+  WHATSAPP
+  BOTH
+}
+
+enum SubAccountPermission {
+  VIEW
+  DEPOSIT
+  WITHDRAW
+  MANAGE_STRATEGY
+}
+
+enum SubAccountStatus {
+  ACTIVE
+  REVOKED
+}
+
 model User {
   id            String   @id @default(uuid())
   walletAddress String   @unique
@@ -62,15 +154,35 @@ model User {
   displayName   String?
   email         String?  @unique
   avatarUrl     String?
-  riskTolerance Int      @default(5)
-  isActive      Boolean  @default(true)
+  // E.164 WhatsApp number, when known. Nullable because most users onboard via
+  // wallet auth and never link a number. Used as the WhatsApp delivery
+  // destination for alert rules (#289); alerts on the WHATSAPP/BOTH channel are
+  // skipped (logged, not errored) for users without a number on file.
+  phone         String?  @unique
+  riskTolerance      Int      @default(5)
+  rebalanceStrategy  String?  // 'MAX_YIELD' | 'TARGET_ALLOCATION' | null (defaults to MAX_YIELD)
+  strategyConfig     Json?    // e.g. { "targetAllocations": { "Blend": 50, "Stellar DEX": 30, "Luma": 20 } }
+  isActive           Boolean  @default(true)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  sessions     Session[]
-  positions    Position[]
-  transactions Transaction[]
-  agentLogs    AgentLog[]
+  sessions              Session[]
+  positions             Position[]
+  transactions          Transaction[]
+  agentLogs             AgentLog[]
+  webhookSubscriptions  WebhookSubscription[]
+  fiatOrders            FiatOrder[]
+  referralCode          ReferralCode?
+  referralConversion    ReferralConversion?
+  recurringDepositPlans RecurringDepositPlan[]
+  alertRules            AlertRule[]
+  costBasisLots         CostBasisLot[]
+  lotDisposals          LotDisposal[]
+  savingsGoals          SavingsGoal[]
+  publishedStrategy     PublishedStrategy?
+  strategyFollows       StrategyFollow[]
+  parentSubAccounts     SubAccount[] @relation("ParentOf")
+  childSubAccounts      SubAccount[] @relation("ChildOf")
 
   @@map("users")
 }
@@ -82,6 +194,8 @@ model Session {
   walletAddress String
   network       Network
   expiresAt     DateTime
+  refreshTokenHash      String?
+  refreshTokenExpiresAt DateTime?
   ipAddress     String?
   userAgent     String?
   createdAt     DateTime @default(now())
@@ -100,6 +214,11 @@ model AdminApiKey {
   role      String
   scopes    String[]
   hash      String
+  // SHA-256 of the raw token ("sha256:<hex>"). A deterministic lookup key that
+  // narrows candidates before the expensive bcrypt compare against `hash`.
+  // Nullable only so the migration is safe on pre-existing rows; keys without
+  // one cannot be authenticated and must be re-issued.
+  tokenPrefix String?
   expiresAt DateTime?
   revokedAt DateTime?
   createdAt DateTime  @default(now())
@@ -111,6 +230,7 @@ model AdminApiKey {
   @@index([role])
   @@index([revokedAt])
   @@index([expiresAt])
+  @@index([tokenPrefix])
   @@map("admin_api_keys")
 }
 
@@ -155,6 +275,7 @@ model Position {
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   transactions   Transaction[]
   yieldSnapshots YieldSnapshot[]
+  savingsGoals   SavingsGoal[]
 
   @@index([userId])
   @@index([status])
@@ -166,24 +287,28 @@ model Position {
 }
 
 model Transaction {
-  id           String            @id @default(uuid())
-  userId       String
-  positionId   String?
-  txHash       String?           @unique
-  type         TransactionType
-  status       TransactionStatus @default(PENDING)
-  assetSymbol  String
-  amount       Decimal           @db.Decimal(36, 18)
-  fee          Decimal?          @db.Decimal(36, 18)
-  network      Network
-  protocolName String?
-  memo         String?
-  confirmedAt  DateTime?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+  id             String            @id @default(uuid())
+  userId         String
+  actingAsUserId String?           // non-null when action was performed by a parent on behalf of a child
+  positionId     String?
+  txHash         String?           @unique
+  type           TransactionType
+  status         TransactionStatus @default(PENDING)
+  assetSymbol    String
+  amount         Decimal           @db.Decimal(36, 18)
+  fee            Decimal?          @db.Decimal(36, 18)
+  network        Network
+  protocolName   String?
+  memo           String?
+  confirmedAt    DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
 
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   position Position? @relation(fields: [positionId], references: [id])
+  fiatOrders FiatOrder[]
+  costBasisLot CostBasisLot?
+  lotDisposals LotDisposal[]
 
   @@index([userId])
   @@index([positionId])
@@ -191,6 +316,7 @@ model Transaction {
   @@index([status])
   @@index([createdAt])
   @@index([userId, createdAt])
+  @@index([actingAsUserId])
   @@map("transactions")
 }
 
@@ -218,6 +344,7 @@ model ProtocolRate {
   borrowApy    Decimal? @db.Decimal(10, 6)
   tvl          Decimal? @db.Decimal(36, 2)
   network      Network
+  rawResponse  String?
   fetchedAt    DateTime @default(now())
 
   @@unique([protocolName, assetSymbol, network, fetchedAt])
@@ -227,18 +354,53 @@ model ProtocolRate {
   @@map("protocol_rates")
 }
 
+// Audit posture of a protocol, mirrored from the AuditStatusValue string union
+// in src/config/protocolRiskMetadata.ts. Values must stay in sync with that
+// union since the scoring job persists it directly.
+enum AuditStatus {
+  UNAUDITED
+  SELF_REPORTED
+  THIRD_PARTY_AUDITED
+}
+
+// ProtocolRiskScore — quantitative, transparent risk score per protocol.
+// Recomputed on a schedule from ProtocolRate history plus curated audit/age
+// metadata (see src/config/protocolRiskMetadata.ts). See
+// docs/PROTOCOL_RISK_SCORING.md for the scoring methodology.
+model ProtocolRiskScore {
+  id                  String      @id @default(uuid())
+  protocolName        String      @unique
+  score               Int // normalized 0-100, higher = lower risk
+  tvlTrendFactor      Float
+  apyVolatilityFactor Float
+  auditStatus         AuditStatus
+  protocolAgeDays     Int
+  // True when there is not enough rate history to compute volatility/trend
+  // meaningfully. Such protocols score conservatively low and are flagged
+  // rather than presented with a misleadingly neutral score.
+  insufficientHistory Boolean     @default(false)
+  // Number of ProtocolRate samples the factors were computed from — surfaced
+  // in the transparency endpoint so users can judge confidence in the score.
+  sampleCount         Int         @default(0)
+  computedAt          DateTime    @default(now())
+
+  @@index([score])
+  @@map("protocol_risk_scores")
+}
+
 model AgentLog {
-  id           String      @id @default(uuid())
-  userId       String?     // null for system-level actions (scans, alerts)
-  positionId   String?     // set when log is tied to a specific position
-  action       AgentAction
-  status       AgentStatus
-  reasoning    String?     @db.Text
-  inputData    Json?
-  outputData   Json?
-  errorMessage String?
-  durationMs   Int?
-  createdAt    DateTime    @default(now())
+  id             String      @id @default(uuid())
+  userId         String?     // null for system-level actions (scans, alerts)
+  actingAsUserId String?     // non-null when action was performed by a parent on behalf of a child
+  positionId     String?     // set when log is tied to a specific position
+  action         AgentAction
+  status         AgentStatus
+  reasoning      String?     @db.Text
+  inputData      Json?
+  outputData     Json?
+  errorMessage   String?
+  durationMs     Int?
+  createdAt      DateTime    @default(now())
 
   user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -249,6 +411,7 @@ model AgentLog {
   @@index([userId, status])
   @@index([createdAt])
   @@index([userId, createdAt])
+  @@index([actingAsUserId])
   @@map("agent_logs")
 }
 
@@ -305,10 +468,12 @@ model CustodialWallet {
   encryptedSecret String
   iv              String
   authTag         String
+  keyVersion      Int      @default(1)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   @@index([userId])
+  @@index([keyVersion])
   @@map("custodial_wallets")
 }
 
@@ -321,4 +486,384 @@ model AuthNonce {
 
   @@index([expiresAt])
   @@map("auth_nonces")
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+model WebhookSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  url       String
+  events    String[]
+  secret    String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@index([userId])
+  @@map("webhook_subscriptions")
+}
+
+model WebhookDelivery {
+  id             String                @id @default(uuid())
+  subscriptionId String
+  event          String
+  payload        Json
+  statusCode     Int?
+  attempts       Int                   @default(0)
+  status         WebhookDeliveryStatus @default(PENDING)
+  error          String?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("webhook_deliveries")
+}
+
+/// User-defined price & yield alert rule (#289).
+///
+/// Evaluated on a schedule by src/jobs/alertRules.ts against the latest
+/// ProtocolRate (PROTOCOL_APY) or the user's Position/YieldSnapshot data
+/// (PORTFOLIO_VALUE, POSITION_DRAWDOWN). Fires only when the comparator
+/// condition holds AND lastFiredAt is outside the cooldown window, so a rule
+/// sitting at its threshold notifies once per cooldown rather than every tick.
+model AlertRule {
+  id              String          @id @default(uuid())
+  userId          String
+  metric          AlertMetric
+  protocolName    String? // required when metric = PROTOCOL_APY
+  comparator      Comparator
+  // Compared against APY as a percentage (e.g. 5 == 5%) for PROTOCOL_APY,
+  // against USD value for PORTFOLIO_VALUE, and against percentage drawdown
+  // from the rolling 30-day peak for POSITION_DRAWDOWN.
+  threshold       Decimal         @db.Decimal(36, 18)
+  deliveryChannel DeliveryChannel
+  cooldownMinutes Int             @default(60)
+  lastFiredAt     DateTime?
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isActive, metric])
+  @@map("alert_rules")
+}
+
+model SubAccount {
+  id           String                @id @default(uuid())
+  parentUserId String
+  childUserId  String
+  permissions  SubAccountPermission[]
+  status       SubAccountStatus      @default(ACTIVE)
+  createdAt    DateTime              @default(now())
+  revokedAt    DateTime?
+
+  parent User @relation("ParentOf", fields: [parentUserId], references: [id], onDelete: Cascade)
+  child  User @relation("ChildOf", fields: [childUserId], references: [id], onDelete: Cascade)
+
+  @@unique([parentUserId, childUserId])
+  @@index([parentUserId])
+  @@index([childUserId])
+  @@index([status])
+  @@map("sub_accounts")
+}
+
+/// Fiat on-ramp / off-ramp order (#290).
+/// Tracks the off-chain payment leg of a fiat<->crypto conversion handled by a
+/// third-party provider (e.g. MoonPay). The on-chain settlement is reconciled
+/// against the existing Stellar event listener rather than trusting the
+/// provider's webhook alone. No plaintext bank/card details are ever stored
+/// here — the provider's hosted checkout captures all PII/payment details.
+model FiatOrder {
+  id              String          @id @default(uuid())
+  userId          String
+  provider        String          // e.g. "moonpay" — provider key, no provider-specific logic elsewhere
+  providerOrderId String
+  direction       FiatDirection
+  fiatAmount      Decimal         @db.Decimal(36, 18)
+  fiatCurrency    String
+  cryptoAmount    Decimal?        @db.Decimal(36, 18)
+  assetSymbol     String
+  status          FiatOrderStatus @default(PENDING)
+  transactionId   String?         // linked once the resulting on-chain Transaction is matched
+  checkoutUrl     String?         // provider hosted checkout URL (on-ramp)
+  kycUrl          String?         // provider KYC next-step link, surfaced to the user when required
+  failureReason   String?         // populated on FAILED/REFUNDED for operator/user visibility
+  settledAt       DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@unique([provider, providerOrderId])
+  @@index([userId])
+  @@index([provider, providerOrderId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("fiat_orders")
+}
+
+/// A user's own single-level referral code (#growth). One code per user; the
+/// same code is returned on repeated requests. Sharing this code lets a new
+/// user attribute their signup to the owner.
+model ReferralCode {
+  id          String   @id @default(uuid())
+  ownerUserId String   @unique
+  code        String   @unique
+  createdAt   DateTime @default(now())
+
+  owner       User                 @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  conversions ReferralConversion[]
+
+  @@index([code])
+  @@map("referral_codes")
+}
+
+/// One referral attribution + its lifecycle. Created in PENDING at signup time
+/// (attribution at the source). Advances to ACTIVATED only when a real,
+/// on-chain-confirmed deposit Transaction crosses the activation threshold —
+/// never on a client-reported claim. The payout job then pays both parties and
+/// moves the row to REWARDED. A row stuck at ACTIVATED means a payout is still
+/// owed and retriable; it is never un-activated once ACTIVATED (on-chain
+/// finality). `referredUserId` is unique — one referral credit per user, ever.
+model ReferralConversion {
+  id                 String         @id @default(uuid())
+  referralCodeId     String
+  referredUserId     String         @unique
+  activatedAt        DateTime?
+  activationTxId     String?        // the confirmed deposit Transaction that satisfied activation
+  status             ReferralStatus @default(PENDING)
+  ownerRewardTxId    String?        // REFERRAL_REWARD Transaction paid to the referrer
+  referredRewardTxId String?        // REFERRAL_REWARD Transaction paid to the referred user
+  payoutError        String?        // last payout failure reason — kept for retriable visibility
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  referralCode ReferralCode @relation(fields: [referralCodeId], references: [id], onDelete: Cascade)
+  referredUser User         @relation(fields: [referredUserId], references: [id], onDelete: Cascade)
+
+  @@index([referralCodeId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("referral_conversions")
+}
+
+model RecurringDepositPlan {
+  id            String                     @id @default(uuid())
+  userId        String
+  amount        Decimal                    @db.Decimal(36, 18)
+  assetSymbol   String
+  cadence       DepositCadence
+  nextRunAt     DateTime
+  status        RecurringDepositPlanStatus @default(ACTIVE)
+  lastRunAt     DateTime?
+  lastRunStatus String?
+  createdAt     DateTime                   @default(now())
+  updatedAt     DateTime                   @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status, nextRunAt])
+  @@map("recurring_deposit_plans")
+}
+
+/// Cost-basis lot for tax reporting (#284). Exactly one lot per confirmed
+/// on-chain DEPOSIT Transaction (`transactionId` unique — the idempotency
+/// anchor under event replay). `remainingAmount` is decremented by FIFO
+/// disposals and must never go negative. Prices are nullable: an unpriced
+/// asset stays null and is excluded from report totals with a caveat — never
+/// silently zeroed. The schema carries no accounting-method column; FIFO
+/// consumption order lives in src/tax/fifo.ts so LIFO could be added later
+/// without a schema change.
+model CostBasisLot {
+  id               String       @id @default(uuid())
+  userId           String
+  transactionId    String       @unique
+  assetSymbol      String
+  originalAmount   Decimal      @db.Decimal(36, 18)
+  remainingAmount  Decimal      @db.Decimal(36, 18)
+  acquisitionPrice Decimal?     @db.Decimal(36, 18)
+  priceSource      PriceSource?
+  acquiredAt       DateTime
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction   @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  disposals   LotDisposal[]
+
+  @@index([userId, assetSymbol, acquiredAt])
+  @@map("cost_basis_lots")
+}
+
+/// One lot's share of a withdrawal (#284). A withdrawal Transaction may span
+/// many lots, so `transactionId` is NOT unique — idempotency comes from
+/// `@@unique([transactionId, lotId])` plus an exists-check in the recorder.
+/// `userId`/`assetSymbol` are denormalized so the tax report reads without
+/// joins. Money fields snapshot values at disposal time, making the report an
+/// immutable ledger read; null money fields mean "unpriced", never zero.
+model LotDisposal {
+  id            String       @id @default(uuid())
+  lotId         String
+  userId        String
+  assetSymbol   String
+  transactionId String
+  amount        Decimal      @db.Decimal(36, 18)
+  disposalPrice Decimal?     @db.Decimal(36, 18)
+  costBasis     Decimal?     @db.Decimal(36, 18)
+  proceeds      Decimal?     @db.Decimal(36, 18)
+  realizedGain  Decimal?     @db.Decimal(36, 18)
+  disposedAt    DateTime
+  createdAt     DateTime     @default(now())
+
+  lot         CostBasisLot @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction  @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@unique([transactionId, lotId])
+  @@index([userId, disposedAt])
+  @@map("lot_disposals")
+}
+
+/// Goal-based investing (#281). A user-stated target amount + date the agent's
+/// strategy selection is driven by. Required-rate projection reuses the same
+/// simple (non-compounding) APY convention as YieldSnapshot/calculateApy for
+/// consistency with live APY reporting — compounding-aware modeling is tracked
+/// separately (#225). One ACTIVE goal per user is enforced at the API layer,
+/// not via a DB constraint, since past goals (ACHIEVED/MISSED/CANCELLED) are
+/// kept for history.
+model SavingsGoal {
+  id             String     @id @default(uuid())
+  userId         String
+  positionId     String?
+  targetAmount   Decimal    @db.Decimal(36, 18)
+  startingAmount Decimal    @db.Decimal(36, 18)
+  targetDate     DateTime
+  riskCeiling    Int?       // optional min protocol risk score (0-100), matches UserStrategyPreferences.riskCeiling
+  status         GoalStatus @default(ACTIVE)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  position Position? @relation(fields: [positionId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([userId, status])
+  @@map("savings_goals")
+}
+
+/// Strategy marketplace (#285). An opt-in, anonymized snapshot of one user's
+/// agent *configuration* — never funds, never custody, never keys. Publishing
+/// copies nothing but `{ strategyName, targetAllocations?, riskCeiling? }`, the
+/// exact three keys the agent loop reads off User.strategyConfig.
+///
+/// One row per user (`userId @unique`): publish always acts on the caller, so
+/// re-publishing upserts rather than accumulating rows. `label` is user-supplied
+/// free text and is the one self-doxx vector — the Zod validator in
+/// src/validators/strategy-validators.ts rejects Stellar addresses and long hex
+/// runs. Nothing in this model or its query paths may expose `userId` to
+/// another user; see docs/STRATEGY_MARKETPLACE.md for the privacy boundary.
+///
+/// `configVersion` is bumped ONLY on a material config change (a `label` edit is
+/// cosmetic and must not spam followers) and is what drives follower
+/// notifications and re-snapshotting.
+model PublishedStrategy {
+  id             String    @id @default(uuid())
+  userId         String    @unique
+  label          String
+  strategyConfig Json
+  configVersion  Int       @default(1)
+  isPublished    Boolean   @default(false)
+  publishedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user      User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  followers StrategyFollow[]
+  metrics   PublishedStrategyMetric[]
+
+  @@index([isPublished])
+  @@map("published_strategies")
+}
+
+/// A follower's opt-in link to a published strategy (#285).
+///
+/// `appliedConfig` is a SNAPSHOT, not a live read-through: it is what the agent
+/// actually applies. That is deliberate — when a publisher unpublishes or
+/// deletes their account the follower must keep working on their last-applied
+/// configuration rather than silently reverting. Hence `publishedStrategyId` is
+/// nullable with `onDelete: SetNull`: deleting the publisher orphans the follow
+/// with its config intact instead of cascading the follow row away.
+///
+/// "At most one active follow per user" is enforced structurally by a raw-SQL
+/// PARTIAL unique index (`WHERE "unfollowedAt" IS NULL`) added in the migration —
+/// Prisma cannot express partial uniques, so it is not visible here.
+model StrategyFollow {
+  id                   String    @id @default(uuid())
+  followerUserId       String
+  publishedStrategyId  String?
+  appliedConfig        Json
+  appliedConfigVersion Int
+  appliedAt            DateTime
+  followedAt           DateTime  @default(now())
+  unfollowedAt         DateTime?
+
+  follower          User               @relation(fields: [followerUserId], references: [id], onDelete: Cascade)
+  publishedStrategy PublishedStrategy? @relation(fields: [publishedStrategyId], references: [id], onDelete: SetNull)
+
+  @@index([followerUserId, unfollowedAt])
+  @@index([publishedStrategyId, unfollowedAt])
+  @@map("strategy_follows")
+}
+
+/// Precomputed leaderboard metrics for a published strategy (#285), one row per
+/// (strategy, window).
+///
+/// Persisted rather than computed per request for two reasons: the leaderboard
+/// must `ORDER BY` the score with `skip`/`take` (a JS-computed value cannot be
+/// ordered in SQL), and recomputing every publisher's 90-day snapshot history on
+/// a semi-public endpoint is a DoS vector. Same precedent as ProtocolRiskScore +
+/// src/jobs/protocolRiskScoring.ts.
+///
+/// `windowDays` is 30 or 90 only — src/agent/snapshotter.ts hard-deletes
+/// YieldSnapshot rows past 90 days, so a "1y" window would silently return a
+/// 90-day figure under a wrong label.
+///
+/// `isEligible` is the anti-gaming gate (track record + sample count + a
+/// computable Sharpe). Ineligible strategies are excluded from the leaderboard
+/// entirely rather than ranked low, so a one-day strategy posting a flattering
+/// APY never appears at all.
+model PublishedStrategyMetric {
+  id                  String   @id @default(uuid())
+  publishedStrategyId String
+  windowDays          Int
+  apy                 Float
+  sharpe              Float?
+  sampleCount         Int
+  trackRecordDays     Int
+  isEligible          Boolean  @default(false)
+  computedAt          DateTime @default(now())
+
+  publishedStrategy PublishedStrategy @relation(fields: [publishedStrategyId], references: [id], onDelete: Cascade)
+
+  @@unique([publishedStrategyId, windowDays])
+  @@index([windowDays, isEligible, sharpe])
+  @@index([windowDays, isEligible, apy])
+  @@map("published_strategy_metrics")
 }

@@ -1,4 +1,4 @@
-import { FIXTURE_USER_1 } from './users';
+import { FIXTURE_USER_1 } from './users'
 
 export const FIXTURE_SESSION_VALID = {
   id: 'session1',
@@ -11,7 +11,7 @@ export const FIXTURE_SESSION_VALID = {
   userAgent: 'jest-test-agent',
   createdAt: new Date('2024-01-01T00:00:00Z'),
   user: { id: FIXTURE_USER_1.id, isActive: true },
-};
+}
 
 export const FIXTURE_SESSION_EXPIRED = {
   id: 'session-expired-1',
@@ -24,11 +24,11 @@ export const FIXTURE_SESSION_EXPIRED = {
   userAgent: 'jest-test-agent',
   createdAt: new Date('2020-01-01T00:00:00Z'),
   user: { id: FIXTURE_USER_1.id, isActive: true },
-};
+}
 
 export function makeSession(
   token: string,
-  overrides: Record<string, unknown> = {},
+  overrides: Record<string, unknown> = {}
 ) {
-  return { ...FIXTURE_SESSION_VALID, token, ...overrides };
+  return { ...FIXTURE_SESSION_VALID, token, ...overrides }
 }

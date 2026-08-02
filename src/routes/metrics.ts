@@ -25,14 +25,18 @@ const router = Router()
  * - HTTP request metrics
  * - Analytics API metrics
  */
-router.get('/', internalAuthGuardStrict, async (_req: Request, res: Response) => {
-  try {
-    const metrics = await getMetrics()
-    res.set('Content-Type', 'text/plain')
-    res.status(200).send(metrics)
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to retrieve metrics' })
+router.get(
+  '/',
+  internalAuthGuardStrict,
+  async (_req: Request, res: Response) => {
+    try {
+      const metrics = await getMetrics()
+      res.set('Content-Type', 'text/plain')
+      res.status(200).send(metrics)
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to retrieve metrics' })
+    }
   }
-})
+)
 
 export default router

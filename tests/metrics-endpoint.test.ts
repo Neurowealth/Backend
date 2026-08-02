@@ -34,7 +34,10 @@ describe('GET /metrics', () => {
     const token = process.env.INTERNAL_SERVICE_TOKEN
 
     beforeAll(() => {
-      if (!token) console.log('Skipping authorized tests: INTERNAL_SERVICE_TOKEN not set')
+      if (!token)
+        console.warn(
+          'Skipping authorized tests: INTERNAL_SERVICE_TOKEN not set'
+        )
     })
 
     it('returns 200 with valid X-Internal-Token', async () => {
@@ -67,7 +70,8 @@ describe('GET /metrics', () => {
     const token = process.env.ADMIN_API_TOKEN
 
     beforeAll(() => {
-      if (!token) console.log('Skipping authorized tests: ADMIN_API_TOKEN not set')
+      if (!token)
+        console.warn('Skipping authorized tests: ADMIN_API_TOKEN not set')
     })
 
     it('returns 200 with valid ADMIN_API_TOKEN as Bearer', async () => {

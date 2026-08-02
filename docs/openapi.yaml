@@ -1,4 +1,4 @@
-openapi: 3.1.0
+openapi: 3.0.3
 
 info:
   title: NeuroWealth API
@@ -7,10 +7,14 @@ info:
     REST API for the NeuroWealth platform — AI-assisted portfolio management
     backed by Stellar smart contracts.
 
+    **Versioning:** All endpoints are served under an explicit version prefix
+    (`/api/v1/*`). The legacy unversioned paths (`/api/*`) remain available as
+    deprecated aliases and return `Deprecation`/`Sunset` headers. Every response
+    includes an `X-API-Version` header. See `docs/api-versioning.md`.
+
     **Breaking-change policy:** This API follows semantic versioning. Breaking
-    changes (removed fields, changed response shapes, new required params)
-    increment the major version and are announced in CHANGELOG.md at least two
-    weeks before release.
+    changes (removed fields, changed response shapes, new required parameters)
+    increment the major version and are announced at least two weeks before release.
 
 servers:
   - url: http://localhost:{port}
@@ -26,181 +30,47 @@ tags:
     description: Liveness and readiness probes
   - name: auth
     description: Wallet-based authentication (Stellar SIWE challenge/verify)
+  - name: agent
+    description: Agent loop control and monitoring
+  - name: whatsapp
+    description: Twilio WhatsApp webhook integration
   - name: portfolio
-    description: Portfolio positions, performance, and NLP queries
+    description: Portfolio positions, performance, and earnings
   - name: transactions
     description: Transaction history and details
+  - name: protocols
+    description: Protocol rates and agent status
   - name: deposit
-    description: Deposit flows
+    description: On-chain deposit operations
   - name: withdraw
-    description: Withdrawal flows
+    description: On-chain withdrawal operations
   - name: vault
     description: Vault / savings product
+  - name: analytics
+    description: Analytics — APY history, user yield, protocol performance
+  - name: stellar
+    description: Stellar event listener metrics
+  - name: fiat
+    description: Fiat on-ramp / off-ramp (buy and sell crypto with fiat via a payment provider)
+  - name: referrals
+    description: Referral rewards program (share a code, earn when referred users deposit)
+  - name: goals
+    description: Goal-based investing — a target amount + date driving the agent's strategy selection
   - name: admin
     description: Admin-only management endpoints
+  - name: sub-accounts
+    description: Family & team sub-accounts with scoped, revocable permissions
+  - name: metrics
+    description: Prometheus-compatible metrics endpoint
 
-# ── Security schemes ─────────────────────────────────────────────────────────
-components:
-  securitySchemes:
-    BearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: JWT issued by `/api/auth/verify`. Include as `Authorization: Bearer <token>`.
-    AdminToken:
-      type: apiKey
-      in: header
-      name: X-Admin-Token
-      description: Static admin token set via `ADMIN_SECRET` env var. Required for all `/api/admin/*` routes.
-    InternalToken:
-      type: apiKey
-      in: header
-      name: X-Internal-Token
-      description: Service-to-service token for internal calls (e.g. Stellar event relayer).
+# Default: no auth. Operations that require a token declare their own
+# `security: [BearerAuth: []]`, which overrides this default. This satisfies
+# the OpenAPI `security-defined` lint rule for the public endpoints (health,
+# auth challenge/verify, webhooks, public protocol reads) without annotating
+# each one individually.
+security: []
 
-  # ── Reusable schemas ───────────────────────────────────────────────────────
-  schemas:
-    ErrorResponse:
-      type: object
-      required: [error]
-      properties:
-        error:
-          type: string
-          example: Unauthorized
-        details:
-          description: Optional structured detail (array or object)
-          oneOf:
-            - type: array
-              items: {}
-            - type: object
-
-    HealthResponse:
-      type: object
-      required: [status, timestamp, version, environment]
-      properties:
-        status:
-          type: string
-          enum: [ok, degraded]
-        timestamp:
-          type: string
-          format: date-time
-        version:
-          type: string
-          example: 1.0.0
-        environment:
-          type: string
-          enum: [development, test, production]
-
-    AuthChallengeResponse:
-      type: object
-      required: [nonce, expiresAt]
-      properties:
-        nonce:
-          type: string
-          description: Random one-time nonce the wallet must sign
-          example: a3f9e2c1d0b84756
-        expiresAt:
-          type: string
-          format: date-time
-
-    AuthVerifyRequest:
-      type: object
-      required: [publicKey, signature, nonce]
-      properties:
-        publicKey:
-          type: string
-          description: Stellar G-address (Ed25519 public key)
-          example: GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3B2WSQHG4W37
-        signature:
-          type: string
-          description: Base64-encoded signature over the nonce
-        nonce:
-          type: string
-
-    AuthVerifyResponse:
-      type: object
-      required: [token]
-      properties:
-        token:
-          type: string
-          description: JWT for use in subsequent requests
-        expiresIn:
-          type: integer
-          description: Seconds until the token expires
-          example: 86400
-
-    Portfolio:
-      type: object
-      required: [address, totalValueUsdc, positions]
-      properties:
-        address:
-          type: string
-        totalValueUsdc:
-          type: string
-          description: Total portfolio value in USDC (string to avoid float precision loss)
-          example: '12450.75'
-        pnlPercent:
-          type: string
-          example: '4.23'
-        positions:
-          type: array
-          items:
-            $ref: '#/components/schemas/Position'
-
-    Position:
-      type: object
-      required: [asset, amount, valueUsdc]
-      properties:
-        asset:
-          type: string
-          example: XLM
-        amount:
-          type: string
-          example: '5000.0000000'
-        valueUsdc:
-          type: string
-          example: '600.00'
-        pnlPercent:
-          type: string
-
-    Transaction:
-      type: object
-      required: [id, type, amount, asset, status, createdAt]
-      properties:
-        id:
-          type: string
-        type:
-          type: string
-          enum: [deposit, withdrawal, swap, vault_deposit, vault_withdraw]
-        amount:
-          type: string
-        asset:
-          type: string
-        status:
-          type: string
-          enum: [pending, confirmed, failed]
-        stellarTxHash:
-          type: string
-        createdAt:
-          type: string
-          format: date-time
-
-    VaultPosition:
-      type: object
-      required: [balance, yieldEarned, lockUntil]
-      properties:
-        balance:
-          type: string
-        yieldEarned:
-          type: string
-        lockUntil:
-          type: string
-          format: date-time
-          nullable: true
-
-# ── Paths ─────────────────────────────────────────────────────────────────────
 paths:
-
   # ── Health ─────────────────────────────────────────────────────────────────
   /health:
     get:
@@ -215,6 +85,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+                timestamp: '2026-06-29T12:00:00.000Z'
+                version: 1.0.0
+                environment: production
 
   /health/ready:
     get:
@@ -228,27 +103,67 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HealthResponse'
+                type: object
+                properties:
+                  ready:
+                    type: boolean
+                    enum: [true]
+                  subsystems:
+                    type: object
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                ready: true
+                subsystems:
+                  database: healthy
+                  eventListener: connected
+                  agentLoop: running
+                timestamp: '2026-06-29T12:00:00.000Z'
         '503':
           description: One or more dependencies unavailable
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                type: object
+                properties:
+                  ready:
+                    type: boolean
+                    enum: [false]
+                  subsystems:
+                    type: object
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                ready: false
+                subsystems:
+                  database: healthy
+                  eventListener: disconnected
+                  agentLoop: running
+                timestamp: '2026-06-29T12:00:00.000Z'
 
   # ── Auth ───────────────────────────────────────────────────────────────────
-  /api/auth/challenge:
-    get:
+  /api/v1/auth/challenge:
+    post:
       tags: [auth]
       operationId: getAuthChallenge
       summary: Request a sign-in challenge nonce
-      parameters:
-        - in: query
-          name: publicKey
-          required: true
-          schema:
-            type: string
-          description: Stellar G-address requesting a nonce
+      description: |
+        Generates a one-time nonce that the caller must sign with their Stellar
+        keypair. The nonce expires after a configurable TTL (default 5 min).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stellarPubKey]
+              properties:
+                stellarPubKey:
+                  type: string
+                  description: Stellar G-address (Ed25519 public key)
+                  example: GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3B2WSQHG4W37
       responses:
         '200':
           description: Challenge nonce issued
@@ -256,43 +171,56 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthChallengeResponse'
+              example:
+                nonce: nw-auth-a3f9e2c1d0b84756...
+                expiresAt: '2026-06-29T12:05:00.000Z'
         '400':
-          description: Invalid public key
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          description: Invalid Stellar public key
+          $ref: '#/components/responses/BadRequest'
 
-  /api/auth/verify:
+  /api/v1/auth/verify:
     post:
       tags: [auth]
       operationId: verifyAuthSignature
       summary: Verify wallet signature and issue JWT
+      description: |
+        Verifies the Stellar signature over the nonce obtained from `/challenge`.
+        On success creates a new user if one does not exist and issues an
+        access token + refresh token pair with rotation.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/AuthVerifyRequest'
+            example:
+              stellarPubKey: GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3B2WSQHG4W37
+              signature: AQAAAAA...
       responses:
         '200':
-          description: Signature valid — JWT issued
+          description: Signature valid — token pair issued
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthVerifyResponse'
+              example:
+                accessToken: eyJhbGciOiJIUzI1NiIs...
+                refreshToken: nw-ref-a3f9e2c1d0b8...
+                userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                expiresAt: '2026-06-29T12:15:00.000Z'
+                refreshExpiresAt: '2026-07-06T12:00:00.000Z'
         '401':
-          description: Invalid or expired signature
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          description: Invalid or expired signature / nonce
+          $ref: '#/components/responses/Unauthorized'
 
-  /api/auth/logout:
+  /api/v1/auth/logout:
     post:
       tags: [auth]
       operationId: logout
-      summary: Invalidate the current JWT
+      summary: Invalidate the current session
+      description: |
+        Revokes the session associated with the provided Bearer token.
+        Both the access token and refresh token are invalidated.
       security:
         - BearerAuth: []
       responses:
@@ -303,35 +231,418 @@ paths:
               schema:
                 type: object
                 properties:
-                  success:
-                    type: boolean
-                    example: true
+                  message:
+                    type: string
+                    example: Logged out successfully
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  # ── Agent ──────────────────────────────────────────────────────────────────
+  /api/v1/agent/status:
+    get:
+      tags: [agent]
+      operationId: getAgentStatus
+      summary: Get agent loop status
+      description: |
+        Returns current agent health and operational status.
+        Protected by internal auth (X-Internal-Token, IP allowlist, or admin Bearer token).
+      security:
+        - InternalToken: []
+      responses:
+        '200':
+          description: Agent status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentStatusResponse'
+              example:
+                success: true
+                data:
+                  isRunning: true
+                  lastRebalanceAt: '2026-06-29T11:30:00.000Z'
+                  currentProtocol: Aave
+                  currentApy: 4.23
+                  nextScheduledCheck: '2026-06-29T12:30:00.000Z'
+                  lastError: null
+                  healthStatus: healthy
+                  timestamp: '2026-06-29T12:00:00.000Z'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ── WhatsApp ───────────────────────────────────────────────────────────────
+  /api/v1/whatsapp/webhook:
+    get:
+      tags: [whatsapp]
+      operationId: whatsappWebhookHealth
+      summary: WhatsApp webhook health check
+      description: Twilio webhook endpoint health check. Returns a simple text response.
+      responses:
+        '200':
+          description: Webhook is alive
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: WhatsApp webhook is alive
+    post:
+      tags: [whatsapp]
+      operationId: handleWhatsAppMessage
+      summary: Handle incoming WhatsApp message
+      description: |
+        Receives incoming WhatsApp messages from Twilio via webhook.
+        Validates the x-twilio-signature header. Returns TwiML response.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [From, Body]
+              properties:
+                From:
+                  type: string
+                  description: WhatsApp sender number
+                  example: '+1234567890'
+                Body:
+                  type: string
+                  description: Message body
+                  example: What is my portfolio?
+      responses:
+        '200':
+          description: TwiML response
+          content:
+            text/xml:
+              schema:
+                type: string
+                example: '<?xml version="1.0" encoding="UTF-8"?><Response><Message>Your portfolio value is 12,450.75 USDC</Message></Response>'
+        '403':
+          description: Missing or invalid Twilio signature
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: 'Forbidden: invalid Twilio signature'
+
+  /api/v1/telegram:
+    get:
+      tags: [telegram]
+      operationId: telegramWebhookHealth
+      summary: Telegram webhook health check
+      description: Telegram webhook endpoint health check. Returns a simple text response.
+      responses:
+        '200':
+          description: Webhook is alive
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Telegram webhook is alive
+    post:
+      tags: [telegram]
+      operationId: handleTelegramMessage
+      summary: Handle incoming Telegram message
+      description: |
+        Receives incoming Telegram messages via webhook.
+        Validates the x-telegram-bot-api-secret-token header. Sends the reply through the Telegram Bot API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: object
+                  properties:
+                    chat:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                          description: Telegram chat ID
+                          example: 123456789
+                    text:
+                      type: string
+                      description: Message body
+                      example: What is my portfolio?
+      responses:
+        '200':
+          description: Message accepted and sent to Telegram
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: OK
+        '401':
+          description: Missing or invalid Telegram webhook secret token
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: 'Forbidden: invalid Telegram secret token'
+
   # ── Portfolio ──────────────────────────────────────────────────────────────
-  /api/portfolio:
+  /api/v1/portfolio/{userId}:
     get:
       tags: [portfolio]
       operationId: getPortfolio
-      summary: Get the authenticated user's portfolio
+      summary: Get portfolio positions
+      description: |
+        Returns the user's portfolio including all active positions,
+        total balance, and total earnings. The authenticated user can
+        only access their own portfolio (enforceUserAccess).
       security:
         - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: User ID (UUID v4)
       responses:
         '200':
           description: Portfolio data
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Portfolio'
+                $ref: '#/components/schemas/PortfolioResponse'
+              example:
+                userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                totalBalance: 12450.75
+                totalEarnings: 523.40
+                activePositions: 3
+                positions:
+                  - id: pos-001
+                    protocolName: Aave
+                    assetSymbol: USDC
+                    currentValue: 10000.00
+                    yieldEarned: 423.15
+                    status: ACTIVE
+                  - id: pos-002
+                    protocolName: Compound
+                    assetSymbol: XLM
+                    currentValue: 2000.00
+                    yieldEarned: 85.50
+                    status: ACTIVE
+                  - id: pos-003
+                    protocolName: unassigned
+                    assetSymbol: USDC
+                    currentValue: 450.75
+                    yieldEarned: 14.75
+                    status: ACTIVE
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
-  /api/portfolio/query:
-    post:
+  /api/v1/portfolio/{userId}/history:
+    get:
       tags: [portfolio]
-      operationId: queryPortfolio
-      summary: Natural-language portfolio query (NLP)
+      operationId: getPortfolioHistory
+      summary: Get portfolio yield history
+      description: Returns historical yield snapshots for the user's positions over a given period.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: User ID (UUID v4)
+        - in: query
+          name: period
+          schema:
+            type: string
+            enum: [7d, 30d, 90d]
+            default: 30d
+          description: Lookback period
+      responses:
+        '200':
+          description: Portfolio history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                    format: uuid
+                  period:
+                    type: string
+                    enum: [7d, 30d, 90d]
+                  points:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date
+                        yieldAmount:
+                          type: number
+              example:
+                userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                period: 30d
+                points:
+                  - date: 2026-06-01
+                    yieldAmount: 12.50
+                  - date: 2026-06-02
+                    yieldAmount: 13.20
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/portfolio/{userId}/earnings:
+    get:
+      tags: [portfolio]
+      operationId: getPortfolioEarnings
+      summary: Get portfolio earnings summary
+      description: Returns total and period earnings with average APY for the user.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: User ID (UUID v4)
+      responses:
+        '200':
+          description: Portfolio earnings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                    format: uuid
+                  totalEarnings:
+                    type: number
+                  periodEarnings:
+                    type: number
+                  averageApy:
+                    type: number
+              example:
+                userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                totalEarnings: 523.40
+                periodEarnings: 85.20
+                averageApy: 4.23
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/portfolio/{userId}/tax-report:
+    get:
+      tags: [portfolio]
+      operationId: getPortfolioTaxReport
+      summary: Get realized gain/loss tax report
+      description: |
+        Returns the user's realized gain/loss report for a calendar year (UTC
+        boundaries), computed with FIFO cost-basis lot accounting over
+        confirmed on-chain withdrawals. Totals include only fully priced
+        disposals; unpriced assets are flagged in `caveats`, never zeroed.
+        See docs/TAX_REPORT.md for methodology and known limitations. The
+        authenticated user can only access their own report
+        (enforceUserAccess). With `format=csv` the report's disposal rows are
+        returned as an RFC 4180 CSV attachment with spreadsheet
+        formula-injection guarding.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: User ID (UUID v4)
+        - in: query
+          name: year
+          required: true
+          schema:
+            type: integer
+            minimum: 2000
+            maximum: 2100
+          description: Calendar year (UTC) the report covers
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+          description: Response format
+      responses:
+        '200':
+          description: Tax report for the requested year
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaxReport'
+              example:
+                userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                year: 2026
+                method: FIFO
+                disposals:
+                  - disposedAt: '2026-06-15T00:00:00.000Z'
+                    assetSymbol: USDC
+                    amount: '40'
+                    withdrawalTxHash: c1d2e3f4a5b6c7d8e9f0
+                    acquiredAt: '2026-01-15T00:00:00.000Z'
+                    acquisitionTxHash: a1b2c3d4e5f6a7b8c9d0
+                    acquisitionPrice: '1'
+                    disposalPrice: '1'
+                    costBasis: '40'
+                    proceeds: '40'
+                    realizedGain: '0'
+                    priced: true
+                totals:
+                  proceeds: '40'
+                  costBasis: '40'
+                  realizedGain: '0'
+                  pricedDisposalCount: 1
+                caveats:
+                  unpricedDisposalCount: 0
+                  unpricedAssets: []
+                  stablecoinAssumption: USDC is priced at 1.00 USD by assumption (STABLECOIN_ASSUMPTION); no market price feed is used.
+                  rebalancesNotIncluded: Protocol rebalances are same-asset transfers and are not treated as taxable disposals in this report.
+            text/csv:
+              schema:
+                type: string
+                description: |
+                  One header row plus one row per disposal, CRLF line endings.
+                  Cells beginning with `=`, `+`, `-`, `@`, tab, or CR are
+                  prefixed with `'` to prevent spreadsheet formula injection.
+              example: |
+                disposedAt,assetSymbol,amount,withdrawalTxHash,acquiredAt,acquisitionTxHash,acquisitionPrice,disposalPrice,costBasis,proceeds,realizedGain,priced
+                2026-06-15T00:00:00.000Z,USDC,40,c1d2e3f4a5b6c7d8e9f0,2026-01-15T00:00:00.000Z,a1b2c3d4e5f6a7b8c9d0,1,1,40,40,0,true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Goal-based investing (#281) ─────────────────────────────────────────────
+  /api/v1/portfolio/goals:
+    post:
+      tags: [goals]
+      operationId: createGoal
+      summary: Create the caller's savings goal
+      description: |
+        Creates a savings goal for the authenticated user. Only one ACTIVE goal
+        per user is allowed at a time — returns 409 if one already exists.
+        `startingAmount` defaults to the current value of `positionId` (or the
+        sum of the user's active positions if omitted). If the target is
+        already met by the starting amount, the goal is created directly with
+        status ACHIEVED.
       security:
         - BearerAuth: []
       requestBody:
@@ -340,50 +651,268 @@ paths:
           application/json:
             schema:
               type: object
-              required: [query]
+              required: [targetAmount, targetDate]
               properties:
-                query:
+                targetAmount:
+                  type: number
+                  description: Must be greater than startingAmount
+                targetDate:
                   type: string
-                  example: What is my XLM allocation?
+                  format: date-time
+                  description: Must be in the future
+                startingAmount:
+                  type: number
+                positionId:
+                  type: string
+                  format: uuid
+                riskCeiling:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+              example:
+                targetAmount: 10000
+                targetDate: '2027-07-21T00:00:00.000Z'
       responses:
-        '200':
-          description: NLP answer
+        '201':
+          description: Goal created
           content:
             application/json:
               schema:
                 type: object
-                required: [answer]
                 properties:
-                  answer:
-                    type: string
+                  goal:
+                    $ref: '#/components/schemas/SavingsGoal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
-  # ── Transactions ───────────────────────────────────────────────────────────
-  /api/transactions:
+  /api/v1/portfolio/goals/{id}:
     get:
-      tags: [transactions]
-      operationId: listTransactions
-      summary: List the authenticated user's transactions
+      tags: [goals]
+      operationId: getGoal
+      summary: Get the user's current savings goal
+      description: |
+        Returns the user's ACTIVE goal if one exists, otherwise their most
+        recently created goal. The authenticated user can only access their
+        own goal (enforceUserAccess). NOTE: for this operation only, `id` is
+        the **user's** ID, not a goal ID — documented under the same path
+        item as PATCH/DELETE below (which take a goal ID) since they share the
+        same route shape, differentiated by HTTP method.
       security:
         - BearerAuth: []
       parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: User ID (UUID v4) — see note above
+      responses:
+        '200':
+          description: Savings goal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  goal:
+                    $ref: '#/components/schemas/SavingsGoal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [goals]
+      operationId: updateGoal
+      summary: Update a savings goal
+      description: |
+        Updates target amount/date/riskCeiling on an ACTIVE goal. This route is
+        keyed by goal id rather than :userId, so ownership is checked
+        explicitly (goal.userId must match the authenticated caller) instead of
+        via enforceUserAccess.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Goal ID (UUID v4)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetAmount:
+                  type: number
+                targetDate:
+                  type: string
+                  format: date-time
+                riskCeiling:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+      responses:
+        '200':
+          description: Updated goal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  goal:
+                    $ref: '#/components/schemas/SavingsGoal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [goals]
+      operationId: cancelGoal
+      summary: Cancel a savings goal
+      description: |
+        Soft-cancels a goal (sets status = CANCELLED) — never hard-deletes.
+        Ownership is checked explicitly, as with PATCH.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Goal ID (UUID v4)
+      responses:
+        '200':
+          description: Cancelled goal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  goal:
+                    $ref: '#/components/schemas/SavingsGoal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/portfolio/goals/{id}/progress:
+    get:
+      tags: [goals]
+      operationId: getGoalProgress
+      summary: Get a savings goal's trajectory
+      description: |
+        Returns current progress, the simple annualized rate required to reach
+        the target by its date, the user's recent actual APY, a projected
+        completion date, and whether the target is reachable within the user's
+        configured risk ceiling. Ownership is checked explicitly, as with
+        PATCH/DELETE.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Goal ID (UUID v4)
+      responses:
+        '200':
+          description: Goal progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalProgress'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Transactions ───────────────────────────────────────────────────────────
+  /api/v1/transactions/detail/{txHash}:
+    get:
+      tags: [transactions]
+      operationId: getTransactionDetail
+      summary: Get transaction detail
+      description: Returns full detail for a single transaction owned by the authenticated user.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: txHash
+          required: true
+          schema:
+            type: string
+          description: Transaction hash
+      responses:
+        '200':
+          description: Transaction detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transaction:
+                    $ref: '#/components/schemas/Transaction'
+              example:
+                transaction:
+                  id: tx-001
+                  txHash: a1b2c3d4e5f6...
+                  type: DEPOSIT
+                  status: CONFIRMED
+                  amount: 1000.00
+                  assetSymbol: USDC
+                  protocolName: Aave
+                  createdAt: '2026-06-28T10:00:00.000Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/transactions/{userId}:
+    get:
+      tags: [transactions]
+      operationId: listTransactions
+      summary: List user transactions
+      description: Returns a paginated list of transactions for the given user.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: User ID (UUID v4)
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Page number (1-indexed)
         - in: query
           name: limit
           schema:
             type: integer
-            default: 20
-            maximum: 100
-        - in: query
-          name: cursor
-          schema:
-            type: string
-          description: Pagination cursor (transaction ID)
-        - in: query
-          name: type
-          schema:
-            type: string
-            enum: [deposit, withdrawal, swap, vault_deposit, vault_withdraw]
+            minimum: 1
+            maximum: 50
+            default: 5
+          description: Items per page
       responses:
         '200':
           description: Transaction list
@@ -391,24 +920,236 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [data]
                 properties:
-                  data:
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  total:
+                    type: integer
+                  transactions:
                     type: array
                     items:
                       $ref: '#/components/schemas/Transaction'
-                  nextCursor:
-                    type: string
-                    nullable: true
+              example:
+                page: 1
+                limit: 5
+                total: 42
+                transactions:
+                  - id: tx-001
+                    txHash: a1b2c3d4e5f6...
+                    type: DEPOSIT
+                    status: CONFIRMED
+                    amount: 1000.00
+                    assetSymbol: USDC
+                    protocolName: Aave
+                    createdAt: '2026-06-28T10:00:00.000Z'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/transactions/{id}/events:
+    get:
+      tags: [transactions]
+      operationId: getTransactionEvents
+      summary: Get transaction event history
+      description: Returns the ordered event history for a transaction.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Transaction ID (UUID v4)
+      responses:
+        '200':
+          description: Transaction events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactionId:
+                    type: string
+                  events:
+                    type: array
+                    items:
+                      type: object
+              example:
+                transactionId: tx-001
+                events:
+                  - id: evt-001
+                    eventType: SUBMITTED
+                    occurredAt: '2026-06-28T10:00:05.000Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Protocols ──────────────────────────────────────────────────────────────
+  /api/v1/protocols/rates:
+    get:
+      tags: [protocols]
+      operationId: getProtocolRates
+      summary: Get current protocol rates
+      description: Returns the latest supply/borrow APY rates across all protocols.
+      responses:
+        '200':
+          description: Protocol rates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rates:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProtocolRate'
+              example:
+                rates:
+                  - protocolName: Aave
+                    assetSymbol: USDC
+                    supplyApy: 4.23
+                    borrowApy: 6.15
+                    tvl: 125000000
+                    network: stellar
+                    fetchedAt: '2026-06-29T12:00:00.000Z'
+
+  /api/v1/protocols/risk:
+    get:
+      tags: [protocols]
+      operationId: getProtocolRiskScores
+      summary: Get protocol risk scores and contributing factors
+      description: >
+        Returns the current risk score (0-100, higher = lower risk) for each
+        protocol together with the contributing factors behind it — audit status,
+        protocol age, APY volatility, TVL trend, sample count and an
+        insufficient-history flag — so the score is transparent rather than
+        opaque. Public: aggregate, non-user-specific data. See the scoring
+        methodology in docs/PROTOCOL_RISK_SCORING.md.
+      responses:
+        '200':
+          description: Protocol risk scores
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  protocols:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProtocolRiskScore'
+                  methodology:
+                    type: string
+                    description: Path to the methodology document backing the factors.
+              example:
+                protocols:
+                  - protocolName: Blend
+                    score: 82
+                    factors:
+                      auditStatus: THIRD_PARTY_AUDITED
+                      protocolAgeDays: 896
+                      apyVolatilityFactor: 0.91
+                      tvlTrendFactor: 0.63
+                      sampleCount: 42
+                      insufficientHistory: false
+                    computedAt: '2026-07-16T00:00:00.000Z'
+                  - protocolName: Luma
+                    score: 20
+                    factors:
+                      auditStatus: SELF_REPORTED
+                      protocolAgeDays: 411
+                      apyVolatilityFactor: 0
+                      tvlTrendFactor: 0.5
+                      sampleCount: 1
+                      insufficientHistory: true
+                    computedAt: '2026-07-16T00:00:00.000Z'
+                methodology: docs/PROTOCOL_RISK_SCORING.md
+
+  /api/v1/protocols/agent/status:
+    get:
+      tags: [protocols]
+      operationId: getProtocolAgentStatus
+      summary: Get rebalancing agent status
+      description: Returns agent loop health and status information for the rebalancing agent.
+      responses:
+        '200':
+          description: Agent status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      isRunning:
+                        type: boolean
+                      healthStatus:
+                        type: string
+                      lastRebalanceAt:
+                        type: string
+                        format: date-time
+                        nullable: true
+                      currentProtocol:
+                        type: string
+                        nullable: true
+                      currentApy:
+                        type: number
+                        nullable: true
+                      nextScheduledCheck:
+                        type: string
+                        format: date-time
+                      lastError:
+                        type: string
+                        nullable: true
+                      latestLog:
+                        type: object
+                        nullable: true
+                        properties:
+                          status:
+                            type: string
+                          action:
+                            type: string
+                          createdAt:
+                            type: string
+                            format: date-time
+                      timestamp:
+                        type: string
+                        format: date-time
+              example:
+                success: true
+                data:
+                  isRunning: true
+                  healthStatus: healthy
+                  lastRebalanceAt: '2026-06-29T11:30:00.000Z'
+                  currentProtocol: Aave
+                  currentApy: 4.23
+                  nextScheduledCheck: '2026-06-29T12:30:00.000Z'
+                  lastError: null
+                  latestLog:
+                    status: success
+                    action: REBALANCE
+                    createdAt: '2026-06-29T11:30:00.000Z'
+                  timestamp: '2026-06-29T12:00:00.000Z'
 
   # ── Deposit ────────────────────────────────────────────────────────────────
-  /api/deposit:
+  /api/v1/deposit:
     post:
       tags: [deposit]
       operationId: initiateDeposit
-      summary: Initiate a deposit
+      summary: Initiate an on-chain deposit
+      description: |
+        Submits a deposit transaction to the active protocol on behalf of the
+        authenticated user. The user must match the userId in the request body,
+        OR the caller must hold an active sub-account with DEPOSIT permission
+        for the target user.
       security:
         - BearerAuth: []
       requestBody:
@@ -417,36 +1158,67 @@ paths:
           application/json:
             schema:
               type: object
-              required: [asset, amount]
+              required: [userId, amount, assetSymbol]
               properties:
-                asset:
+                userId:
                   type: string
-                  example: USDC
+                  format: uuid
+                  description: User ID (UUID v4)
                 amount:
+                  type: number
+                  minimum: 0
+                  exclusiveMinimum: true
+                  description: Deposit amount
+                assetSymbol:
                   type: string
-                  example: '100.0000000'
+                  minLength: 1
+                  description: Asset symbol (e.g. USDC, XLM)
+                protocolName:
+                  type: string
+                  description: Target protocol (optional, uses active protocol if omitted)
+                memo:
+                  type: string
+                  maxLength: 280
+                  description: Optional memo
+            example:
+              userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+              amount: 1000.00
+              assetSymbol: USDC
+              protocolName: Aave
       responses:
         '201':
           description: Deposit initiated
           content:
             application/json:
               schema:
-                type: object
-                required: [transaction]
-                properties:
-                  transaction:
-                    $ref: '#/components/schemas/Transaction'
+                $ref: '#/components/schemas/TransactionResponse'
+              example:
+                txHash: a1b2c3d4e5f6...
+                status: CONFIRMED
+                transaction:
+                  id: tx-001
+                  txHash: a1b2c3d4e5f6...
+                  status: CONFIRMED
+                  amount: 1000.00
+                  assetSymbol: USDC
+                  protocolName: Aave
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Duplicate transaction hash
+          $ref: '#/components/responses/Conflict'
 
-  # ── Withdraw ───────────────────────────────────────────────────────────────
-  /api/withdraw:
+  # ── Recurring Deposit ─────────────────────────────────────────────────────
+  /api/v1/deposit/recurring:
     post:
-      tags: [withdraw]
-      operationId: initiateWithdrawal
-      summary: Initiate a withdrawal
+      tags: [deposit]
+      operationId: createRecurringDeposit
+      summary: Create a recurring deposit plan
+      description: |
+        Creates a scheduled recurring deposit. Requires explicit confirmation.
+        The deposit will execute automatically on the specified cadence.
       security:
         - BearerAuth: []
       requestBody:
@@ -455,71 +1227,511 @@ paths:
           application/json:
             schema:
               type: object
-              required: [asset, amount, destinationAddress]
+              required: [userId, amount, assetSymbol, cadence, confirmed]
               properties:
-                asset:
+                userId:
                   type: string
-                  example: XLM
+                  format: uuid
                 amount:
+                  type: number
+                  exclusiveMinimum: true
+                assetSymbol:
                   type: string
-                  example: '50.0000000'
-                destinationAddress:
+                  minLength: 1
+                cadence:
                   type: string
+                  enum: [WEEKLY, BIWEEKLY, MONTHLY]
+                confirmed:
+                  type: boolean
+                  enum: [true]
+                  description: Must be true to confirm the recurring deposit
+            example:
+              userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+              amount: 50
+              assetSymbol: USDC
+              cadence: WEEKLY
+              confirmed: true
+      responses:
+        '201':
+          description: Recurring deposit plan created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan:
+                    $ref: '#/components/schemas/RecurringDepositPlan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/deposit/recurring/by-user/{userId}:
+    get:
+      tags: [deposit]
+      operationId: listRecurringDeposits
+      summary: List recurring deposit plans for a user
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of recurring deposit plans
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plans:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RecurringDepositPlan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/deposit/recurring/{id}:
+    patch:
+      tags: [deposit]
+      operationId: updateRecurringDeposit
+      summary: Update a recurring deposit plan
+      description: Pause, resume, or update the amount/cadence of a plan.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: number
+                  exclusiveMinimum: true
+                cadence:
+                  type: string
+                  enum: [WEEKLY, BIWEEKLY, MONTHLY]
+                status:
+                  type: string
+                  enum: [ACTIVE, PAUSED, CANCELLED]
+      responses:
+        '200':
+          description: Plan updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan:
+                    $ref: '#/components/schemas/RecurringDepositPlan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [deposit]
+      operationId: cancelRecurringDeposit
+      summary: Cancel a recurring deposit plan
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Plan cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan:
+                    $ref: '#/components/schemas/RecurringDepositPlan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Withdraw ───────────────────────────────────────────────────────────────
+  /api/v1/withdraw:
+    post:
+      tags: [withdraw]
+      operationId: initiateWithdrawal
+      summary: Initiate an on-chain withdrawal
+      description: |
+        Submits a withdrawal transaction from the active protocol on behalf of
+        the authenticated user. The user must match the userId in the request body,
+        OR the caller must hold an active sub-account with WITHDRAW permission
+        for the target user.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, amount, assetSymbol]
+              properties:
+                userId:
+                  type: string
+                  format: uuid
+                amount:
+                  type: number
+                  minimum: 0
+                  exclusiveMinimum: true
+                assetSymbol:
+                  type: string
+                  minLength: 1
+                protocolName:
+                  type: string
+                memo:
+                  type: string
+                  maxLength: 280
+            example:
+              userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+              amount: 500.00
+              assetSymbol: USDC
       responses:
         '201':
           description: Withdrawal initiated
           content:
             application/json:
               schema:
+                $ref: '#/components/schemas/TransactionResponse'
+              example:
+                txHash: f6e5d4c3b2a1...
+                status: CONFIRMED
+                transaction:
+                  id: tx-002
+                  txHash: f6e5d4c3b2a1...
+                  status: CONFIRMED
+                  amount: 500.00
+                  assetSymbol: USDC
+                  protocolName: Aave
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # ── Vault ──────────────────────────────────────────────────────────────────
+  /api/v1/vault/state:
+    get:
+      tags: [vault]
+      operationId: getVaultState
+      summary: Get global vault state
+      description: Returns current vault APY and the active protocol name. No auth required.
+      responses:
+        '200':
+          description: Vault state
+          content:
+            application/json:
+              schema:
                 type: object
-                required: [transaction]
                 properties:
-                  transaction:
-                    $ref: '#/components/schemas/Transaction'
+                  apy:
+                    type: number
+                    description: Current vault APY
+                  activeProtocol:
+                    type: string
+                    description: Active protocol name
+              example:
+                apy: 4.23
+                activeProtocol: Aave
+
+  /api/v1/vault/balance:
+    get:
+      tags: [vault]
+      operationId: getVaultBalance
+      summary: Get user's vault balance
+      description: Returns the authenticated user's on-chain vault balance and shares.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Vault balance
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  balance:
+                    type: number
+                  shares:
+                    type: number
+              example:
+                balance: 5000.00
+                shares: 4950.00
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/vault/build-transaction:
+    post:
+      tags: [vault]
+      operationId: buildVaultTransaction
+      summary: Build unsigned vault transaction XDR (non-custodial)
+      description: |
+        Builds an unsigned Stellar XDR transaction for vault deposit or withdrawal.
+        The user signs the XDR client-side — the backend never holds private keys.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, amount, assetSymbol]
+              properties:
+                type:
+                  type: string
+                  enum: [deposit, withdraw]
+                amount:
+                  type: number
+                  minimum: 0
+                  exclusiveMinimum: true
+                assetSymbol:
+                  type: string
+                  minLength: 1
+            example:
+              type: deposit
+              amount: 1000.00
+              assetSymbol: USDC
+      responses:
+        '200':
+          description: Unsigned XDR built
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  xdr:
+                    type: string
+                    description: Unsigned Stellar transaction XDR
+                  type:
+                    type: string
+                    enum: [deposit, withdraw]
+                  amount:
+                    type: number
+                  walletAddress:
+                    type: string
+              example:
+                xdr: AAAAAA...
+                type: deposit
+                amount: 1000.00
+                walletAddress: GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3B2WSQHG4W37
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  # ── Vault ──────────────────────────────────────────────────────────────────
-  /api/vault:
+  # ── Analytics ──────────────────────────────────────────────────────────────
+  /api/v1/analytics/apy-history:
     get:
-      tags: [vault]
-      operationId: getVaultPosition
-      summary: Get the user's vault position
+      tags: [analytics]
+      operationId: getApyHistory
+      summary: Get APY history
+      description: Returns APY snapshots over time for the authenticated user's positions (graph-ready).
       security:
         - BearerAuth: []
+      parameters:
+        - in: query
+          name: period
+          schema:
+            type: string
+            enum: [7d, 30d, 90d]
+            default: 30d
+          description: Lookback period
       responses:
         '200':
-          description: Vault position
+          description: APY history
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/VaultPosition'
+                type: object
+                properties:
+                  userId:
+                    type: string
+                  period:
+                    type: string
+                  points:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date
+                        apy:
+                          type: number
+                        positionId:
+                          type: string
+              example:
+                userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                period: 30d
+                points:
+                  - date: 2026-06-01
+                    apy: 4.10
+                    positionId: pos-001
+                  - date: 2026-06-02
+                    apy: 4.15
+                    positionId: pos-001
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /api/vault/deposit:
-    post:
-      tags: [vault]
-      operationId: depositToVault
-      summary: Move funds into the vault
+  /api/v1/analytics/user-yield:
+    get:
+      tags: [analytics]
+      operationId: getUserYield
+      summary: Get user yield summary
+      description: Returns cumulative and period yield earned by the authenticated user.
       security:
         - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [amount]
-              properties:
-                amount:
-                  type: string
-                  example: '200.0000000'
+      parameters:
+        - in: query
+          name: period
+          schema:
+            type: string
+            enum: [7d, 30d, 90d]
+            default: 30d
       responses:
-        '201':
-          description: Vault deposit recorded
+        '200':
+          description: User yield
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                  period:
+                    type: string
+                  totalYield:
+                    type: number
+                  periodYield:
+                    type: number
+                  averageApy:
+                    type: number
+                  points:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date
+                        yieldAmount:
+                          type: number
+                        apy:
+                          type: number
+              example:
+                userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                period: 30d
+                totalYield: 523.40
+                periodYield: 85.20
+                averageApy: 4.23
+                points:
+                  - date: 2026-06-01
+                    yieldAmount: 12.50
+                    apy: 4.10
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/analytics/protocol-performance:
+    get:
+      tags: [analytics]
+      operationId: getProtocolPerformance
+      summary: Get protocol APY performance
+      description: Returns historical APY rates per protocol (graph-ready). No auth required.
+      parameters:
+        - in: query
+          name: period
+          schema:
+            type: string
+            enum: [7d, 30d, 90d]
+            default: 30d
+      responses:
+        '200':
+          description: Protocol performance
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period:
+                    type: string
+                  protocols:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        protocol:
+                          type: string
+                        asset:
+                          type: string
+                        network:
+                          type: string
+                        points:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              date:
+                                type: string
+                                format: date
+                              apy:
+                                type: number
+                              tvl:
+                                type: number
+                                nullable: true
+              example:
+                period: 30d
+                protocols:
+                  - protocol: Aave
+                    asset: USDC
+                    network: stellar
+                    points:
+                      - date: 2026-06-01
+                        apy: 4.10
+                        tvl: 125000000
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # ── Stellar ────────────────────────────────────────────────────────────────
+  /api/v1/stellar/metrics:
+    get:
+      tags: [stellar]
+      operationId: getStellarMetrics
+      summary: Get Stellar event-processing metrics
+      description: Returns current event-processing metrics from the Stellar event listener.
+      responses:
+        '200':
+          description: Stellar metrics
           content:
             application/json:
               schema:
@@ -527,49 +1739,42 @@ paths:
                 properties:
                   success:
                     type: boolean
-                  transaction:
-                    $ref: '#/components/schemas/Transaction'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /api/vault/withdraw:
-    post:
-      tags: [vault]
-      operationId: withdrawFromVault
-      summary: Move funds out of the vault
-      security:
-        - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [amount]
-              properties:
-                amount:
-                  type: string
-      responses:
-        '201':
-          description: Vault withdrawal recorded
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  transaction:
-                    $ref: '#/components/schemas/Transaction'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+                  data:
+                    type: object
+                    properties:
+                      totalProcessed:
+                        type: integer
+                      totalErrors:
+                        type: integer
+                      processingRatePerMinute:
+                        type: number
+                      errorRate:
+                        type: number
+                      ledgerLag:
+                        type: integer
+                      lastDbOperationMs:
+                        type: number
+                      lastUpdated:
+                        type: string
+                        format: date-time
+              example:
+                success: true
+                data:
+                  totalProcessed: 15234
+                  totalErrors: 23
+                  processingRatePerMinute: 45.2
+                  errorRate: 0.15
+                  ledgerLag: 2
+                  lastDbOperationMs: 42
+                  lastUpdated: '2026-06-29T12:00:00.000Z'
 
   # ── Admin ──────────────────────────────────────────────────────────────────
-  /api/admin/users:
+  /api/v1/admin/users:
     get:
       tags: [admin]
       operationId: adminListUsers
-      summary: List all users (admin only)
+      summary: List all users
+      description: Returns a paginated list of all users. Requires admin authentication.
       security:
         - AdminToken: []
       parameters:
@@ -578,6 +1783,7 @@ paths:
           schema:
             type: integer
             default: 50
+            maximum: 500
         - in: query
           name: cursor
           schema:
@@ -603,16 +1809,22 @@ paths:
                   nextCursor:
                     type: string
                     nullable: true
+              example:
+                data:
+                  - address: GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3B2WSQHG4W37
+                    createdAt: '2026-01-15T10:00:00.000Z'
+                nextCursor: null
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
 
-  /api/admin/stats:
+  /api/v1/admin/stats:
     get:
       tags: [admin]
       operationId: adminGetStats
-      summary: Platform statistics (admin only)
+      summary: Platform statistics
+      description: Returns platform-wide statistics. Requires admin authentication.
       security:
         - AdminToken: []
       responses:
@@ -629,18 +1841,2544 @@ paths:
                     type: string
                   activeVaults:
                     type: integer
+              example:
+                totalUsers: 1284
+                totalVolumeUsdc: '12500000.00'
+                activeVaults: 856
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
 
-  # ── Reusable responses ────────────────────────────────────────────────────
-  responses: {}
+  /api/v1/admin/stellar/metrics:
+    get:
+      tags: [admin]
+      operationId: adminGetStellarMetrics
+      summary: Stellar event processing metrics (admin)
+      description: |
+        Returns detailed event processing metrics including processing rate,
+        error rate, and ledger lag. Requires admin scope `metrics:read`.
+      security:
+        - AdminToken: []
+      responses:
+        '200':
+          description: Stellar metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      totalProcessed:
+                        type: integer
+                      totalErrors:
+                        type: integer
+                      processingRatePerMinute:
+                        type: number
+                      errorRate:
+                        type: string
+                      ledgerLag:
+                        type: integer
+                      lastDbOperationMs:
+                        type: number
+                      lastUpdated:
+                        type: string
+                        format: date-time
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                success: true
+                data:
+                  totalProcessed: 15234
+                  totalErrors: 23
+                  processingRatePerMinute: 45.2
+                  errorRate: 0.15%
+                  ledgerLag: 2
+                  lastDbOperationMs: 42
+                  lastUpdated: '2026-06-29T12:00:00.000Z'
+                timestamp: '2026-06-29T12:00:00.000Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/admin/dlq/inspect:
+    get:
+      tags: [admin]
+      operationId: adminInspectDLQ
+      summary: Inspect dead-letter queue
+      description: |
+        Returns current DLQ contents with filtering and pagination.
+        Requires admin scope `dlq:read`.
+      security:
+        - AdminToken: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [PENDING, RETRIED, RESOLVED]
+          description: Filter by event status
+        - in: query
+          name: eventType
+          schema:
+            type: string
+          description: Filter by event type
+        - in: query
+          name: retryCountMin
+          schema:
+            type: integer
+            default: 0
+          description: Minimum retry count
+        - in: query
+          name: retryCountMax
+          schema:
+            type: integer
+          description: Maximum retry count
+        - in: query
+          name: timeRangeStart
+          schema:
+            type: string
+            format: date-time
+          description: Earliest event timestamp
+        - in: query
+          name: timeRangeEnd
+          schema:
+            type: string
+            format: date-time
+          description: Latest event timestamp
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 500
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: DLQ contents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      totalInQueue:
+                        type: integer
+                      filteredCount:
+                        type: integer
+                      returnedCount:
+                        type: integer
+                      pagination:
+                        type: object
+                        properties:
+                          offset:
+                            type: integer
+                          limit:
+                            type: integer
+                          hasMore:
+                            type: boolean
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            contractId:
+                              type: string
+                            txHash:
+                              type: string
+                            eventType:
+                              type: string
+                            ledger:
+                              type: integer
+                            status:
+                              type: string
+                            retryCount:
+                              type: integer
+                            error:
+                              type: string
+                              nullable: true
+                            createdAt:
+                              type: string
+                              format: date-time
+                            updatedAt:
+                              type: string
+                              format: date-time
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                success: true
+                data:
+                  totalInQueue: 15
+                  filteredCount: 10
+                  returnedCount: 10
+                  pagination:
+                    offset: 0
+                    limit: 50
+                    hasMore: false
+                  items:
+                    - id: dlq-001
+                      contractId: CA123...
+                      txHash: a1b2c3d4...
+                      eventType: DEPOSIT
+                      ledger: 1234567
+                      status: PENDING
+                      retryCount: 3
+                      error: 'Insufficient gas'
+                      createdAt: '2026-06-29T10:00:00.000Z'
+                      updatedAt: '2026-06-29T11:00:00.000Z'
+                timestamp: '2026-06-29T12:00:00.000Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/admin/dlq/retry:
+    post:
+      tags: [admin]
+      operationId: adminRetryDLQ
+      summary: Retry all pending DLQ events
+      description: |
+        Manually retries all pending dead-letter events.
+        Requires admin scope `dlq:write`.
+      security:
+        - AdminToken: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dryRun:
+                  type: boolean
+                  description: If true, returns what would be retried without executing
+                  default: false
+      responses:
+        '200':
+          description: Retry initiated or dry-run result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      resolved:
+                        type: integer
+                      failed:
+                        type: integer
+                      totalRemaining:
+                        type: integer
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                success: true
+                data:
+                  resolved: 8
+                  failed: 2
+                  totalRemaining: 5
+                timestamp: '2026-06-29T12:00:00.000Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/admin/dlq/resolve:
+    post:
+      tags: [admin]
+      operationId: adminResolveDLQEvent
+      summary: Manually resolve a DLQ event
+      description: |
+        Marks a specific DLQ event as resolved.
+        Requires admin scope `dlq:write`.
+      security:
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId]
+              properties:
+                eventId:
+                  type: string
+                  description: DLQ event ID
+      responses:
+        '200':
+          description: Event resolved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      eventId:
+                        type: string
+                      status:
+                        type: string
+                        enum: [RESOLVED]
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                success: true
+                data:
+                  eventId: dlq-001
+                  status: RESOLVED
+                timestamp: '2026-06-29T12:00:00.000Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/admin/dlq/replay:
+    post:
+      tags: [admin]
+      operationId: adminReplayDLQEvents
+      summary: Replay selected DLQ events
+      description: |
+        Safely replays selected DLQ events back into the processing pipeline.
+        Only retries events in PENDING or RETRIED status.
+        Requires admin scope `dlq:write`.
+      security:
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventIds]
+              properties:
+                eventIds:
+                  type: array
+                  items:
+                    type: string
+                  maxItems: 1000
+                  description: DLQ event IDs to replay
+                dryRun:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: Replay result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      requestedCount:
+                        type: integer
+                      replayedCount:
+                        type: integer
+                      blockedCount:
+                        type: integer
+                      resolved:
+                        type: integer
+                      failed:
+                        type: integer
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                success: true
+                data:
+                  requestedCount: 5
+                  replayedCount: 5
+                  blockedCount: 0
+                  resolved: 4
+                  failed: 1
+                timestamp: '2026-06-29T12:00:00.000Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/admin/stellar/backfill:
+    post:
+      tags: [admin]
+      operationId: adminBackfillStellarEvents
+      summary: Backfill Stellar events for a ledger range
+      description: |
+        Manually triggers event backfill for a ledger range.
+        Requires admin scope `backfill:write`.
+      security:
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [startLedger]
+              properties:
+                startLedger:
+                  type: integer
+                  minimum: 0
+                  description: Starting ledger sequence number
+                endLedger:
+                  type: integer
+                  description: Ending ledger sequence number (optional, defaults to latest)
+              example:
+                startLedger: 1234000
+                endLedger: 1235000
+      responses:
+        '200':
+          description: Backfill initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      startLedger:
+                        type: integer
+                      endLedger:
+                        type: string
+                      status:
+                        type: string
+                  message:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                success: true
+                data:
+                  startLedger: 1234000
+                  endLedger: latest
+                  status: backfill_initiated
+                message: 'Backfill operation initiated. Check logs for progress.'
+                timestamp: '2026-06-29T12:00:00.000Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/admin/keys:
+    get:
+      tags: [admin]
+      operationId: adminListKeys
+      summary: List admin API keys
+      description: |
+        Lists all admin API key metadata (no hashes or tokens returned).
+        Requires admin scope `keys:read`.
+      security:
+        - AdminToken: []
+      responses:
+        '200':
+          description: List of admin keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        role:
+                          type: string
+                        scopes:
+                          type: array
+                          items:
+                            type: string
+                        expiresAt:
+                          type: string
+                          format: date-time
+                          nullable: true
+                        revokedAt:
+                          type: string
+                          format: date-time
+                          nullable: true
+                        lastUsedAt:
+                          type: string
+                          format: date-time
+                          nullable: true
+                        createdAt:
+                          type: string
+                          format: date-time
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                success: true
+                data:
+                  - id: key-001
+                    name: CI Pipeline
+                    role: service
+                    scopes: [read, write]
+                    expiresAt: null
+                    revokedAt: null
+                    lastUsedAt: '2026-06-29T11:00:00.000Z'
+                    createdAt: '2026-01-01T00:00:00.000Z'
+                timestamp: '2026-06-29T12:00:00.000Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [admin]
+      operationId: adminCreateKey
+      summary: Create a new admin API key
+      description: |
+        Issues a new scoped admin API key. The raw token is returned once
+        and will never be stored in plaintext. Requires admin scope `keys:write`.
+      security:
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, role, scopes]
+              properties:
+                name:
+                  type: string
+                  description: Human-readable key name
+                role:
+                  type: string
+                  description: Key role (e.g. service, admin)
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                    enum: [read, write, wallet, agent, super]
+                  minItems: 1
+                expiresAt:
+                  type: string
+                  format: date-time
+                  description: Optional expiration date
+            example:
+              name: Monitor Service
+              role: service
+              scopes: [read, metrics:read]
+      responses:
+        '201':
+          description: Key created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      role:
+                        type: string
+                      scopes:
+                        type: array
+                        items:
+                          type: string
+                      expiresAt:
+                        type: string
+                        format: date-time
+                        nullable: true
+                      createdAt:
+                        type: string
+                        format: date-time
+                      token:
+                        type: string
+                        description: The raw API key token (shown once)
+                      warning:
+                        type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                success: true
+                data:
+                  id: key-002
+                  name: Monitor Service
+                  role: service
+                  scopes: [read, metrics:read]
+                  expiresAt: null
+                  createdAt: '2026-06-29T12:00:00.000Z'
+                  token: a1b2c3d4e5f6...
+                  warning: 'Store this token securely. It will not be shown again.'
+                timestamp: '2026-06-29T12:00:00.000Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Key name already exists
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/admin/keys/{id}:
+    delete:
+      tags: [admin]
+      operationId: adminRevokeKey
+      summary: Revoke an admin API key
+      description: |
+        Immediately revokes an admin API key by setting its revokedAt timestamp.
+        Requires admin scope `keys:write`.
+      security:
+        - AdminToken: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Admin key ID
+      responses:
+        '200':
+          description: Key revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      status:
+                        type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                success: true
+                data:
+                  id: key-002
+                  status: revoked
+                timestamp: '2026-06-29T12:00:00.000Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Key already revoked
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/admin/wallets/rotation-status:
+    get:
+      tags: [admin]
+      operationId: adminGetWalletRotationStatus
+      summary: Get wallet key rotation status
+      description: |
+        Reports the progress of wallet key rotation across custodial wallets.
+        Requires admin scope `keys:read`.
+      security:
+        - AdminToken: []
+      responses:
+        '200':
+          description: Rotation status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      totalWallets:
+                        type: integer
+                      v1Wallets:
+                        type: integer
+                      v2Wallets:
+                        type: integer
+                      percentV1:
+                        type: number
+                      isRotationComplete:
+                        type: boolean
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                success: true
+                data:
+                  totalWallets: 150
+                  v1Wallets: 15
+                  v2Wallets: 135
+                  percentV1: 10
+                  isRotationComplete: false
+                timestamp: '2026-06-29T12:00:00.000Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ── Metrics ────────────────────────────────────────────────────────────────
+  /metrics:
+    get:
+      tags: [metrics]
+      operationId: getPrometheusMetrics
+      summary: Prometheus metrics endpoint
+      description: |
+        Returns Prometheus-compatible metrics for observability.
+        Protected by strict internal auth (returns 404 if unauthorized for info hiding).
+      security:
+        - InternalToken: []
+      responses:
+        '200':
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP neuro_event_processed_total Total events processed
+                # TYPE neuro_event_processed_total counter
+                neuro_event_processed_total{status="success"} 15234
+                neuro_event_processed_total{status="error"} 23
+        '404':
+          description: Not found (info hiding for unauthorized requests)
+
+  # ── Fiat on-ramp / off-ramp ──────────────────────────────────────────────
+  /api/v1/fiat/quote:
+    post:
+      tags: [fiat]
+      operationId: getFiatQuote
+      summary: Get a fiat buy/sell quote
+      description: >
+        Returns an indicative quote from the active fiat provider for buying
+        (ON_RAMP) or selling (OFF_RAMP) a crypto asset with fiat currency.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FiatQuoteRequest'
+      responses:
+        '200':
+          description: Quote
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiatQuote'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          description: Provider unavailable or returned an error
+
+  /api/v1/fiat/orders:
+    post:
+      tags: [fiat]
+      operationId: createFiatOrder
+      summary: Create a fiat order
+      description: >
+        Creates an on-ramp or off-ramp order with the active provider and
+        returns the order along with a provider checkout URL (and KYC URL if
+        the provider requires identity verification). The order settles only
+        after the on-chain crypto leg is independently confirmed.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateFiatOrderRequest'
+      responses:
+        '201':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiatOrder'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          description: Provider unavailable or returned an error
+    get:
+      tags: [fiat]
+      operationId: listFiatOrders
+      summary: List the caller's fiat orders
+      description: Returns the authenticated user's fiat orders, newest first.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Order history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FiatOrder'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/fiat/orders/{id}:
+    get:
+      tags: [fiat]
+      operationId: getFiatOrder
+      summary: Get a single fiat order
+      description: Returns one fiat order owned by the authenticated user.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Fiat order ID
+      responses:
+        '200':
+          description: Order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiatOrder'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/fiat/webhook/{provider}:
+    post:
+      tags: [fiat]
+      operationId: fiatProviderWebhook
+      summary: Fiat provider webhook callback
+      description: >
+        Signed callback delivered by the fiat provider on order state changes.
+        Authenticity is verified from the provider's HMAC signature over the
+        raw request body — no JWT is required. The endpoint is idempotent and
+        always ACKs a well-formed, verified delivery. A provider "completed"
+        signal advances the order to PROCESSING; settlement to SETTLED requires
+        independent on-chain confirmation.
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema:
+            type: string
+          description: Provider key (e.g. `moonpay`)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Provider-specific payload (opaque; verified by signature)
+      responses:
+        '200':
+          description: Delivery accepted (idempotent)
+        '400':
+          description: Malformed payload
+        '401':
+          description: Invalid or missing signature
+        '404':
+          description: Unknown provider
+        '500':
+          description: Processing error (provider should retry)
+
+  # ── Referrals ────────────────────────────────────────────────────────────────
+  /api/v1/referrals/code:
+    get:
+      tags: [referrals]
+      operationId: getMyReferralCode
+      summary: Get (or create) the caller's referral code
+      description: >
+        Returns the authenticated caller's referral code, creating one on the
+        first request. Idempotent — the same code is returned on every call.
+        Share this code; when a new user signs up with it and later makes a
+        qualifying deposit, both parties are rewarded.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: The caller's referral code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReferralCodeResponse'
+              example:
+                code: ABC123XY
+                createdAt: '2026-06-29T12:00:00.000Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/referrals/{userId}:
+    get:
+      tags: [referrals]
+      operationId: getReferrals
+      summary: List referrals attributed to a user
+      description: >
+        Lists the referrals attributed to the user's code, newest first.
+        Owner-scoped — a caller may only read their own referrals.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+          description: The owning user's id (must match the authenticated caller)
+      responses:
+        '200':
+          description: Referrals for the user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReferralListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Caller may only read their own referrals
+
+  # ── Custom price & yield alert rules (#289) ──────────────────────────────
+  /api/v1/alerts:
+    post:
+      tags: [alerts]
+      operationId: createAlertRule
+      summary: Create an alert rule
+      description: >
+        Creates a user-defined price/yield alert rule owned by the authenticated
+        caller. The rule is evaluated on a schedule; when its comparator
+        condition holds against the live metric and it is outside its cooldown
+        window, a notification is delivered over the chosen channel(s). A
+        `PROTOCOL_APY` rule must name a `protocolName`; the other metrics must
+        not. See `docs/ALERTS.md` for metric semantics and the drawdown window.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAlertRuleRequest'
+      responses:
+        '201':
+          description: The created alert rule
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # GET is keyed by the owning user id; PATCH/DELETE by the rule id. They share
+  # one URL template (disambiguated only by HTTP method in the Express router),
+  # so OpenAPI represents them under a single path item with a generic {id}
+  # whose meaning is documented per-operation.
+  /api/v1/alerts/{id}:
+    get:
+      tags: [alerts]
+      operationId: listAlertRules
+      summary: List a user's alert rules
+      description: >
+        Lists the alert rules owned by the user, newest first. Owner-scoped — a
+        caller may only read their own rules. Here the path parameter is the
+        owning **user id** (must match the authenticated caller).
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The owning user's id (must match the authenticated caller)
+      responses:
+        '200':
+          description: Alert rules for the user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRuleListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    patch:
+      tags: [alerts]
+      operationId: updateAlertRule
+      summary: Update an alert rule
+      description: >
+        Updates a rule the caller owns. Here the path parameter is the **rule
+        id**. The `PROTOCOL_APY` ↔ `protocolName` pairing is enforced against
+        the merged (stored + patch) state.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Alert rule id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAlertRuleRequest'
+      responses:
+        '200':
+          description: The updated alert rule
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [alerts]
+      operationId: deleteAlertRule
+      summary: Delete an alert rule
+      description: Deletes a rule the caller owns. Future evaluations stop immediately.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Alert rule id
+      responses:
+        '204':
+          description: Deleted (no content)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Sub-Accounts ───────────────────────────────────────────────────────────
+
+  /api/v1/sub-accounts:
+    post:
+      tags: [sub-accounts]
+      operationId: createSubAccount
+      summary: Create a sub-account relationship
+      description: |
+        Creates a parent→child sub-account link with an initial permission set.
+        The authenticated user becomes the parent. The child must exist and must
+        not already be a parent (no chained sub-accounts).
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [childUserId, permissions]
+              properties:
+                childUserId:
+                  type: string
+                  format: uuid
+                  description: The child user's ID
+                permissions:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/SubAccountPermission'
+                  minItems: 1
+                  maxItems: 4
+                  description: Initial permission set
+            example:
+              childUserId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+              permissions: [VIEW, DEPOSIT]
+      responses:
+        '201':
+          description: Sub-account created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subAccount:
+                    $ref: '#/components/schemas/SubAccount'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Child user not found
+        '409':
+          description: Sub-account relationship already exists
+
+  /api/v1/sub-accounts/{id}/permissions:
+    patch:
+      tags: [sub-accounts]
+      operationId: updateSubAccountPermissions
+      summary: Update sub-account permissions
+      description: |
+        Replaces the permission set for an existing sub-account. Only the
+        parent who owns the sub-account can update permissions.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Sub-account ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permissions]
+              properties:
+                permissions:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/SubAccountPermission'
+                  minItems: 1
+                  maxItems: 4
+            example:
+              permissions: [VIEW, DEPOSIT, WITHDRAW]
+      responses:
+        '200':
+          description: Permissions updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subAccount:
+                    $ref: '#/components/schemas/SubAccount'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/sub-accounts/{id}:
+    delete:
+      tags: [sub-accounts]
+      operationId: revokeSubAccount
+      summary: Revoke a sub-account
+      description: |
+        Soft-revokes a sub-account by setting its status to REVOKED. Only the
+        parent who owns the sub-account can revoke it. Revocation takes effect
+        immediately on the next request. The audit trail is preserved.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Sub-account ID
+      responses:
+        '200':
+          description: Sub-account revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subAccount:
+                    $ref: '#/components/schemas/SubAccount'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/strategies/publish:
+    post:
+      tags: [strategies]
+      operationId: publishStrategy
+      summary: Publish the caller's strategy to the marketplace
+      description: >
+        Publishes (or re-publishes) an anonymized snapshot of the caller's own
+        agent configuration. One listing per user — a second call updates the
+        same listing.
+
+
+        `strategyConfig` carries only the three keys the agent acts on
+        (`strategyName`, `targetAllocations`, `riskCeiling`). `riskTolerance` is
+        never copied; it stays personal to each user. Omit `strategyConfig` to
+        snapshot whatever the caller is currently running.
+
+
+        `configVersion` increments only on a MATERIAL change to those three
+        keys — a label-only edit is cosmetic and notifies nobody. When it does
+        increment, every active follower's applied snapshot is rewritten in the
+        same transaction and they receive a `strategy.updated` notification.
+
+
+        `label` is free text shown to strangers and is rejected (not stripped)
+        if it contains a Stellar address or a long hexadecimal run.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishStrategyRequest'
+      responses:
+        '200':
+          description: The caller's listing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishStrategyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/strategies/unpublish:
+    post:
+      tags: [strategies]
+      operationId: unpublishStrategy
+      summary: Delist the caller's strategy
+      description: >
+        Removes the caller's listing from every marketplace query immediately.
+
+
+        Existing follows are NOT severed. Followers keep the configuration
+        snapshot they already copied and their agent keeps running unchanged —
+        silently reverting someone's live configuration because a stranger
+        delisted theirs would change what the agent does with the follower's
+        money without the follower ever acting. Followers receive a
+        `strategy.unpublished` notification.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: The delisted listing
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [strategy]
+                properties:
+                  strategy:
+                    $ref: '#/components/schemas/PublishedStrategy'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/strategies/marketplace:
+    get:
+      tags: [strategies]
+      operationId: getStrategyMarketplace
+      summary: Browse the ranked, anonymized leaderboard
+      description: >
+        Returns published strategies ranked by a precomputed, risk-adjusted
+        score. No response field identifies a publisher: no `userId`, no wallet
+        address, no absolute balance — only the configuration and derived
+        statistics.
+
+
+        Strategies below the eligibility gate (at least 30 days of track record,
+        at least 14 portfolio samples, and a computable Sharpe ratio) are
+        excluded ENTIRELY rather than ranked low, so a one-day strategy posting
+        a flattering APY never appears.
+
+
+        `window` accepts `30d` and `90d` only. Yield snapshots are retained for
+        90 days, so a longer window has no data behind it and is rejected with a
+        400 rather than silently downgraded.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: sortBy
+          schema:
+            type: string
+            enum: [apy, sharpe]
+            default: sharpe
+          description: Ranking field. Defaults to the risk-adjusted score.
+        - in: query
+          name: window
+          schema:
+            type: string
+            enum: ['30d', '90d']
+            default: '30d'
+          description: Statistics window. Longer windows are rejected (90-day snapshot retention).
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        '200':
+          description: A page of the leaderboard
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StrategyMarketplaceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/strategies/following:
+    get:
+      tags: [strategies]
+      operationId: getFollowedStrategy
+      summary: What the caller currently follows
+      description: >
+        Returns the caller's single active follow, or `{ "follow": null }` when
+        they follow nothing — following nothing is a normal state, not a missing
+        resource.
+
+
+        `appliedConfig` is the snapshot the agent actually runs and may lag the
+        live listing (or outlive it entirely, if the publisher delisted or
+        deleted their account). `strategy` is null for such an orphaned follow.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: The caller's active follow, or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [follow]
+                properties:
+                  follow:
+                    type: object
+                    nullable: true
+                    allOf:
+                      - $ref: '#/components/schemas/StrategyFollow'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/strategies/{id}/follow:
+    post:
+      tags: [strategies]
+      operationId: followStrategy
+      summary: Follow a published strategy
+      description: >
+        Copies the strategy's configuration into a snapshot the caller's agent
+        applies on its next scheduled run. Configuration only — no funds move,
+        no custody is transferred, and the publisher's identity is never
+        revealed.
+
+
+        A user may follow at most one strategy at a time; following while
+        already following swaps atomically. Following your own strategy is
+        rejected with 409.
+
+
+        The caller's own risk ceiling is never widened: the effective ceiling is
+        the STRICTER of the publisher's and the follower's. An active savings
+        goal continues to outrank a followed configuration.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The published strategy's id (NOT a user id)
+      responses:
+        '201':
+          description: The created follow
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [follow]
+                properties:
+                  follow:
+                    $ref: '#/components/schemas/StrategyFollow'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Self-follow is not permitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/strategies/{id}/unfollow:
+    post:
+      tags: [strategies]
+      operationId: unfollowStrategy
+      summary: Release the caller's follow
+      description: >
+        Ends the caller's active follow. Their agent reverts to their own
+        `rebalanceStrategy`/`strategyConfig` on the next scheduled run.
+
+
+        Also releases an orphaned follow (one whose publisher deleted their
+        account, leaving no strategy id to name).
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The published strategy's id
+      responses:
+        '200':
+          description: The released follow
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, unfollowedAt]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  unfollowedAt:
+                    type: string
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        JWT access token issued by `POST /api/v1/auth/verify`.
+        Include as `Authorization: Bearer <token>`.
+    AdminToken:
+      type: http
+      scheme: bearer
+      bearerFormat: API-Key
+      description: >
+        Admin API key. Can be provided either as
+        `Authorization: Bearer <token>` or as the legacy
+        `X-Admin-Token` header. Issued via `POST /api/v1/admin/keys`.
+    InternalToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Token
+      description: >
+        Service-to-service token for internal endpoints (e.g., agent status,
+        Prometheus metrics). Alternative auth methods include IP allowlisting
+        or admin Bearer token.
+
+  schemas:
+    # ── Auth ──────────────────────────────────────────────────────────────
+    AuthChallengeResponse:
+      type: object
+      required: [nonce, expiresAt]
+      properties:
+        nonce:
+          type: string
+          description: 'One-time nonce the wallet must sign (prefix: nw-auth-)'
+          example: nw-auth-a3f9e2c1d0b84756...
+        expiresAt:
+          type: string
+          format: date-time
+
+    AuthVerifyRequest:
+      type: object
+      required: [stellarPubKey, signature]
+      properties:
+        stellarPubKey:
+          type: string
+          description: Stellar G-address (Ed25519 public key)
+          example: GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3B2WSQHG4W37
+        signature:
+          type: string
+          description: Base64-encoded Stellar signature over the nonce
+        referralCode:
+          type: string
+          maxLength: 32
+          description: >
+            Optional referral code, captured for attribution. Applied only when
+            this call creates a brand-new user; invalid, self, or duplicate
+            codes are ignored and never fail signup.
+          example: ABC123XY
+
+    AuthVerifyResponse:
+      type: object
+      required: [accessToken, refreshToken, userId]
+      properties:
+        accessToken:
+          type: string
+          description: JWT access token (short-lived, default 15 min)
+        refreshToken:
+          type: string
+          description: Opaque refresh token (single-use, default 7 day TTL)
+        userId:
+          type: string
+          format: uuid
+        expiresAt:
+          type: string
+          format: date-time
+          description: Access token expiration
+        refreshExpiresAt:
+          type: string
+          format: date-time
+          description: Refresh token expiration
+
+    # ── Health & Status ───────────────────────────────────────────────────
+    HealthResponse:
+      type: object
+      required: [status, timestamp, version, environment]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+          example: 1.0.0
+        environment:
+          type: string
+          enum: [development, test, production]
+
+    AgentStatusResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            isRunning:
+              type: boolean
+            lastRebalanceAt:
+              type: string
+              format: date-time
+              nullable: true
+            currentProtocol:
+              type: string
+              nullable: true
+            currentApy:
+              type: string
+              nullable: true
+            nextScheduledCheck:
+              type: string
+              format: date-time
+            lastError:
+              type: string
+              nullable: true
+            healthStatus:
+              type: string
+              enum: [healthy, degraded, stopped]
+            timestamp:
+              type: string
+              format: date-time
+
+    # ── Portfolio ─────────────────────────────────────────────────────────
+    PortfolioResponse:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        totalBalance:
+          type: number
+        totalEarnings:
+          type: number
+        activePositions:
+          type: integer
+        positions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Position'
+
+    SavingsGoal:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        positionId:
+          type: string
+          format: uuid
+          nullable: true
+        targetAmount:
+          type: number
+        startingAmount:
+          type: number
+        targetDate:
+          type: string
+          format: date-time
+        riskCeiling:
+          type: integer
+          nullable: true
+        status:
+          type: string
+          enum: [ACTIVE, ACHIEVED, MISSED, CANCELLED]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    GoalProgress:
+      type: object
+      properties:
+        goalId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [ACTIVE, ACHIEVED, MISSED, CANCELLED]
+        targetAmount:
+          type: number
+        startingAmount:
+          type: number
+        currentAmount:
+          type: number
+        targetDate:
+          type: string
+          format: date-time
+        requiredApy:
+          type: number
+          description: Simple annualized rate needed to reach the target by targetDate
+        actualApy:
+          type: number
+          description: Recent (30d) simple average APY the user is actually getting
+        onTrack:
+          type: boolean
+        reachable:
+          type: boolean
+          description: False when requiredApy exceeds the best APY available within the goal's risk ceiling
+        projectedCompletionDate:
+          type: string
+          format: date-time
+          nullable: true
+        note:
+          type: string
+        whatsappReply:
+          type: string
+
+    Position:
+      type: object
+      properties:
+        id:
+          type: string
+        protocolName:
+          type: string
+        assetSymbol:
+          type: string
+          example: USDC
+        currentValue:
+          type: number
+        yieldEarned:
+          type: number
+        status:
+          type: string
+          enum: [ACTIVE, CLOSED]
+
+    # ── Tax report (#284) ─────────────────────────────────────────────────
+    # Money fields are decimal strings (never floats) and null means
+    # "unpriced" — never zero. Totals sum only fully priced disposals.
+    TaxReport:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        year:
+          type: integer
+        method:
+          type: string
+          enum: [FIFO]
+        disposals:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaxReportDisposal'
+        totals:
+          type: object
+          properties:
+            proceeds:
+              type: string
+            costBasis:
+              type: string
+            realizedGain:
+              type: string
+            pricedDisposalCount:
+              type: integer
+        caveats:
+          type: object
+          properties:
+            unpricedDisposalCount:
+              type: integer
+            unpricedAssets:
+              type: array
+              items:
+                type: string
+            stablecoinAssumption:
+              type: string
+            rebalancesNotIncluded:
+              type: string
+
+    TaxReportDisposal:
+      type: object
+      properties:
+        disposedAt:
+          type: string
+          format: date-time
+        assetSymbol:
+          type: string
+          example: USDC
+        amount:
+          type: string
+          description: Decimal string in asset units
+        withdrawalTxHash:
+          type: string
+          nullable: true
+        acquiredAt:
+          type: string
+          format: date-time
+        acquisitionTxHash:
+          type: string
+          nullable: true
+        acquisitionPrice:
+          type: string
+          nullable: true
+        disposalPrice:
+          type: string
+          nullable: true
+        costBasis:
+          type: string
+          nullable: true
+        proceeds:
+          type: string
+          nullable: true
+        realizedGain:
+          type: string
+          nullable: true
+        priced:
+          type: boolean
+          description: True when every money field is present; only priced disposals enter totals
+
+    # ── Transaction ───────────────────────────────────────────────────────
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: string
+        txHash:
+          type: string
+        type:
+          type: string
+          enum: [DEPOSIT, WITHDRAWAL, SWAP, VAULT_DEPOSIT, VAULT_WITHDRAW]
+        status:
+          type: string
+          enum: [PENDING, CONFIRMED, FAILED]
+        amount:
+          type: number
+        assetSymbol:
+          type: string
+        protocolName:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    TransactionResponse:
+      type: object
+      properties:
+        txHash:
+          type: string
+        status:
+          type: string
+        transaction:
+          type: object
+          properties:
+            id:
+              type: string
+            txHash:
+              type: string
+            status:
+              type: string
+            amount:
+              type: number
+            assetSymbol:
+              type: string
+            protocolName:
+              type: string
+              nullable: true
+            actingAsUserId:
+              type: string
+              format: uuid
+              nullable: true
+              description: >
+                Non-null when the action was performed by a parent on behalf
+                of a child via a sub-account delegation.
+
+    # ── Recurring Deposit ──────────────────────────────────────────────────
+    RecurringDepositPlan:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        amount:
+          type: string
+          description: Decimal amount
+        assetSymbol:
+          type: string
+        cadence:
+          type: string
+          enum: [WEEKLY, BIWEEKLY, MONTHLY]
+        nextRunAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [ACTIVE, PAUSED, CANCELLED]
+        lastRunAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastRunStatus:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    # ── Protocol ──────────────────────────────────────────────────────────
+    ProtocolRate:
+      type: object
+      properties:
+        protocolName:
+          type: string
+        assetSymbol:
+          type: string
+        supplyApy:
+          type: number
+        borrowApy:
+          type: number
+          nullable: true
+        tvl:
+          type: number
+          nullable: true
+        network:
+          type: string
+        fetchedAt:
+          type: string
+          format: date-time
+
+    ProtocolRiskScore:
+      type: object
+      description: >-
+        A protocol's transparent risk score plus the contributing factors
+        behind it. See docs/PROTOCOL_RISK_SCORING.md for the methodology.
+      properties:
+        protocolName:
+          type: string
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Normalized 0-100, higher = lower risk.
+        factors:
+          type: object
+          properties:
+            auditStatus:
+              type: string
+              enum: [UNAUDITED, SELF_REPORTED, THIRD_PARTY_AUDITED]
+            protocolAgeDays:
+              type: integer
+            apyVolatilityFactor:
+              type: number
+              description: APY stability in [0,1]; 1 = very stable.
+            tvlTrendFactor:
+              type: number
+              description: TVL trend in [0,1]; >0.5 = growing, <0.5 = declining.
+            sampleCount:
+              type: integer
+              description: Number of rate samples the factors were computed from.
+            insufficientHistory:
+              type: boolean
+              description: >-
+                True when history is too sparse to characterize the protocol;
+                such protocols are scored conservatively low and flagged.
+        computedAt:
+          type: string
+          format: date-time
+
+    # ── Error ─────────────────────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: Unauthorized
+        details:
+          description: Optional structured detail (array or object)
+          oneOf:
+            - type: array
+              items: {}
+            - type: object
+
+    # ── Sub-Accounts ─────────────────────────────────────────────────────────
+    SubAccountPermission:
+      type: string
+      enum: [VIEW, DEPOSIT, WITHDRAW, MANAGE_STRATEGY]
+      description: >
+        Granular permission for sub-account delegation. Permissions are
+        independent flags — having DEPOSIT does not implicitly grant VIEW.
+    SubAccountStatus:
+      type: string
+      enum: [ACTIVE, REVOKED]
+      description: ACTIVE means the sub-account is live; REVOKED means it was soft-deleted.
+    SubAccount:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        parentUserId:
+          type: string
+          format: uuid
+        childUserId:
+          type: string
+          format: uuid
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubAccountPermission'
+        status:
+          $ref: '#/components/schemas/SubAccountStatus'
+        createdAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    # ── Fiat ──────────────────────────────────────────────────────────────
+    FiatDirection:
+      type: string
+      enum: [ON_RAMP, OFF_RAMP]
+      description: ON_RAMP buys crypto with fiat; OFF_RAMP sells crypto for fiat.
+    FiatOrderStatus:
+      type: string
+      enum: [PENDING, PROCESSING, SETTLED, FAILED, REFUNDED]
+      description: >
+        PENDING (awaiting payment), PROCESSING (provider reported payment;
+        awaiting on-chain confirmation), SETTLED (on-chain confirmed),
+        FAILED, REFUNDED.
+    FiatQuoteRequest:
+      type: object
+      required: [direction, fiatAmount, fiatCurrency, assetSymbol]
+      properties:
+        direction:
+          $ref: '#/components/schemas/FiatDirection'
+        fiatAmount:
+          type: number
+          format: double
+          minimum: 0
+          example: 100
+        fiatCurrency:
+          type: string
+          description: 3-letter ISO 4217 currency code
+          example: USD
+        assetSymbol:
+          type: string
+          example: USDC
+    FiatQuote:
+      type: object
+      properties:
+        direction:
+          $ref: '#/components/schemas/FiatDirection'
+        fiatAmount:
+          type: number
+          example: 100
+        fiatCurrency:
+          type: string
+          example: USD
+        cryptoAmount:
+          type: number
+          example: 98.5
+        assetSymbol:
+          type: string
+          example: USDC
+        feeAmount:
+          type: number
+          example: 1.5
+        exchangeRate:
+          type: number
+          example: 1.0
+        provider:
+          type: string
+          example: moonpay
+        expiresAt:
+          type: string
+          format: date-time
+    CreateFiatOrderRequest:
+      type: object
+      required: [userId, direction, fiatAmount, fiatCurrency, assetSymbol]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        direction:
+          $ref: '#/components/schemas/FiatDirection'
+        fiatAmount:
+          type: number
+          minimum: 0
+          example: 100
+        fiatCurrency:
+          type: string
+          example: USD
+        assetSymbol:
+          type: string
+          example: USDC
+    FiatOrder:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        provider:
+          type: string
+          example: moonpay
+        providerOrderId:
+          type: string
+        direction:
+          $ref: '#/components/schemas/FiatDirection'
+        fiatAmount:
+          type: number
+          example: 100
+        fiatCurrency:
+          type: string
+          example: USD
+        cryptoAmount:
+          type: number
+          nullable: true
+          example: 98.5
+        assetSymbol:
+          type: string
+          example: USDC
+        status:
+          $ref: '#/components/schemas/FiatOrderStatus'
+        checkoutUrl:
+          type: string
+          nullable: true
+        kycUrl:
+          type: string
+          nullable: true
+        transactionId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Linked on-chain transaction once settled
+        failureReason:
+          type: string
+          nullable: true
+        settledAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ReferralStatus:
+      type: string
+      enum: [PENDING, ACTIVATED, REWARDED, EXPIRED]
+      description: >
+        PENDING (attributed at signup), ACTIVATED (a confirmed deposit crossed
+        the threshold), REWARDED (both parties paid), EXPIRED.
+    ReferralCodeResponse:
+      type: object
+      required: [code, createdAt]
+      properties:
+        code:
+          type: string
+          example: ABC123XY
+        createdAt:
+          type: string
+          format: date-time
+    Referral:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ReferralStatus'
+        activatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        activationTxId:
+          type: string
+          nullable: true
+          description: The confirmed deposit Transaction that satisfied activation
+        ownerRewardTxId:
+          type: string
+          nullable: true
+        referredRewardTxId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    ReferralListResponse:
+      type: object
+      required: [code, referrals]
+      properties:
+        code:
+          type: string
+          nullable: true
+          description: The owner's referral code, or null if none has been created yet
+          example: ABC123XY
+        referrals:
+          type: array
+          items:
+            $ref: '#/components/schemas/Referral'
+
+    AlertMetric:
+      type: string
+      enum: [PROTOCOL_APY, PORTFOLIO_VALUE, POSITION_DRAWDOWN]
+      description: >
+        What the rule watches. PROTOCOL_APY = a named protocol's supply APY in
+        percent; PORTFOLIO_VALUE = the user's total active-position value in USD;
+        POSITION_DRAWDOWN = percentage decline of that portfolio value from its
+        rolling 30-day peak (see docs/ALERTS.md).
+    AlertComparator:
+      type: string
+      enum: [LT, LTE, GT, GTE]
+      description: Comparison of the observed value against the threshold.
+    AlertDeliveryChannel:
+      type: string
+      enum: [WEBHOOK, WHATSAPP, BOTH]
+      description: Where a triggered alert is delivered.
+    StrategyConfig:
+      type: object
+      description: >
+        The three keys the agent acts on. Nothing else is ever copied to a
+        follower — notably `riskTolerance`, which stays personal.
+      required: [strategyName]
+      properties:
+        strategyName:
+          type: string
+          enum: [MAX_YIELD, TARGET_ALLOCATION]
+          description: >
+            GOAL_TRACKING is not publishable — it is driven by the publisher's
+            own savings goal, which means nothing to a follower.
+        targetAllocations:
+          type: object
+          additionalProperties:
+            type: number
+            minimum: 0
+            maximum: 100
+          description: >
+            Protocol name → percentage weight. Required when strategyName is
+            TARGET_ALLOCATION, and must sum to 100 — followers inherit these
+            weights verbatim.
+          example:
+            Blend: 60
+            Luma: 40
+        riskCeiling:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: >
+            Minimum acceptable protocol risk score (higher = lower risk). A
+            follower's effective ceiling is the stricter of theirs and the
+            publisher's.
+
+    PublishStrategyRequest:
+      type: object
+      required: [label]
+      properties:
+        label:
+          type: string
+          maxLength: 60
+          description: >
+            Public display name. Rejected if it contains a Stellar address or a
+            hexadecimal run of 32+ characters — published strategies are
+            anonymous.
+          example: Steady conservative yield
+        strategyConfig:
+          $ref: '#/components/schemas/StrategyConfig'
+
+    PublishedStrategy:
+      type: object
+      description: >
+        A marketplace listing. Deliberately carries no `userId` — the publisher
+        is anonymous to everyone including followers.
+      required: [id, label, strategyConfig, configVersion, isPublished]
+      properties:
+        id:
+          type: string
+          format: uuid
+        label:
+          type: string
+          example: Steady conservative yield
+        strategyConfig:
+          $ref: '#/components/schemas/StrategyConfig'
+        configVersion:
+          type: integer
+          description: Incremented only on a material configuration change.
+        isPublished:
+          type: boolean
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    PublishStrategyResponse:
+      type: object
+      required: [strategy, materialChange]
+      properties:
+        strategy:
+          $ref: '#/components/schemas/PublishedStrategy'
+        materialChange:
+          type: boolean
+          description: >
+            True when this publish changed the configuration and therefore
+            bumped `configVersion` and notified followers.
+
+    StrategyMarketplaceEntry:
+      type: object
+      description: >
+        One leaderboard row. Statistics are derived and relative — never an
+        absolute balance, and never anything identifying the publisher.
+      required:
+        - strategyId
+        - label
+        - strategyConfig
+        - windowDays
+        - apy
+        - sampleCount
+        - trackRecordDays
+      properties:
+        strategyId:
+          type: string
+          format: uuid
+        label:
+          type: string
+        strategyConfig:
+          $ref: '#/components/schemas/StrategyConfig'
+        configVersion:
+          type: integer
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        windowDays:
+          type: integer
+          enum: [30, 90]
+        apy:
+          type: number
+          description: Annualized return over the window, in percent (simple, non-compounding).
+        sharpe:
+          type: number
+          nullable: true
+          description: >
+            Risk-adjusted return. Null when not computable (too few samples, or a
+            zero-variance series) — never faked as 0. Eligible entries always
+            have a value.
+        sampleCount:
+          type: integer
+        trackRecordDays:
+          type: integer
+          description: Days of observed history. At least 30 for any listed entry.
+        computedAt:
+          type: string
+          format: date-time
+
+    StrategyMarketplaceResponse:
+      type: object
+      required: [page, limit, total, window, sortBy, strategies]
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        window:
+          type: string
+          enum: ['30d', '90d']
+        sortBy:
+          type: string
+          enum: [apy, sharpe]
+        strategies:
+          type: array
+          items:
+            $ref: '#/components/schemas/StrategyMarketplaceEntry'
+
+    StrategyFollow:
+      type: object
+      required: [id, appliedConfig, appliedConfigVersion, appliedAt, followedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        strategyId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null when the publisher deleted their account (the follow is orphaned).
+        appliedConfig:
+          allOf:
+            - $ref: '#/components/schemas/StrategyConfig'
+          description: >
+            The snapshot the agent actually runs. May lag the live listing, and
+            outlives it if the publisher delists or deletes their account.
+        appliedConfigVersion:
+          type: integer
+        appliedAt:
+          type: string
+          format: date-time
+        followedAt:
+          type: string
+          format: date-time
+        strategy:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PublishedStrategy'
+
+    AlertRule:
+      type: object
+      required:
+        - id
+        - userId
+        - metric
+        - comparator
+        - threshold
+        - deliveryChannel
+        - cooldownMinutes
+        - isActive
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        metric:
+          $ref: '#/components/schemas/AlertMetric'
+        protocolName:
+          type: string
+          nullable: true
+          description: Required when metric is PROTOCOL_APY; null otherwise.
+          example: Blend
+        comparator:
+          $ref: '#/components/schemas/AlertComparator'
+        threshold:
+          type: number
+          description: >
+            Percent for PROTOCOL_APY/POSITION_DRAWDOWN, USD for PORTFOLIO_VALUE.
+          example: 5
+        deliveryChannel:
+          $ref: '#/components/schemas/AlertDeliveryChannel'
+        cooldownMinutes:
+          type: integer
+          minimum: 1
+          maximum: 10080
+          default: 60
+          description: Minimum minutes between repeat notifications while the condition holds.
+        lastFiredAt:
+          type: string
+          format: date-time
+          nullable: true
+        isActive:
+          type: boolean
+          description: >
+            A PROTOCOL_APY rule is auto-set to false if its protocol is delisted
+            (no rate data), rather than evaluating against stale data.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateAlertRuleRequest:
+      type: object
+      required: [metric, comparator, threshold, deliveryChannel]
+      properties:
+        metric:
+          $ref: '#/components/schemas/AlertMetric'
+        protocolName:
+          type: string
+          description: Required when metric is PROTOCOL_APY; rejected otherwise.
+          example: Blend
+        comparator:
+          $ref: '#/components/schemas/AlertComparator'
+        threshold:
+          type: number
+          example: 5
+        deliveryChannel:
+          $ref: '#/components/schemas/AlertDeliveryChannel'
+        cooldownMinutes:
+          type: integer
+          minimum: 1
+          maximum: 10080
+          default: 60
+    UpdateAlertRuleRequest:
+      type: object
+      minProperties: 1
+      description: Partial update — at least one field must be provided.
+      properties:
+        metric:
+          $ref: '#/components/schemas/AlertMetric'
+        protocolName:
+          type: string
+          nullable: true
+        comparator:
+          $ref: '#/components/schemas/AlertComparator'
+        threshold:
+          type: number
+        deliveryChannel:
+          $ref: '#/components/schemas/AlertDeliveryChannel'
+        cooldownMinutes:
+          type: integer
+          minimum: 1
+          maximum: 10080
+        isActive:
+          type: boolean
+    AlertRuleListResponse:
+      type: object
+      required: [rules]
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertRule'
+
   responses:
     Unauthorized:
-      description: Missing or invalid authentication token
+      description: Missing or invalid authentication
       content:
         application/json:
           schema:
@@ -661,3 +4399,24 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Validation error
+            details:
+              - field: amount
+                message: Must be a positive number
+    NotFound:
+      description: The requested resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Not found
+    Conflict:
+      description: Resource conflict (e.g. duplicate)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Conflict

@@ -148,6 +148,39 @@ export const dbConnectionsActive = new client.Gauge({
   registers: [register],
 })
 
+// ── Prisma Connection Pool Metrics ──────────────────────────────────────────────
+// Sourced from prisma.$metrics.json() and refreshed by the poolMetrics job.
+
+export const dbPoolSize = new client.Gauge({
+  name: 'db_pool_size',
+  help: 'Total connections in the Prisma connection pool (open connections)',
+  registers: [register],
+})
+
+export const dbPoolActive = new client.Gauge({
+  name: 'db_pool_active',
+  help: 'Connections currently in use (busy)',
+  registers: [register],
+})
+
+export const dbPoolIdle = new client.Gauge({
+  name: 'db_pool_idle',
+  help: 'Idle connections available in the pool',
+  registers: [register],
+})
+
+export const dbPoolWaitCount = new client.Gauge({
+  name: 'db_pool_wait_count',
+  help: 'Number of queries currently waiting for a free connection',
+  registers: [register],
+})
+
+export const dbPoolWaitDurationMs = new client.Gauge({
+  name: 'db_pool_wait_duration_ms',
+  help: 'Cumulative time (ms) queries have spent waiting for a connection',
+  registers: [register],
+})
+
 // ── HTTP Request Metrics ─────────────────────────────────────────────────────────
 
 export const httpRequestsTotal = new client.Counter({
@@ -165,6 +198,15 @@ export const httpRequestDuration = new client.Histogram({
   registers: [register],
 })
 
+// ── Request Timeout Metrics ───────────────────────────────────────────────────
+
+export const requestTimeoutsTotal = new client.Counter({
+  name: 'request_timeouts_total',
+  help: 'Total number of HTTP requests that timed out before completing',
+  labelNames: ['route_group'] as const,
+  registers: [register],
+})
+
 // ── Analytics API Metrics ────────────────────────────────────────────────────────
 
 export const analyticsRequestsTotal = new client.Counter({
@@ -179,6 +221,15 @@ export const analyticsRequestDuration = new client.Histogram({
   help: 'Duration of analytics API requests in seconds',
   labelNames: ['endpoint'] as const,
   buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5],
+  registers: [register],
+})
+
+// ── Request Validation Metrics ────────────────────────────────────────────────────
+
+export const rejectedRequestsTotal = new client.Counter({
+  name: 'rejected_requests_total',
+  help: 'Total number of rejected requests due to size or content-type',
+  labelNames: ['reason'] as const,
   registers: [register],
 })
 
@@ -267,7 +318,10 @@ export function recordEventFailed(eventType: string, errorType: string): void {
 /**
  * Record event processing duration
  */
-export function recordEventDuration(eventType: string, durationSeconds: number): void {
+export function recordEventDuration(
+  eventType: string,
+  durationSeconds: number
+): void {
   eventsProcessingDuration.observe({ event_type: eventType }, durationSeconds)
 }
 
@@ -302,7 +356,9 @@ export function updateAgentHeartbeat(): void {
 /**
  * Update agent loop status
  */
-export function updateAgentStatus(status: 'stopped' | 'running' | 'degraded'): void {
+export function updateAgentStatus(
+  status: 'stopped' | 'running' | 'degraded'
+): void {
   const statusValue = status === 'stopped' ? 0 : status === 'running' ? 1 : 2
   agentLoopStatus.set(statusValue)
 }
@@ -324,7 +380,10 @@ export function recordRebalanceTriggered(): void {
 /**
  * Record database operation duration
  */
-export function recordDbOperation(operation: string, durationSeconds: number): void {
+export function recordDbOperation(
+  operation: string,
+  durationSeconds: number
+): void {
   dbOperationDuration.observe({ operation }, durationSeconds)
 }
 
@@ -342,6 +401,13 @@ export function recordHttpRequest(
     { method, route, status_code: statusCode.toString() },
     durationSeconds
   )
+}
+
+/**
+ * Record a timed-out HTTP request
+ */
+export function recordRequestTimeout(routeGroup: string): void {
+  requestTimeoutsTotal.inc({ route_group: routeGroup })
 }
 
 /**
@@ -389,7 +455,10 @@ export function recordExternalServiceError(
 /**
  * Record a rate limit hit
  */
-export function recordRateLimitHit(routeGroup: string, limiterType: string): void {
+export function recordRateLimitHit(
+  routeGroup: string,
+  limiterType: string
+): void {
   rateLimitHitsTotal.inc({ route_group: routeGroup, limiter_type: limiterType })
 }
 
@@ -403,8 +472,20 @@ export function recordAuthFailure(endpoint: string, failureType: string): void {
 /**
  * Update active rate limit violations
  */
-export function updateRateLimitViolations(routeGroup: string, count: number): void {
+export function updateRateLimitViolations(
+  routeGroup: string,
+  count: number
+): void {
   rateLimitActiveViolations.set({ route_group: routeGroup }, count)
+}
+
+/**
+ * Record a rejected request due to size or content-type
+ */
+export function recordRejectedRequest(
+  reason: 'oversized' | 'content_type'
+): void {
+  rejectedRequestsTotal.inc({ reason })
 }
 
 /**

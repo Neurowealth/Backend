@@ -14,11 +14,12 @@ import cors, { CorsOptions } from 'cors'
 import express from 'express'
 import { config } from '../config/env'
 import { logger } from '../utils/logger'
+import { recordRejectedRequest } from '../utils/metrics'
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
 
 function buildCorsOptions(): CorsOptions {
-  const { allowedOrigins, } = config.security
+  const { allowedOrigins } = config.security
   const isProduction = config.nodeEnv === 'production'
 
   return {
@@ -27,7 +28,9 @@ function buildCorsOptions(): CorsOptions {
       // Allow them in non-production; block in production unless explicitly listed.
       if (!requestOrigin) {
         if (isProduction) {
-          logger.warn('[CORS] Rejecting request with no Origin header in production')
+          logger.warn(
+            '[CORS] Rejecting request with no Origin header in production'
+          )
           callback(new Error('CORS: missing Origin header'))
         } else {
           callback(null, true)
@@ -48,7 +51,9 @@ function buildCorsOptions(): CorsOptions {
           '[CORS] ALLOWED_ORIGINS is empty in production. ' +
             'Set it to a comma-separated list of permitted origins.'
         )
-        callback(new Error('CORS: server misconfiguration — no origins allowed'))
+        callback(
+          new Error('CORS: server misconfiguration — no origins allowed')
+        )
         return
       }
 
@@ -62,7 +67,13 @@ function buildCorsOptions(): CorsOptions {
 
     // Standard safe headers; expand as your API needs grow
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-Token', 'X-Request-ID', 'X-Correlation-ID'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Admin-Token',
+      'X-Request-ID',
+      'X-Correlation-ID',
+    ],
     exposedHeaders: ['X-Request-ID'],
     credentials: true,
     // Pre-flight cache: 2 hours in production, no cache in dev
@@ -76,7 +87,11 @@ function buildCorsOptions(): CorsOptions {
  * proper 403 JSON responses instead of letting them bubble to the
  * generic error handler.
  */
-export function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
+export function corsMiddleware(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void {
   cors(buildCorsOptions())(req, res, (err) => {
     if (err) {
       res.status(403).json({
@@ -90,12 +105,81 @@ export function corsMiddleware(req: Request, res: Response, next: NextFunction):
   })
 }
 
+/**
+ * Legacy startup CORS validation, retained for the src/app.ts entrypoint.
+ * In production a non-empty allowlist is mandatory; misconfiguration is fatal.
+ */
+export function validateCorsConfig(): void {
+  const { allowedOrigins } = config.security
+  if (config.nodeEnv === 'production' && allowedOrigins.length === 0) {
+    throw new Error(
+      'CORS allowlist must be set and non-empty in production mode. ' +
+        'Set ALLOWED_ORIGINS to a comma-separated list of permitted origins.'
+    )
+  }
+}
+
+/**
+ * Legacy CORS setup helper, retained for the src/app.ts entrypoint.
+ * The src/index.ts entrypoint wires corsMiddleware directly instead.
+ */
+export function setupCors(app: express.Application): void {
+  validateCorsConfig()
+  app.use(corsMiddleware)
+}
+
+// ── Content-type restrictions ────────────────────────────────────────────────────
+
+const DISALLOWED_CONTENT_TYPES = [
+  'multipart/form-data',
+  'application/x-www-form-urlencoded',
+]
+
+/**
+ * Middleware to reject disallowed content types (multipart/form-data, application/x-www-form-urlencoded).
+ * Returns 415 Unsupported Media Type for disallowed content types.
+ * Can be skipped per-route by setting req.allowUrlEncoded = true.
+ */
+export function contentTypeRestrictionMiddleware(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void {
+  // Skip if route has opted out of content-type restrictions
+  if ((req as any).allowUrlEncoded) {
+    return next()
+  }
+
+  const contentType = req.headers['content-type']
+  if (!contentType) {
+    return next()
+  }
+
+  // Check if content type matches any disallowed type
+  for (const disallowed of DISALLOWED_CONTENT_TYPES) {
+    if (contentType.toLowerCase().includes(disallowed)) {
+      logger.warn(
+        `[Content-Type] Rejecting disallowed content type: ${contentType}`
+      )
+      recordRejectedRequest('content_type')
+      res.status(415).json({
+        success: false,
+        error: 'Unsupported Media Type',
+        reason: `Content type "${disallowed}" is not allowed.`,
+      })
+      return
+    }
+  }
+
+  next()
+}
+
 // ── Body size limits ──────────────────────────────────────────────────────────
 
 const { bodySizeLimit } = config.security
 
 /**
- * JSON body parser capped at `bodySizeLimit` (default 100 kb).
+ * JSON body parser capped at `bodySizeLimit` (default 64 kb).
  * Requests exceeding the limit are rejected with 413 automatically by Express.
  */
 export const jsonBodyParser = express.json({ limit: bodySizeLimit })
@@ -103,6 +187,9 @@ export const jsonBodyParser = express.json({ limit: bodySizeLimit })
 /**
  * URL-encoded body parser capped at `bodySizeLimit`.
  * `extended: false` uses the built-in querystring library — no prototype-pollution risk.
+ * Note: This parser is still available for routes that need it (e.g., Twilio webhooks),
+ * but the contentTypeRestrictionMiddleware will reject application/x-www-form-urlencoded
+ * unless the route opts out by setting req.allowUrlEncoded = true.
  */
 export const urlencodedBodyParser = express.urlencoded({
   limit: bodySizeLimit,
@@ -121,6 +208,7 @@ export function payloadSizeErrorHandler(
   next: NextFunction
 ): void {
   if (err.type === 'entity.too.large') {
+    recordRejectedRequest('oversized')
     res.status(413).json({
       success: false,
       error: 'Payload Too Large',
@@ -129,4 +217,16 @@ export function payloadSizeErrorHandler(
     return
   }
   next(err)
+}
+
+/**
+ * Middleware to allow per-route override of body size limit.
+ * Usage: app.post('/admin/bulk', allowBodySizeOverride('1mb'), handler)
+ */
+export function allowBodySizeOverride(limit: string) {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    // Store the override limit on the request for the body parser to use
+    ;(req as any).bodySizeLimitOverride = limit
+    next()
+  }
 }

@@ -11,7 +11,12 @@ export class AppError extends Error {
   }
 }
 
-export const sendError = (res: Response, statusCode: number, message: string, details?: any) => {
+export const sendError = (
+  res: Response,
+  statusCode: number,
+  message: string,
+  details?: any
+) => {
   return res.status(statusCode).json({
     error: message,
     details,

@@ -21,10 +21,14 @@ router.get('/apy-history', requireAuth, async (req: Request, res: Response) => {
   const userId = req.auth!.userId
   const parsed = periodSchema.safeParse(req.query)
   if (!parsed.success) {
-    return res.status(400).json({ error: 'Validation error', details: parsed.error.flatten() })
+    return res
+      .status(400)
+      .json({ error: 'Validation error', details: parsed.error.flatten() })
   }
 
-  const fromDate = new Date(Date.now() - periodToDays(parsed.data.period) * 86400_000)
+  const fromDate = new Date(
+    Date.now() - periodToDays(parsed.data.period) * 86400_000
+  )
 
   const snapshots = await db.yieldSnapshot.findMany({
     where: { position: { userId }, snapshotAt: { gte: fromDate } },
@@ -49,13 +53,20 @@ router.get('/user-yield', requireAuth, async (req: Request, res: Response) => {
   const userId = req.auth!.userId
   const parsed = periodSchema.safeParse(req.query)
   if (!parsed.success) {
-    return res.status(400).json({ error: 'Validation error', details: parsed.error.flatten() })
+    return res
+      .status(400)
+      .json({ error: 'Validation error', details: parsed.error.flatten() })
   }
 
-  const fromDate = new Date(Date.now() - periodToDays(parsed.data.period) * 86400_000)
+  const fromDate = new Date(
+    Date.now() - periodToDays(parsed.data.period) * 86400_000
+  )
 
   const [positions, snapshots] = await Promise.all([
-    db.position.findMany({ where: { userId }, select: { yieldEarned: true, assetSymbol: true } }),
+    db.position.findMany({
+      where: { userId },
+      select: { yieldEarned: true, assetSymbol: true },
+    }),
     db.yieldSnapshot.findMany({
       where: { position: { userId }, snapshotAt: { gte: fromDate } },
       orderBy: { snapshotAt: 'asc' },
@@ -63,8 +74,14 @@ router.get('/user-yield', requireAuth, async (req: Request, res: Response) => {
     }),
   ])
 
-  const totalYield = positions.reduce((sum, p) => sum + Number(p.yieldEarned), 0)
-  const periodYield = snapshots.reduce((sum, s) => sum + Number(s.yieldAmount), 0)
+  const totalYield = positions.reduce(
+    (sum, p) => sum + Number(p.yieldEarned),
+    0
+  )
+  const periodYield = snapshots.reduce(
+    (sum, s) => sum + Number(s.yieldAmount),
+    0
+  )
   const averageApy =
     snapshots.length > 0
       ? snapshots.reduce((sum, s) => sum + Number(s.apy), 0) / snapshots.length
@@ -93,10 +110,14 @@ router.get('/user-yield', requireAuth, async (req: Request, res: Response) => {
 router.get('/protocol-performance', async (req: Request, res: Response) => {
   const parsed = periodSchema.safeParse(req.query)
   if (!parsed.success) {
-    return res.status(400).json({ error: 'Validation error', details: parsed.error.flatten() })
+    return res
+      .status(400)
+      .json({ error: 'Validation error', details: parsed.error.flatten() })
   }
 
-  const fromDate = new Date(Date.now() - periodToDays(parsed.data.period) * 86400_000)
+  const fromDate = new Date(
+    Date.now() - periodToDays(parsed.data.period) * 86400_000
+  )
 
   const rates = await db.protocolRate.findMany({
     where: { fetchedAt: { gte: fromDate } },
@@ -112,12 +133,25 @@ router.get('/protocol-performance', async (req: Request, res: Response) => {
   })
 
   // Group by protocol for graph-ready output
-  const byProtocol: Record<string, { protocol: string; asset: string; network: string; points: { date: string; apy: number; tvl: number | null }[] }> = {}
+  const byProtocol: Record<
+    string,
+    {
+      protocol: string
+      asset: string
+      network: string
+      points: { date: string; apy: number; tvl: number | null }[]
+    }
+  > = {}
 
   for (const r of rates) {
     const key = `${r.protocolName}:${r.assetSymbol}:${r.network}`
     if (!byProtocol[key]) {
-      byProtocol[key] = { protocol: r.protocolName, asset: r.assetSymbol, network: r.network, points: [] }
+      byProtocol[key] = {
+        protocol: r.protocolName,
+        asset: r.assetSymbol,
+        network: r.network,
+        points: [],
+      }
     }
     byProtocol[key].points.push({
       date: r.fetchedAt.toISOString().slice(0, 10),
@@ -126,7 +160,9 @@ router.get('/protocol-performance', async (req: Request, res: Response) => {
     })
   }
 
-  return res.status(200).json({ period: parsed.data.period, protocols: Object.values(byProtocol) })
+  return res
+    .status(200)
+    .json({ period: parsed.data.period, protocols: Object.values(byProtocol) })
 })
 
 export default router

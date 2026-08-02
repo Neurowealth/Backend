@@ -95,6 +95,15 @@ groups:
           summary: "Database operations slow"
           description: "P95 DB operation duration is {{ $value }}s (> 1s)"
 
+      - alert: DBPoolSaturation
+        expr: db_pool_wait_count > 5
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database connection pool saturated"
+          description: "{{ $value }} queries are waiting for a free DB connection (> 5) for over 30s. Consider raising DATABASE_CONNECTION_LIMIT or investigating slow queries."
+
       - alert: HTTPRequestsSlow
         expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 5
         for: 5m
