@@ -587,6 +587,50 @@ export const config = {
       process.env.RECURRING_DEPOSITS_INTERVAL_MS || '300000'
     ),
   },
+  /**
+   * Tool-calling assistant (#318) — replaces the rule-based parser
+   * (src/nlp/parser.ts) as the recognition layer for open-ended requests, with
+   * the parser retained as fallback. See src/agent/assistant/.
+   */
+  assistant: {
+    /**
+     * Off by default. WhatsApp/Telegram only route the 'unknown' bucket
+     * (open-ended requests the rule-based parser can't classify) into the
+     * assistant when this is true — every recognized command keeps going
+     * through the existing parser path unconditionally. REST
+     * /api/v1/assistant/chat always uses the assistant regardless of this
+     * flag (it has no rule-based fallback to gate).
+     */
+    enabled:
+      (process.env.ASSISTANT_ENABLED || 'false').toLowerCase() === 'true',
+    model: process.env.ASSISTANT_MODEL || 'claude-sonnet-4-5',
+    maxTokens: parseInt(process.env.ASSISTANT_MAX_TOKENS || '1024'),
+    maxToolCallsPerTurn: parseInt(
+      process.env.ASSISTANT_MAX_TOOL_CALLS_PER_TURN || '5'
+    ),
+    /** Per-user token budget and the window it resets over. */
+    perUserTokenBudget: parseInt(
+      process.env.ASSISTANT_PER_USER_TOKEN_BUDGET || '20000'
+    ),
+    perUserBudgetWindowMs: parseInt(
+      process.env.ASSISTANT_PER_USER_BUDGET_WINDOW_MS || String(60 * 60 * 1000)
+    ),
+    /** Global token budget across all users and the window it resets over. */
+    globalTokenBudget: parseInt(
+      process.env.ASSISTANT_GLOBAL_TOKEN_BUDGET || '2000000'
+    ),
+    globalBudgetWindowMs: parseInt(
+      process.env.ASSISTANT_GLOBAL_BUDGET_WINDOW_MS || String(60 * 60 * 1000)
+    ),
+    /**
+     * Fraction of portfolio value above which a withdrawal is treated as
+     * sensitive regardless of model confidence (still always confirmed either
+     * way — this only affects the wording of the confirmation prompt).
+     */
+    largeWithdrawalPortfolioFraction: parseFloat(
+      process.env.ASSISTANT_LARGE_WITHDRAWAL_FRACTION || '0.5'
+    ),
+  },
   outbox: {
     dispatchIntervalMs: parseInt(
       process.env.OUTBOX_DISPATCH_INTERVAL_MS || '15000'

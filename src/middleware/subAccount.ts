@@ -34,22 +34,20 @@ export function requireSubAccountPermission(permission: SubAccountPermission) {
     }
 
     try {
-      const subAccount = await db.subAccount.findUnique({
-        where: {
-          parentUserId_childUserId: {
-            parentUserId: req.auth.userId,
-            childUserId: targetUserId,
-          },
-        },
-      })
+      const result = await checkSubAccountPermission(
+        req.auth.userId,
+        targetUserId,
+        permission
+      )
 
-      if (!subAccount || subAccount.status !== 'ACTIVE') {
-        res.status(403).json({ error: 'Forbidden' })
-        return
-      }
-
-      if (!subAccount.permissions.includes(permission)) {
-        res.status(403).json({ error: 'Forbidden', required: permission })
+      if (!result.allowed) {
+        res
+          .status(403)
+          .json(
+            result.reason === 'no_permission'
+              ? { error: 'Forbidden', required: permission }
+              : { error: 'Forbidden' }
+          )
         return
       }
 
@@ -68,4 +66,41 @@ export function requireSubAccountPermission(permission: SubAccountPermission) {
       res.status(500).json({ error: 'Internal server error' })
     }
   }
+}
+
+export type SubAccountPermissionCheck =
+  | { allowed: true }
+  | { allowed: false; reason: 'no_active_link' | 'no_permission' }
+
+/**
+ * The non-HTTP core of requireSubAccountPermission above, so a caller with no
+ * Express request/response (the assistant tool registry — #318) can enforce
+ * the exact same rule the REST routes do rather than re-implementing it.
+ *
+ * Self-access (parentUserId === childUserId) is NOT special-cased here —
+ * callers that need the self-access shortcut (the HTTP middleware above, the
+ * assistant orchestrator) check that before calling this, since "am I acting
+ * on my own account" is a decision that belongs to the caller, not this
+ * lookup.
+ */
+export async function checkSubAccountPermission(
+  parentUserId: string,
+  childUserId: string,
+  permission: SubAccountPermission
+): Promise<SubAccountPermissionCheck> {
+  const subAccount = await db.subAccount.findUnique({
+    where: {
+      parentUserId_childUserId: { parentUserId, childUserId },
+    },
+  })
+
+  if (!subAccount || subAccount.status !== 'ACTIVE') {
+    return { allowed: false, reason: 'no_active_link' }
+  }
+
+  if (!subAccount.permissions.includes(permission)) {
+    return { allowed: false, reason: 'no_permission' }
+  }
+
+  return { allowed: true }
 }

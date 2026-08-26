@@ -82,6 +82,7 @@ import recurringDepositRouter from './routes/recurring-deposits'
 import alertsRouter from './routes/alerts'
 import strategiesRouter from './routes/strategies'
 import subAccountsRouter from './routes/sub-accounts'
+import assistantRouter from './routes/assistant'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -300,6 +301,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'alerts', handlers: [alertsRouter] },
   { path: 'strategies', handlers: [strategiesRouter] },
   { path: 'sub-accounts', handlers: [subAccountsRouter] },
+  { path: 'assistant', handlers: [assistantRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
 

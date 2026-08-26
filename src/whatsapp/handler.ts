@@ -35,6 +35,7 @@ import {
   setPendingConfirmation,
   clearPendingConfirmation,
 } from './pendingConfirmations'
+import { handleAssistantMessage } from '../agent/assistant/assistant'
 
 export type WhatsAppResponse = {
   body: string
@@ -398,6 +399,65 @@ async function resolveMessageText(
   return { text: result.text, fromVoice: true }
 }
 
+/**
+ * Resolve a WhatsApp phone's DB-backed account id, the same lookup
+ * getPortfolioYieldSummary uses. Returns null (never throws) so a lookup
+ * failure degrades to the existing "I didn't understand that" reply rather
+ * than surfacing an error — see the assistant fallback below.
+ */
+async function resolveDbUserId(phone: string): Promise<string | null> {
+  try {
+    const walletAddress = getUserWalletAddress(phone)
+    if (!walletAddress) return null
+    const user = await db.user.findFirst({
+      where: { walletAddress },
+      select: { id: true },
+    })
+    return user?.id ?? null
+  } catch (error) {
+    logger.error(
+      '[Assistant] Failed to resolve WhatsApp user for assistant fallback',
+      {
+        error: error instanceof Error ? error.message : String(error),
+      }
+    )
+    return null
+  }
+}
+
+/**
+ * Tool-calling assistant fallback (#318) for requests the rule-based parser
+ * doesn't recognize. Gated behind config.assistant.enabled — see its
+ * definition in src/config/env.ts for the rollout rationale. Never throws:
+ * any failure (model down, budget exhausted, DB lookup failure) degrades to
+ * the existing formatUnknownMessage() reply, so this can never make an
+ * "unknown" message WORSE than it already was.
+ */
+async function tryAssistantFallback(
+  intent: Intent,
+  text: string,
+  normalizedPhone: string
+): Promise<WhatsAppResponse | null> {
+  if (intent.action !== 'unknown' || !config.assistant.enabled) return null
+
+  const userId = await resolveDbUserId(normalizedPhone)
+  if (!userId) return null
+
+  try {
+    const reply = await handleAssistantMessage({
+      userId,
+      channel: 'whatsapp',
+      message: text,
+    })
+    return { body: reply.text }
+  } catch (error) {
+    logger.error('[Assistant] WhatsApp assistant fallback failed', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return null
+  }
+}
+
 /** Map a media/transcription error onto the right user-facing fallback. */
 function mediaErrorReply(err: unknown): string {
   if (err instanceof UnsupportedAudioError) {
@@ -481,6 +541,17 @@ export async function handleWhatsAppMessage(
       body: `I heard: *${summary}*.\nReply "yes" to confirm or "no" to cancel.`,
     }
   }
+
+  // Tool-calling assistant (#318): only reached for the 'unknown' bucket —
+  // every intent the rule-based parser DOES recognize keeps going through
+  // executeIntent exactly as before. Falls back to formatUnknownMessage()
+  // below when disabled, unavailable, or the user has no DB account yet.
+  const assistantReply = await tryAssistantFallback(
+    intent,
+    text,
+    normalizedPhone
+  )
+  if (assistantReply) return assistantReply
 
   return executeIntent(intent, normalizedPhone)
 }

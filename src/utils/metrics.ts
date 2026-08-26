@@ -756,6 +756,60 @@ export function recordWsPublishFailure(): void {
   wsPublishFailuresTotal.inc()
 }
 
+// ── Tool-calling assistant metrics (#318) ────────────────────────────────────
+
+export const assistantTokensTotal = new client.Counter({
+  name: 'assistant_tokens_total',
+  help: 'Total tokens spent by the tool-calling assistant planner',
+  registers: [register],
+})
+
+export const assistantToolCallDuration = new client.Histogram({
+  name: 'assistant_tool_call_duration_seconds',
+  help: 'Duration of an assistant tool execution in seconds',
+  labelNames: ['tool', 'status'] as const,
+  buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10],
+  registers: [register],
+})
+
+export const assistantToolCallsTotal = new client.Counter({
+  name: 'assistant_tool_calls_total',
+  help: 'Total assistant tool calls, by tool and outcome',
+  labelNames: ['tool', 'outcome'] as const,
+  registers: [register],
+})
+
+export const assistantFallbackTotal = new client.Counter({
+  name: 'assistant_fallback_total',
+  help: 'Total times the assistant degraded to the rule-based parser',
+  labelNames: ['reason'] as const,
+  registers: [register],
+})
+
+export function recordAssistantTokenSpend(tokens: number): void {
+  assistantTokensTotal.inc(tokens)
+}
+
+export function recordAssistantToolCall(
+  tool: string,
+  outcome: 'executed' | 'rejected' | 'error',
+  durationSeconds?: number
+): void {
+  assistantToolCallsTotal.inc({ tool, outcome })
+  if (durationSeconds !== undefined) {
+    assistantToolCallDuration.observe(
+      { tool, status: outcome },
+      durationSeconds
+    )
+  }
+}
+
+export function recordAssistantFallback(
+  reason: 'model_error' | 'budget_exceeded' | 'schema_error'
+): void {
+  assistantFallbackTotal.inc({ reason })
+}
+
 /**
  * Get metrics for Prometheus scraping
  */

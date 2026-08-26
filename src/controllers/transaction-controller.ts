@@ -180,6 +180,98 @@ export async function executeDeposit(
   }
 }
 
+export interface ExecuteWithdrawParams {
+  userId: string
+  walletAddress: string
+  amount: number
+  assetSymbol: string
+  protocolName?: string
+  memo?: string
+  actingAsUserId?: string | null
+}
+
+export interface ExecuteWithdrawResult {
+  transaction: Transaction
+  status: 'CONFIRMED' | 'FAILED'
+}
+
+/**
+ * Core withdraw logic, extracted from the WITHDRAWAL branch of
+ * processOnChainTransaction so it has a callable service-layer entry point
+ * (the deposit side already had one via executeDeposit). Used by the HTTP
+ * route below and by the assistant's withdraw tool
+ * (src/agent/tools/actionTools.ts) — the assistant must go through the exact
+ * same idempotent/audited path as every other caller, never a bespoke one.
+ */
+export async function executeWithdraw(
+  params: ExecuteWithdrawParams
+): Promise<ExecuteWithdrawResult> {
+  const {
+    userId,
+    walletAddress,
+    amount,
+    assetSymbol,
+    protocolName,
+    memo,
+    actingAsUserId,
+  } = params
+
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: { id: true, network: true },
+  })
+  if (!user) {
+    throw new Error('User not found')
+  }
+
+  logger.info('Submitting on-chain withdrawal', {
+    userId,
+    amount,
+    assetSymbol,
+  })
+
+  const transaction = await enqueueAndDispatch({
+    kind: 'WITHDRAW',
+    userId,
+    userAddress: walletAddress,
+    amount,
+    assetSymbol,
+    network: user.network,
+    type: 'WITHDRAWAL',
+    protocolName,
+    memo,
+    actingAsUserId,
+  })
+
+  logger.info('On-chain withdrawal completed', {
+    userId,
+    txHash: transaction.txHash,
+    status: transaction.status,
+  })
+
+  if (transaction.status === 'CONFIRMED') {
+    publishUserEvent(
+      userId,
+      EVENT_TYPE_TOPIC['transaction.confirmed'],
+      'transaction.confirmed',
+      {
+        txHash: transaction.txHash,
+        type: 'WITHDRAWAL',
+        status: transaction.status,
+        assetSymbol,
+        amount,
+        protocolName,
+        userId,
+      }
+    ).catch(() => {})
+  }
+
+  return {
+    transaction,
+    status: transaction.status as 'CONFIRMED' | 'FAILED',
+  }
+}
+
 export async function processOnChainTransaction(
   req: Request,
   res: Response,
@@ -203,57 +295,22 @@ export async function processOnChainTransaction(
   if (type === 'WITHDRAWAL') {
     const user = await db.user.findUnique({
       where: { id: userId },
-      select: { id: true, network: true },
+      select: { id: true },
     })
     if (!user) {
       return sendNotFound(res, 'User')
     }
 
-    logger.info('Submitting on-chain withdrawal', {
-      correlationId: req.correlationId,
-      type,
+    const result = await executeWithdraw({
       userId,
+      walletAddress: req.auth!.walletAddress,
       amount,
       assetSymbol,
-    })
-
-    const transaction = await enqueueAndDispatch({
-      kind: 'WITHDRAW',
-      userId,
-      userAddress: req.auth!.walletAddress,
-      amount,
-      assetSymbol,
-      network: user.network,
-      type,
       protocolName,
       memo,
       actingAsUserId,
     })
-
-    logger.info('On-chain withdrawal completed', {
-      correlationId: req.correlationId,
-      type,
-      userId,
-      txHash: transaction.txHash,
-      status: transaction.status,
-    })
-
-    if (transaction.status === 'CONFIRMED') {
-      publishUserEvent(
-        userId,
-        EVENT_TYPE_TOPIC['transaction.confirmed'],
-        'transaction.confirmed',
-        {
-          txHash: transaction.txHash,
-          type,
-          status: transaction.status,
-          assetSymbol,
-          amount,
-          protocolName,
-          userId,
-        }
-      ).catch(() => {})
-    }
+    const transaction = result.transaction
 
     return res.status(201).json({
       txHash: transaction.txHash,
