@@ -14,12 +14,13 @@
  * (no awaited network I/O inside the DB transaction), reconcilable via the
  * queries in docs/TAX_REPORT.md.
  */
-import { Prisma } from '@prisma/client'
+import { Prisma, AccountingMethod } from '@prisma/client'
 import { Decimal } from '@prisma/client/runtime/library'
 import db from '../db'
 import { logger } from '../utils/logger'
 import { alertingService } from '../services/alerting'
-import { consumeLotsFifo, InsufficientLotsError } from './fifo'
+import { InsufficientLotsError } from './fifo'
+import { resolveMethod, SpecificIdSelectionError } from './methods'
 import { priceForAsset } from './pricing'
 
 type Db = typeof db | Prisma.TransactionClient
@@ -110,12 +111,22 @@ export async function createLotForDeposit(
 }
 
 /**
- * Record FIFO disposals for a confirmed withdrawal Transaction. Idempotent:
- * if any disposal already exists for this transactionId the call is a no-op
- * (event replay). All-or-nothing: when open lots cannot cover the withdrawal,
- * nothing is written — partial rows written under an error path would poison
- * later repair, while an idempotent re-run after backfill produces the correct
+ * Record cost-basis disposals for a confirmed withdrawal Transaction, under
+ * the given accounting `method` (default FIFO — unchanged behavior for
+ * every existing caller). Idempotent: if any disposal already exists for
+ * this transactionId the call is a no-op (event replay). All-or-nothing:
+ * when the relevant lots (all open lots for FIFO/LIFO/HIFO, or just the
+ * `selectedLotIds` for SPECIFIC_ID) cannot cover the withdrawal, nothing is
+ * written — partial rows written under an error path would poison later
+ * repair, while an idempotent re-run after backfill produces the correct
  * ledger. That case alerts critically but never blocks the withdrawal.
+ *
+ * SPECIFIC_ID note: an invalid/missing selection is only ever discovered
+ * here — after the withdrawal has already been submitted on-chain, since
+ * disposal recording happens on the event-listener's confirmation path
+ * (see docs/TAX_REPORT.md), the same timing every other method already
+ * uses. It is treated exactly like an InsufficientLotsError: a critical
+ * alert, nothing written, the withdrawal itself unaffected.
  */
 export async function recordDisposalsForWithdrawal(
   userId: string,
@@ -123,7 +134,9 @@ export async function recordDisposalsForWithdrawal(
   assetSymbol: string,
   amount: Decimal | string | number,
   disposedAt: Date,
-  database: Db = db
+  database: Db = db,
+  method: AccountingMethod = AccountingMethod.FIFO,
+  selectedLotIds?: string[]
 ): Promise<void> {
   try {
     const existing = await (database as any).lotDisposal.findFirst({
@@ -146,7 +159,7 @@ export async function recordDisposalsForWithdrawal(
     })
 
     const { price } = priceForAsset(assetSymbol)
-    const { disposals, updatedLots } = consumeLotsFifo(
+    const { disposals, updatedLots } = resolveMethod(method).consumeLots(
       openLots.map((lot: any) => ({
         id: lot.id,
         remainingAmount: new Decimal(lot.remainingAmount),
@@ -157,7 +170,8 @@ export async function recordDisposalsForWithdrawal(
         acquiredAt: lot.acquiredAt,
       })),
       new Decimal(amount),
-      price
+      price,
+      { selectedLotIds }
     )
 
     for (const lot of updatedLots) {
@@ -203,10 +217,12 @@ export async function recordDisposalsForWithdrawal(
     }
     const message = err instanceof Error ? err.message : String(err)
     const isShortfall = err instanceof InsufficientLotsError
+    const isBadSelection = err instanceof SpecificIdSelectionError
     logger.error('[Tax] Disposal recording failed (withdrawal unaffected)', {
       userId,
       transactionId,
       assetSymbol,
+      method,
       error: message,
       ...(isShortfall && {
         requested: (err as InsufficientLotsError).requested.toString(),
@@ -218,7 +234,9 @@ export async function recordDisposalsForWithdrawal(
       {
         title: isShortfall
           ? 'Withdrawal exceeds tracked cost-basis lots'
-          : 'Disposal recording failed',
+          : isBadSelection
+            ? 'Invalid SPECIFIC_ID lot selection'
+            : 'Disposal recording failed',
         description: `Recording disposals for withdrawal transaction ${transactionId} (user ${userId}) failed: ${message}. Nothing was written; the withdrawal is unaffected. Backfill/repair lots (scripts/backfill-cost-basis-lots.ts) — the recorder is idempotent and safe to re-run.`,
         severity: 'critical',
         component: 'tax-lot-tracking',

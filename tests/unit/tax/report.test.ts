@@ -1,11 +1,13 @@
-// Tax report assembly tests (#284): totals include only fully priced
-// disposals (unpriced flagged in caveats, never zeroed), UTC year bounds on
-// disposedAt, and an empty year is still a valid report.
+// Tax report assembly tests (#284, extended by #317): totals include only
+// fully priced disposals (unpriced flagged in caveats, never zeroed), UTC
+// year bounds on disposedAt, an empty year is still a valid report, and
+// method selection is a confirmation gate (not a recompute switch).
 import db from '../../../src/db'
 import {
   buildTaxReport,
   taxReportToCsvRows,
   TAX_REPORT_CSV_HEADERS,
+  MethodMismatchError,
 } from '../../../src/tax/report'
 
 jest.mock('../../../src/db', () => ({ __esModule: true, default: {} }))
@@ -42,6 +44,11 @@ function disposalRow(overrides: Record<string, any> = {}) {
 beforeEach(() => {
   jest.clearAllMocks()
   mockDb.lotDisposal = { findMany: jest.fn() }
+  mockDb.user = {
+    findUnique: jest
+      .fn()
+      .mockResolvedValue({ accountingMethod: 'FIFO', methodEffectiveAt: null }),
+  }
 })
 
 describe('buildTaxReport', () => {
@@ -125,6 +132,66 @@ describe('buildTaxReport', () => {
     expect(report.disposals[0].acquiredAt).toBe('2026-11-01T00:00:00.000Z')
     expect(report.disposals[0].acquisitionTxHash).toBe('deposit-hash')
     expect(report.disposals[0].withdrawalTxHash).toBe('withdraw-hash')
+  })
+
+  it('reports the method column from the account, not a hardcoded literal', async () => {
+    mockDb.user.findUnique.mockResolvedValue({
+      accountingMethod: 'HIFO',
+      methodEffectiveAt: null,
+    })
+    mockDb.lotDisposal.findMany.mockResolvedValue([])
+
+    const report = await buildTaxReport('user-1', 2026)
+
+    expect(report.method).toBe('HIFO')
+  })
+
+  it('accepts a requested method that matches the account setting', async () => {
+    mockDb.user.findUnique.mockResolvedValue({
+      accountingMethod: 'LIFO',
+      methodEffectiveAt: null,
+    })
+    mockDb.lotDisposal.findMany.mockResolvedValue([])
+
+    const report = await buildTaxReport('user-1', 2026, 'LIFO' as any)
+
+    expect(report.method).toBe('LIFO')
+  })
+
+  it('rejects a requested method that does not match the account setting', async () => {
+    mockDb.user.findUnique.mockResolvedValue({
+      accountingMethod: 'FIFO',
+      methodEffectiveAt: null,
+    })
+
+    await expect(buildTaxReport('user-1', 2026, 'LIFO' as any)).rejects.toThrow(
+      MethodMismatchError
+    )
+    expect(mockDb.lotDisposal.findMany).not.toHaveBeenCalled()
+  })
+
+  it('flags a mid-year method change instead of silently mixing methods', async () => {
+    mockDb.user.findUnique.mockResolvedValue({
+      accountingMethod: 'HIFO',
+      methodEffectiveAt: new Date('2026-06-01T00:00:00Z'),
+    })
+    mockDb.lotDisposal.findMany.mockResolvedValue([])
+
+    const report = await buildTaxReport('user-1', 2026)
+
+    expect(report.caveats.methodChangeNote).toMatch(/HIFO/)
+  })
+
+  it('does not flag a method change outside the report year', async () => {
+    mockDb.user.findUnique.mockResolvedValue({
+      accountingMethod: 'HIFO',
+      methodEffectiveAt: new Date('2025-06-01T00:00:00Z'),
+    })
+    mockDb.lotDisposal.findMany.mockResolvedValue([])
+
+    const report = await buildTaxReport('user-1', 2026)
+
+    expect(report.caveats.methodChangeNote).toBeNull()
   })
 })
 

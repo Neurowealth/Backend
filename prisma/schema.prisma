@@ -137,6 +137,18 @@ enum RecurringDepositPlanStatus {
 // unpriced in the tax report — never silently zeroed.
 enum PriceSource {
   STABLECOIN_ASSUMPTION
+  // #317 — see src/tax/pricing.ts's source hierarchy.
+  USER_DECLARED // an explicit price the user supplied (e.g. at deposit time)
+  MARKET_FEED // a volatile-asset price feed snapshot — stubbed (always null) in v1
+}
+
+// #317 — cost-basis consumption order. FIFO is the default and preserves
+// every pre-existing user's realized-gain figures unchanged.
+enum AccountingMethod {
+  FIFO
+  LIFO
+  HIFO
+  SPECIFIC_ID
 }
 
 enum GoalStatus {
@@ -186,23 +198,29 @@ enum SubAccountStatus {
 }
 
 model User {
-  id                String   @id @default(uuid())
-  walletAddress     String   @unique
-  network           Network  @default(MAINNET)
+  id                String           @id @default(uuid())
+  walletAddress     String           @unique
+  network           Network          @default(MAINNET)
   displayName       String?
-  email             String?  @unique
+  email             String?          @unique
   avatarUrl         String?
   // E.164 WhatsApp number, when known. Nullable because most users onboard via
   // wallet auth and never link a number. Used as the WhatsApp delivery
   // destination for alert rules (#289); alerts on the WHATSAPP/BOTH channel are
   // skipped (logged, not errored) for users without a number on file.
-  phone             String?  @unique
-  riskTolerance     Int      @default(5)
+  phone             String?          @unique
+  riskTolerance     Int              @default(5)
   rebalanceStrategy String? // 'MAX_YIELD' | 'TARGET_ALLOCATION' | null (defaults to MAX_YIELD)
   strategyConfig    Json? // e.g. { "targetAllocations": { "Blend": 50, "Stellar DEX": 30, "Luma": 20 } }
-  isActive          Boolean  @default(true)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  isActive          Boolean          @default(true)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  // #317 — cost-basis consumption method for the tax report. Changing this
+  // is forward-only: methodEffectiveAt stamps when a change took effect, so
+  // disposals recorded before it are never retroactively recomputed (see
+  // docs/TAX_REPORT.md).
+  accountingMethod  AccountingMethod @default(FIFO)
+  methodEffectiveAt DateTime?
 
   sessions                Session[]
   positions               Position[]
@@ -433,6 +451,11 @@ model Transaction {
   confirmedAt    DateTime?
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
+  // #317 — SPECIFIC_ID lot selection for a WITHDRAWAL, captured at request
+  // time so the Stellar event listener (the sole writer of disposal rows,
+  // see docs/TAX_REPORT.md) has it once the on-chain event confirms. Empty
+  // for every other accounting method and for all non-withdrawal types.
+  selectedLotIds String[]          @default([])
 
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   position     Position?     @relation(fields: [positionId], references: [id])

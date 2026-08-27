@@ -429,7 +429,9 @@ async function handleWithdrawEvent(
     withdrawData.assetSymbol,
     withdrawData.amount,
     transaction.confirmedAt ?? new Date(),
-    tx
+    tx,
+    user.accountingMethod,
+    transaction.selectedLotIds
   )
 
   return user.id

@@ -15,6 +15,10 @@ const withdrawSchema = z.object({
   assetSymbol: z.string().min(1),
   protocolName: z.string().min(1).optional(),
   memo: z.string().max(280).optional(),
+  // #317 — required only when the user's accountingMethod is SPECIFIC_ID;
+  // ignored otherwise. Enforced in src/tax/service.ts at disposal-recording
+  // time, not here — this route has no tax-module awareness.
+  selectedLotIds: z.array(z.string().uuid()).optional(),
 })
 
 router.post(

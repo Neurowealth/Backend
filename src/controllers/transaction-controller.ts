@@ -31,6 +31,10 @@ async function enqueueAndDispatch(params: {
   protocolName?: string
   memo?: string
   actingAsUserId?: string | null
+  // #317 — SPECIFIC_ID lot selection, WITHDRAWAL only. Captured here so the
+  // Stellar event listener has it once the on-chain withdrawal confirms
+  // (see src/tax/service.ts's recordDisposalsForWithdrawal).
+  selectedLotIds?: string[]
 }): Promise<Transaction> {
   const pending = await db.$transaction(async (tx) => {
     const transaction = await tx.transaction.create({
@@ -44,6 +48,7 @@ async function enqueueAndDispatch(params: {
         network: params.network,
         protocolName: params.protocolName,
         memo: params.memo,
+        selectedLotIds: params.selectedLotIds ?? [],
       },
     })
 
@@ -185,7 +190,8 @@ export async function processOnChainTransaction(
   res: Response,
   type: 'DEPOSIT' | 'WITHDRAWAL'
 ) {
-  const { userId, amount, assetSymbol, protocolName, memo } = req.body
+  const { userId, amount, assetSymbol, protocolName, memo, selectedLotIds } =
+    req.body
 
   if (!req.auth) {
     return sendUnauthorized(res)
@@ -228,6 +234,7 @@ export async function processOnChainTransaction(
       protocolName,
       memo,
       actingAsUserId,
+      selectedLotIds,
     })
 
     logger.info('On-chain withdrawal completed', {
