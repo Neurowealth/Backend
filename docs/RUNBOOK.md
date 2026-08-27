@@ -333,7 +333,55 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_API_TOKEN" \
 
 ---
 
-## 6. Incident Contacts
+## 6. Database Migration Rollback
+
+Prisma migrations are forward-only — there is no built-in `down`. Every migration
+in `prisma/migrations/<name>/` therefore ships a hand-written `rollback.sql`
+alongside its `migration.sql`. CI enforces this via
+`scripts/check-migration-rollback.sh`.
+
+### When to roll back
+
+Roll back when a freshly deployed migration is itself the problem (broken schema,
+failed constraint, performance regression). If the application code is the
+problem, prefer redeploying the previous app version over a schema rollback.
+
+> **WARNING:** Rollbacks can be destructive — `DROP TABLE`/`DROP COLUMN` discard
+> data. Confirm a recent backup/snapshot exists before proceeding. Some rollbacks
+> are flagged partially irreversible inside their `rollback.sql` (e.g.
+> `20260617000000_fix_agent_log_attribution` cannot restore `NOT NULL` if
+> system-generated rows with a null `userId` exist).
+
+### Procedure
+
+```bash
+# 1. Take / confirm a database snapshot first.
+
+# 2. Identify the migration to reverse (most recent applied is the usual target)
+npx prisma migrate status
+
+# 3. Run the rollback for that migration (applies rollback.sql, then marks it
+#    rolled back in _prisma_migrations and runs a health check).
+DATABASE_URL=$DATABASE_URL bash scripts/rollback-migration.sh <migration-name>
+
+#    Optionally verify the live app afterwards:
+HEALTHCHECK_URL=http://localhost:3001/health/ready \
+  DATABASE_URL=$DATABASE_URL bash scripts/rollback-migration.sh <migration-name>
+
+# 4. Re-deploy the previous application version if the schema change was paired
+#    with code changes.
+```
+
+After a successful rollback the migration is marked `rolled_back_at` in Prisma's
+history, so a later `prisma migrate deploy` (with a fixed migration) re-applies it.
+
+### Authoring rollbacks for new migrations
+
+Every new migration PR must add a `rollback.sql` that reverses its `migration.sql`:
+drop what it created, recreate what it dropped, and document any irreversible
+steps as comments. The `Migration rollback check` workflow blocks merge otherwise.
+
+## 7. Incident Contacts
 
 ### Escalation tiers
 

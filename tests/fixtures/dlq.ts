@@ -10,7 +10,7 @@ export const FIXTURE_DLQ_PENDING = {
   retryCount: 0,
   createdAt: new Date('2024-01-01T00:00:00Z'),
   updatedAt: new Date('2024-01-01T00:00:00Z'),
-};
+}
 
 export const FIXTURE_DLQ_RETRIED = {
   id: 'dlq-0002-0002-0002-000000000002',
@@ -24,7 +24,7 @@ export const FIXTURE_DLQ_RETRIED = {
   retryCount: 2,
   createdAt: new Date('2024-01-01T01:00:00Z'),
   updatedAt: new Date('2024-01-01T02:00:00Z'),
-};
+}
 
 export const FIXTURE_DLQ_RESOLVED = {
   id: 'dlq-0003-0003-0003-000000000003',
@@ -38,10 +38,10 @@ export const FIXTURE_DLQ_RESOLVED = {
   retryCount: 1,
   createdAt: new Date('2024-01-01T02:00:00Z'),
   updatedAt: new Date('2024-01-01T03:00:00Z'),
-};
+}
 
 export function makeDlqEntry(
-  overrides: Partial<typeof FIXTURE_DLQ_PENDING> = {},
+  overrides: Partial<typeof FIXTURE_DLQ_PENDING> = {}
 ) {
-  return { ...FIXTURE_DLQ_PENDING, ...overrides };
+  return { ...FIXTURE_DLQ_PENDING, ...overrides }
 }

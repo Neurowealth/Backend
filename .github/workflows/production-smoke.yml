@@ -41,13 +41,13 @@ jobs:
       STELLAR_AGENT_SECRET_KEY: SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
       VAULT_CONTRACT_ID: CDUMMYVAULTCONTRACTID
       USDC_TOKEN_ADDRESS: CDUMMYUSDC
-      ANTHROPIC_API_KEY: smoke-anthropic-key
+      ANTHROPIC_API_KEY: sk-ant-smoke-key
       JWT_SEED: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
       JWT_SESSION_TTL_HOURS: '24'
       JWT_NONCE_TTL_MS: '300000'
       JWT_CLEANUP_INTERVAL_MS: '86400000'
       WALLET_ENCRYPTION_KEY: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
-      TWILIO_AUTH_TOKEN: smoke-twilio-token
+      TWILIO_AUTH_TOKEN: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
     steps:
       - name: Checkout repository
@@ -56,7 +56,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       - name: Install dependencies (build)
@@ -78,4 +78,4 @@ jobs:
         run: npx prisma@5.22.0 generate
 
       - name: Run startup smoke check (/health)
-        run: npm run smoke:health
+        run: npm run smoke

@@ -1,5 +1,8 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  // "metrics" exposes prisma.$metrics.json() — used to export connection-pool
+  // utilisation to Prometheus (see src/jobs/poolMetrics.ts).
+  previewFeatures = ["metrics"]
 }
 
 datasource db {
@@ -19,6 +22,10 @@ enum TransactionType {
   YIELD_CLAIM
   REBALANCE
   SWAP
+  // Platform-funded referral reward payout. Distinct from user-initiated
+  // activity so it is auditable and, for tax purposes (#284), identifiable as
+  // realized income rather than a return on the user's own capital.
+  REFERRAL_REWARD
 }
 
 enum TransactionStatus {
@@ -41,6 +48,11 @@ enum AgentAction {
   ANALYZE
   ALERT
   CLAIM_YIELD
+  // Progress snapshot for an ACTIVE SavingsGoal (#281) — logged whenever the
+  // goal progress endpoint or strategy engine recomputes trajectory, so a
+  // goal's trend is inspectable via AgentLog the same way rebalance decisions
+  // already are.
+  GOAL_PROGRESS
 }
 
 enum AgentStatus {
@@ -55,62 +67,285 @@ enum DeadLetterEventStatus {
   RESOLVED
 }
 
-model User {
-  id            String   @id @default(uuid())
-  walletAddress String   @unique
-  network       Network  @default(MAINNET)
-  displayName   String?
-  email         String?  @unique
-  avatarUrl     String?
-  riskTolerance Int      @default(5)
-  isActive      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+// #325 — durable outbox for on-chain money movements.
+enum OutboxOpKind {
+  DEPOSIT
+  WITHDRAW
+  REBALANCE
+  RECURRING_DEPOSIT
+  REFERRAL_REWARD
+  YIELD_CLAIM
+}
 
-  sessions     Session[]
-  positions    Position[]
-  transactions Transaction[]
-  agentLogs    AgentLog[]
+enum OutboxOpActor {
+  USER
+  AGENT
+  SYSTEM
+}
+
+// CRITICAL: user withdrawals (capital leaving the platform).
+// NORMAL: recurring deposits / referral rewards.
+// LOW: agent-triggered rebalances.
+enum OutboxPriority {
+  CRITICAL
+  NORMAL
+  LOW
+}
+
+enum OutboxOpStatus {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+  CANCELLED
+}
+
+enum FiatDirection {
+  ON_RAMP
+  OFF_RAMP
+}
+
+enum FiatOrderStatus {
+  PENDING
+  PROCESSING
+  SETTLED
+  FAILED
+  REFUNDED
+}
+
+enum ReferralStatus {
+  PENDING
+  ACTIVATED
+  REWARDED
+  EXPIRED
+}
+
+enum DepositCadence {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+}
+
+enum RecurringDepositPlanStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+// Where an acquisition/disposal USD price came from (#284). Only stablecoins
+// are priced in v1; anything else is stored with a null price and surfaced as
+// unpriced in the tax report — never silently zeroed.
+enum PriceSource {
+  STABLECOIN_ASSUMPTION
+  // #317 — see src/tax/pricing.ts's source hierarchy.
+  USER_DECLARED // an explicit price the user supplied (e.g. at deposit time)
+  MARKET_FEED // a volatile-asset price feed snapshot — stubbed (always null) in v1
+}
+
+// #317 — cost-basis consumption order. FIFO is the default and preserves
+// every pre-existing user's realized-gain figures unchanged.
+enum AccountingMethod {
+  FIFO
+  LIFO
+  HIFO
+  SPECIFIC_ID
+}
+
+enum GoalStatus {
+  ACTIVE
+  ACHIEVED
+  MISSED
+  CANCELLED
+}
+
+// User-defined alert rules (#289). Distinct from the operator-facing
+// Prometheus/Grafana alerting in docs/OBSERVABILITY.md — these watch
+// portfolio/market conditions the end user cares about.
+enum AlertMetric {
+  PROTOCOL_APY
+  PORTFOLIO_VALUE
+  POSITION_DRAWDOWN
+  DRIFT
+  VOLATILITY_REGIME
+  ANOMALY
+}
+
+enum Comparator {
+  LT
+  LTE
+  GT
+  GTE
+}
+
+enum DeliveryChannel {
+  WEBHOOK
+  WHATSAPP
+  BOTH
+  EMAIL
+  ALL
+}
+
+enum SubAccountPermission {
+  VIEW
+  DEPOSIT
+  WITHDRAW
+  MANAGE_STRATEGY
+}
+
+enum SubAccountStatus {
+  ACTIVE
+  REVOKED
+}
+
+model User {
+  id                String           @id @default(uuid())
+  walletAddress     String           @unique
+  network           Network          @default(MAINNET)
+  displayName       String?
+  email             String?          @unique
+  avatarUrl         String?
+  // E.164 WhatsApp number, when known. Nullable because most users onboard via
+  // wallet auth and never link a number. Used as the WhatsApp delivery
+  // destination for alert rules (#289); alerts on the WHATSAPP/BOTH channel are
+  // skipped (logged, not errored) for users without a number on file.
+  phone             String?          @unique
+  riskTolerance     Int              @default(5)
+  rebalanceStrategy String? // 'MAX_YIELD' | 'TARGET_ALLOCATION' | null (defaults to MAX_YIELD)
+  strategyConfig    Json? // e.g. { "targetAllocations": { "Blend": 50, "Stellar DEX": 30, "Luma": 20 } }
+  isActive          Boolean          @default(true)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  // #317 — cost-basis consumption method for the tax report. Changing this
+  // is forward-only: methodEffectiveAt stamps when a change took effect, so
+  // disposals recorded before it are never retroactively recomputed (see
+  // docs/TAX_REPORT.md).
+  accountingMethod  AccountingMethod @default(FIFO)
+  methodEffectiveAt DateTime?
+
+  sessions                Session[]
+  positions               Position[]
+  transactions            Transaction[]
+  agentLogs               AgentLog[]
+  webhookSubscriptions    WebhookSubscription[]
+  fiatOrders              FiatOrder[]
+  fiatQuoteLocks          FiatQuoteLock[]
+  referralCode            ReferralCode?
+  referralConversion      ReferralConversion?
+  recurringDepositPlans   RecurringDepositPlan[]
+  alertRules              AlertRule[]
+  costBasisLots           CostBasisLot[]
+  lotDisposals            LotDisposal[]
+  savingsGoals            SavingsGoal[]
+  publishedStrategy       PublishedStrategy?
+  strategyFollows         StrategyFollow[]
+  parentSubAccounts       SubAccount[]             @relation("ParentOf")
+  childSubAccounts        SubAccount[]             @relation("ChildOf")
+  allocationSuggestions   AllocationSuggestion[]
+  portfolioAttributions   PortfolioAttribution[]
+  portfolioRiskAggregates PortfolioRiskAggregate[]
+  approvalPolicies        ApprovalPolicy[]         @relation("ApprovalPolicyPrincipal")
+  approvalRequests        ApprovalRequest[]        @relation("ApprovalRequestPrincipal")
+  userEvents              UserEvent[]
+  userEventSequence       UserEventSequence?
+  userApiKeys             UserApiKey[]
+  userWebhookEndpoints    UserWebhookEndpoint[]
+  emailIdentity           EmailIdentity?
 
   @@map("users")
 }
 
+model UserApiKey {
+  id               String    @id @default(uuid())
+  userId           String
+  name             String
+  scopes           String[]
+  hash             String
+  tokenPrefix      String
+  ipAllowlist      String[]  @default([])
+  rateLimitPerMin  Int?
+  allowWithdrawals Boolean   @default(false)
+  lastUsedAt       DateTime?
+  lastUsedIp       String?
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenPrefix])
+  @@map("user_api_keys")
+}
+
+model IdempotencyRecord {
+  id             String    @id @default(uuid())
+  userId         String
+  idempotencyKey String
+  fingerprint    String
+  status         String // in_progress | completed
+  statusCode     Int?
+  responseBody   Json?
+  completedAt    DateTime?
+  expiresAt      DateTime
+  createdAt      DateTime  @default(now())
+
+  @@unique([userId, idempotencyKey])
+  @@index([expiresAt])
+  @@map("idempotency_records")
+}
+
 model Session {
-  id            String   @id @default(uuid())
-  userId        String
-  token         String   @unique
-  walletAddress String
-  network       Network
-  expiresAt     DateTime
-  ipAddress     String?
-  userAgent     String?
-  createdAt     DateTime @default(now())
+  id                    String    @id @default(uuid())
+  userId                String
+  token                 String    @unique
+  walletAddress         String
+  network               Network
+  expiresAt             DateTime
+  refreshTokenHash      String?
+  refreshTokenExpiresAt DateTime?
+  ipAddress             String?
+  userAgent             String?
+  label                 String?
+  deviceType            String?
+  lastSeenAt            DateTime?
+  lastSeenIp            String?
+  revokedAt             DateTime?
+  revokedReason         String?
+  approxLocation        String?
+  createdAt             DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([expiresAt])
   @@index([userId, expiresAt])
+  @@index([revokedAt])
   @@map("sessions")
 }
 
 model AdminApiKey {
-  id        String    @id @default(uuid())
-  name      String    @unique
-  role      String
-  scopes    String[]
-  hash      String
-  expiresAt DateTime?
-  revokedAt DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  lastUsedAt DateTime?
+  id          String    @id @default(uuid())
+  name        String    @unique
+  role        String
+  scopes      String[]
+  hash        String
+  // SHA-256 of the raw token ("sha256:<hex>"). A deterministic lookup key that
+  // narrows candidates before the expensive bcrypt compare against `hash`.
+  // Nullable only so the migration is safe on pre-existing rows; keys without
+  // one cannot be authenticated and must be re-issued.
+  tokenPrefix String?
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastUsedAt  DateTime?
 
   auditLogs AdminAuditLog[]
 
   @@index([role])
   @@index([revokedAt])
   @@index([expiresAt])
+  @@index([tokenPrefix])
   @@map("admin_api_keys")
 }
 
@@ -138,6 +373,41 @@ model AdminAuditLog {
   @@map("admin_audit_logs")
 }
 
+enum AuditBlockType {
+  EVENT_BATCH
+  TXN_BATCH
+  ADMIN_BATCH
+  ANCHOR
+}
+
+model AuditBlock {
+  id           String         @id @default(uuid())
+  height       Int            @unique
+  prevHash     String
+  hash         String         @unique
+  blockType    AuditBlockType
+  payloadCount Int            @default(0)
+  payloadHash  String
+  createdAt    DateTime       @default(now())
+
+  @@index([blockType])
+  @@index([createdAt])
+  @@map("audit_blocks")
+}
+
+model AuditPayloadHash {
+  id          String   @id @default(uuid())
+  tableName   String
+  kind        String
+  payloadHash String
+  createdAt   DateTime @default(now())
+
+  @@index([tableName])
+  @@index([kind])
+  @@index([payloadHash])
+  @@map("audit_payload_hashes")
+}
+
 model Position {
   id              String         @id @default(uuid())
   userId          String
@@ -155,6 +425,7 @@ model Position {
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   transactions   Transaction[]
   yieldSnapshots YieldSnapshot[]
+  savingsGoals   SavingsGoal[]
 
   @@index([userId])
   @@index([status])
@@ -166,24 +437,33 @@ model Position {
 }
 
 model Transaction {
-  id           String            @id @default(uuid())
-  userId       String
-  positionId   String?
-  txHash       String?           @unique
-  type         TransactionType
-  status       TransactionStatus @default(PENDING)
-  assetSymbol  String
-  amount       Decimal           @db.Decimal(36, 18)
-  fee          Decimal?          @db.Decimal(36, 18)
-  network      Network
-  protocolName String?
-  memo         String?
-  confirmedAt  DateTime?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+  id             String            @id @default(uuid())
+  userId         String
+  actingAsUserId String? // non-null when action was performed by a parent on behalf of a child
+  positionId     String?
+  txHash         String?           @unique
+  type           TransactionType
+  status         TransactionStatus @default(PENDING)
+  assetSymbol    String
+  amount         Decimal           @db.Decimal(36, 18)
+  fee            Decimal?          @db.Decimal(36, 18)
+  network        Network
+  protocolName   String?
+  memo           String?
+  confirmedAt    DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  // #317 — SPECIFIC_ID lot selection for a WITHDRAWAL, captured at request
+  // time so the Stellar event listener (the sole writer of disposal rows,
+  // see docs/TAX_REPORT.md) has it once the on-chain event confirms. Empty
+  // for every other accounting method and for all non-withdrawal types.
+  selectedLotIds String[]          @default([])
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  position Position? @relation(fields: [positionId], references: [id])
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  position     Position?     @relation(fields: [positionId], references: [id])
+  fiatOrders   FiatOrder[]
+  costBasisLot CostBasisLot?
+  lotDisposals LotDisposal[]
 
   @@index([userId])
   @@index([positionId])
@@ -191,6 +471,7 @@ model Transaction {
   @@index([status])
   @@index([createdAt])
   @@index([userId, createdAt])
+  @@index([actingAsUserId])
   @@map("transactions")
 }
 
@@ -218,6 +499,7 @@ model ProtocolRate {
   borrowApy    Decimal? @db.Decimal(10, 6)
   tvl          Decimal? @db.Decimal(36, 2)
   network      Network
+  rawResponse  String?
   fetchedAt    DateTime @default(now())
 
   @@unique([protocolName, assetSymbol, network, fetchedAt])
@@ -227,18 +509,53 @@ model ProtocolRate {
   @@map("protocol_rates")
 }
 
+// Audit posture of a protocol, mirrored from the AuditStatusValue string union
+// in src/config/protocolRiskMetadata.ts. Values must stay in sync with that
+// union since the scoring job persists it directly.
+enum AuditStatus {
+  UNAUDITED
+  SELF_REPORTED
+  THIRD_PARTY_AUDITED
+}
+
+// ProtocolRiskScore — quantitative, transparent risk score per protocol.
+// Recomputed on a schedule from ProtocolRate history plus curated audit/age
+// metadata (see src/config/protocolRiskMetadata.ts). See
+// docs/PROTOCOL_RISK_SCORING.md for the scoring methodology.
+model ProtocolRiskScore {
+  id                  String      @id @default(uuid())
+  protocolName        String      @unique
+  score               Int // normalized 0-100, higher = lower risk
+  tvlTrendFactor      Float
+  apyVolatilityFactor Float
+  auditStatus         AuditStatus
+  protocolAgeDays     Int
+  // True when there is not enough rate history to compute volatility/trend
+  // meaningfully. Such protocols score conservatively low and are flagged
+  // rather than presented with a misleadingly neutral score.
+  insufficientHistory Boolean     @default(false)
+  // Number of ProtocolRate samples the factors were computed from — surfaced
+  // in the transparency endpoint so users can judge confidence in the score.
+  sampleCount         Int         @default(0)
+  computedAt          DateTime    @default(now())
+
+  @@index([score])
+  @@map("protocol_risk_scores")
+}
+
 model AgentLog {
-  id           String      @id @default(uuid())
-  userId       String?     // null for system-level actions (scans, alerts)
-  positionId   String?     // set when log is tied to a specific position
-  action       AgentAction
-  status       AgentStatus
-  reasoning    String?     @db.Text
-  inputData    Json?
-  outputData   Json?
-  errorMessage String?
-  durationMs   Int?
-  createdAt    DateTime    @default(now())
+  id             String      @id @default(uuid())
+  userId         String? // null for system-level actions (scans, alerts)
+  actingAsUserId String? // non-null when action was performed by a parent on behalf of a child
+  positionId     String? // set when log is tied to a specific position
+  action         AgentAction
+  status         AgentStatus
+  reasoning      String?     @db.Text
+  inputData      Json?
+  outputData     Json?
+  errorMessage   String?
+  durationMs     Int?
+  createdAt      DateTime    @default(now())
 
   user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -249,26 +566,27 @@ model AgentLog {
   @@index([userId, status])
   @@index([createdAt])
   @@index([userId, createdAt])
+  @@index([actingAsUserId])
   @@map("agent_logs")
 }
 
 model EventCursor {
-  id                   String   @id @default(uuid())
-  contractId           String   @unique
-  lastProcessedLedger  Int
-  lastProcessedAt      DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                  String   @id @default(uuid())
+  contractId          String   @unique
+  lastProcessedLedger Int
+  lastProcessedAt     DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@map("event_cursors")
 }
 
 model ProcessedEvent {
-  id           String   @id @default(uuid())
-  contractId   String
-  txHash       String
-  eventType    String
-  ledger       Int
-  processedAt  DateTime @default(now())
+  id          String   @id @default(uuid())
+  contractId  String
+  txHash      String
+  eventType   String
+  ledger      Int
+  processedAt DateTime @default(now())
 
   @@unique([contractId, txHash, eventType, ledger])
   @@index([contractId])
@@ -279,23 +597,75 @@ model ProcessedEvent {
 }
 
 model DeadLetterEvent {
-  id          String                @id @default(uuid())
-  contractId  String
-  txHash      String
-  eventType   String
-  ledger      Int
-  error       String                @db.Text
-  payload     Json
-  status      DeadLetterEventStatus @default(PENDING)
-  retryCount  Int                   @default(0)
-  createdAt   DateTime              @default(now())
-  updatedAt   DateTime              @updatedAt
+  id         String                @id @default(uuid())
+  contractId String
+  txHash     String
+  eventType  String
+  ledger     Int
+  error      String                @db.Text
+  payload    Json
+  status     DeadLetterEventStatus @default(PENDING)
+  retryCount Int                   @default(0)
+  createdAt  DateTime              @default(now())
+  updatedAt  DateTime              @updatedAt
 
   @@index([status])
   @@index([contractId])
   @@index([txHash])
   @@index([createdAt])
   @@map("dead_letter_events")
+}
+
+// Durable outbox + prioritized dispatcher for on-chain money movements (#325).
+// This is the single choke point every write to the vault contract must pass
+// through — src/outbox/executors.ts is the only module besides
+// src/stellar/contract.ts itself allowed to call the raw write functions
+
+// (enforced by tests/unit/outbox/structural.test.ts).
+model OutboxOp {
+  id String @id @default(uuid())
+
+  // Deterministic per-caller anchor (e.g. "DEPOSIT:<userId>:<transactionId>").
+  // Guarantees at-most-once submission across dispatcher crashes/restarts —
+  // see src/outbox/idempotency.ts.
+  idempotencyKey String @unique
+
+  userId String
+  kind   OutboxOpKind
+  actor  OutboxOpActor
+
+  // The exact, validated operation: { method, params, asset, amount,
+  // destination, ... } — never a key, never unvalidated user input.
+  payload Json
+
+  priority OutboxPriority
+  status   OutboxOpStatus @default(PENDING)
+
+  // Set once the dispatcher successfully submits to the network.
+  txHash String? @unique
+
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime?
+  error         String?   @db.Text
+
+  submittedAt DateTime?
+  confirmedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Which signer (Stellar public key) this op executes under. The dispatcher
+  // serializes ops sharing a signer so sequence-number ordering on that
+  // account is never raced (see src/outbox/signerLock.ts). Populated at
+  // claim time, once the signer is known.
+  signerPublicKey String?
+
+  @@index([status, priority, createdAt])
+  @@index([userId])
+  @@index([kind])
+  @@index([signerPublicKey, status])
+  @@index([status, nextAttemptAt])
+  @@map("outbox_ops")
 }
 
 model CustodialWallet {
@@ -305,11 +675,50 @@ model CustodialWallet {
   encryptedSecret String
   iv              String
   authTag         String
+  keyVersion      Int      @default(1)
+  // Which WalletEncryptionKey encrypted this row, set at write time. Null on
+  // rows written before provenance tracking existed (#323) — such rows are
+  // read via the legacy dual-key fallback in src/stellar/wallet.ts until a
+  // backfill (scripts/backfill-wallet-key-provenance.ts) or a rotation writes
+  // a value here. Deliberately not a required FK for that reason.
+  encryptionKeyId String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  encryptionKey WalletEncryptionKey? @relation(fields: [encryptionKeyId], references: [id])
+
   @@index([userId])
+  @@index([keyVersion])
+  @@index([encryptionKeyId])
   @@map("custodial_wallets")
+}
+
+enum KeyStatus {
+  ACTIVE
+  RETIRED
+  COMPROMISED
+}
+
+/// Registry of wallet-encryption key *metadata* (#323) — never the key
+/// material itself. `hash` is SHA-256 over the hex key, letting a
+/// CustodialWallet row's `encryptionKeyId` prove which key encrypted it
+/// without the registry ever holding anything an attacker could decrypt
+/// with. See src/keys/registry.ts.
+model WalletEncryptionKey {
+  id            String    @id @default(uuid())
+  keyLabel      String    @unique
+  hash          String    @unique
+  status        KeyStatus @default(ACTIVE)
+  rotatedFromId String?
+  createdAt     DateTime  @default(now())
+  retiredAt     DateTime?
+
+  rotatedFrom WalletEncryptionKey?  @relation("KeyRotation", fields: [rotatedFromId], references: [id])
+  rotatedTo   WalletEncryptionKey[] @relation("KeyRotation")
+  wallets     CustodialWallet[]
+
+  @@index([status])
+  @@map("wallet_encryption_keys")
 }
 
 model AuthNonce {
@@ -321,4 +730,832 @@ model AuthNonce {
 
   @@index([expiresAt])
   @@map("auth_nonces")
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+model WebhookSubscription {
+  id                 String    @id @default(uuid())
+  userId             String
+  url                String
+  events             String[]
+  secret             String
+  secretNext         String?
+  secretNextActiveAt DateTime?
+  isActive           Boolean   @default(true)
+  autoReplay         Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries  WebhookDelivery[]
+  deadLetters WebhookDeadLetter[]
+
+  @@index([userId])
+  @@map("webhook_subscriptions")
+}
+
+model WebhookDelivery {
+  id             String                @id @default(uuid())
+  subscriptionId String
+  event          String
+  payload        Json
+  statusCode     Int?
+  attempts       Int                   @default(0)
+  status         WebhookDeliveryStatus @default(PENDING)
+  error          String?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("webhook_deliveries")
+}
+
+model WebhookDeadLetter {
+  id             String   @id @default(uuid())
+  subscriptionId String
+  event          String
+  payload        Json
+  firstFailedAt  DateTime
+  lastError      String
+  attempts       Int
+  status         String // PENDING | REPLAYED | RESOLVED | DISCARDED
+  createdAt      DateTime @default(now())
+
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId, status])
+  @@map("webhook_dead_letters")
+}
+
+/// User-defined price & yield alert rule (#289).
+///
+/// Evaluated on a schedule by src/jobs/alertRules.ts against the latest
+/// ProtocolRate (PROTOCOL_APY) or the user's Position/YieldSnapshot data
+/// (PORTFOLIO_VALUE, POSITION_DRAWDOWN). Fires only when the comparator
+/// condition holds AND lastFiredAt is outside the cooldown window, so a rule
+/// sitting at its threshold notifies once per cooldown rather than every tick.
+model AlertRule {
+  id              String          @id @default(uuid())
+  userId          String
+  metric          AlertMetric
+  protocolName    String? // required when metric = PROTOCOL_APY
+  comparator      Comparator
+  // Compared against APY as a percentage (e.g. 5 == 5%) for PROTOCOL_APY,
+  // against USD value for PORTFOLIO_VALUE, and against percentage drawdown
+  // from the rolling 30-day peak for POSITION_DRAWDOWN.
+  threshold       Decimal         @db.Decimal(36, 18)
+  deliveryChannel DeliveryChannel
+  cooldownMinutes Int             @default(60)
+  lastFiredAt     DateTime?
+  snoozedUntil    DateTime?
+  snoozeReason    String?
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isActive, metric])
+  @@map("alert_rules")
+}
+
+model SubAccount {
+  id           String                 @id @default(uuid())
+  parentUserId String
+  childUserId  String
+  permissions  SubAccountPermission[]
+  status       SubAccountStatus       @default(ACTIVE)
+  createdAt    DateTime               @default(now())
+  revokedAt    DateTime?
+
+  parent User @relation("ParentOf", fields: [parentUserId], references: [id], onDelete: Cascade)
+  child  User @relation("ChildOf", fields: [childUserId], references: [id], onDelete: Cascade)
+
+  @@unique([parentUserId, childUserId])
+  @@index([parentUserId])
+  @@index([childUserId])
+  @@index([status])
+  @@map("sub_accounts")
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  EXECUTED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+/// Multi-signature approval policy (#314). Governs one permission class
+/// (WITHDRAW/DEPOSIT/MANAGE_STRATEGY) for a principal's own account
+/// (scopedToChildUserId = null) or for a specific sub-account relationship
+/// (scopedToChildUserId = the child). A null highValueThreshold means the
+/// policy applies to every operation of that permission, not just large ones.
+/// Pending requests snapshot the policy that created them (see
+/// ApprovalRequest.minApprovers) — editing or deactivating a policy never
+/// changes an already-open request, only new ones.
+model ApprovalPolicy {
+  id                  String               @id @default(uuid())
+  principalUserId     String
+  scopedToChildUserId String?
+  permission          SubAccountPermission
+  minApprovers        Int
+  highValueThreshold  Decimal?             @db.Decimal(36, 18)
+  approvalTimeoutMs   Int
+  isActive            Boolean              @default(true)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  principal User              @relation("ApprovalPolicyPrincipal", fields: [principalUserId], references: [id], onDelete: Cascade)
+  requests  ApprovalRequest[]
+
+  @@index([principalUserId, permission, isActive])
+  @@index([scopedToChildUserId, permission, isActive])
+  @@map("approval_policies")
+}
+
+/// One high-value/sensitive operation held at PENDING_APPROVAL. Status
+/// machine: PENDING -> APPROVED -> EXECUTED (terminal, on-chain finality,
+/// never un-executed); PENDING -> REJECTED / EXPIRED / CANCELLED. `payload`
+/// is the exact operation to re-run on execution (see
+/// src/approvals/service.ts's guardOperation/decide). `minApprovers` is
+/// snapshotted from the policy at request time so a later policy edit never
+/// changes an open request's threshold.
+model ApprovalRequest {
+  id             String               @id @default(uuid())
+  policyId       String
+  userId         String
+  actingAsUserId String
+  permission     SubAccountPermission
+  amount         Decimal              @db.Decimal(36, 18)
+  assetSymbol    String
+  payload        Json
+  status         ApprovalStatus       @default(PENDING)
+  minApprovers   Int
+  requestedAt    DateTime             @default(now())
+  expiresAt      DateTime
+  executedAt     DateTime?
+  executedTxId   String?
+  cancelledById  String?
+  reason         String?
+
+  policy    ApprovalPolicy @relation(fields: [policyId], references: [id])
+  user      User           @relation("ApprovalRequestPrincipal", fields: [userId], references: [id], onDelete: Cascade)
+  approvals Approval[]
+
+  @@index([userId, status])
+  @@index([status, expiresAt])
+  @@map("approval_requests")
+}
+
+/// One approver's decision on an ApprovalRequest. The unique constraint is
+/// the concurrency primitive: two approvals landing simultaneously cannot
+/// both be recorded for the same (request, approver) pair, and threshold-met
+/// detection is a conditional UPDATE on the request, never check-then-act.
+model Approval {
+  id             String   @id @default(uuid())
+  requestId      String
+  approverUserId String
+  approved       Boolean
+  note           String?
+  createdAt      DateTime @default(now())
+
+  request ApprovalRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, approverUserId])
+  @@index([requestId])
+  @@map("approvals")
+}
+
+/// Fiat on-ramp / off-ramp order (#290).
+/// Tracks the off-chain payment leg of a fiat<->crypto conversion handled by a
+/// third-party provider (e.g. MoonPay). The on-chain settlement is reconciled
+/// against the existing Stellar event listener rather than trusting the
+/// provider's webhook alone. No plaintext bank/card details are ever stored
+/// here — the provider's hosted checkout captures all PII/payment details.
+model FiatOrder {
+  id                  String          @id @default(uuid())
+  userId              String
+  provider            String // e.g. "moonpay" — provider key, no provider-specific logic elsewhere
+  providerOrderId     String
+  direction           FiatDirection
+  fiatAmount          Decimal         @db.Decimal(36, 18)
+  fiatCurrency        String
+  cryptoAmount        Decimal?        @db.Decimal(36, 18)
+  assetSymbol         String
+  status              FiatOrderStatus @default(PENDING)
+  transactionId       String? // linked once the resulting on-chain Transaction is matched
+  checkoutUrl         String? // provider hosted checkout URL (on-ramp)
+  kycUrl              String? // provider KYC next-step link, surfaced to the user when required
+  failureReason       String? // populated on FAILED/REFUNDED for operator/user visibility
+  settledAt           DateTime?
+  // Best-execution / rate-drift protection (#313). quoteRate/quotedCryptoAmount
+  // and fees are captured from the locked quote at order-creation time so
+  // cryptoAmount is never an unexplained number; settledRate/settledCryptoAmount
+  // are populated at on-chain settlement so the quoted-vs-settled delta is
+  // always inspectable on the order itself.
+  quoteRate           Decimal?        @db.Decimal(36, 18)
+  quotedCryptoAmount  Decimal?        @db.Decimal(36, 18)
+  fees                Json? // structured FeeBreakdown; null means the provider could not price it (unpriced, never assumed 0)
+  providerQuoteId     String?
+  rateLockExpiresAt   DateTime?
+  settledRate         Decimal?        @db.Decimal(36, 18)
+  settledCryptoAmount Decimal?        @db.Decimal(36, 18)
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@unique([provider, providerOrderId])
+  @@index([userId])
+  @@index([provider, providerOrderId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("fiat_orders")
+}
+
+/// A time-boxed, provider-pinned quote returned by the best-execution quote
+/// flow (#313). Order creation may reference a lock's id (`quoteId`) instead of
+/// re-quoting; the lock is consumed exactly once and rejected past `expiresAt`
+/// with `quote_expired` so a stale rate is never silently honored.
+model FiatQuoteLock {
+  id              String        @id @default(uuid())
+  userId          String
+  provider        String
+  direction       FiatDirection
+  fiatAmount      Decimal       @db.Decimal(36, 18)
+  fiatCurrency    String
+  assetSymbol     String
+  cryptoAmount    Decimal       @db.Decimal(36, 18)
+  rate            Decimal?      @db.Decimal(36, 18)
+  fees            Json?
+  providerQuoteId String?
+  expiresAt       DateTime
+  consumedAt      DateTime?
+  createdAt       DateTime      @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([provider])
+  @@map("fiat_quote_locks")
+}
+
+/// A user's own single-level referral code (#growth). One code per user; the
+/// same code is returned on repeated requests. Sharing this code lets a new
+/// user attribute their signup to the owner.
+model ReferralCode {
+  id          String   @id @default(uuid())
+  ownerUserId String   @unique
+  code        String   @unique
+  createdAt   DateTime @default(now())
+
+  owner       User                 @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  conversions ReferralConversion[]
+
+  @@index([code])
+  @@map("referral_codes")
+}
+
+/// One referral attribution + its lifecycle. Created in PENDING at signup time
+/// (attribution at the source). Advances to ACTIVATED only when a real,
+/// on-chain-confirmed deposit Transaction crosses the activation threshold —
+/// never on a client-reported claim. The payout job then pays both parties and
+/// moves the row to REWARDED. A row stuck at ACTIVATED means a payout is still
+/// owed and retriable; it is never un-activated once ACTIVATED (on-chain
+/// finality). `referredUserId` is unique — one referral credit per user, ever.
+model ReferralConversion {
+  id                 String         @id @default(uuid())
+  referralCodeId     String
+  referredUserId     String         @unique
+  activatedAt        DateTime?
+  activationTxId     String? // the confirmed deposit Transaction that satisfied activation
+  status             ReferralStatus @default(PENDING)
+  ownerRewardTxId    String? // REFERRAL_REWARD Transaction paid to the referrer
+  referredRewardTxId String? // REFERRAL_REWARD Transaction paid to the referred user
+  payoutError        String? // last payout failure reason — kept for retriable visibility
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  referralCode ReferralCode @relation(fields: [referralCodeId], references: [id], onDelete: Cascade)
+  referredUser User         @relation(fields: [referredUserId], references: [id], onDelete: Cascade)
+
+  @@index([referralCodeId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("referral_conversions")
+}
+
+model RecurringDepositPlan {
+  id            String                     @id @default(uuid())
+  userId        String
+  amount        Decimal                    @db.Decimal(36, 18)
+  assetSymbol   String
+  cadence       DepositCadence
+  nextRunAt     DateTime
+  status        RecurringDepositPlanStatus @default(ACTIVE)
+  lastRunAt     DateTime?
+  lastRunStatus String?
+  createdAt     DateTime                   @default(now())
+  updatedAt     DateTime                   @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status, nextRunAt])
+  @@map("recurring_deposit_plans")
+}
+
+/// Cost-basis lot for tax reporting (#284). Exactly one lot per confirmed
+/// on-chain DEPOSIT Transaction (`transactionId` unique — the idempotency
+/// anchor under event replay). `remainingAmount` is decremented by FIFO
+/// disposals and must never go negative. Prices are nullable: an unpriced
+/// asset stays null and is excluded from report totals with a caveat — never
+/// silently zeroed. The schema carries no accounting-method column; FIFO
+/// consumption order lives in src/tax/fifo.ts so LIFO could be added later
+/// without a schema change.
+model CostBasisLot {
+  id               String       @id @default(uuid())
+  userId           String
+  transactionId    String       @unique
+  assetSymbol      String
+  originalAmount   Decimal      @db.Decimal(36, 18)
+  remainingAmount  Decimal      @db.Decimal(36, 18)
+  acquisitionPrice Decimal?     @db.Decimal(36, 18)
+  priceSource      PriceSource?
+  acquiredAt       DateTime
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction   @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  disposals   LotDisposal[]
+
+  @@index([userId, assetSymbol, acquiredAt])
+  @@map("cost_basis_lots")
+}
+
+/// One lot's share of a withdrawal (#284). A withdrawal Transaction may span
+/// many lots, so `transactionId` is NOT unique — idempotency comes from
+/// `@@unique([transactionId, lotId])` plus an exists-check in the recorder.
+/// `userId`/`assetSymbol` are denormalized so the tax report reads without
+/// joins. Money fields snapshot values at disposal time, making the report an
+/// immutable ledger read; null money fields mean "unpriced", never zero.
+model LotDisposal {
+  id            String   @id @default(uuid())
+  lotId         String
+  userId        String
+  assetSymbol   String
+  transactionId String
+  amount        Decimal  @db.Decimal(36, 18)
+  disposalPrice Decimal? @db.Decimal(36, 18)
+  costBasis     Decimal? @db.Decimal(36, 18)
+  proceeds      Decimal? @db.Decimal(36, 18)
+  realizedGain  Decimal? @db.Decimal(36, 18)
+  disposedAt    DateTime
+  createdAt     DateTime @default(now())
+
+  lot         CostBasisLot @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction  @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@unique([transactionId, lotId])
+  @@index([userId, disposedAt])
+  @@map("lot_disposals")
+}
+
+/// Goal-based investing (#281). A user-stated target amount + date the agent's
+/// strategy selection is driven by. Required-rate projection reuses the same
+/// simple (non-compounding) APY convention as YieldSnapshot/calculateApy for
+/// consistency with live APY reporting — compounding-aware modeling is tracked
+/// separately (#225). One ACTIVE goal per user is enforced at the API layer,
+/// not via a DB constraint, since past goals (ACHIEVED/MISSED/CANCELLED) are
+/// kept for history.
+model SavingsGoal {
+  id             String     @id @default(uuid())
+  userId         String
+  positionId     String?
+  targetAmount   Decimal    @db.Decimal(36, 18)
+  startingAmount Decimal    @db.Decimal(36, 18)
+  targetDate     DateTime
+  riskCeiling    Int? // optional min protocol risk score (0-100), matches UserStrategyPreferences.riskCeiling
+  status         GoalStatus @default(ACTIVE)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  position Position? @relation(fields: [positionId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([userId, status])
+  @@map("savings_goals")
+}
+
+/// Strategy marketplace (#285). An opt-in, anonymized snapshot of one user's
+/// agent *configuration* — never funds, never custody, never keys. Publishing
+/// copies nothing but `{ strategyName, targetAllocations?, riskCeiling? }`, the
+/// exact three keys the agent loop reads off User.strategyConfig.
+///
+/// One row per user (`userId @unique`): publish always acts on the caller, so
+/// re-publishing upserts rather than accumulating rows. `label` is user-supplied
+/// free text and is the one self-doxx vector — the Zod validator in
+/// src/validators/strategy-validators.ts rejects Stellar addresses and long hex
+/// runs. Nothing in this model or its query paths may expose `userId` to
+/// another user; see docs/STRATEGY_MARKETPLACE.md for the privacy boundary.
+///
+/// `configVersion` is bumped ONLY on a material config change (a `label` edit is
+/// cosmetic and must not spam followers) and is what drives follower
+/// notifications and re-snapshotting.
+model PublishedStrategy {
+  id             String    @id @default(uuid())
+  userId         String    @unique
+  label          String
+  strategyConfig Json
+  configVersion  Int       @default(1)
+  isPublished    Boolean   @default(false)
+  publishedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user         User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  followers    StrategyFollow[]
+  metrics      PublishedStrategyMetric[]
+  attributions StrategyAttribution[]
+
+  @@index([isPublished])
+  @@map("published_strategies")
+}
+
+/// A follower's opt-in link to a published strategy (#285).
+///
+/// `appliedConfig` is a SNAPSHOT, not a live read-through: it is what the agent
+/// actually applies. That is deliberate — when a publisher unpublishes or
+/// deletes their account the follower must keep working on their last-applied
+/// configuration rather than silently reverting. Hence `publishedStrategyId` is
+/// nullable with `onDelete: SetNull`: deleting the publisher orphans the follow
+/// with its config intact instead of cascading the follow row away.
+///
+/// "At most one active follow per user" is enforced structurally by a raw-SQL
+/// PARTIAL unique index (`WHERE "unfollowedAt" IS NULL`) added in the migration —
+/// Prisma cannot express partial uniques, so it is not visible here.
+model StrategyFollow {
+  id                   String    @id @default(uuid())
+  followerUserId       String
+  publishedStrategyId  String?
+  appliedConfig        Json
+  appliedConfigVersion Int
+  appliedAt            DateTime
+  followedAt           DateTime  @default(now())
+  unfollowedAt         DateTime?
+
+  follower          User               @relation(fields: [followerUserId], references: [id], onDelete: Cascade)
+  publishedStrategy PublishedStrategy? @relation(fields: [publishedStrategyId], references: [id], onDelete: SetNull)
+
+  @@index([followerUserId, unfollowedAt])
+  @@index([publishedStrategyId, unfollowedAt])
+  @@map("strategy_follows")
+}
+
+/// Precomputed leaderboard metrics for a published strategy (#285), one row per
+/// (strategy, window).
+///
+/// Persisted rather than computed per request for two reasons: the leaderboard
+/// must `ORDER BY` the score with `skip`/`take` (a JS-computed value cannot be
+/// ordered in SQL), and recomputing every publisher's 90-day snapshot history on
+/// a semi-public endpoint is a DoS vector. Same precedent as ProtocolRiskScore +
+/// src/jobs/protocolRiskScoring.ts.
+///
+/// `windowDays` is 30 or 90 only — src/agent/snapshotter.ts hard-deletes
+/// YieldSnapshot rows past 90 days, so a "1y" window would silently return a
+/// 90-day figure under a wrong label.
+///
+/// `isEligible` is the anti-gaming gate (track record + sample count + a
+/// computable Sharpe). Ineligible strategies are excluded from the leaderboard
+/// entirely rather than ranked low, so a one-day strategy posting a flattering
+/// APY never appears at all.
+model PublishedStrategyMetric {
+  id                  String   @id @default(uuid())
+  publishedStrategyId String
+  windowDays          Int
+  apy                 Float
+  sharpe              Float?
+  sampleCount         Int
+  trackRecordDays     Int
+  isEligible          Boolean  @default(false)
+  computedAt          DateTime @default(now())
+
+  publishedStrategy PublishedStrategy @relation(fields: [publishedStrategyId], references: [id], onDelete: Cascade)
+
+  @@unique([publishedStrategyId, windowDays])
+  @@index([windowDays, isEligible, sharpe])
+  @@index([windowDays, isEligible, apy])
+  @@map("published_strategy_metrics")
+}
+
+/// Precomputed performance attribution for one user's own portfolio (#320).
+///
+/// One row per (userId, windowDays), mirroring PublishedStrategyMetric's
+/// rationale: this must be readable by the API without recomputing a window's
+/// worth of daily YieldSnapshot + ProtocolRate history on every request. See
+/// src/jobs/attribution.ts and src/analytics/attribution.ts (the pure,
+/// zero-I/O Brinson-attribution + Cariño-linking core).
+///
+/// `sectorBreakdown` is JSON rather than a child table: it is small
+/// (bounded by the protocol universe), never queried/filtered/sorted on its
+/// own, and always read as a whole alongside the row that owns it — the same
+/// precedent as PortfolioOptimization's AllocationSuggestion.weights.
+model PortfolioAttribution {
+  id                 String   @id @default(uuid())
+  userId             String
+  windowDays         Int
+  portfolioReturn    Float
+  benchmarkReturn    Float
+  allocationEffect   Float
+  selectionEffect    Float
+  unattributedEffect Float
+  reconciliationGap  Float
+  reconciled         Boolean  @default(false)
+  benchmarkVersion   String
+  sectorBreakdown    Json
+  computedAt         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, windowDays])
+  @@index([userId])
+  @@map("portfolio_attributions")
+}
+
+/// Precomputed benchmark-relative performance attribution for a PUBLISHED
+/// strategy (#320) — what lets the marketplace show `vsBenchmark` next to
+/// `apy`/`sharpe` without recomputing per request. Same anonymization boundary
+/// as PublishedStrategyMetric: this row is derived from the publisher's own
+/// aggregates only and is never joined back to `userId` in a response (see
+/// docs/STRATEGY_MARKETPLACE.md).
+model StrategyAttribution {
+  id                  String   @id @default(uuid())
+  publishedStrategyId String
+  windowDays          Int
+  portfolioReturn     Float
+  benchmarkReturn     Float
+  allocationEffect    Float
+  selectionEffect     Float
+  unattributedEffect  Float
+  reconciliationGap   Float
+  reconciled          Boolean  @default(false)
+  benchmarkVersion    String
+  sectorBreakdown     Json
+  computedAt          DateTime @default(now())
+
+  publishedStrategy PublishedStrategy @relation(fields: [publishedStrategyId], references: [id], onDelete: Cascade)
+
+  @@unique([publishedStrategyId, windowDays])
+  @@index([publishedStrategyId])
+  @@map("strategy_attributions")
+}
+
+/// Portfolio-optimization suggestion (#322). One row per computed suggestion.
+///
+/// ADVISORY BY CONSTRUCTION. Persisting a suggestion never changes what the
+/// agent does — `User.strategyConfig` is the only thing the agent reads, and
+/// nothing in src/analytics/ may write it (enforced by a source-scanning test in
+/// tests/unit/analytics/structural.test.ts). Applying a suggestion is a separate,
+/// deliberate call by the user through the existing, already-validated strategy
+/// update path. Rows are kept rather than replaced so a user can see how the
+/// recommendation moved as their inputs changed.
+///
+/// `weights` is Json PERCENTAGES (sum 100 +/- 0.01), not Decimal — a deliberate
+/// deviation from the issue's "use Decimal for storage". The vector's entire
+/// purpose is to round-trip into User.strategyConfig.targetAllocations, which is
+/// itself a Json map of numbers validated by publishableConfigSchema. Storing
+/// Decimal would force a lossy re-conversion at the one place the value is ever
+/// consumed. PublishedStrategyMetric already sets the Float-for-computed-
+/// analytics precedent. See docs/PORTFOLIO_OPTIMIZATION.md.
+///
+/// `inputHash` is a sha256 over the canonical input snapshot (universe, mu,
+/// Sigma, riskTolerance, effective ceiling, constraints, lookback). Equal hashes
+/// must mean equal weights — that is what makes "did my recommendation actually
+/// change, or just my inputs?" answerable, and it is asserted by a determinism
+/// test.
+model AllocationSuggestion {
+  id                   String   @id @default(uuid())
+  userId               String
+  inputHash            String
+  /// ok | infeasible | insufficient_universe | non_converged
+  status               String
+  /// { "Blend": 42.5, ... } percentages summing to 100 +/- 0.01. Empty for non-ok rows.
+  weights              Json
+  frontier             Json
+  backtestSummary      Json?
+  riskTolerance        Int
+  effectiveRiskCeiling Int?
+  /// Failure explanation / binding constraint for non-ok rows.
+  reason               String?
+  computedAt           DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, computedAt])
+  @@index([userId, inputHash])
+  @@map("allocation_suggestions")
+}
+
+/// Precomputed risk analytics aggregate for a user (#225).
+/// Recomputed on a schedule from YieldSnapshot history.
+model PortfolioRiskAggregate {
+  id                   String    @id @default(uuid())
+  userId               String
+  window               String
+  insufficientHistory  Boolean   @default(false)
+  sampleCount          Int       @default(0)
+  annualisedVolatility Float?
+  sortinoRatio         Float?
+  downsideDeviation    Float?
+  maxDrawdown          Float?
+  maxDrawdownDuration  Int?
+  varHistorical95      Float?
+  varHistorical99      Float?
+  varParametric95      Float?
+  varParametric99      Float?
+  cvarHistorical95     Float?
+  cvarHistorical99     Float?
+  beta                 Float?
+  dataFrom             DateTime?
+  dataTo               DateTime?
+  computedAt           DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, window])
+  @@index([userId])
+  @@index([window])
+  @@index([computedAt])
+  @@index([sortinoRatio])
+  @@index([annualisedVolatility])
+  @@map("portfolio_risk_aggregates")
+}
+
+/// One durable, sequence-numbered event on a user's real-time stream (#316).
+///
+/// DESIGN NOTE — why Postgres and not a Redis Stream.
+/// Redis is *optional* in this deployment: src/config/redis.ts degrades to a
+/// no-op when REDIS_URL is unset, which is the configuration most environments
+/// (and the whole test suite) actually run. A Redis-backed stream would
+/// therefore make `resume afterSeq` silently unavailable exactly where it is
+/// hardest to notice, and would put durability on a store we already treat as
+/// a cache. Postgres is the source of truth for every other domain event, is
+/// already covered by the retention job, and gives us the gapless per-user
+/// counter below for free. Redis stays in the design as the *transport* for the
+/// cross-pod fan-out (src/events/bridge.ts) — never as the store. Losing Redis
+/// costs live cross-pod delivery for the duration of the outage; it never costs
+/// replay, because replay reads this table.
+///
+/// Bounded two ways by src/jobs/dataRetention.ts: by age
+/// (RETENTION_USER_EVENTS_DAYS) and by per-user row count
+/// (USER_EVENT_STREAM_MAX_PER_USER). A resume older than what survives is
+/// answered with a `gap` frame carrying the newest available seq, never an
+/// unbounded replay.
+model UserEvent {
+  id        String   @id @default(uuid())
+  /// Stream owner. Delivery to a parent sub-account is authorised at publish
+  /// time (see src/events/publisher.ts) — never by rewriting this column.
+  userId    String
+  /// Monotonic, gapless, per-user. Allocated by the atomic upsert-increment on
+  /// UserEventSequence inside the same transaction as this row's INSERT.
+  seq       BigInt
+  /// One of src/events/types.ts USER_EVENT_TOPICS.
+  topic     String
+  /// Domain event type, e.g. 'deposit.received'. Mirrors the webhook event
+  /// name when one exists so both channels speak the same vocabulary.
+  type      String
+  /// Already redacted through the per-type allowlist in
+  /// src/utils/api-formatters.ts before it is stored — the socket must never
+  /// be the reason a field reaches a client, so the store holds only what a
+  /// client is allowed to see.
+  payload   Json
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, seq])
+  @@index([userId, seq])
+  @@index([createdAt])
+  @@map("user_events")
+}
+
+/// Per-user monotonic counter backing UserEvent.seq (#316).
+/// Incremented with a single `INSERT … ON CONFLICT DO UPDATE … RETURNING`, so
+/// concurrent publishers for the same user serialise on the row lock and can
+/// never mint a duplicate or leave a hole.
+model UserEventSequence {
+  userId    String   @id
+  lastSeq   BigInt   @default(0)
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_event_sequences")
+}
+
+model UserWebhookEndpoint {
+  id                  String    @id @default(uuid())
+  userId              String
+  url                 String
+  secretHash          String
+  events              String[]
+  topicScope          String[]
+  filterJson          Json?
+  status              String    @default("ACTIVE") // ACTIVE | PAUSED | DISABLED_BAD_ENDPOINT
+  consecutiveFailures Int       @default(0)
+  lastDeliveryAt      DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  user       User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries UserWebhookDelivery[]
+
+  @@index([userId, status])
+  @@map("user_webhook_endpoints")
+}
+
+model UserWebhookDelivery {
+  id            String    @id @default(uuid())
+  endpointId    String
+  userEventSeq  Int
+  eventType     String
+  status        String    @default("PENDING") // PENDING | DELIVERED | FAILED | DEAD
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime?
+  responseCode  Int?
+  error         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  endpoint UserWebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@unique([endpointId, userEventSeq])
+  @@index([endpointId])
+  @@index([status])
+  @@map("user_webhook_deliveries")
+}
+
+model AlertFire {
+  id                 String   @id @default(uuid())
+  ruleId             String
+  userId             String
+  firedAt            DateTime @default(now())
+  leafTrace          Json
+  deliveredVia       String[]
+  ackId              String?
+  escalated          Boolean  @default(false)
+  suppressedBySnooze Boolean  @default(false)
+
+  @@index([ruleId, firedAt])
+  @@index([userId, firedAt])
+  @@map("alert_fires")
+}
+
+model AlertAck {
+  id        String   @id @default(uuid())
+  ruleId    String
+  userId    String
+  fireId    String?
+  source    String // API | WHATSAPP | TELEGRAM | EMAIL
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([ruleId])
+  @@index([userId])
+  @@map("alert_acks")
+}
+
+model EmailIdentity {
+  id              String    @id @default(uuid())
+  userId          String    @unique
+  email           String    @unique
+  verifiedAt      DateTime?
+  verifyTokenHash String?
+  verifyExpiresAt DateTime?
+  status          String    @default("PENDING") // PENDING | VERIFIED | BOUNCED | COMPLAINED | SUPPRESSED
+  lastBounceAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_identities")
 }

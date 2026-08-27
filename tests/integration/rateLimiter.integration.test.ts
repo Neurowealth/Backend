@@ -18,6 +18,9 @@ jest.mock('../../src/config/env', () => ({
       adminRateLimit: { windowMs: 900000, max: 10 },
       webhookRateLimit: { windowMs: 60000, max: 30 },
       internalRateLimit: { windowMs: 60000, max: 500 },
+      // #322 — every limiter in rateLimiter.ts is constructed at module load,
+      // so a block missing here fails the whole suite at import, not at use.
+      optimizerRateLimit: { windowMs: 60000, max: 5 },
       trustedIps: [],
       internalServiceToken: '',
     },
@@ -52,7 +55,11 @@ describe('rate limiter – IETF rate-limit headers', () => {
     })
 
     it('reflects the configured limit and window in RateLimit-Policy for custom limiters', async () => {
-      const limiter = buildRateLimiter({ windowMs: 60000, max: 30, limiterType: 'test' })
+      const limiter = buildRateLimiter({
+        windowMs: 60000,
+        max: 30,
+        limiterType: 'test',
+      })
       const app = buildTestApp(limiter)
       const res = await request(app).get('/test')
 
@@ -62,7 +69,11 @@ describe('rate limiter – IETF rate-limit headers', () => {
 
   describe('throttled (429) responses', () => {
     it('returns 429 after the request budget is exhausted', async () => {
-      const limiter = buildRateLimiter({ windowMs: 60000, max: 1, limiterType: 'test' })
+      const limiter = buildRateLimiter({
+        windowMs: 60000,
+        max: 1,
+        limiterType: 'test',
+      })
       const app = buildTestApp(limiter)
 
       await request(app).get('/test') // uses up the single allowed request
@@ -73,7 +84,11 @@ describe('rate limiter – IETF rate-limit headers', () => {
     })
 
     it('sets Retry-After (positive integer, seconds) on 429 responses', async () => {
-      const limiter = buildRateLimiter({ windowMs: 60000, max: 1, limiterType: 'test' })
+      const limiter = buildRateLimiter({
+        windowMs: 60000,
+        max: 1,
+        limiterType: 'test',
+      })
       const app = buildTestApp(limiter)
 
       await request(app).get('/test')
@@ -87,7 +102,11 @@ describe('rate limiter – IETF rate-limit headers', () => {
     })
 
     it('sets RateLimit-Policy on 429 responses', async () => {
-      const limiter = buildRateLimiter({ windowMs: 60000, max: 1, limiterType: 'test' })
+      const limiter = buildRateLimiter({
+        windowMs: 60000,
+        max: 1,
+        limiterType: 'test',
+      })
       const app = buildTestApp(limiter)
 
       await request(app).get('/test')

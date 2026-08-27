@@ -1,663 +1,987 @@
-openapi: 3.1.0
-
+openapi: '3.0.3'
 info:
-  title: NeuroWealth API
-  version: 1.0.0
+  title: NeuroWealth Backend API
+  version: '1.0.0'
   description: |
-    REST API for the NeuroWealth platform — AI-assisted portfolio management
-    backed by Stellar smart contracts.
+    NeuroWealth autonomous DeFi portfolio manager backend.
 
-    **Breaking-change policy:** This API follows semantic versioning. Breaking
-    changes (removed fields, changed response shapes, new required params)
-    increment the major version and are announced in CHANGELOG.md at least two
-    weeks before release.
+    Authentication: All protected endpoints require a `Bearer <JWT>` token in the
+    `Authorization` header, obtained from `POST /api/auth/login`.
 
 servers:
-  - url: http://localhost:{port}
-    description: Local development
-    variables:
-      port:
-        default: '3000'
-  - url: https://api.neurowealth.app
-    description: Production
+  - url: /api/v1
+    description: Versioned API base (alias of /api for current release)
+  - url: /api
+    description: API base
 
 tags:
-  - name: health
-    description: Liveness and readiness probes
-  - name: auth
-    description: Wallet-based authentication (Stellar SIWE challenge/verify)
-  - name: portfolio
-    description: Portfolio positions, performance, and NLP queries
-  - name: transactions
-    description: Transaction history and details
-  - name: deposit
-    description: Deposit flows
-  - name: withdraw
-    description: Withdrawal flows
-  - name: vault
-    description: Vault / savings product
-  - name: admin
-    description: Admin-only management endpoints
+  - name: Analytics
+    description: Portfolio performance and risk analytics
+  - name: Auth
+    description: Authentication and session management
+  - name: Portfolio
+    description: User portfolio management
+  - name: Realtime
+    description: |
+      Authenticated WebSocket streaming (#316). The handshake below is a real
+      HTTP request and is spec'd here so generated clients know how to open it;
+      everything after the 101 is the JSON subprotocol described in the
+      `WebSocket*` schemas and in docs/WEBSOCKET_STREAMING.md.
 
-# ── Security schemes ─────────────────────────────────────────────────────────
+# ─── Reusable components ──────────────────────────────────────────────────────
 components:
   securitySchemes:
-    BearerAuth:
+    bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT issued by `/api/auth/verify`. Include as `Authorization: Bearer <token>`.
-    AdminToken:
-      type: apiKey
-      in: header
-      name: X-Admin-Token
-      description: Static admin token set via `ADMIN_SECRET` env var. Required for all `/api/admin/*` routes.
-    InternalToken:
-      type: apiKey
-      in: header
-      name: X-Internal-Token
-      description: Service-to-service token for internal calls (e.g. Stellar event relayer).
 
-  # ── Reusable schemas ───────────────────────────────────────────────────────
   schemas:
-    ErrorResponse:
+    # ── Shared primitives ────────────────────────────────────────────────────
+    Period:
+      type: string
+      enum: ['7d', '30d', '90d']
+      default: '30d'
+      description: Analysis time window. Maximum available history is 90 days.
+
+    InsufficientHistoryFlag:
+      type: boolean
+      description: |
+        True when the available snapshot history is shorter than the requested
+        window. Rows/responses with this flag set are excluded from leaderboard
+        rankings. Never silently serves a truncated window under the requested label.
+
+    NullableDecimal:
+      type: number
+      format: double
+      nullable: true
+
+    # ── Risk metrics ─────────────────────────────────────────────────────────
+    RiskMetrics:
       type: object
-      required: [error]
+      description: |
+        Computed risk/performance statistics for a portfolio-value series.
+
+        **Null contract**: any metric that is not computable (insufficient samples,
+        zero variance, degenerate series) is returned as `null` — never as `0`,
+        `Infinity`, or `NaN`.
+
+        **VaR / CVaR estimators**:
+        - `varHistorical*` / `cvarHistorical*` — empirical (plain-historical),
+          sorts the observed return distribution. Preferred for DeFi portfolios.
+        - `varParametric*` — Gaussian assumption (mean + σ). Underestimates tail
+          risk for fat-tailed distributions; provided for comparison only.
+
+        All loss magnitudes are **positive numbers** (0.05 = 5% potential loss).
+      properties:
+        sampleCount:
+          type: integer
+          description: Number of period-return observations used in all computations.
+        annualisedVolatility:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: |
+            Sample standard deviation of period returns × √(periodsPerYear).
+            null if fewer than 2 return observations.
+        sortinoRatio:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: |
+            (Annualised mean return − MAR) / annualised downside deviation.
+            null if fewer than 2 observations or downside deviation is 0 (no losses).
+        downsideDeviation:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: RMS of returns below MAR, annualised. null if no returns.
+        maxDrawdown:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: |
+            Maximum peak-to-trough decline as a positive fraction (0.15 = 15%).
+            null if fewer than 2 value points.
+        maxDrawdownDuration:
+          nullable: true
+          type: integer
+          description: |
+            Number of observation steps from peak to trough in the max drawdown
+            episode. null if no drawdown occurred.
+        varHistorical95:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: Historical VaR at 95% confidence (positive = potential loss).
+        varHistorical99:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: Historical VaR at 99% confidence.
+        varParametric95:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: Parametric (Gaussian) VaR at 95% confidence.
+        varParametric99:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: Parametric (Gaussian) VaR at 99% confidence.
+        cvarHistorical95:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: Historical CVaR (Expected Shortfall) at 95%.
+        cvarHistorical99:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: Historical CVaR at 99%.
+        beta:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: |
+            Beta vs an exogenous benchmark series. null when no benchmark is
+            provided (benchmark index ingestion is deferred).
+        periodsPerYear:
+          type: number
+          description: |
+            Inferred periods-per-year used for annualisation, derived from the
+            median inter-observation spacing. Robust to snapshot gaps.
+      required:
+        - sampleCount
+        - periodsPerYear
+
+    PortfolioRiskResponse:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        requestedWindow:
+          $ref: '#/components/schemas/Period'
+        actualWindowDays:
+          type: integer
+          description: Days of data actually used (may be shorter than requested).
+        insufficientHistory:
+          $ref: '#/components/schemas/InsufficientHistoryFlag'
+        dataFrom:
+          nullable: true
+          type: string
+          format: date-time
+          description: ISO timestamp of the earliest snapshot included.
+        dataTo:
+          nullable: true
+          type: string
+          format: date-time
+          description: ISO timestamp of the latest snapshot included.
+        computedAt:
+          type: string
+          format: date-time
+          description: When these figures were computed (staleness signal).
+        source:
+          type: string
+          enum: ['precomputed', 'live']
+          description: Whether the response was served from the precomputed cache.
+        metrics:
+          allOf:
+            - $ref: '#/components/schemas/RiskMetrics'
+            - nullable: true
+              type: object
+          description: null when sampleCount is 0 (entirely un-funded history).
+      required:
+        - userId
+        - requestedWindow
+        - actualWindowDays
+        - insufficientHistory
+        - computedAt
+        - source
+
+    RollingVolPoint:
+      type: object
+      properties:
+        timestampMs:
+          type: integer
+          format: int64
+          description: Epoch milliseconds of the last return in this rolling window.
+        volatility:
+          nullable: true
+          type: number
+          format: double
+          description: Annualised volatility over the window. null if insufficient data.
+      required:
+        - timestampMs
+        - volatility
+
+    DrawdownPoint:
+      type: object
+      properties:
+        timestampMs:
+          type: integer
+          format: int64
+        drawdown:
+          type: number
+          format: double
+          description: Drawdown from the running peak as a positive fraction.
+      required:
+        - timestampMs
+        - drawdown
+
+    TimeseriesResponse:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        requestedWindow:
+          $ref: '#/components/schemas/Period'
+        insufficientHistory:
+          $ref: '#/components/schemas/InsufficientHistoryFlag'
+        rollingVolatility:
+          type: array
+          items:
+            $ref: '#/components/schemas/RollingVolPoint'
+        drawdown:
+          type: array
+          items:
+            $ref: '#/components/schemas/DrawdownPoint'
+        computedAt:
+          type: string
+          format: date-time
+      required:
+        - userId
+        - requestedWindow
+        - insufficientHistory
+        - rollingVolatility
+        - drawdown
+        - computedAt
+
+    ValidationError:
+      type: object
+      properties:
+        error:
+          type: string
+          example: Validation error
+        details:
+          type: object
+      required:
+        - error
+
+    UnauthorizedError:
+      type: object
       properties:
         error:
           type: string
           example: Unauthorized
-        details:
-          description: Optional structured detail (array or object)
-          oneOf:
-            - type: array
-              items: {}
-            - type: object
+      required:
+        - error
 
-    HealthResponse:
-      type: object
-      required: [status, timestamp, version, environment]
-      properties:
-        status:
-          type: string
-          enum: [ok, degraded]
-        timestamp:
-          type: string
-          format: date-time
-        version:
-          type: string
-          example: 1.0.0
-        environment:
-          type: string
-          enum: [development, test, production]
+    # ── Real-time WebSocket subprotocol (#316) ───────────────────────────────
+    #
+    # These are not request/response bodies: they are the JSON frames exchanged
+    # over the socket opened by `GET /ws`. They live in the spec so client
+    # generators and reviewers have one authoritative shape per frame.
 
-    AuthChallengeResponse:
-      type: object
-      required: [nonce, expiresAt]
-      properties:
-        nonce:
-          type: string
-          description: Random one-time nonce the wallet must sign
-          example: a3f9e2c1d0b84756
-        expiresAt:
-          type: string
-          format: date-time
+    WebSocketTopic:
+      type: string
+      enum: [portfolio, transactions, agent, alerts, strategies]
+      description: |
+        Subscription, ordering, and permission unit.
 
-    AuthVerifyRequest:
-      type: object
-      required: [publicKey, signature, nonce]
-      properties:
-        publicKey:
-          type: string
-          description: Stellar G-address (Ed25519 public key)
-          example: GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3B2WSQHG4W37
-        signature:
-          type: string
-          description: Base64-encoded signature over the nonce
-        nonce:
-          type: string
+        **Ordering**: within a topic, events arrive in ascending `seq`. Across
+        topics there is NO ordering guarantee — all topics share one per-user
+        sequence, so use `seq` rather than arrival order. On-chain events
+        inherit ProcessedEvent's ledger ordering upstream.
 
-    AuthVerifyResponse:
+    WebSocketSubscribe:
       type: object
-      required: [token]
+      description: Client → server. Start live delivery for the given topics.
+      required: [type, topics]
+      additionalProperties: false
       properties:
-        token:
-          type: string
-          description: JWT for use in subsequent requests
-        expiresIn:
-          type: integer
-          description: Seconds until the token expires
-          example: 86400
-
-    Portfolio:
-      type: object
-      required: [address, totalValueUsdc, positions]
-      properties:
-        address:
-          type: string
-        totalValueUsdc:
-          type: string
-          description: Total portfolio value in USDC (string to avoid float precision loss)
-          example: '12450.75'
-        pnlPercent:
-          type: string
-          example: '4.23'
-        positions:
-          type: array
-          items:
-            $ref: '#/components/schemas/Position'
-
-    Position:
-      type: object
-      required: [asset, amount, valueUsdc]
-      properties:
-        asset:
-          type: string
-          example: XLM
-        amount:
-          type: string
-          example: '5000.0000000'
-        valueUsdc:
-          type: string
-          example: '600.00'
-        pnlPercent:
-          type: string
-
-    Transaction:
-      type: object
-      required: [id, type, amount, asset, status, createdAt]
-      properties:
-        id:
-          type: string
         type:
           type: string
-          enum: [deposit, withdrawal, swap, vault_deposit, vault_withdraw]
-        amount:
+          enum: [subscribe]
+        topics:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/WebSocketTopic'
+        coalesce:
+          type: boolean
+          default: false
+          description: |
+            Opt into latest-wins coalescing of same-type bursts within a short
+            window (WS_COALESCE_WINDOW_MS). Suppressed events remain in the
+            durable stream but are NOT redelivered by a later `resume`, because
+            `afterSeq` has already moved past them. Off by default.
+
+    WebSocketResume:
+      type: object
+      description: |
+        Client → server. Replay everything after `afterSeq`, then switch to live.
+        Send this on every reconnect.
+      required: [type, topics, afterSeq]
+      additionalProperties: false
+      properties:
+        type:
           type: string
-        asset:
+          enum: [resume]
+        topics:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/WebSocketTopic'
+        afterSeq:
+          type: integer
+          minimum: 0
+          description: Last `seq` the client durably processed. 0 replays everything retained.
+        coalesce:
+          type: boolean
+          default: false
+
+    WebSocketUnsubscribe:
+      type: object
+      description: Client → server. Stop delivery for the given topics.
+      required: [type, topics]
+      additionalProperties: false
+      properties:
+        type:
           type: string
+          enum: [unsubscribe]
+        topics:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/WebSocketTopic'
+
+    WebSocketPing:
+      type: object
+      description: |
+        Client → server. Application-level keepalive, answered with `pong`. Only
+        needed by clients that cannot observe protocol-level pongs (browsers);
+        the server pings every `heartbeatIntervalMs` regardless.
+      required: [type]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [ping]
+
+    WebSocketClientMessage:
+      description: |
+        Every message a client may send. The receive side is a control channel
+        only — v1 is server→client for data. State-changing operations stay on
+        the REST surface, which has the validation, idempotency, and audit trail
+        a socket does not.
+      oneOf:
+        - $ref: '#/components/schemas/WebSocketSubscribe'
+        - $ref: '#/components/schemas/WebSocketResume'
+        - $ref: '#/components/schemas/WebSocketUnsubscribe'
+        - $ref: '#/components/schemas/WebSocketPing'
+
+    WebSocketHello:
+      type: object
+      description: Server → client. First frame after a successful handshake.
+      required: [type, actor, topics, currentSeq, heartbeatIntervalMs]
+      properties:
+        type:
+          type: string
+          enum: [hello]
+        actor:
+          type: string
+          enum: [self, delegated]
+          description: |
+            `delegated` when the connection was opened with `?actor=<userId>`
+            and an ACTIVE sub-account grant authorised it.
+        topics:
+          type: array
+          description: Topics this connection may subscribe to, derived server-side.
+          items:
+            $ref: '#/components/schemas/WebSocketTopic'
+        currentSeq:
+          type: integer
+          description: Newest `seq` on the bound stream right now.
+        heartbeatIntervalMs:
+          type: integer
+
+    WebSocketSubscribed:
+      type: object
+      description: Server → client. Acknowledges the active subscription set.
+      required: [type, topics, currentSeq, coalesce]
+      properties:
+        type:
+          type: string
+          enum: [subscribed]
+        topics:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebSocketTopic'
+        currentSeq:
+          type: integer
+        coalesce:
+          type: boolean
+
+    WebSocketEvent:
+      type: object
+      description: |
+        Server → client. One domain event.
+
+        **Delivery is at-least-once.** A `resume` replays from the durable store
+        while live events keep arriving, and the live-switch prefers a duplicate
+        over a hole. Dedupe on `seq`, which is monotonic per user.
+
+        **Payloads are allowlisted per event type** by the same discipline as
+        REST responses (src/utils/api-formatters.ts). No `userId`, wallet
+        address, key, or internal field appears here.
+      required: [type, seq, topic, event, payload, emittedAt]
+      properties:
+        type:
+          type: string
+          enum: [event]
+        seq:
+          type: integer
+          description: Monotonic per-user sequence number. Track the highest you processed.
+        topic:
+          $ref: '#/components/schemas/WebSocketTopic'
+        event:
+          type: string
+          description: Domain event type, e.g. `deposit.received`.
+          example: deposit.received
+        payload:
+          type: object
+          additionalProperties: true
+        emittedAt:
+          type: string
+          format: date-time
+
+    WebSocketReplay:
+      type: object
+      description: Server → client. Brackets the replay served for a `resume`.
+      required: [type, status, fromSeq, toSeq, count]
+      properties:
+        type:
+          type: string
+          enum: [replay]
         status:
           type: string
-          enum: [pending, confirmed, failed]
-        stellarTxHash:
-          type: string
-        createdAt:
-          type: string
-          format: date-time
+          enum: [start, end]
+        fromSeq:
+          type: integer
+        toSeq:
+          type: integer
+        count:
+          type: integer
 
-    VaultPosition:
+    WebSocketGap:
       type: object
-      required: [balance, yieldEarned, lockUntil]
+      description: |
+        Server → client. The stream could not be served continuously.
+
+        * `retention` — the requested `afterSeq` is older than what is retained,
+          or a single replay hit its page limit with history still to come.
+        * `backpressure` — the client was too slow; delivery stopped at
+          `afterSeq`. Nothing is lost; `resume` from there.
+        * `unknown_stream` — the requested `afterSeq` is ahead of the server.
+
+        When `snapshotRequired` is true, replay cannot close the gap: fetch a
+        REST snapshot (`/portfolio`, `/transactions`, …) and then `subscribe`.
+      required: [type, reason, afterSeq, currentSeq, oldestAvailableSeq, snapshotRequired]
       properties:
-        balance:
+        type:
           type: string
-        yieldEarned:
+          enum: [gap]
+        reason:
           type: string
-        lockUntil:
+          enum: [retention, backpressure, unknown_stream]
+        afterSeq:
+          type: integer
+          nullable: true
+        currentSeq:
+          type: integer
+        oldestAvailableSeq:
+          type: integer
+          nullable: true
+        snapshotRequired:
+          type: boolean
+
+    WebSocketError:
+      type: object
+      description: |
+        Server → client. `forbidden` mirrors REST 403 semantics — a topic the
+        connection's grant does not cover. `unauthorized` precedes a close with
+        code 4408 when the session is revoked mid-connection.
+      required: [type, code, message]
+      properties:
+        type:
+          type: string
+          enum: [error]
+        code:
+          type: string
+          enum: [bad_request, forbidden, unauthorized, rate_limited, internal]
+        message:
+          type: string
+
+    WebSocketDraining:
+      type: object
+      description: |
+        Server → client. Sent before a graceful shutdown closes the socket with
+        code 1001. Reconnect after `retryAfterMs` and `resume` from
+        `resumeAfterSeq`.
+      required: [type, reason, resumeAfterSeq, retryAfterMs]
+      properties:
+        type:
+          type: string
+          enum: [draining]
+        reason:
+          type: string
+          enum: [server_shutdown]
+        resumeAfterSeq:
+          type: integer
+        retryAfterMs:
+          type: integer
+
+    WebSocketPong:
+      type: object
+      description: Server → client. Reply to an application-level `ping`.
+      required: [type, at]
+      properties:
+        type:
+          type: string
+          enum: [pong]
+        at:
           type: string
           format: date-time
-          nullable: true
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+    WebSocketServerFrame:
+      description: Every frame the server may send.
+      oneOf:
+        - $ref: '#/components/schemas/WebSocketHello'
+        - $ref: '#/components/schemas/WebSocketSubscribed'
+        - $ref: '#/components/schemas/WebSocketEvent'
+        - $ref: '#/components/schemas/WebSocketReplay'
+        - $ref: '#/components/schemas/WebSocketGap'
+        - $ref: '#/components/schemas/WebSocketError'
+        - $ref: '#/components/schemas/WebSocketDraining'
+        - $ref: '#/components/schemas/WebSocketPong'
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid JWT.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UnauthorizedError'
+
+# ─── Paths ────────────────────────────────────────────────────────────────────
 paths:
 
-  # ── Health ─────────────────────────────────────────────────────────────────
-  /health:
-    get:
-      tags: [health]
-      operationId: healthCheck
-      summary: Liveness check
-      description: Returns service status, version, and environment. No auth required.
-      responses:
-        '200':
-          description: Service is healthy
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HealthResponse'
+  # ── Risk endpoints ───────────────────────────────────────────────────────────
 
-  /health/ready:
+  /analytics/risk:
     get:
-      tags: [health]
-      operationId: readinessCheck
-      summary: Readiness check
-      description: Returns 200 when DB and Stellar RPC are reachable, 503 otherwise.
-      responses:
-        '200':
-          description: All dependencies reachable
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HealthResponse'
-        '503':
-          description: One or more dependencies unavailable
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+      operationId: getPortfolioRisk
+      summary: Portfolio risk metrics
+      description: |
+        Returns VaR (95%/99%, historical and parametric), CVaR (95%/99%,
+        historical), Sortino ratio, downside deviation, max drawdown (+duration),
+        and annualised volatility for the authenticated user's portfolio.
 
-  # ── Auth ───────────────────────────────────────────────────────────────────
-  /api/auth/challenge:
-    get:
-      tags: [auth]
-      operationId: getAuthChallenge
-      summary: Request a sign-in challenge nonce
+        **Ownership**: `userId` is taken from the JWT payload — you cannot read
+        another user's risk data via this endpoint.
+
+        **Retention boundary**: YieldSnapshot rows are hard-deleted after 90 days
+        by the snapshotter. Windows longer than the available history are
+        relabelled with `insufficientHistory: true` and `actualWindowDays` set to
+        the honest available span — never silently truncated.
+
+        **Caching**: If a precomputed row < 1 hour old exists, it is returned
+        directly (`source: "precomputed"`). Otherwise a live compute is performed
+        (`source: "live"`).
+
+        **Null contract**: metrics that cannot be computed return `null`, never
+        `0`, `Infinity`, or `NaN`.
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
       parameters:
-        - in: query
-          name: publicKey
-          required: true
+        - name: window
+          in: query
+          required: false
           schema:
-            type: string
-          description: Stellar G-address requesting a nonce
+            $ref: '#/components/schemas/Period'
+          description: Analysis time window.
       responses:
         '200':
-          description: Challenge nonce issued
+          description: Risk metrics for the authenticated user.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AuthChallengeResponse'
+                $ref: '#/components/schemas/PortfolioRiskResponse'
+              examples:
+                sufficient_history:
+                  summary: User with 30d of data
+                  value:
+                    userId: "3f8e1c2a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+                    requestedWindow: "30d"
+                    actualWindowDays: 30
+                    insufficientHistory: false
+                    dataFrom: "2026-07-21T00:00:00.000Z"
+                    dataTo: "2026-08-20T00:00:00.000Z"
+                    computedAt: "2026-08-20T12:00:00.000Z"
+                    source: "precomputed"
+                    metrics:
+                      sampleCount: 720
+                      annualisedVolatility: 0.12
+                      sortinoRatio: 1.85
+                      downsideDeviation: 0.045
+                      maxDrawdown: 0.08
+                      maxDrawdownDuration: 14
+                      varHistorical95: 0.031
+                      varHistorical99: 0.065
+                      varParametric95: 0.028
+                      varParametric99: 0.044
+                      cvarHistorical95: 0.052
+                      cvarHistorical99: 0.078
+                      beta: null
+                      periodsPerYear: 8760
+                insufficient_history:
+                  summary: New user with < 7d data requesting 30d
+                  value:
+                    userId: "3f8e1c2a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+                    requestedWindow: "30d"
+                    actualWindowDays: 3
+                    insufficientHistory: true
+                    dataFrom: "2026-08-17T00:00:00.000Z"
+                    dataTo: "2026-08-20T00:00:00.000Z"
+                    computedAt: "2026-08-20T12:00:00.000Z"
+                    source: "live"
+                    metrics: null
         '400':
-          description: Invalid public key
+          description: Invalid query parameters.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /api/auth/verify:
-    post:
-      tags: [auth]
-      operationId: verifyAuthSignature
-      summary: Verify wallet signature and issue JWT
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AuthVerifyRequest'
-      responses:
-        '200':
-          description: Signature valid — JWT issued
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthVerifyResponse'
+                $ref: '#/components/schemas/ValidationError'
         '401':
-          description: Invalid or expired signature
+          description: Missing or invalid JWT.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/UnauthorizedError'
+        '500':
+          description: Internal server error.
 
-  /api/auth/logout:
-    post:
-      tags: [auth]
-      operationId: logout
-      summary: Invalidate the current JWT
-      security:
-        - BearerAuth: []
-      responses:
-        '200':
-          description: Session invalidated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  # ── Portfolio ──────────────────────────────────────────────────────────────
-  /api/portfolio:
+  /analytics/risk/timeseries:
     get:
-      tags: [portfolio]
-      operationId: getPortfolio
-      summary: Get the authenticated user's portfolio
-      security:
-        - BearerAuth: []
-      responses:
-        '200':
-          description: Portfolio data
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Portfolio'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+      operationId: getPortfolioRiskTimeseries
+      summary: Portfolio risk timeseries (rolling volatility + drawdown)
+      description: |
+        Returns graph-ready rolling annualised volatility and running-peak
+        drawdown series for the authenticated user's portfolio.
 
-  /api/portfolio/query:
-    post:
-      tags: [portfolio]
-      operationId: queryPortfolio
-      summary: Natural-language portfolio query (NLP)
-      security:
-        - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [query]
-              properties:
-                query:
-                  type: string
-                  example: What is my XLM allocation?
-      responses:
-        '200':
-          description: NLP answer
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [answer]
-                properties:
-                  answer:
-                    type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        **Ownership**: `userId` is taken from the JWT payload.
 
-  # ── Transactions ───────────────────────────────────────────────────────────
-  /api/transactions:
-    get:
-      tags: [transactions]
-      operationId: listTransactions
-      summary: List the authenticated user's transactions
+        **Null in rolling volatility**: points with fewer observations than
+        `rollingWindow` have `volatility: null`.
+      tags: [Analytics]
       security:
-        - BearerAuth: []
+        - bearerAuth: []
       parameters:
-        - in: query
-          name: limit
+        - name: window
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Period'
+        - name: rollingWindow
+          in: query
+          required: false
           schema:
             type: integer
-            default: 20
-            maximum: 100
-        - in: query
-          name: cursor
-          schema:
-            type: string
-          description: Pagination cursor (transaction ID)
-        - in: query
-          name: type
-          schema:
-            type: string
-            enum: [deposit, withdrawal, swap, vault_deposit, vault_withdraw]
+            minimum: 2
+            maximum: 30
+            default: 7
+          description: Number of observations per rolling volatility window.
       responses:
         '200':
-          description: Transaction list
+          description: Timeseries data for the authenticated user.
           content:
             application/json:
               schema:
-                type: object
-                required: [data]
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Transaction'
-                  nextCursor:
-                    type: string
-                    nullable: true
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  # ── Deposit ────────────────────────────────────────────────────────────────
-  /api/deposit:
-    post:
-      tags: [deposit]
-      operationId: initiateDeposit
-      summary: Initiate a deposit
-      security:
-        - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [asset, amount]
-              properties:
-                asset:
-                  type: string
-                  example: USDC
-                amount:
-                  type: string
-                  example: '100.0000000'
-      responses:
-        '201':
-          description: Deposit initiated
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [transaction]
-                properties:
-                  transaction:
-                    $ref: '#/components/schemas/Transaction'
+                $ref: '#/components/schemas/TimeseriesResponse'
         '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  # ── Withdraw ───────────────────────────────────────────────────────────────
-  /api/withdraw:
-    post:
-      tags: [withdraw]
-      operationId: initiateWithdrawal
-      summary: Initiate a withdrawal
-      security:
-        - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [asset, amount, destinationAddress]
-              properties:
-                asset:
-                  type: string
-                  example: XLM
-                amount:
-                  type: string
-                  example: '50.0000000'
-                destinationAddress:
-                  type: string
-      responses:
-        '201':
-          description: Withdrawal initiated
+          description: Invalid query parameters.
           content:
             application/json:
               schema:
-                type: object
-                required: [transaction]
-                properties:
-                  transaction:
-                    $ref: '#/components/schemas/Transaction'
-        '400':
-          $ref: '#/components/responses/BadRequest'
+                $ref: '#/components/schemas/ValidationError'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: Missing or invalid JWT.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedError'
+        '500':
+          description: Internal server error.
 
-  # ── Vault ──────────────────────────────────────────────────────────────────
-  /api/vault:
+  # ── Existing analytics endpoints ─────────────────────────────────────────────
+
+  /analytics/apy-history:
     get:
-      tags: [vault]
-      operationId: getVaultPosition
-      summary: Get the user's vault position
+      operationId: getApyHistory
+      summary: APY snapshot history
+      description: |
+        Returns APY snapshots over time for the authenticated user's positions.
+        Graph-ready (sorted ascending by date).
+      tags: [Analytics]
       security:
-        - BearerAuth: []
-      responses:
-        '200':
-          description: Vault position
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/VaultPosition'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /api/vault/deposit:
-    post:
-      tags: [vault]
-      operationId: depositToVault
-      summary: Move funds into the vault
-      security:
-        - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [amount]
-              properties:
-                amount:
-                  type: string
-                  example: '200.0000000'
-      responses:
-        '201':
-          description: Vault deposit recorded
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  transaction:
-                    $ref: '#/components/schemas/Transaction'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /api/vault/withdraw:
-    post:
-      tags: [vault]
-      operationId: withdrawFromVault
-      summary: Move funds out of the vault
-      security:
-        - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [amount]
-              properties:
-                amount:
-                  type: string
-      responses:
-        '201':
-          description: Vault withdrawal recorded
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  transaction:
-                    $ref: '#/components/schemas/Transaction'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  # ── Admin ──────────────────────────────────────────────────────────────────
-  /api/admin/users:
-    get:
-      tags: [admin]
-      operationId: adminListUsers
-      summary: List all users (admin only)
-      security:
-        - AdminToken: []
+        - bearerAuth: []
       parameters:
-        - in: query
-          name: limit
+        - name: period
+          in: query
+          required: false
           schema:
-            type: integer
-            default: 50
-        - in: query
-          name: cursor
-          schema:
-            type: string
+            $ref: '#/components/schemas/Period'
       responses:
         '200':
-          description: User list
+          description: APY history points.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  data:
+                  userId:
+                    type: string
+                    format: uuid
+                  period:
+                    $ref: '#/components/schemas/Period'
+                  points:
                     type: array
                     items:
                       type: object
                       properties:
-                        address:
+                        date:
                           type: string
-                        createdAt:
+                          format: date
+                        apy:
+                          type: number
+                        positionId:
                           type: string
-                          format: date-time
-                  nextCursor:
-                    type: string
-                    nullable: true
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
 
-  /api/admin/stats:
+  /analytics/user-yield:
     get:
-      tags: [admin]
-      operationId: adminGetStats
-      summary: Platform statistics (admin only)
+      operationId: getUserYield
+      summary: User yield summary
+      description: Returns cumulative and period yield earned by the authenticated user.
+      tags: [Analytics]
       security:
-        - AdminToken: []
+        - bearerAuth: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Period'
       responses:
         '200':
-          description: Platform stats
+          description: Yield summary.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  totalUsers:
-                    type: integer
-                  totalVolumeUsdc:
+                  userId:
                     type: string
-                  activeVaults:
-                    type: integer
+                    format: uuid
+                  period:
+                    $ref: '#/components/schemas/Period'
+                  totalYield:
+                    type: number
+                  periodYield:
+                    type: number
+                  averageApy:
+                    type: number
+                  points:
+                    type: array
+                    items:
+                      type: object
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /analytics/protocol-performance:
+    get:
+      operationId: getProtocolPerformance
+      summary: Protocol APY history
+      description: Returns historical APY rates per protocol. Public endpoint (no auth required).
+      tags: [Analytics]
+      security: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Period'
+      responses:
+        '200':
+          description: Protocol APY history grouped by protocol.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period:
+                    $ref: '#/components/schemas/Period'
+                  protocols:
+                    type: array
+                    items:
+                      type: object
+
+  # ── Real-time WebSocket stream (#316) ─────────────────────────────────────────
+
+  /ws:
+    get:
+      operationId: openRealtimeStream
+      summary: Open the authenticated real-time event stream
+      description: |
+        Upgrades to a WebSocket carrying this user's live, sequence-numbered
+        event stream. Not a REST endpoint: the only HTTP response a client
+        should ever see is a rejection — success is a `101 Switching Protocols`
+        followed by the JSON subprotocol below.
+
+        Full client contract, including reconnect policy and worked examples:
+        `docs/WEBSOCKET_STREAMING.md`.
+
+        ### Authentication
+        The same JWT + live-session check the REST middleware performs, run
+        BEFORE the protocol switch — an unauthenticated peer gets a 401 and
+        never becomes a WebSocket. There is no anonymous channel.
+
+        Send the token either as `Authorization: Bearer <jwt>` (server-side
+        clients) or as the subprotocol pair `Sec-WebSocket-Protocol: bearer,
+        <jwt>` (browsers, which cannot set headers on a WebSocket). A `?token=`
+        query parameter is deliberately NOT accepted: URLs reach access logs,
+        proxy logs, and referrers, and this token is a live session.
+
+        A session revoked while the socket is open closes it with code 4408 —
+        the server rechecks the session periodically rather than trusting the
+        handshake forever.
+
+        ### Message flow
+        1. Server sends `hello` with the topics you may read and `currentSeq`.
+        2. Client sends `subscribe` (live from now) or `resume` (replay first).
+        3. Server sends `event` frames; each carries a monotonic per-user `seq`.
+        4. On reconnect, client sends `resume` with the highest `seq` it
+           durably processed. Missed events replay, then live resumes.
+
+        ### Delivery guarantees
+        At-least-once, with a duplication window around a reconnect — dedupe on
+        `seq`. Within a topic, events are ordered; across topics they are not.
+
+        ### Heartbeat and idle policy
+        The server pings every `heartbeatIntervalMs` (default 30s). A connection
+        that neither pongs nor sends a frame for `WS_IDLE_TIMEOUT_MS` (default
+        90s) is closed with code 4408. Clients that cannot observe protocol
+        pongs may send `{"type":"ping"}` instead.
+
+        ### Backpressure
+        A slow consumer is never buffered without bound. Past the per-connection
+        bound the server stops delivering, sends one `gap` frame with reason
+        `backpressure`, and waits for a `resume`. Nothing is lost — the durable
+        stream still holds every event.
+
+        ### Limits
+        Handshakes are rate-limited per source IP (`429` on the upgrade), client
+        messages per connection (`rate_limited` error frame, then close 4429),
+        and each user may hold `WS_MAX_CONNECTIONS_PER_USER` sockets per pod.
+
+        ### Close codes
+        | Code | Meaning |
+        |------|---------|
+        | 1000 | Normal closure |
+        | 1001 | Server draining (preceded by a `draining` frame) |
+        | 4401 | Unauthenticated |
+        | 4403 | Actor not permitted |
+        | 4408 | Session revoked, or idle timeout |
+        | 4429 | Message rate limit exceeded |
+      tags: [Realtime]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: actor
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: |
+            Bind the connection to a sub-account's stream instead of your own.
+            The ACTIVE `SubAccount` grant is verified server-side and its
+            permissions decide the readable topics (`VIEW` → portfolio,
+            transactions, agent, alerts; `MANAGE_STRATEGY` → strategies).
+            Same enforcement as the REST `actingAsUserId` routes; the client's
+            opinion about its own scope is never consulted.
+        - name: Sec-WebSocket-Protocol
+          in: header
+          required: false
+          schema:
+            type: string
+            example: bearer, eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+          description: Browser alternative to the Authorization header.
+      requestBody:
+        required: false
+        description: |
+          Not an HTTP body — documents the frames the client sends over the
+          socket after the upgrade.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebSocketClientMessage'
+      responses:
+        '101':
+          description: |
+            Protocol switched. Every subsequent server frame is one of
+            `WebSocketServerFrame`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebSocketServerFrame'
+        '401':
+          description: Missing, malformed, expired, or revoked credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedError'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          description: No ACTIVE sub-account grant for the requested `actor`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedError'
+        '429':
+          description: Handshake rate limit, or too many concurrent connections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedError'
 
-  # ── Reusable responses ────────────────────────────────────────────────────
-  responses: {}
+  # ── Health ────────────────────────────────────────────────────────────────────
 
-components:
-  responses:
-    Unauthorized:
-      description: Missing or invalid authentication token
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-          example:
-            error: Unauthorized
-    Forbidden:
-      description: Authenticated but insufficient permissions
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-          example:
-            error: Forbidden
-    BadRequest:
-      description: Invalid request body or parameters
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
+  /health/live:
+    get:
+      operationId: getLiveness
+      summary: Liveness probe
+      description: Always returns 200 once the process is running.
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: Process alive.
+
+  /health/ready:
+    get:
+      operationId: getReadiness
+      summary: Readiness probe
+      description: Returns 200 only when all background services are healthy.
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: All services ready.
+        '503':
+          description: One or more services not ready.
+
+

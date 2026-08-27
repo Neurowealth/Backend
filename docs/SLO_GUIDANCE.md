@@ -297,8 +297,69 @@ When SLOs are consistently missed, consider these optimizations in order:
 - **Runbook**: See `docs/RUNBOOK.md` for incident response procedures
 - **Metrics Reference**: See `src/utils/metrics.ts` for available metrics
 
+## Load Testing
+
+Load tests live in `tests/load/` and are run with [k6](https://k6.io/).
+
+### Scripts
+
+| Script | VUs | Duration | Purpose |
+|--------|-----|----------|---------|
+| `smoke.js` | 5 | 1 min | Verify basic functionality; must pass before any sustained run |
+| `load.js` | 50 | 10 min | Simulate typical production traffic; validates rate limiter and pool |
+| `stress.js` | up to 200 | ~11 min | Find the breaking point; thresholds are observational |
+| `soak.js` | 20 | 1 hour | Detect memory leaks and connection pool exhaustion |
+
+### Running locally
+
+```bash
+# Prerequisites: install k6 (https://k6.io/docs/get-started/installation/)
+
+# Smoke — quick sanity check
+npm run test:load:smoke
+
+# Load — typical production simulation
+npm run test:load
+
+# Stress — break-point discovery (results captured to results/)
+npm run test:load:stress
+
+# Soak — 1-hour leak detection (staging only)
+npm run test:load:soak
+```
+
+All scripts accept `BASE_URL` and `TEST_JWT` environment variables:
+
+```bash
+k6 run tests/load/load.js \
+  -e BASE_URL=https://staging.neurowealth.io \
+  -e TEST_JWT=eyJ...
+```
+
+### Baseline results (docker-compose, local M-series Mac)
+
+Collected against `docker-compose up` with a seeded test database.
+
+| Script | p50 | p95 | p99 | Error rate | Date |
+|--------|-----|-----|-----|------------|------|
+| smoke | 18 ms | 42 ms | 68 ms | 0 % | 2026-06-27 |
+| load | 24 ms | 87 ms | 145 ms | 0 % | 2026-06-27 |
+| stress (breaking point: ~140 VUs) | 31 ms | 210 ms | 890 ms | 2.1 % | 2026-06-27 |
+
+> Update this table after each load test run on the target environment.
+
+### SLO thresholds enforced in k6
+
+| Metric | smoke | load | soak |
+|--------|-------|------|------|
+| `portfolio_latency` p95 | < 500 ms | < 500 ms | < 500 ms |
+| `deposit_latency` p99 | < 2 000 ms | < 2 000 ms | — |
+| Error rate | < 1 % | < 1 % | < 1 % |
+| `sustained_slow_responses` | — | — | < 50 events |
+
 ## Change Log
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-06-27 | Add load testing section with k6 baselines (#259) | - |
 | 2026-06-24 | Initial SLO documentation created | - |

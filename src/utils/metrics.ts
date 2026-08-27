@@ -148,6 +148,39 @@ export const dbConnectionsActive = new client.Gauge({
   registers: [register],
 })
 
+// ── Prisma Connection Pool Metrics ──────────────────────────────────────────────
+// Sourced from prisma.$metrics.json() and refreshed by the poolMetrics job.
+
+export const dbPoolSize = new client.Gauge({
+  name: 'db_pool_size',
+  help: 'Total connections in the Prisma connection pool (open connections)',
+  registers: [register],
+})
+
+export const dbPoolActive = new client.Gauge({
+  name: 'db_pool_active',
+  help: 'Connections currently in use (busy)',
+  registers: [register],
+})
+
+export const dbPoolIdle = new client.Gauge({
+  name: 'db_pool_idle',
+  help: 'Idle connections available in the pool',
+  registers: [register],
+})
+
+export const dbPoolWaitCount = new client.Gauge({
+  name: 'db_pool_wait_count',
+  help: 'Number of queries currently waiting for a free connection',
+  registers: [register],
+})
+
+export const dbPoolWaitDurationMs = new client.Gauge({
+  name: 'db_pool_wait_duration_ms',
+  help: 'Cumulative time (ms) queries have spent waiting for a connection',
+  registers: [register],
+})
+
 // ── HTTP Request Metrics ─────────────────────────────────────────────────────────
 
 export const httpRequestsTotal = new client.Counter({
@@ -165,6 +198,15 @@ export const httpRequestDuration = new client.Histogram({
   registers: [register],
 })
 
+// ── Request Timeout Metrics ───────────────────────────────────────────────────
+
+export const requestTimeoutsTotal = new client.Counter({
+  name: 'request_timeouts_total',
+  help: 'Total number of HTTP requests that timed out before completing',
+  labelNames: ['route_group'] as const,
+  registers: [register],
+})
+
 // ── Analytics API Metrics ────────────────────────────────────────────────────────
 
 export const analyticsRequestsTotal = new client.Counter({
@@ -179,6 +221,15 @@ export const analyticsRequestDuration = new client.Histogram({
   help: 'Duration of analytics API requests in seconds',
   labelNames: ['endpoint'] as const,
   buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5],
+  registers: [register],
+})
+
+// ── Request Validation Metrics ────────────────────────────────────────────────────
+
+export const rejectedRequestsTotal = new client.Counter({
+  name: 'rejected_requests_total',
+  help: 'Total number of rejected requests due to size or content-type',
+  labelNames: ['reason'] as const,
   registers: [register],
 })
 
@@ -247,6 +298,45 @@ export const rateLimitActiveViolations = new client.Gauge({
   registers: [register],
 })
 
+// ── Fiat Provider Metrics (#313) ─────────────────────────────────────────────
+
+export const fiatQuoteLatency = new client.Histogram({
+  name: 'fiat_quote_latency_seconds',
+  help: 'Latency of a single fiat provider quote request',
+  labelNames: ['provider', 'direction'] as const,
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+  registers: [register],
+})
+
+export const fiatQuoteFailuresTotal = new client.Counter({
+  name: 'fiat_quote_failures_total',
+  help: 'Total number of failed fiat provider quote requests',
+  labelNames: ['provider', 'reason'] as const,
+  registers: [register],
+})
+
+export const fiatOrdersTotal = new client.Counter({
+  name: 'fiat_orders_total',
+  help: 'Total number of fiat orders by provider and outcome',
+  labelNames: ['provider', 'status'] as const,
+  registers: [register],
+})
+
+export const fiatProviderCircuitState = new client.Gauge({
+  name: 'fiat_provider_circuit_state',
+  help: 'Current circuit breaker state per fiat provider (0=closed, 1=half-open, 2=open)',
+  labelNames: ['provider'] as const,
+  registers: [register],
+})
+
+export const fiatRateDriftPct = new client.Histogram({
+  name: 'fiat_rate_drift_pct',
+  help: 'Absolute percentage drift between quoted and settled crypto amount',
+  labelNames: ['provider', 'direction'] as const,
+  buckets: [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25],
+  registers: [register],
+})
+
 // ── Helper Functions ─────────────────────────────────────────────────────────────
 
 /**
@@ -267,7 +357,10 @@ export function recordEventFailed(eventType: string, errorType: string): void {
 /**
  * Record event processing duration
  */
-export function recordEventDuration(eventType: string, durationSeconds: number): void {
+export function recordEventDuration(
+  eventType: string,
+  durationSeconds: number
+): void {
   eventsProcessingDuration.observe({ event_type: eventType }, durationSeconds)
 }
 
@@ -302,7 +395,9 @@ export function updateAgentHeartbeat(): void {
 /**
  * Update agent loop status
  */
-export function updateAgentStatus(status: 'stopped' | 'running' | 'degraded'): void {
+export function updateAgentStatus(
+  status: 'stopped' | 'running' | 'degraded'
+): void {
   const statusValue = status === 'stopped' ? 0 : status === 'running' ? 1 : 2
   agentLoopStatus.set(statusValue)
 }
@@ -324,7 +419,10 @@ export function recordRebalanceTriggered(): void {
 /**
  * Record database operation duration
  */
-export function recordDbOperation(operation: string, durationSeconds: number): void {
+export function recordDbOperation(
+  operation: string,
+  durationSeconds: number
+): void {
   dbOperationDuration.observe({ operation }, durationSeconds)
 }
 
@@ -342,6 +440,13 @@ export function recordHttpRequest(
     { method, route, status_code: statusCode.toString() },
     durationSeconds
   )
+}
+
+/**
+ * Record a timed-out HTTP request
+ */
+export function recordRequestTimeout(routeGroup: string): void {
+  requestTimeoutsTotal.inc({ route_group: routeGroup })
 }
 
 /**
@@ -389,7 +494,10 @@ export function recordExternalServiceError(
 /**
  * Record a rate limit hit
  */
-export function recordRateLimitHit(routeGroup: string, limiterType: string): void {
+export function recordRateLimitHit(
+  routeGroup: string,
+  limiterType: string
+): void {
   rateLimitHitsTotal.inc({ route_group: routeGroup, limiter_type: limiterType })
 }
 
@@ -403,8 +511,249 @@ export function recordAuthFailure(endpoint: string, failureType: string): void {
 /**
  * Update active rate limit violations
  */
-export function updateRateLimitViolations(routeGroup: string, count: number): void {
+export function updateRateLimitViolations(
+  routeGroup: string,
+  count: number
+): void {
   rateLimitActiveViolations.set({ route_group: routeGroup }, count)
+}
+
+/**
+ * Record a rejected request due to size or content-type
+ */
+export function recordRejectedRequest(
+  reason: 'oversized' | 'content_type'
+): void {
+  rejectedRequestsTotal.inc({ reason })
+}
+
+/**
+ * Record a fiat provider quote attempt's latency (success or failure).
+ */
+export function recordFiatQuoteLatency(
+  provider: string,
+  direction: string,
+  durationSeconds: number
+): void {
+  fiatQuoteLatency.observe({ provider, direction }, durationSeconds)
+}
+
+/**
+ * Record a failed fiat provider quote request.
+ */
+export function recordFiatQuoteFailure(provider: string, reason: string): void {
+  fiatQuoteFailuresTotal.inc({ provider, reason })
+}
+
+/**
+ * Record a fiat order outcome for a provider.
+ */
+export function recordFiatOrder(provider: string, status: string): void {
+  fiatOrdersTotal.inc({ provider, status })
+}
+
+/**
+ * Reflect a fiat provider's circuit breaker state in a gauge for dashboards.
+ */
+export function setFiatProviderCircuitState(
+  provider: string,
+  state: 'closed' | 'half-open' | 'open'
+): void {
+  const value = state === 'closed' ? 0 : state === 'half-open' ? 1 : 2
+  fiatProviderCircuitState.set({ provider }, value)
+}
+
+/**
+ * Record the absolute percentage drift between a quoted and settled amount.
+ */
+export function recordFiatRateDrift(
+  provider: string,
+  direction: string,
+  absDriftPct: number
+): void {
+  fiatRateDriftPct.observe({ provider, direction }, absDriftPct)
+}
+
+// ── Outbox Metrics (#325) ────────────────────────────────────────────────────
+
+export const outboxOpsTotal = new client.Counter({
+  name: 'outbox_ops_total',
+  help: 'Total outbox op submit attempts, by kind/priority/outcome',
+  labelNames: ['kind', 'priority', 'outcome'] as const, // outcome: confirmed|retry|failed
+  registers: [register],
+})
+
+export const outboxQueueDepth = new client.Gauge({
+  name: 'outbox_queue_depth',
+  help: 'Current outbox op count by status and priority',
+  labelNames: ['status', 'priority'] as const,
+  registers: [register],
+})
+
+export const outboxOpLatencySeconds = new client.Histogram({
+  name: 'outbox_op_latency_seconds',
+  help: 'Time from outbox op creation to confirmation, in seconds',
+  labelNames: ['kind'] as const,
+  buckets: [0.5, 1, 2, 5, 10, 30, 60, 120, 300],
+  registers: [register],
+})
+
+export const outboxFeeBumpTotal = new client.Counter({
+  name: 'outbox_fee_bump_total',
+  help: 'Total fee-bump resubmissions triggered by unconfirmed-too-long ops',
+  labelNames: ['kind'] as const,
+  registers: [register],
+})
+
+export const outboxStuckSubmitted = new client.Gauge({
+  name: 'outbox_stuck_submitted',
+  help: 'Ops SUBMITTED but unconfirmed longer than the configured timeout — the "lost in flight" alarm',
+  registers: [register],
+})
+
+export function recordOutboxOp(
+  kind: string,
+  priority: string,
+  outcome: 'confirmed' | 'retry' | 'failed'
+): void {
+  outboxOpsTotal.inc({ kind, priority, outcome })
+}
+
+export function updateOutboxQueueDepth(
+  rows: Array<{ status: string; priority: string; count: number }>
+): void {
+  outboxQueueDepth.reset()
+  for (const row of rows) {
+    outboxQueueDepth.set(
+      { status: row.status, priority: row.priority },
+      row.count
+    )
+  }
+}
+
+export function recordOutboxLatency(kind: string, seconds: number): void {
+  outboxOpLatencySeconds.observe({ kind }, seconds)
+}
+
+export function recordOutboxFeeBump(kind: string): void {
+  outboxFeeBumpTotal.inc({ kind })
+}
+
+export function updateOutboxStuckSubmitted(count: number): void {
+  outboxStuckSubmitted.set(count)
+}
+
+// ── Real-time WebSocket streaming metrics (#316) ─────────────────────────────
+
+export const wsConnectionsActive = new client.Gauge({
+  name: 'ws_connections_active',
+  help: 'Currently open authenticated WebSocket connections',
+  labelNames: ['mode'] as const, // mode: self|delegated
+  registers: [register],
+})
+
+export const wsHandshakesTotal = new client.Counter({
+  name: 'ws_handshakes_total',
+  help: 'WebSocket handshake attempts by outcome',
+  labelNames: ['outcome'] as const, // outcome: accepted|unauthorized|forbidden|rate_limited|too_many
+  registers: [register],
+})
+
+export const wsMessagesSentTotal = new client.Counter({
+  name: 'ws_messages_sent_total',
+  help: 'Frames pushed to clients, by topic and delivery path',
+  labelNames: ['topic', 'path'] as const, // path: live|replay
+  registers: [register],
+})
+
+export const wsMessagesReceivedTotal = new client.Counter({
+  name: 'ws_messages_received_total',
+  help: 'Client messages received, by message type',
+  labelNames: ['type'] as const,
+  registers: [register],
+})
+
+export const wsReplayEventsTotal = new client.Counter({
+  name: 'ws_replay_events_total',
+  help: 'Events replayed from the durable stream on resume',
+  registers: [register],
+})
+
+export const wsGapsTotal = new client.Counter({
+  name: 'ws_gaps_total',
+  help: 'Gap frames emitted, by reason (retention|backpressure|unknown_stream)',
+  labelNames: ['reason'] as const,
+  registers: [register],
+})
+
+export const wsDroppedEventsTotal = new client.Counter({
+  name: 'ws_dropped_events_total',
+  help: 'Events dropped rather than delivered, by reason (backpressure|coalesced)',
+  labelNames: ['reason'] as const,
+  registers: [register],
+})
+
+export const wsBridgePublishTotal = new client.Counter({
+  name: 'ws_bridge_publish_total',
+  help: 'Cross-pod event publishes, by transport outcome',
+  labelNames: ['outcome'] as const, // outcome: redis|local_only|error
+  registers: [register],
+})
+
+export const wsPublishFailuresTotal = new client.Counter({
+  name: 'ws_publish_failures_total',
+  help: 'publishUserEvent calls that failed to persist to the durable stream',
+  registers: [register],
+})
+
+export function setWsConnectionsActive(
+  mode: 'self' | 'delegated',
+  count: number
+): void {
+  wsConnectionsActive.set({ mode }, count)
+}
+
+export function recordWsHandshake(
+  outcome:
+    'accepted' | 'unauthorized' | 'forbidden' | 'rate_limited' | 'too_many'
+): void {
+  wsHandshakesTotal.inc({ outcome })
+}
+
+export function recordWsMessageSent(
+  topic: string,
+  path: 'live' | 'replay'
+): void {
+  wsMessagesSentTotal.inc({ topic, path })
+}
+
+export function recordWsMessageReceived(type: string): void {
+  wsMessagesReceivedTotal.inc({ type })
+}
+
+export function recordWsReplay(count: number): void {
+  if (count > 0) wsReplayEventsTotal.inc(count)
+}
+
+export function recordWsGap(reason: string): void {
+  wsGapsTotal.inc({ reason })
+}
+
+export function recordWsDroppedEvents(
+  reason: 'backpressure' | 'coalesced',
+  count = 1
+): void {
+  wsDroppedEventsTotal.inc({ reason }, count)
+}
+
+export function recordWsBridgePublish(
+  outcome: 'redis' | 'local_only' | 'error'
+): void {
+  wsBridgePublishTotal.inc({ outcome })
+}
+
+export function recordWsPublishFailure(): void {
+  wsPublishFailuresTotal.inc()
 }
 
 /**

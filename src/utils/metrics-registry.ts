@@ -22,6 +22,6 @@
  * (They are the same object — this file just exports it explicitly.)
  */
 
-import { register } from 'prom-client';
+import { register } from 'prom-client'
 
-export { register };
+export { register }

@@ -300,7 +300,7 @@ describe('Regression Tests - Critical Prisma-Backed Flows', () => {
           role: 'admin',
           scopes: ['dlq:read', 'dlq:write'],
           hash: 'test-hash',
-          tokenPrefix: 'test-prefix',
+          tokenPrefix: 'sha256:test-prefix',
         },
       })
 

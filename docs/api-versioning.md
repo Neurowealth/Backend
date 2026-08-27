@@ -39,7 +39,15 @@ GET    /api/v1/transactions/history (List transaction history)
 
 ### Current API State (v1)
 
-All routes currently registered in `src/routes/` are implicitly **v1 endpoints**. These routes currently use the `/api/` prefix without explicit versioning:
+All routes registered in `src/routes/` are served as **v1 endpoints** under the
+`/api/v1/` prefix. The legacy unversioned `/api/` paths remain mounted as
+**deprecated aliases** (see [Deprecation Headers](#deprecation-headers)) so existing
+clients keep working during migration. The mounting is driven by the `apiRoutes`
+table in `src/index.ts`, which mounts each resource under both `/api/v1/<resource>`
+(primary) and `/api/<resource>` (deprecated). Every response carries an
+`X-API-Version: 1` header.
+
+The versioned resources are:
 
 - `auth` — Authentication and session management
 - `admin` — Administrative operations
@@ -55,8 +63,6 @@ All routes currently registered in `src/routes/` are implicitly **v1 endpoints**
 - `vault` — Vault operations
 - `whatsapp` — WhatsApp integration
 - `withdraw` — Withdrawal operations
-
-**Note:** When introducing versioning to the codebase, these will be prefixed with `/api/v1/` to explicitly mark them as v1 endpoints.
 
 ## Version Introduction Process
 

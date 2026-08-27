@@ -58,7 +58,10 @@ jest.mock('../../../src/utils/metrics-registry', () => ({
   },
 }))
 
-import { recordJobSuccess, recordJobFailure } from '../../../src/utils/job-metrics'
+import {
+  recordJobSuccess,
+  recordJobFailure,
+} from '../../../src/utils/job-metrics'
 
 describe('job-metrics', () => {
   beforeEach(() => {
@@ -70,19 +73,26 @@ describe('job-metrics', () => {
   describe('recordJobSuccess', () => {
     it('increments job_success_total with the correct job_name label', () => {
       recordJobSuccess('session_cleanup', 250)
-      expect(mockSuccessInc).toHaveBeenCalledWith({ job_name: 'session_cleanup' })
+      expect(mockSuccessInc).toHaveBeenCalledWith({
+        job_name: 'session_cleanup',
+      })
     })
 
     it('observes job_duration_ms with the correct job_name label and duration', () => {
       recordJobSuccess('retention_auth_nonces', 450)
-      expect(mockObserve).toHaveBeenCalledWith({ job_name: 'retention_auth_nonces' }, 450)
+      expect(mockObserve).toHaveBeenCalledWith(
+        { job_name: 'retention_auth_nonces' },
+        450
+      )
     })
 
     it('does not call inc on the failure counter', () => {
       mockSuccessInc.mockClear()
       mockFailureInc.mockClear()
       recordJobSuccess('retention_agent_logs', 100)
-      expect(mockSuccessInc).toHaveBeenCalledWith({ job_name: 'retention_agent_logs' })
+      expect(mockSuccessInc).toHaveBeenCalledWith({
+        job_name: 'retention_agent_logs',
+      })
       expect(mockFailureInc).not.toHaveBeenCalled()
     })
   })
@@ -90,19 +100,26 @@ describe('job-metrics', () => {
   describe('recordJobFailure', () => {
     it('increments job_failure_total with the correct job_name label', () => {
       recordJobFailure('session_cleanup', 300)
-      expect(mockFailureInc).toHaveBeenCalledWith({ job_name: 'session_cleanup' })
+      expect(mockFailureInc).toHaveBeenCalledWith({
+        job_name: 'session_cleanup',
+      })
     })
 
     it('observes job_duration_ms with the correct job_name label and duration', () => {
       recordJobFailure('retention_processed_events', 750)
-      expect(mockObserve).toHaveBeenCalledWith({ job_name: 'retention_processed_events' }, 750)
+      expect(mockObserve).toHaveBeenCalledWith(
+        { job_name: 'retention_processed_events' },
+        750
+      )
     })
 
     it('does not call inc on the success counter', () => {
       mockSuccessInc.mockClear()
       mockFailureInc.mockClear()
       recordJobFailure('retention_dead_letter_events', 200)
-      expect(mockFailureInc).toHaveBeenCalledWith({ job_name: 'retention_dead_letter_events' })
+      expect(mockFailureInc).toHaveBeenCalledWith({
+        job_name: 'retention_dead_letter_events',
+      })
       expect(mockSuccessInc).not.toHaveBeenCalled()
     })
   })

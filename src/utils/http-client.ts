@@ -96,7 +96,10 @@ export class HttpClientAdapter {
     throw lastError!
   }
 
-  private async executeWithTimeout<T>(fn: () => Promise<T>, context?: string): Promise<T> {
+  private async executeWithTimeout<T>(
+    fn: () => Promise<T>,
+    context?: string
+  ): Promise<T> {
     const { timeoutMs } = this.config
 
     return new Promise<T>((resolve, reject) => {
@@ -118,9 +121,14 @@ export class HttpClientAdapter {
 
   private checkCircuitBreaker(context?: string): void {
     if (this.state === 'open') {
-      if (Date.now() - this.lastFailureTime >= this.config.circuitBreakerResetMs) {
+      if (
+        Date.now() - this.lastFailureTime >=
+        this.config.circuitBreakerResetMs
+      ) {
         this.state = 'half-open'
-        logger.debug('[HttpClientAdapter] Circuit breaker transitioning to half-open')
+        logger.debug(
+          '[HttpClientAdapter] Circuit breaker transitioning to half-open'
+        )
       } else {
         throw new CircuitBreakerError(context)
       }
@@ -129,7 +137,9 @@ export class HttpClientAdapter {
 
   private onSuccess(): void {
     if (this.state === 'half-open') {
-      logger.debug('[HttpClientAdapter] Circuit breaker closing after successful half-open request')
+      logger.debug(
+        '[HttpClientAdapter] Circuit breaker closing after successful half-open request'
+      )
     }
     this.state = 'closed'
     this.failures = Math.max(0, this.failures - 1)
@@ -139,18 +149,22 @@ export class HttpClientAdapter {
     this.failures++
     this.lastFailureTime = Date.now()
 
-    logger.debug(`[HttpClientAdapter] Failure #${this.failures}/${this.config.circuitBreakerThreshold}: ${error.message}`)
+    logger.debug(
+      `[HttpClientAdapter] Failure #${this.failures}/${this.config.circuitBreakerThreshold}: ${error.message}`
+    )
 
     if (this.failures >= this.config.circuitBreakerThreshold) {
       this.state = 'open'
-      logger.warn(`[HttpClientAdapter] Circuit breaker OPEN after ${this.failures} failures`)
+      logger.warn(
+        `[HttpClientAdapter] Circuit breaker OPEN after ${this.failures} failures`
+      )
     }
   }
 
   private async delay(attempt: number): Promise<void> {
     const delayMs = Math.min(
       this.config.baseDelayMs * Math.pow(2, attempt),
-      this.config.maxDelayMs,
+      this.config.maxDelayMs
     )
     const jitter = delayMs * (0.5 + Math.random() * 0.5)
     return new Promise((resolve) => setTimeout(resolve, jitter))

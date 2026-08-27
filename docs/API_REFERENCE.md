@@ -8,6 +8,13 @@ Comprehensive reference for all backend endpoints defined in src/routes.
 - Content type: application/json unless otherwise specified
 - Auth header format: Authorization: Bearer <token>
 
+## API Versioning
+
+- All endpoints are served under an explicit version prefix: `/api/v1/<resource>` (for example `/api/v1/auth/challenge`).
+- The legacy unversioned paths shown below (`/api/<resource>`) remain available as **deprecated aliases**. They still function but return `Deprecation: true` and `Sunset` headers and a `Link` header pointing at the `/api/v1` successor.
+- Every response includes an `X-API-Version: 1` header.
+- Breaking changes introduce a new major version (`/api/v2`); deprecated versions are supported for a minimum of 6 months before the announced `Sunset` date. The full policy lives in [`docs/api-versioning.md`](api-versioning.md).
+
 ## Authentication and Authorization
 
 - Public endpoints: GET /health, POST /api/auth/challenge, POST /api/auth/verify, GET /api/whatsapp/webhook, POST /api/whatsapp/webhook, GET /api/vault/state, GET /api/protocols/rates, GET /api/protocols/agent/status, GET /api/agent/status
@@ -378,6 +385,62 @@ Response 200:
 "averageApy": 4.025,
 "whatsappReply": "..."
 }
+
+Response 401:
+{
+"error": "Unauthorized"
+}
+
+Response 404:
+{
+"error": "User not found"
+}
+
+### GET /api/portfolio/:userId/tax-report
+
+- Auth: required (requireAuth + enforceUserAccess)
+- Path params:
+  - userId: uuid string
+- Query params:
+  - year: integer (2000–2100), required — calendar year, UTC boundaries
+  - format: enum(json, csv), default json
+- Request body: none
+
+Realized gain/loss report computed with FIFO cost-basis lot accounting over
+confirmed on-chain withdrawals. Money fields are decimal strings; null means
+"unpriced" (excluded from totals), never zero. See docs/TAX_REPORT.md for
+methodology and known limitations.
+
+Example request:
+GET /api/portfolio/550e8400-e29b-41d4-a716-446655440001/tax-report?year=2026
+
+Response 200 (json):
+{
+"userId": "550e8400-e29b-41d4-a716-446655440001",
+"year": 2026,
+"method": "FIFO",
+"disposals": [
+{
+"disposedAt": "2026-06-15T00:00:00.000Z",
+"assetSymbol": "USDC",
+"amount": "40",
+"withdrawalTxHash": "c1d2...",
+"acquiredAt": "2026-01-15T00:00:00.000Z",
+"acquisitionTxHash": "a1b2...",
+"acquisitionPrice": "1",
+"disposalPrice": "1",
+"costBasis": "40",
+"proceeds": "40",
+"realizedGain": "0",
+"priced": true
+}
+],
+"totals": { "proceeds": "40", "costBasis": "40", "realizedGain": "0", "pricedDisposalCount": 1 },
+"caveats": { "unpricedDisposalCount": 0, "unpricedAssets": [], "stablecoinAssumption": "...", "rebalancesNotIncluded": "..." }
+}
+
+Response 200 (format=csv): text/csv attachment (tax-report-2026.csv), header
+row plus one row per disposal, formula-injection-safe cells.
 
 Response 401:
 {
