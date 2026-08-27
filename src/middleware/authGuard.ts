@@ -44,7 +44,8 @@ export function internalAuthGuard(
   const clientIp = getClientIp(req)
   const internalToken = req.headers['x-internal-token'] as string | undefined
   const adminToken = req.headers['authorization']?.replace('Bearer ', '') as
-    string | undefined
+    | string
+    | undefined
 
   // Check 1: X-Internal-Token header
   if (internalToken && process.env.INTERNAL_SERVICE_TOKEN) {
@@ -118,7 +119,8 @@ export function internalAuthGuardStrict(
   const clientIp = getClientIp(req)
   const internalToken = req.headers['x-internal-token'] as string | undefined
   const adminToken = req.headers['authorization']?.replace('Bearer ', '') as
-    string | undefined
+    | string
+    | undefined
 
   // Check 1: X-Internal-Token header
   if (internalToken && process.env.INTERNAL_SERVICE_TOKEN) {

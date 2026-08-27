@@ -147,7 +147,10 @@ export type OptimizationOutcome =
     }
 
 export type BindingConstraint =
-  'minWeights' | 'maxWeights' | 'stableFloor' | 'riskCeiling'
+  | 'minWeights'
+  | 'maxWeights'
+  | 'stableFloor'
+  | 'riskCeiling'
 
 // ── Estimation ───────────────────────────────────────────────────────────────
 

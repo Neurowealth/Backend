@@ -2,7 +2,10 @@ import crypto from 'node:crypto'
 import { Prisma } from '@prisma/client'
 
 export type AuditBlockType =
-  'EVENT_BATCH' | 'TXN_BATCH' | 'ADMIN_BATCH' | 'ANCHOR'
+  | 'EVENT_BATCH'
+  | 'TXN_BATCH'
+  | 'ADMIN_BATCH'
+  | 'ANCHOR'
 
 export interface AuditBlockLike {
   height: number

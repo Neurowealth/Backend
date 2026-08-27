@@ -93,7 +93,12 @@ export interface CreateOrderResult {
  * the system never depends on a provider's raw status strings.
  */
 export type NormalizedWebhookStatus =
-  'PENDING' | 'PROCESSING' | 'SETTLED' | 'FAILED' | 'REFUNDED' | 'KYC_REQUIRED'
+  | 'PENDING'
+  | 'PROCESSING'
+  | 'SETTLED'
+  | 'FAILED'
+  | 'REFUNDED'
+  | 'KYC_REQUIRED'
 
 export interface ParsedWebhook {
   providerOrderId: string
@@ -152,7 +157,10 @@ export interface FiatRampProvider {
  *                         healthy, otherwise fall back to DEFAULT semantics.
  */
 export type ProviderSelectionPolicy =
-  'DEFAULT' | 'BEST_QUOTE' | 'ROUND_ROBIN_HEALTHY' | 'PREFER_PROVIDER'
+  | 'DEFAULT'
+  | 'BEST_QUOTE'
+  | 'ROUND_ROBIN_HEALTHY'
+  | 'PREFER_PROVIDER'
 
 export type CircuitState = 'closed' | 'open' | 'half-open'
 
