@@ -103,7 +103,7 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
       logger.info('[RecurringDeposit] Plan executed successfully', {
         planId: plan.id,
         userId: plan.userId,
-        txHash: result.transaction.txHash,
+        txHash: result.transaction!.txHash,
       })
 
       publishUserEvent(
@@ -116,9 +116,26 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
           amount: Number(plan.amount),
           assetSymbol: plan.assetSymbol,
           cadence: plan.cadence,
-          txHash: result.transaction.txHash,
+          txHash: result.transaction!.txHash,
         }
       ).catch(() => {})
+    } else if (result.status === 'PENDING_APPROVAL') {
+      // Gated by an ApprovalPolicy (#314): skip this occurrence rather than
+      // executing or failing it. `nextRunAt` is deliberately left untouched
+      // so the plan is picked up again next sweep — guardOperation's dedupe
+      // check (same policy/user/amount, still-PENDING) lands on the same
+      // open request instead of piling up duplicates, so this is a no-op
+      // poll until an approver decides, not a retry storm.
+      await db.recurringDepositPlan.update({
+        where: { id: plan.id },
+        data: { lastRunStatus: 'pending_approval' },
+      })
+
+      logger.info('[RecurringDeposit] Plan occurrence pending approval', {
+        planId: plan.id,
+        userId: plan.userId,
+        approvalRequestId: result.approvalRequestId,
+      })
     } else {
       await failPlan(plan, 'transaction_failed')
     }

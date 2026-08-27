@@ -587,6 +587,11 @@ export const config = {
       process.env.RECURRING_DEPOSITS_INTERVAL_MS || '300000'
     ),
   },
+  approvals: {
+    expirySweepIntervalMs: parseInt(
+      process.env.APPROVAL_EXPIRY_SWEEP_INTERVAL_MS || '60000'
+    ),
+  },
   outbox: {
     dispatchIntervalMs: parseInt(
       process.env.OUTBOX_DISPATCH_INTERVAL_MS || '15000'

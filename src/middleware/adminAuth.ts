@@ -32,6 +32,9 @@ export const ADMIN_SCOPES = [
   // cancel unsent PENDING ops).
   'outbox:read',
   'outbox:write',
+  // #314 — admin cancellation of a PENDING_APPROVAL request (the issue's
+  // "requester or admin" cancel rule).
+  'approvals:write',
   'super',
 ] as const
 export type AdminScope = (typeof ADMIN_SCOPES)[number]

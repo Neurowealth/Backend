@@ -10,6 +10,7 @@ import { enqueueOutboxOp } from '../outbox/service'
 import { dispatchOne } from '../outbox/dispatcher'
 import { deriveIdempotencyKey } from '../outbox/idempotency'
 import { OutboxOpKind } from '../outbox/types'
+import { guardOperation } from '../approvals/service'
 
 /**
  * Persist the Transaction row (PENDING, no hash yet) and its outbox intent in
@@ -113,23 +114,40 @@ export interface ExecuteDepositParams {
   assetSymbol: string
   memo?: string
   actingAsUserId?: string | null
+  // Set only by src/approvals/executors.ts when re-running an already
+  // APPROVED request's payload — never by an HTTP route or job directly, or
+  // an approved request would re-trigger guardOperation and gate itself.
+  skipApprovalGuard?: boolean
 }
 
 export interface ExecuteDepositResult {
-  transaction: Transaction
-  status: 'CONFIRMED' | 'FAILED'
+  transaction: Transaction | null
+  status: 'CONFIRMED' | 'FAILED' | 'PENDING_APPROVAL'
+  approvalRequestId?: string
 }
 
 /**
  * Core deposit logic extracted for reuse by both the HTTP route and the
  * recurring deposit scheduler. Submits an on-chain transaction, persists
  * the Transaction row, and dispatches a webhook on success.
+ *
+ * Gated by an ApprovalPolicy (#314) before anything is submitted: this is
+ * the single interception point, so the HTTP deposit route AND
+ * src/jobs/recurringDeposits.ts (which calls this function directly) are
+ * both covered without duplicating the check.
  */
 export async function executeDeposit(
   params: ExecuteDepositParams
 ): Promise<ExecuteDepositResult> {
-  const { userId, walletAddress, amount, assetSymbol, memo, actingAsUserId } =
-    params
+  const {
+    userId,
+    walletAddress,
+    amount,
+    assetSymbol,
+    memo,
+    actingAsUserId,
+    skipApprovalGuard,
+  } = params
 
   const user = await db.user.findUnique({
     where: { id: userId },
@@ -137,6 +155,32 @@ export async function executeDeposit(
   })
   if (!user) {
     throw new Error('User not found')
+  }
+
+  if (!skipApprovalGuard) {
+    const guard = await guardOperation({
+      userId,
+      actingAsUserId,
+      permission: 'DEPOSIT',
+      amount,
+      assetSymbol,
+      payload: {
+        type: 'deposit',
+        userId,
+        walletAddress,
+        amount,
+        assetSymbol,
+        memo,
+        actingAsUserId,
+      },
+    })
+    if (!guard.allowed) {
+      return {
+        transaction: null,
+        status: 'PENDING_APPROVAL',
+        approvalRequestId: guard.requestId,
+      }
+    }
   }
 
   logger.info('Submitting on-chain deposit', {
@@ -185,6 +229,127 @@ export async function executeDeposit(
   }
 }
 
+export interface ExecuteWithdrawParams {
+  userId: string
+  walletAddress: string
+  amount: number
+  assetSymbol: string
+  protocolName?: string
+  memo?: string
+  actingAsUserId?: string | null
+  // See ExecuteDepositParams.skipApprovalGuard.
+  skipApprovalGuard?: boolean
+}
+
+export interface ExecuteWithdrawResult {
+  transaction: Transaction | null
+  status: 'CONFIRMED' | 'FAILED' | 'PENDING_APPROVAL'
+  approvalRequestId?: string
+}
+
+/**
+ * Core withdrawal logic, mirroring executeDeposit. Extracted so both the
+ * HTTP withdraw route and the approval service's post-approval execution
+ * path (src/approvals/executors.ts) run through the exact same gate and
+ * submission logic.
+ */
+export async function executeWithdraw(
+  params: ExecuteWithdrawParams
+): Promise<ExecuteWithdrawResult> {
+  const {
+    userId,
+    walletAddress,
+    amount,
+    assetSymbol,
+    protocolName,
+    memo,
+    actingAsUserId,
+    skipApprovalGuard,
+  } = params
+
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: { id: true, network: true },
+  })
+  if (!user) {
+    throw new Error('User not found')
+  }
+
+  if (!skipApprovalGuard) {
+    const guard = await guardOperation({
+      userId,
+      actingAsUserId,
+      permission: 'WITHDRAW',
+      amount,
+      assetSymbol,
+      payload: {
+        type: 'withdraw',
+        userId,
+        walletAddress,
+        amount,
+        assetSymbol,
+        protocolName,
+        memo,
+        actingAsUserId,
+      },
+    })
+    if (!guard.allowed) {
+      return {
+        transaction: null,
+        status: 'PENDING_APPROVAL',
+        approvalRequestId: guard.requestId,
+      }
+    }
+  }
+
+  logger.info('Submitting on-chain withdrawal', {
+    userId,
+    amount,
+    assetSymbol,
+  })
+
+  const transaction = await enqueueAndDispatch({
+    kind: 'WITHDRAW',
+    userId,
+    userAddress: walletAddress,
+    amount,
+    assetSymbol,
+    network: user.network,
+    type: 'WITHDRAWAL',
+    protocolName,
+    memo,
+    actingAsUserId,
+  })
+
+  logger.info('On-chain withdrawal completed', {
+    userId,
+    txHash: transaction.txHash,
+    status: transaction.status,
+  })
+
+  if (transaction.status === 'CONFIRMED') {
+    publishUserEvent(
+      userId,
+      EVENT_TYPE_TOPIC['transaction.confirmed'],
+      'transaction.confirmed',
+      {
+        txHash: transaction.txHash,
+        type: 'WITHDRAWAL',
+        status: transaction.status,
+        assetSymbol,
+        amount,
+        protocolName,
+        userId,
+      }
+    ).catch(() => {})
+  }
+
+  return {
+    transaction,
+    status: transaction.status as 'CONFIRMED' | 'FAILED',
+  }
+}
+
 export async function processOnChainTransaction(
   req: Request,
   res: Response,
@@ -209,34 +374,31 @@ export async function processOnChainTransaction(
   if (type === 'WITHDRAWAL') {
     const user = await db.user.findUnique({
       where: { id: userId },
-      select: { id: true, network: true },
+      select: { id: true },
     })
     if (!user) {
       return sendNotFound(res, 'User')
     }
 
-    logger.info('Submitting on-chain withdrawal', {
-      correlationId: req.correlationId,
-      type,
+    const result = await executeWithdraw({
       userId,
+      walletAddress: req.auth!.walletAddress,
       amount,
       assetSymbol,
-    })
-
-    const transaction = await enqueueAndDispatch({
-      kind: 'WITHDRAW',
-      userId,
-      userAddress: req.auth!.walletAddress,
-      amount,
-      assetSymbol,
-      network: user.network,
-      type,
       protocolName,
       memo,
       actingAsUserId,
       selectedLotIds,
     })
 
+    if (result.status === 'PENDING_APPROVAL') {
+      return res.status(202).json({
+        status: 'PENDING_APPROVAL',
+        approvalRequestId: result.approvalRequestId,
+      })
+    }
+
+    const transaction = result.transaction!
     logger.info('On-chain withdrawal completed', {
       correlationId: req.correlationId,
       type,
@@ -245,23 +407,8 @@ export async function processOnChainTransaction(
       status: transaction.status,
     })
 
-    if (transaction.status === 'CONFIRMED') {
-      publishUserEvent(
-        userId,
-        EVENT_TYPE_TOPIC['transaction.confirmed'],
-        'transaction.confirmed',
-        {
-          txHash: transaction.txHash,
-          type,
-          status: transaction.status,
-          assetSymbol,
-          amount,
-          protocolName,
-          userId,
-        }
-      ).catch(() => {})
-    }
-
+    // Notification already dispatched inside executeWithdraw above — do not
+    // re-publish here (that would double-fire transaction.confirmed).
     return res.status(201).json({
       txHash: transaction.txHash,
       status: transaction.status,
@@ -290,21 +437,29 @@ export async function processOnChainTransaction(
     actingAsUserId,
   })
 
+  if (result.status === 'PENDING_APPROVAL') {
+    return res.status(202).json({
+      status: 'PENDING_APPROVAL',
+      approvalRequestId: result.approvalRequestId,
+    })
+  }
+
+  const transaction = result.transaction!
   return res.status(201).json({
-    txHash: result.transaction.txHash,
-    status: result.transaction.status,
+    txHash: transaction.txHash,
+    status: transaction.status,
     transaction: {
-      id: result.transaction.id,
-      txHash: result.transaction.txHash,
-      status: result.transaction.status,
-      amount: Number(result.transaction.amount),
-      assetSymbol: result.transaction.assetSymbol,
-      protocolName: result.transaction.protocolName,
+      id: transaction.id,
+      txHash: transaction.txHash,
+      status: transaction.status,
+      amount: Number(transaction.amount),
+      assetSymbol: transaction.assetSymbol,
+      protocolName: transaction.protocolName,
     },
     whatsappReply: formatDepositReply({
-      amount: Number(result.transaction.amount),
-      assetSymbol: result.transaction.assetSymbol,
-      protocolName: result.transaction.protocolName,
+      amount: Number(transaction.amount),
+      assetSymbol: transaction.assetSymbol,
+      protocolName: transaction.protocolName,
     }),
   })
 }

@@ -1178,6 +1178,41 @@ router.post(
 )
 
 /**
+ * POST /api/admin/approvals/:id/cancel
+ * Admin cancellation of a PENDING_APPROVAL request (#314) — the issue's
+ * "requester or admin" cancel rule; the requester's own path is
+ * POST /api/v1/approvals/:id/cancel. Required scope: approvals:write
+ */
+router.post(
+  '/approvals/:id/cancel',
+  requireAdminScope('approvals:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { cancel } = await import('../approvals/service')
+      const adminAuth = res.locals.adminAuth
+      const result = await cancel(req.params.id, adminAuth?.id ?? 'admin', {
+        isAdmin: true,
+      })
+      auditLog(req, res, 'APPROVAL_ADMIN_CANCEL', 'success', {
+        requestId: req.params.id,
+      })
+      res.status(200).json({ success: true, data: result })
+    } catch (error) {
+      const statusCode =
+        error && typeof error === 'object' && 'statusCode' in error
+          ? (error as { statusCode: number }).statusCode
+          : 400
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'APPROVAL_ADMIN_CANCEL', 'failure', {
+        requestId: req.params.id,
+        error: message,
+      })
+      res.status(statusCode).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
  * GET /api/admin/users/:id/sessions — list sessions for a user (#376)
  */
 router.get(

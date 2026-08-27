@@ -45,6 +45,14 @@ const WEBHOOK_EVENTS = [
   // Durable outbox (#325): a money-moving op exhausted its retries and moved
   // to the terminal FAILED state — see docs/OUTBOX.md.
   'outbox.op_failed',
+  // Approval workflows (#314): lifecycle of a PENDING_APPROVAL high-value
+  // operation gated by an ApprovalPolicy — see docs/APPROVALS.md.
+  'approval.requested',
+  'approval.approved',
+  'approval.rejected',
+  'approval.executed',
+  'approval.expired',
+  'approval.cancelled',
 ] as const
 
 export const createWebhookSchema = z.object({

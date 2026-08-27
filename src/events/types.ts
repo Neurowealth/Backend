@@ -64,6 +64,15 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'recurring_deposit.executed': 'transactions',
   'recurring_deposit.failed': 'transactions',
   'outbox.op_failed': 'transactions',
+  // #314 — a PENDING_APPROVAL operation's lifecycle is itself a transaction
+  // state (gating a withdraw/deposit before it submits), so it shares the
+  // 'transactions' topic rather than introducing a new one.
+  'approval.requested': 'transactions',
+  'approval.approved': 'transactions',
+  'approval.rejected': 'transactions',
+  'approval.executed': 'transactions',
+  'approval.expired': 'transactions',
+  'approval.cancelled': 'transactions',
   'agent.rebalanced': 'agent',
   'alert_rule.triggered': 'alerts',
   'strategy.updated': 'strategies',

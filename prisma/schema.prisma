@@ -243,6 +243,8 @@ model User {
   allocationSuggestions   AllocationSuggestion[]
   portfolioAttributions   PortfolioAttribution[]
   portfolioRiskAggregates PortfolioRiskAggregate[]
+  approvalPolicies        ApprovalPolicy[]         @relation("ApprovalPolicyPrincipal")
+  approvalRequests        ApprovalRequest[]        @relation("ApprovalRequestPrincipal")
   userEvents              UserEvent[]
   userEventSequence       UserEventSequence?
   userApiKeys             UserApiKey[]
@@ -844,6 +846,96 @@ model SubAccount {
   @@index([childUserId])
   @@index([status])
   @@map("sub_accounts")
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  EXECUTED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+/// Multi-signature approval policy (#314). Governs one permission class
+/// (WITHDRAW/DEPOSIT/MANAGE_STRATEGY) for a principal's own account
+/// (scopedToChildUserId = null) or for a specific sub-account relationship
+/// (scopedToChildUserId = the child). A null highValueThreshold means the
+/// policy applies to every operation of that permission, not just large ones.
+/// Pending requests snapshot the policy that created them (see
+/// ApprovalRequest.minApprovers) — editing or deactivating a policy never
+/// changes an already-open request, only new ones.
+model ApprovalPolicy {
+  id                  String               @id @default(uuid())
+  principalUserId     String
+  scopedToChildUserId String?
+  permission          SubAccountPermission
+  minApprovers        Int
+  highValueThreshold  Decimal?             @db.Decimal(36, 18)
+  approvalTimeoutMs   Int
+  isActive            Boolean              @default(true)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  principal User              @relation("ApprovalPolicyPrincipal", fields: [principalUserId], references: [id], onDelete: Cascade)
+  requests  ApprovalRequest[]
+
+  @@index([principalUserId, permission, isActive])
+  @@index([scopedToChildUserId, permission, isActive])
+  @@map("approval_policies")
+}
+
+/// One high-value/sensitive operation held at PENDING_APPROVAL. Status
+/// machine: PENDING -> APPROVED -> EXECUTED (terminal, on-chain finality,
+/// never un-executed); PENDING -> REJECTED / EXPIRED / CANCELLED. `payload`
+/// is the exact operation to re-run on execution (see
+/// src/approvals/service.ts's guardOperation/decide). `minApprovers` is
+/// snapshotted from the policy at request time so a later policy edit never
+/// changes an open request's threshold.
+model ApprovalRequest {
+  id             String               @id @default(uuid())
+  policyId       String
+  userId         String
+  actingAsUserId String
+  permission     SubAccountPermission
+  amount         Decimal              @db.Decimal(36, 18)
+  assetSymbol    String
+  payload        Json
+  status         ApprovalStatus       @default(PENDING)
+  minApprovers   Int
+  requestedAt    DateTime             @default(now())
+  expiresAt      DateTime
+  executedAt     DateTime?
+  executedTxId   String?
+  cancelledById  String?
+  reason         String?
+
+  policy    ApprovalPolicy @relation(fields: [policyId], references: [id])
+  user      User           @relation("ApprovalRequestPrincipal", fields: [userId], references: [id], onDelete: Cascade)
+  approvals Approval[]
+
+  @@index([userId, status])
+  @@index([status, expiresAt])
+  @@map("approval_requests")
+}
+
+/// One approver's decision on an ApprovalRequest. The unique constraint is
+/// the concurrency primitive: two approvals landing simultaneously cannot
+/// both be recorded for the same (request, approver) pair, and threshold-met
+/// detection is a conditional UPDATE on the request, never check-then-act.
+model Approval {
+  id             String   @id @default(uuid())
+  requestId      String
+  approverUserId String
+  approved       Boolean
+  note           String?
+  createdAt      DateTime @default(now())
+
+  request ApprovalRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, approverUserId])
+  @@index([requestId])
+  @@map("approvals")
 }
 
 /// Fiat on-ramp / off-ramp order (#290).
