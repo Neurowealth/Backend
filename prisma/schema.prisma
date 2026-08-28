@@ -132,6 +132,33 @@ enum RecurringDepositPlanStatus {
   CANCELLED
 }
 
+/// Contribution policy for recurring deposits (#311).
+/// FIXED = current behavior (default, backward compatible).
+/// ADAPTIVE = volatility-aware scaling with pause-on-drawdown.
+enum ContributionPolicy {
+  FIXED
+  ADAPTIVE
+}
+
+/// How to handle a plan whose run was skipped (#311).
+enum CatchUpMode {
+  /// Skip the missed run, continue on schedule.
+  SKIP
+  /// Accumulate missed runs and execute them on the next scheduled window.
+  ACCUMULATE
+  /// Retry the skipped run on the next sweep (default).
+  RETRY
+}
+
+/// Status of an individual recurring deposit run (#311).
+enum RecurringDepositRunStatus {
+  EXECUTED
+  SKIPPED
+  FAILED
+  PENDING_APPROVAL
+  PARTIAL
+}
+
 // Where an acquisition/disposal USD price came from (#284). Only stablecoins
 // are priced in v1; anything else is stored with a null price and surfaced as
 // unpriced in the tax report — never silently zeroed.
@@ -232,6 +259,7 @@ model User {
   referralCode            ReferralCode?
   referralConversion      ReferralConversion?
   recurringDepositPlans   RecurringDepositPlan[]
+  recurringDepositRuns    RecurringDepositRun[]
   alertRules              AlertRule[]
   costBasisLots           CostBasisLot[]
   lotDisposals            LotDisposal[]
@@ -1069,14 +1097,71 @@ model RecurringDepositPlan {
   status        RecurringDepositPlanStatus @default(ACTIVE)
   lastRunAt     DateTime?
   lastRunStatus String?
-  createdAt     DateTime                   @default(now())
-  updatedAt     DateTime                   @updatedAt
+
+  // ── Smart DCA fields (#311) ────────────────────────────────────────────
+  /// Contribution policy: FIXED (default) or ADAPTIVE (volatility-aware).
+  policy             ContributionPolicy @default(FIXED)
+  /// Catch-up mode for skipped runs: RETRY (default), SKIP, or ACCUMULATE.
+  catchUpMode        CatchUpMode        @default(RETRY)
+  /// Pause-on-drawdown: skip (or double) when portfolio drawdown exceeds this %.
+  /// Null = no drawdown pause (default for FIXED plans).
+  pauseOnDrawdownPct Float?
+  /// When paused on drawdown, double the contribution instead of skipping.
+  doubleOnDrawdown   Boolean            @default(false)
+  /// Accumulated missed runs (ACCUMULATE catch-up mode). Capped at 10.
+  accumulatedRuns    Int                @default(0)
+  /// Consecutive failure count for auto-pause backoff.
+  consecutiveFailures Int               @default(0)
+  /// Auto-pause reason (user-visible) when consecutiveFailures exceeds threshold.
+  autoPauseReason    String?
+  /// Optional multi-protocol allocation as JSON: { "Protocol": weight% }.
+  /// Single-protocol plans are a single-entry map — no schema break.
+  allocationMap      Json?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs RecurringDepositRun[]
+
+  createdAt     DateTime                   @default(now())
+  updatedAt     DateTime                   @updatedAt
 
   @@index([userId])
   @@index([status, nextRunAt])
   @@map("recurring_deposit_plans")
+}
+
+/// Per-run ledger for recurring deposits (#311).
+/// Records baseline amount, applied amount, regime snapshot, and reasoning
+/// for every execution — the policy audit trail (AgentLog is the deposit
+/// audit trail).
+model RecurringDepositRun {
+  id               String                    @id @default(uuid())
+  planId           String
+  userId           String
+  /// Baseline amount before adaptive scaling.
+  baselineAmount   Decimal                   @db.Decimal(36, 18)
+  /// Actual amount deposited (after regime scaling, drawdown check).
+  appliedAmount    Decimal                   @db.Decimal(36, 18)
+  /// Regime metrics snapshot at time of run (JSON: volatility, drawdown, etc.).
+  regimeSnapshot   Json?
+  /// Human-readable reasoning for any deviation from baseline.
+  reasoning        String?
+  /// Status of this individual run.
+  status           RecurringDepositRunStatus @default(EXECUTED)
+  /// Transaction hash if deposit was executed.
+  txHash           String?
+  /// Error message if run failed.
+  errorMessage     String?
+  /// Allocation legs (JSON): [{ protocol, amount, txHash?, error? }].
+  allocationLegs   Json?
+  createdAt        DateTime                  @default(now())
+
+  plan RecurringDepositPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  user User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([planId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("recurring_deposit_runs")
 }
 
 /// Cost-basis lot for tax reporting (#284). Exactly one lot per confirmed
