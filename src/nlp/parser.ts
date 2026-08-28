@@ -2,54 +2,80 @@ import Anthropic from '@anthropic-ai/sdk'
 import { HttpClientAdapter } from '../utils/http-client'
 import { config } from '../config'
 
-export interface Intent {
-  action:
-    | 'deposit'
-    | 'withdraw'
-    | 'balance'
-    | 'earnings'
-    | 'help'
-    | 'create_recurring_deposit'
-    | 'pause_recurring_deposit'
-    | 'cancel_recurring_deposit'
-    | 'goal'
-    | 'alert_create'
-    | 'alert_list'
-    | 'alert_delete'
-    | 'unknown'
-  amount?: number
-  currency?: string
-  all?: boolean
-  cadence?: 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY'
-  // Alert-rule fields (action = alert_*). Kept optional so the union stays flat.
-  metric?: 'PROTOCOL_APY' | 'PORTFOLIO_VALUE' | 'POSITION_DRAWDOWN'
-  protocolName?: string
-  comparator?: 'LT' | 'LTE' | 'GT' | 'GTE'
-  threshold?: number
-  alertId?: string
-}
+/**
+ * Represents a parsed user intent for the financial bot.
+ *
+ * This is a discriminated union so TypeScript can safely narrow the
+ * available properties based on `action`.
+ */
+export type Intent =
+  | {
+      action: 'deposit'
+      amount?: number
+      currency?: string
+    }
+  | {
+      action: 'withdraw'
+      amount?: number
+      currency?: string
+      all?: boolean
+    }
+  | {
+      action: 'balance'
+    }
+  | {
+      action: 'earnings'
+    }
+  | {
+      action: 'help'
+    }
+  | {
+      action: 'goal'
+    }
+  | {
+      action: 'create_recurring_deposit'
+      amount?: number
+      cadence?: 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY'
+    }
+  | {
+      action: 'pause_recurring_deposit'
+    }
+  | {
+      action: 'alert_create'
+      metric: string
+      protocolName: string
+      comparator: string
+      threshold: number
+    }
+  | {
+      action: 'alert_list'
+    }
+  | {
+      action: 'alert_delete'
+      alertId?: string
+    }
+  | {
+      action: 'unknown'
+    }
 
-// Actions the Claude tier is allowed to emit. Kept in sync MANUALLY with the
-// Intent union above and the handler switch in src/whatsapp/handler.ts — same
-// manual-sync caveat as the deposit/withdraw intents (#281/#282). A new action
-// must be added here or parseWithClaude will drop it as unknown.
-const KNOWN_ACTIONS = [
-  'deposit',
-  'withdraw',
-  'balance',
-  'earnings',
-  'help',
-  'create_recurring_deposit',
-  'pause_recurring_deposit',
-  'alert_create',
-  'alert_list',
-  'alert_delete',
-] as const
+// ---------------------------------------------------------------------------
+// Anthropic client
+// ---------------------------------------------------------------------------
 
+/**
+ * Anthropic SDK client.
+ *
+ * A dummy key allows this module to be imported in tests/environments where
+ * ANTHROPIC_API_KEY isn't configured. Actual requests with the dummy key will
+ * fail authentication, which is handled by parseWithClaude().
+ */
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || 'dummy_key',
 })
 
+/**
+ * Resilient HTTP wrapper around outbound Anthropic calls.
+ */
 const anthropicHttpClient = new HttpClientAdapter({
   timeoutMs: config.httpClient.timeoutMs,
   maxRetries: config.httpClient.maxRetries,
@@ -59,247 +85,628 @@ const anthropicHttpClient = new HttpClientAdapter({
   circuitBreakerResetMs: config.httpClient.circuitBreakerResetMs,
 })
 
-/**
- * Parse alert-rule management phrases (create/list/delete) from a lowercased
- * message. Returns null when the message isn't alert-related so the caller can
- * fall through to the other regex tiers. Deliberately conservative — anything
- * ambiguous is left to the Claude tier.
- */
-export function parseAlertIntent(lowerMsg: string): Intent | null {
-  // List: "my alerts", "list alerts", "show my alert rules"
-  if (
-    /\b(list|show|view|my)\b.*\balerts?\b|\balerts?\b.*\b(list|status)\b/i.test(
-      lowerMsg
-    )
-  ) {
-    return { action: 'alert_list' }
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+type RecurringCadence = 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY'
+
+function normalizeCadence(value: string): RecurringCadence | null {
+  switch (value.toLowerCase()) {
+    case 'weekly':
+      return 'WEEKLY'
+    case 'biweekly':
+    case 'bi-weekly':
+    case 'every two weeks':
+      return 'BIWEEKLY'
+    case 'monthly':
+      return 'MONTHLY'
+    default:
+      return null
   }
-
-  // Delete: "delete alert <id>", "remove alert <uuid>", "cancel alert <id>"
-  const deleteMatch = lowerMsg.match(
-    /\b(delete|remove|cancel|stop)\s+alert(?:\s+rule)?\s+([0-9a-f-]{6,})/i
-  )
-  if (deleteMatch) {
-    return { action: 'alert_delete', alertId: deleteMatch[2] }
-  }
-  if (/\b(delete|remove|cancel|stop)\b.*\balerts?\b/i.test(lowerMsg)) {
-    // Delete intent without a parseable id — still route to alert_delete so the
-    // handler can ask which rule to remove.
-    return { action: 'alert_delete' }
-  }
-
-  // Create: "alert me if <protocol> apy drops below 5",
-  // "notify me when my portfolio drops below 1000".
-  const isCreate =
-    /\b(alert|notify|tell|warn|ping)\s+me\b/i.test(lowerMsg) ||
-    /\b(set|create|add)\s+(an?\s+)?alert\b/i.test(lowerMsg)
-  if (!isCreate) return null
-
-  const intent: Intent = { action: 'alert_create' }
-
-  // Metric + protocol
-  if (/\bportfolio\b/i.test(lowerMsg)) {
-    intent.metric = 'PORTFOLIO_VALUE'
-  } else if (/\bdrawdown\b/i.test(lowerMsg)) {
-    intent.metric = 'POSITION_DRAWDOWN'
-  } else if (/\bapy\b|\byield\b/i.test(lowerMsg)) {
-    intent.metric = 'PROTOCOL_APY'
-    // Grab the protocol name preceding "apy"/"yield" (e.g. "blend apy").
-    const protoMatch = lowerMsg.match(/\b([a-z][a-z0-9 ]*?)\s+(?:apy|yield)\b/i)
-    if (protoMatch) {
-      intent.protocolName = protoMatch[1].trim()
-    }
-  }
-
-  // Comparator
-  if (
-    /\b(below|under|less than|drops? below|falls? below|<)\b/i.test(lowerMsg)
-  ) {
-    intent.comparator = 'LT'
-  } else if (
-    /\b(above|over|greater than|exceeds?|rises? above|>)\b/i.test(lowerMsg)
-  ) {
-    intent.comparator = 'GT'
-  }
-
-  // Threshold — first standalone number in the message.
-  const numMatch = lowerMsg.match(/([\d]+(?:\.[\d]+)?)/)
-  if (numMatch) {
-    const n = parseFloat(numMatch[1])
-    if (!isNaN(n)) intent.threshold = n
-  }
-
-  return intent
 }
 
-// Regex fallback
+function normalizeComparator(value: string): string {
+  switch (value.trim().toLowerCase()) {
+    case '<':
+    case 'less than':
+    case 'below':
+    case 'under':
+      return '<'
+
+    case '<=':
+    case 'less than or equal to':
+    case 'at most':
+      return '<='
+
+    case '>':
+    case 'greater than':
+    case 'above':
+    case 'over':
+      return '>'
+
+    case '>=':
+    case 'greater than or equal to':
+    case 'at least':
+      return '>='
+
+    case '=':
+    case '==':
+    case 'equals':
+    case 'equal to':
+      return '='
+
+    default:
+      return value.trim()
+  }
+}
+
+/**
+ * Safely extracts a positive number from text.
+ */
+function parseAmount(value: string): number | null {
+  const amount = parseFloat(value.replace(/,/g, ''))
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return null
+  }
+
+  return amount
+}
+
+/**
+ * Runtime validation for a Claude-produced Intent.
+ *
+ * Never trust an LLM response merely because it was cast to TypeScript.
+ */
+function isValidIntent(value: unknown): value is Intent {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const candidate = value as Record<string, unknown>
+
+  if (typeof candidate.action !== 'string') {
+    return false
+  }
+
+  switch (candidate.action) {
+    case 'balance':
+    case 'earnings':
+    case 'help':
+    case 'goal':
+    case 'pause_recurring_deposit':
+    case 'alert_list':
+    case 'unknown':
+      return true
+
+    case 'deposit':
+      return (
+        (candidate.amount === undefined ||
+          (typeof candidate.amount === 'number' &&
+            Number.isFinite(candidate.amount))) &&
+        (candidate.currency === undefined ||
+          typeof candidate.currency === 'string')
+      )
+
+    case 'withdraw':
+      return (
+        (candidate.amount === undefined ||
+          (typeof candidate.amount === 'number' &&
+            Number.isFinite(candidate.amount))) &&
+        (candidate.currency === undefined ||
+          typeof candidate.currency === 'string') &&
+        (candidate.all === undefined || typeof candidate.all === 'boolean')
+      )
+
+    case 'create_recurring_deposit':
+      return (
+        (candidate.amount === undefined ||
+          (typeof candidate.amount === 'number' &&
+            Number.isFinite(candidate.amount))) &&
+        (candidate.cadence === undefined ||
+          candidate.cadence === 'WEEKLY' ||
+          candidate.cadence === 'BIWEEKLY' ||
+          candidate.cadence === 'MONTHLY')
+      )
+
+    case 'alert_create':
+      return (
+        typeof candidate.metric === 'string' &&
+        candidate.metric.length > 0 &&
+        typeof candidate.protocolName === 'string' &&
+        candidate.protocolName.length > 0 &&
+        typeof candidate.comparator === 'string' &&
+        candidate.comparator.length > 0 &&
+        typeof candidate.threshold === 'number' &&
+        Number.isFinite(candidate.threshold)
+      )
+
+    case 'alert_delete':
+      return (
+        candidate.alertId === undefined || typeof candidate.alertId === 'string'
+      )
+
+    default:
+      return false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Regex parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Attempts to parse an intent using deterministic regex matching.
+ *
+ * This path is:
+ * - fast
+ * - free
+ * - deterministic
+ * - safe for tests
+ * - independent of Claude
+ *
+ * Returns null when the message isn't recognized and can therefore be
+ * escalated to Claude when AI_MODE isn't "local".
+ */
 export function parseWithRegex(message: string): Intent | null {
   const lowerMsg = message.toLowerCase().trim()
 
-  // Withdraw everything
-  if (/withdraw\s+(all|everything)/i.test(lowerMsg)) {
-    return { action: 'withdraw', all: true }
+  if (!lowerMsg) {
+    return null
   }
 
-  // Recurring deposit — cancel/pause
+  // -------------------------------------------------------------------------
+  // Withdraw all
+  // -------------------------------------------------------------------------
+
   if (
-    /(?:cancel|pause|stop)\s+(?:my\s+)?(?:recurring|scheduled|automatic)\s+deposit/i.test(
-      lowerMsg
-    )
+    /^(?:please\s+)?withdraw\s+(?:all|everything)\s*[.!?]*$/i.test(lowerMsg)
   ) {
-    return { action: 'pause_recurring_deposit' }
-  }
-
-  // Recurring deposit — create
-  const recurringMatch = lowerMsg.match(
-    /(?:set\s+up|create|start|new)\s+(?:a\s+)?(?:recurring|scheduled|automatic)\s+deposit\s+(?:of\s+)?([\d.,]+)\s*(?:\w+)?\s+(?:every|weekly|biweekly|bi-weekly|monthly)/i
-  )
-  if (recurringMatch) {
-    const amount = parseFloat(recurringMatch[1].replace(/,/g, ''))
-    if (!isNaN(amount)) {
-      let cadence: Intent['cadence'] = 'WEEKLY'
-      if (/bi-?weekly/i.test(lowerMsg)) cadence = 'BIWEEKLY'
-      else if (/monthly/i.test(lowerMsg)) cadence = 'MONTHLY'
-      return { action: 'create_recurring_deposit', amount, cadence }
+    return {
+      action: 'withdraw',
+      all: true,
     }
   }
 
-  // Simpler recurring deposit pattern: "recurring deposit 50 weekly"
-  const simpleRecurring = lowerMsg.match(
-    /(?:recurring|scheduled|automatic)\s+deposit\s+([\d.,]+)\s*(weekly|bi-?weekly|monthly)/i
-  )
-  if (simpleRecurring) {
-    const amount = parseFloat(simpleRecurring[1].replace(/,/g, ''))
-    if (!isNaN(amount)) {
-      let cadence: Intent['cadence'] = 'WEEKLY'
-      if (/bi-?weekly/i.test(simpleRecurring[2])) cadence = 'BIWEEKLY'
-      else if (/monthly/i.test(simpleRecurring[2])) cadence = 'MONTHLY'
-      return { action: 'create_recurring_deposit', amount, cadence }
-    }
-  }
+  // -------------------------------------------------------------------------
+  // Deposit / withdraw with amount
+  // -------------------------------------------------------------------------
 
-  // Deposit/Withdraw with amount
   const actionMatch = lowerMsg.match(
-    /(deposit|withdraw)\s+([\d.,]+)(?:\s+([a-z]+))?/i
+    /^(?:please\s+)?(deposit|withdraw)\s+([\d.,]+)(?:\s+([a-z]+))?\s*[.!?]*$/i
   )
+
   if (actionMatch) {
     const action = actionMatch[1].toLowerCase() as 'deposit' | 'withdraw'
-    const amount = parseFloat(actionMatch[2].replace(/,/g, ''))
-    if (!isNaN(amount)) {
-      const intent: Intent = { action, amount }
+    const amount = parseAmount(actionMatch[2])
+
+    if (amount !== null) {
+      const intent: Intent =
+        action === 'deposit'
+          ? {
+              action: 'deposit',
+              amount,
+            }
+          : {
+              action: 'withdraw',
+              amount,
+            }
+
       if (actionMatch[3]) {
         intent.currency = actionMatch[3].toUpperCase()
       }
+
       return intent
     }
   }
 
-  // Alert rules — list / delete / create. Checked before the generic
-  // "apy"/"yield" earnings keyword so "alert me when apy..." isn't swallowed.
-  const alertIntent = parseAlertIntent(lowerMsg)
-  if (alertIntent) {
-    return alertIntent
-  }
-
+  // -------------------------------------------------------------------------
   // Balance
-  if (/balance|what'?s my balance|how much do i have/i.test(lowerMsg)) {
-    return { action: 'balance' }
+  // -------------------------------------------------------------------------
+
+  if (
+    /^(?:please\s+)?(?:check\s+)?balance[.!?]*$/i.test(lowerMsg) ||
+    /^what'?s\s+my\s+balance[.!?]*$/i.test(lowerMsg) ||
+    /^how\s+much\s+(?:money\s+)?do\s+i\s+have[.!?]*$/i.test(lowerMsg)
+  ) {
+    return {
+      action: 'balance',
+    }
   }
 
+  // -------------------------------------------------------------------------
   // Earnings / performance
-  if (/earnings|performance|yield|apy/i.test(lowerMsg)) {
-    return { action: 'earnings' }
+  // -------------------------------------------------------------------------
+
+  if (
+    /^(?:show\s+)?(?:my\s+)?(?:earnings|performance|yield|apy)[.!?]*$/i.test(
+      lowerMsg
+    ) ||
+    /\b(?:show|check|view)\s+(?:my\s+)?(?:earnings|performance|yield|apy)\b/i.test(
+      lowerMsg
+    )
+  ) {
+    return {
+      action: 'earnings',
+    }
   }
 
-  // Savings goal (progress/status query — creation happens via the REST API)
-  if (/goal/i.test(lowerMsg)) {
-    return { action: 'goal' }
+  // -------------------------------------------------------------------------
+  // Goal
+  // -------------------------------------------------------------------------
+
+  if (
+    /^goal[.!?]*$/i.test(lowerMsg) ||
+    /^(?:show|check|view)\s+(?:my\s+)?(?:savings\s+)?goal(?:\s+progress)?[.!?]*$/i.test(
+      lowerMsg
+    ) ||
+    /how\s+am\s+i\s+doing\s+on\s+(?:my\s+)?(?:savings\s+)?goal/i.test(lowerMsg)
+  ) {
+    return {
+      action: 'goal',
+    }
   }
 
+  // -------------------------------------------------------------------------
   // Help
-  if (/help|what can you do|commands/i.test(lowerMsg)) {
-    return { action: 'help' }
+  // -------------------------------------------------------------------------
+
+  if (/^(?:help|commands|what\s+can\s+you\s+do)[.!?]*$/i.test(lowerMsg)) {
+    return {
+      action: 'help',
+    }
   }
+
+  // -------------------------------------------------------------------------
+  // Create recurring deposit
+  //
+  // Examples:
+  // "recurring deposit 50 weekly"
+  // "create recurring deposit 50 weekly"
+  // "set up recurring deposit 50 monthly"
+  // "automatic deposit 100 biweekly"
+  // -------------------------------------------------------------------------
+
+  const recurringMatch = lowerMsg.match(
+    /^(?:(?:please\s+)?(?:create|set\s+up|start)\s+)?(?:a\s+)?(?:recurring|automatic|scheduled)\s+deposit\s+([\d.,]+)\s+(weekly|biweekly|bi-weekly|monthly)\s*[.!?]*$/i
+  )
+
+  if (recurringMatch) {
+    const amount = parseAmount(recurringMatch[1])
+    const cadence = normalizeCadence(recurringMatch[2])
+
+    if (amount !== null && cadence !== null) {
+      return {
+        action: 'create_recurring_deposit',
+        amount,
+        cadence,
+      }
+    }
+  }
+
+  // Also support:
+  // "deposit 50 weekly"
+  // "deposit 50 every week"
+  const recurringDepositMatch = lowerMsg.match(
+    /^(?:(?:please\s+)?(?:set\s+up|start)\s+)?(?:recurring\s+)?deposit\s+([\d.,]+)\s+(weekly|biweekly|bi-weekly|monthly|every\s+week|every\s+two\s+weeks|every\s+month)\s*[.!?]*$/i
+  )
+
+  if (recurringDepositMatch) {
+    const amount = parseAmount(recurringDepositMatch[1])
+    const cadenceText = recurringDepositMatch[2]
+      .replace(/^every\s+week$/i, 'weekly')
+      .replace(/^every\s+two\s+weeks$/i, 'biweekly')
+      .replace(/^every\s+month$/i, 'monthly')
+
+    const cadence = normalizeCadence(cadenceText)
+
+    if (amount !== null && cadence !== null) {
+      return {
+        action: 'create_recurring_deposit',
+        amount,
+        cadence,
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Pause recurring deposit
+  // -------------------------------------------------------------------------
+
+  if (
+    /^(?:please\s+)?(?:pause|stop)\s+(?:my\s+)?(?:recurring|scheduled|automatic)\s+deposit(?:s)?[.!?]*$/i.test(
+      lowerMsg
+    )
+  ) {
+    return {
+      action: 'pause_recurring_deposit',
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // List alerts
+  // -------------------------------------------------------------------------
+
+  if (
+    /^(?:list|show|view)\s+(?:my\s+)?alerts?[.!?]*$/i.test(lowerMsg) ||
+    /^alerts?[.!?]*$/i.test(lowerMsg)
+  ) {
+    return {
+      action: 'alert_list',
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Delete alert
+  //
+  // Examples:
+  // "delete alert 123"
+  // "remove alert abc"
+  // -------------------------------------------------------------------------
+
+  const alertDeleteMatch = lowerMsg.match(
+    /^(?:please\s+)?(?:delete|remove)\s+alert\s+([a-z0-9_-]+)\s*[.!?]*$/i
+  )
+
+  if (alertDeleteMatch) {
+    return {
+      action: 'alert_delete',
+      alertId: alertDeleteMatch[1],
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Create alert
+  //
+  // Examples:
+  // "alert me when Blend apy < 5"
+  // "alert me when Blend apy is below 5"
+  // "alert me when Blend apy > 10"
+  // -------------------------------------------------------------------------
+
+  const alertMatch = lowerMsg.match(
+    /^(?:please\s+)?alert\s+(?:me\s+)?when\s+(.+?)\s+(?:is\s+)?(<=|>=|<|>|=|below|above|under|over|less\s+than|greater\s+than|at\s+most|at\s+least|equals?)\s+([\d.,]+)\s*[.!?]*$/i
+  )
+
+  if (alertMatch) {
+    const subject = alertMatch[1].trim()
+    const comparator = normalizeComparator(alertMatch[2])
+    const threshold = parseAmount(alertMatch[3])
+
+    if (threshold !== null) {
+      // Try to split "Blend apy" into protocol + metric.
+      const parts = subject.split(/\s+/)
+
+      let protocolName = subject
+      let metric = 'apy'
+
+      if (parts.length >= 2) {
+        const possibleMetric = parts[parts.length - 1]
+
+        if (
+          /^(apy|yield|price|tvl|apr|rate|balance|earnings)$/i.test(
+            possibleMetric
+          )
+        ) {
+          metric = possibleMetric.toLowerCase()
+          protocolName = parts.slice(0, -1).join(' ')
+        }
+      }
+
+      return {
+        action: 'alert_create',
+        metric,
+        protocolName,
+        comparator,
+        threshold,
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // No match
+  // -------------------------------------------------------------------------
 
   return null
 }
 
-// Claude fallback
+// ---------------------------------------------------------------------------
+// Claude parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Falls back to Claude when regex cannot classify a message.
+ *
+ * Claude is only called when AI_MODE !== "local".
+ */
 export async function parseWithClaude(message: string): Promise<Intent> {
   try {
     const response = await anthropicHttpClient.execute(async () => {
       return anthropic.messages.create({
         model: 'claude-3-haiku-20240307',
-        max_tokens: 150,
-        system: `You are an intent parser for a financial bot. Determine if the user wants to deposit, withdraw, check balance, view earnings/performance, set up a recurring/scheduled deposit, cancel/pause a recurring deposit, check their savings goal progress, or needs help.
-Return ONLY a JSON object representing the intent, matching this TypeScript interface exactly without any wrapper text or markdown:
+        max_tokens: 250,
+
+        system: `
+You are an intent parser for a financial WhatsApp bot.
+
+Classify the user's message into exactly one of these actions:
+
+- deposit
+- withdraw
+- balance
+- earnings
+- help
+- goal
+- create_recurring_deposit
+- pause_recurring_deposit
+- alert_create
+- alert_list
+- alert_delete
+- unknown
+
+Return ONLY a JSON object.
+Do not include markdown.
+Do not include explanations.
+Do not include code fences.
+
+Schemas:
+
+deposit:
 {
-  "action": "deposit" | "withdraw" | "balance" | "earnings" | "help" | "create_recurring_deposit" | "pause_recurring_deposit" | "goal" | "unknown",
-  "amount": number, // optional
-  "currency": string, // optional
-  "all": boolean, // for "withdraw everything"
-  "cadence": "WEEKLY" | "BIWEEKLY" | "MONTHLY", // optional, only for create_recurring_deposit
-  // Alert fields (only for alert_* actions):
-  "metric": "PROTOCOL_APY" | "PORTFOLIO_VALUE" | "POSITION_DRAWDOWN", // what to watch
-  "protocolName": string, // required when metric = PROTOCOL_APY, e.g. "Blend"
-  "comparator": "LT" | "LTE" | "GT" | "GTE", // below=LT, above=GT
-  "threshold": number, // the trigger value (APY as a percent, e.g. 5 for 5%)
-  "alertId": string // for alert_delete, if the user named a specific rule id
-}`,
-        messages: [{ role: 'user', content: message }],
+  "action": "deposit",
+  "amount": number,
+  "currency": string
+}
+
+withdraw:
+{
+  "action": "withdraw",
+  "amount": number,
+  "currency": string,
+  "all": boolean
+}
+
+balance:
+{
+  "action": "balance"
+}
+
+earnings:
+{
+  "action": "earnings"
+}
+
+help:
+{
+  "action": "help"
+}
+
+goal:
+{
+  "action": "goal"
+}
+
+create_recurring_deposit:
+{
+  "action": "create_recurring_deposit",
+  "amount": number,
+  "cadence": "WEEKLY" | "BIWEEKLY" | "MONTHLY"
+}
+
+pause_recurring_deposit:
+{
+  "action": "pause_recurring_deposit"
+}
+
+alert_create:
+{
+  "action": "alert_create",
+  "metric": string,
+  "protocolName": string,
+  "comparator": string,
+  "threshold": number
+}
+
+alert_list:
+{
+  "action": "alert_list"
+}
+
+alert_delete:
+{
+  "action": "alert_delete",
+  "alertId": string
+}
+
+unknown:
+{
+  "action": "unknown"
+}
+
+For "withdraw everything", use:
+{
+  "action": "withdraw",
+  "all": true
+}
+
+Do not invent an amount when one was not provided.
+Do not invent an alert ID.
+`.trim(),
+
+        messages: [
+          {
+            role: 'user',
+            content: message,
+          },
+        ],
       })
     }, 'anthropic.parseIntent')
 
-    const contentBlock = response.content.find((c) => c.type === 'text')
-    if (contentBlock && contentBlock.type === 'text') {
-      const textContent = contentBlock.text
-      const jsonStr = textContent.substring(
-        textContent.indexOf('{'),
-        textContent.lastIndexOf('}') + 1
-      )
-      if (jsonStr) {
-        const parsed = JSON.parse(jsonStr)
-        if (
-          [
-            'deposit',
-            'withdraw',
-            'balance',
-            'earnings',
-            'help',
-            'create_recurring_deposit',
-            'pause_recurring_deposit',
-            'goal',
-          ].includes(parsed.action)
-        ) {
-          return parsed as Intent
-        }
-      }
-    }
-  } catch (error) {
-    // Silently continue and fall back to unknown
-  }
+    const contentBlock = response.content.find(
+      (content) => content.type === 'text'
+    )
 
-  return { action: 'unknown' }
+    if (!contentBlock || contentBlock.type !== 'text') {
+      return { action: 'unknown' }
+    }
+
+    const textContent = contentBlock.text.trim()
+
+    const start = textContent.indexOf('{')
+    const end = textContent.lastIndexOf('}')
+
+    if (start === -1 || end === -1 || end < start) {
+      return { action: 'unknown' }
+    }
+
+    const jsonStr = textContent.substring(start, end + 1)
+
+    const parsed: unknown = JSON.parse(jsonStr)
+
+    if (!isValidIntent(parsed)) {
+      return { action: 'unknown' }
+    }
+
+    return parsed
+  } catch {
+    return { action: 'unknown' }
+  }
 }
 
+// ---------------------------------------------------------------------------
+// Main parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Main entry point.
+ *
+ * Parsing order:
+ *
+ * 1. Empty input -> unknown
+ * 2. Regex -> deterministic/local result
+ * 3. Claude -> only when AI_MODE !== "local"
+ * 4. Unknown fallback
+ *
+ * This guarantees the parser never throws.
+ */
 export async function parseIntent(message: string): Promise<Intent> {
   if (!message || message.trim() === '') {
     return { action: 'unknown' }
   }
 
   try {
-    // Try regex first (fast + free, handles ~80% of messages)
     const regexResult = parseWithRegex(message)
+
     if (regexResult) {
       return regexResult
     }
 
-    // Fall back to Claude API if AI_MODE is not local
     if (process.env.AI_MODE !== 'local') {
       return await parseWithClaude(message)
     }
-  } catch (error) {
-    // Never throws - always degrade gracefully
+  } catch {
+    // Intent parsing must never break the WhatsApp handler.
   }
 
   return { action: 'unknown' }

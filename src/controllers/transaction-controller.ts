@@ -239,6 +239,9 @@ export interface ExecuteWithdrawParams {
   actingAsUserId?: string | null
   // See ExecuteDepositParams.skipApprovalGuard.
   skipApprovalGuard?: boolean
+  // #317 — SPECIFIC_ID lot selection, WITHDRAWAL only. Persisted so the
+  // Stellar event listener has it when the withdrawal confirms.
+  selectedLotIds?: string[]
 }
 
 export interface ExecuteWithdrawResult {
@@ -265,6 +268,7 @@ export async function executeWithdraw(
     memo,
     actingAsUserId,
     skipApprovalGuard,
+    selectedLotIds,
   } = params
 
   const user = await db.user.findUnique({
@@ -291,6 +295,7 @@ export async function executeWithdraw(
         protocolName,
         memo,
         actingAsUserId,
+        selectedLotIds,
       },
     })
     if (!guard.allowed) {
@@ -319,6 +324,7 @@ export async function executeWithdraw(
     protocolName,
     memo,
     actingAsUserId,
+    selectedLotIds,
   })
 
   logger.info('On-chain withdrawal completed', {
