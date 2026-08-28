@@ -1559,3 +1559,114 @@ model EmailIdentity {
 
   @@map("email_identities")
 }
+
+// --- Issue #372: Audit Anchoring ---
+model AuditAnchor {
+  id            String    @id @default(uuid())
+  blockHeight   Int
+  blockHash     String
+  stellarTxHash String    @unique
+  ledger        Int?
+  submittedAt   DateTime  @default(now())
+  confirmedAt   DateTime?
+
+  @@index([blockHeight])
+  @@map("audit_anchors")
+}
+
+// --- Issue #371: GDPR/CCPA Data Export & Right-to-Erasure ---
+model DataSubjectRequest {
+  id          String   @id @default(uuid())
+  userId      String
+  type        String   // EXPORT | ERASURE
+  status      String   // PENDING | PROCESSING | COMPLETED | PARTIAL | FAILED | REJECTED
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+
+  @@index([userId])
+  @@map("data_subject_requests")
+}
+
+model RedactionManifest {
+  id        String   @id @default(uuid())
+  requestId String
+  modelName String
+  recordId  String
+  action    String   // DELETED | ANONYMIZED
+  createdAt DateTime @default(now())
+
+  @@index([requestId])
+  @@map("redaction_manifests")
+}
+
+// --- Issue #373: Sanctions Screening Case Management & SAR Workflow ---
+enum CaseStatus {
+  OPEN
+  TRIAGE
+  INVESTIGATING
+  ESCALATED
+  PENDING_SAR
+  SAR_FILED
+  CLEARED
+  CLOSED_NO_ACTION
+}
+
+enum CasePriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model ComplianceCase {
+  id               String       @id @default(uuid())
+  userId           String
+  status           CaseStatus   @default(OPEN)
+  priority         CasePriority
+  openedReason     String       // "score_threshold" | "manual" | "sanctions_hit" | "law_enforcement_request"
+  triggerScore     Int?
+  scoreModelVersion String?
+  assignedTo       String?      // AdminApiKey.id / reviewer identity
+  slaDueAt         DateTime?
+  relatedTxnIds    String[]
+  relatedCaseIds   String[]
+  createdAt        DateTime     @default(now())
+  closedAt         DateTime?
+  outcome          String?      // mirrors terminal status + a reason
+
+  @@index([userId])
+  @@index([status])
+  @@map("compliance_cases")
+}
+
+model CaseEvent {
+  id        String   @id @default(uuid())
+  caseId    String
+  type      String   // NOTE | STATUS_CHANGE | ASSIGNMENT | EVIDENCE | DECISION | FREEZE | UNFREEZE | SAR_DRAFTED | SAR_FILED
+  actor     String   // reviewer identity
+  body      Json     // structured per type
+  createdAt DateTime @default(now())
+
+  @@index([caseId, createdAt])
+  @@map("case_events")
+}
+
+// --- Issue #370: FATF Travel Rule Data Collection ---
+model TravelRuleRecord {
+  id               String    @id @default(uuid())
+  transactionId    String?   // or outboxOpId / fiatOrderId
+  direction        String    // OUTBOUND | INBOUND
+  amountBaseCcy    Decimal   @db.Decimal(36,18)
+  baseCurrency     String
+  originator       Json      // { name, accountOrWallet, address?, idNumber?, idType? }
+  beneficiary      Json      // { name, accountOrWallet }
+  counterpartyVasp Json?     // { name, did?, classification: 'VASP'|'UNHOSTED'|'UNKNOWN' }
+  dataSource       String    // KYC_PROFILE | USER_ATTESTED | PROVIDER
+  status           String    // PENDING_DATA | READY | TRANSMITTED | EXEMPT
+  transmittedAt    DateTime?
+  createdAt        DateTime  @default(now())
+
+  @@index([transactionId])
+  @@index([status])
+  @@map("travel_rule_records")
+}
