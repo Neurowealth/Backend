@@ -137,11 +137,7 @@ export interface ReplayFrame {
 export interface ErrorFrame {
   type: 'error'
   code:
-    | 'bad_request'
-    | 'forbidden'
-    | 'unauthorized'
-    | 'rate_limited'
-    | 'internal'
+    'bad_request' | 'forbidden' | 'unauthorized' | 'rate_limited' | 'internal'
   message: string
 }
 

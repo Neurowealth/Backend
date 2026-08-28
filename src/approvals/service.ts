@@ -111,8 +111,7 @@ export interface GuardOperationParams {
 }
 
 export type GuardResult =
-  | { allowed: true }
-  | { allowed: false; requestId: string; expiresAt: Date }
+  { allowed: true } | { allowed: false; requestId: string; expiresAt: Date }
 
 /**
  * Called from the service layer (executeDeposit/executeWithdraw), never

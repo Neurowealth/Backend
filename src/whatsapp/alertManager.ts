@@ -68,8 +68,7 @@ async function resolveUserId(walletAddress: string): Promise<string | null> {
 }
 
 export type CreateAlertResult =
-  | { ok: true; rule: AlertRuleView }
-  | { ok: false; error: string }
+  { ok: true; rule: AlertRuleView } | { ok: false; error: string }
 
 /**
  * Create an alert rule for the user owning `walletAddress`. Validates the

@@ -715,11 +715,7 @@ export function setWsConnectionsActive(
 
 export function recordWsHandshake(
   outcome:
-    | 'accepted'
-    | 'unauthorized'
-    | 'forbidden'
-    | 'rate_limited'
-    | 'too_many'
+    'accepted' | 'unauthorized' | 'forbidden' | 'rate_limited' | 'too_many'
 ): void {
   wsHandshakesTotal.inc({ outcome })
 }

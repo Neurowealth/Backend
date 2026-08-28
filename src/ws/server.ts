@@ -24,8 +24,7 @@ import { StreamConnection, WS_CLOSE } from './connection'
 
 let wss: WebSocketServer | null = null
 let upgradeHandler:
-  | ((req: IncomingMessage, socket: Duplex, head: Buffer) => void)
-  | null = null
+  ((req: IncomingMessage, socket: Duplex, head: Buffer) => void) | null = null
 let boundServer: HttpServer | null = null
 
 const connections = new Set<StreamConnection>()

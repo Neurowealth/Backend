@@ -1,12 +1,7 @@
 import db from '../db'
 
 export type TransactionEventType =
-  | 'INITIATED'
-  | 'SUBMITTED'
-  | 'CONFIRMED'
-  | 'FAILED'
-  | 'RETRIED'
-  | 'REVERSED'
+  'INITIATED' | 'SUBMITTED' | 'CONFIRMED' | 'FAILED' | 'RETRIED' | 'REVERSED'
 
 export async function recordTransactionEvent(
   transactionId: string,

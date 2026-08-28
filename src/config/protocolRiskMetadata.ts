@@ -25,9 +25,7 @@
  */
 
 export type AuditStatusValue =
-  | 'UNAUDITED'
-  | 'SELF_REPORTED'
-  | 'THIRD_PARTY_AUDITED'
+  'UNAUDITED' | 'SELF_REPORTED' | 'THIRD_PARTY_AUDITED'
 
 export interface ProtocolRiskMetadata {
   /** Must match ProtocolRate.protocolName / YieldProtocol.name exactly. */

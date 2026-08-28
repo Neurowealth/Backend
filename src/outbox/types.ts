@@ -18,11 +18,7 @@ export type OutboxOpActor = 'USER' | 'AGENT' | 'SYSTEM'
 export type OutboxPriority = 'CRITICAL' | 'NORMAL' | 'LOW'
 
 export type OutboxOpStatus =
-  | 'PENDING'
-  | 'SUBMITTED'
-  | 'CONFIRMED'
-  | 'FAILED'
-  | 'CANCELLED'
+  'PENDING' | 'SUBMITTED' | 'CONFIRMED' | 'FAILED' | 'CANCELLED'
 
 /**
  * The exact, validated operation the dispatcher will submit. Mirrors the

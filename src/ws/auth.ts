@@ -39,8 +39,7 @@ export type HandshakeFailure =
   | { ok: false; code: 4403; reason: 'forbidden'; message: string }
 
 export type HandshakeResult =
-  | { ok: true; auth: AuthenticatedHandshake }
-  | HandshakeFailure
+  { ok: true; auth: AuthenticatedHandshake } | HandshakeFailure
 
 /**
  * Topics a parent may see on a child's stream, per sub-account permission.
