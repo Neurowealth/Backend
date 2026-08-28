@@ -84,9 +84,11 @@ export function verifyStreamTicket(
     usedTicketIds.add(payload.ticketId)
 
     // Auto-clean ticket ID after TTL
-    setTimeout(() => {
+    const cleanupTimer = setTimeout(() => {
       usedTicketIds.delete(payload.ticketId)
     }, 65000)
+
+    cleanupTimer.unref()
 
     return payload
   } catch (error) {
