@@ -23,6 +23,7 @@ import {
 } from '../agent/effectiveStrategy'
 import { estimate, DEFAULT_LOOKBACK_DAYS } from './estimation'
 import { optimize, toPercentageAllocations } from './optimizer'
+import { effectiveApy, shouldUseEffectiveApy } from './yieldComposition'
 import {
   AllocationSuggestionResult,
   BacktestComparison,
@@ -258,6 +259,8 @@ export async function suggestAllocation(
         protocolName: true,
         assetSymbol: true,
         supplyApy: true,
+        baseApy: true,
+        incentiveApy: true,
         fetchedAt: true,
       },
     }),
@@ -270,12 +273,24 @@ export async function suggestAllocation(
     }),
   ])
 
-  const rates: RawRateObservation[] = rateRows.map((r) => ({
-    protocolName: r.protocolName,
-    assetSymbol: r.assetSymbol,
-    apy: Number(r.supplyApy),
-    date: r.fetchedAt,
-  }))
+  const rates: RawRateObservation[] = rateRows.map((r) => {
+    // #349 flag-gated OPTIMIZER consumption: when USE_EFFECTIVE_APY=true the
+    // optimizer statistics are built from haircuted effective yield. OFF by
+    // default → uses raw quoted supplyApy, byte-for-byte unchanged.
+    const apy = shouldUseEffectiveApy()
+      ? (effectiveApy({
+          baseApy: Number(r.baseApy ?? null),
+          incentiveApy: Number(r.incentiveApy ?? null),
+          supplyApy: Number(r.supplyApy),
+        }) ?? Number(r.supplyApy))
+      : Number(r.supplyApy)
+    return {
+      protocolName: r.protocolName,
+      assetSymbol: r.assetSymbol,
+      apy,
+      date: r.fetchedAt,
+    }
+  })
   const riskScores: RiskScoreRow[] = scoreRows.map((s) => ({
     protocolName: s.protocolName,
     score: s.score,

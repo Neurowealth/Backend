@@ -10,6 +10,16 @@ export interface YieldProtocol {
   lastUpdated: Date
   isAvailable: boolean
   errorMessage?: string
+  /** #349: base (market) rate, optional split of `apy`. */
+  baseApy?: number
+  /** #349: incentive (token-reward) rate, optional split of `apy`. */
+  incentiveApy?: number
+  /** #349: reward-token metadata (symbol, address, apy). */
+  rewardTokens?: Array<{
+    symbol: string
+    address?: string
+    apy?: number
+  }>
 }
 
 export interface ProtocolComparison {
@@ -117,6 +127,26 @@ export interface StrategyParams {
     startingAmount: number
     targetDate: Date
   }
+  /**
+   * Exposure context (#346): the user's whole-portfolio per-protocol split and
+   * the caps in effect. Optional for backward compatibility — strategies with no
+   * exposure awareness see nothing and behave as before.
+   */
+  exposure?: ExposureContext
+  /**
+   * Live network fee-oracle snapshot (#347). Null/absent means the cost model
+   * falls back to conservative constants and lowers its confidence. Mirrors the
+   * rebalanceCost.FeeSnapshot shape without importing it (avoids a type cycle).
+   */
+  feeSnapshot?: {
+    recommendedBaseFee: number
+    congestionLevel?: 'low' | 'medium' | 'high'
+    fetchedAt?: Date | null
+  } | null
+  /**
+   * Per-protocol entry+exit cost in bps (#347), used by the cost model.
+   */
+  protocolEntryExitBps?: Record<string, number>
 }
 
 export interface RebalanceStrategy {
@@ -143,4 +173,40 @@ export interface UserStrategyPreferences {
    * overwhelming majority of users, who follow nothing.
    */
   followedStrategyId?: string | null
+  /**
+   * Per-protocol exposure cap overrides (#346), from strategyConfig.exposureCaps.
+   * Each value is { maxFraction?, maxAbsolute? }. Absent for users who never
+   * configured caps.
+   */
+  exposureCaps?: Record<string, { maxFraction?: number; maxAbsolute?: string }>
+  /**
+   * Per-user default max single-protocol fraction (#346), from
+   * strategyConfig.defaultMaxFraction. Takes precedence over the risk-tolerance
+   * table but yields to a per-protocol override.
+   */
+  defaultMaxFraction?: number
+}
+
+/**
+ * Per-protocol exposure context handed to a strategy (#346). Describes how the
+ * user's whole ACTIVE portfolio is currently split and the caps in effect, so a
+ * strategy can (a) prefer targets with headroom under cap and (b) surface
+ * capConstraints in its decision. Pure data produced by the rebalancer from the
+ * caller's own positions.
+ */
+export interface ExposureContext {
+  /** Current fraction of the portfolio in each protocol. */
+  fractions: Record<string, number>
+  /**
+   * Effective cap per protocol: { maxFraction, maxAbsolute?, source }.
+   * Only present for protocols that have a cap supplied by the caller.
+   */
+  caps: Record<
+    string,
+    { maxFraction: number; maxAbsolute?: string; source: string }
+  >
+  /** Protocol names with a current fraction above their effective cap. */
+  overCap: string[]
+  /** True when the sum of caps over the eligible set < 1 (unplaceable). */
+  unplaceable: boolean
 }

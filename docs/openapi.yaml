@@ -478,7 +478,15 @@ components:
 
         When `snapshotRequired` is true, replay cannot close the gap: fetch a
         REST snapshot (`/portfolio`, `/transactions`, …) and then `subscribe`.
-      required: [type, reason, afterSeq, currentSeq, oldestAvailableSeq, snapshotRequired]
+      required:
+        [
+          type,
+          reason,
+          afterSeq,
+          currentSeq,
+          oldestAvailableSeq,
+          snapshotRequired,
+        ]
       properties:
         type:
           type: string
@@ -567,7 +575,6 @@ components:
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 paths:
-
   # ── Risk endpoints ───────────────────────────────────────────────────────────
 
   /analytics/risk:
@@ -614,14 +621,14 @@ paths:
                 sufficient_history:
                   summary: User with 30d of data
                   value:
-                    userId: "3f8e1c2a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
-                    requestedWindow: "30d"
+                    userId: '3f8e1c2a-4b5d-6e7f-8a9b-0c1d2e3f4a5b'
+                    requestedWindow: '30d'
                     actualWindowDays: 30
                     insufficientHistory: false
-                    dataFrom: "2026-07-21T00:00:00.000Z"
-                    dataTo: "2026-08-20T00:00:00.000Z"
-                    computedAt: "2026-08-20T12:00:00.000Z"
-                    source: "precomputed"
+                    dataFrom: '2026-07-21T00:00:00.000Z'
+                    dataTo: '2026-08-20T00:00:00.000Z'
+                    computedAt: '2026-08-20T12:00:00.000Z'
+                    source: 'precomputed'
                     metrics:
                       sampleCount: 720
                       annualisedVolatility: 0.12
@@ -640,14 +647,14 @@ paths:
                 insufficient_history:
                   summary: New user with < 7d data requesting 30d
                   value:
-                    userId: "3f8e1c2a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
-                    requestedWindow: "30d"
+                    userId: '3f8e1c2a-4b5d-6e7f-8a9b-0c1d2e3f4a5b'
+                    requestedWindow: '30d'
                     actualWindowDays: 3
                     insufficientHistory: true
-                    dataFrom: "2026-08-17T00:00:00.000Z"
-                    dataTo: "2026-08-20T00:00:00.000Z"
-                    computedAt: "2026-08-20T12:00:00.000Z"
-                    source: "live"
+                    dataFrom: '2026-08-17T00:00:00.000Z'
+                    dataTo: '2026-08-20T00:00:00.000Z'
+                    computedAt: '2026-08-20T12:00:00.000Z'
+                    source: 'live'
                     metrics: null
         '400':
           description: Invalid query parameters.
@@ -717,6 +724,149 @@ paths:
           description: Internal server error.
 
   # ── Existing analytics endpoints ─────────────────────────────────────────────
+
+  /analytics/correlation:
+    get:
+      operationId: getPortfolioCorrelation
+      summary: Portfolio APY correlation matrix and diversification score
+      description: |
+        Returns the per-protocol APY correlation matrix and a weighted
+        diversification score for the authenticated user's portfolio (#348).
+
+        Correlation is computed from historical quoted APY levels
+        (`ProtocolRate.supplyApy`), aligned to common days — it measures how
+        synchronously protocols' yields have moved, NOT asset-price correlation,
+        and does not model principal loss, depeg, or smart-contract failure. The
+        `caveat` field ships with every response.
+
+        `correlation[i][j]` is in [-1, 1]; degenerate (constant) series yield
+        `null` rather than 0. The diversification score is 0-100 (higher = more
+        diversified), `null` when fewer than 2 protocols have history.
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: window
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [30d, 60d, 90d]
+            default: 90d
+      responses:
+        '200':
+          description: Correlation matrix and diversification score.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                    format: uuid
+                  window:
+                    type: string
+                  computed:
+                    type: boolean
+                  observationCount:
+                    type: integer
+                  protocols:
+                    type: array
+                    items:
+                      type: string
+                  correlation:
+                    type: array
+                    items:
+                      type: array
+                      items:
+                        type: number
+                        nullable: true
+                  averageCorrelation:
+                    type: number
+                    nullable: true
+                  diversificationScore:
+                    type: number
+                    nullable: true
+                  caveat:
+                    type: string
+        '400':
+          description: Invalid query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /analytics/yield-breakdown:
+    get:
+      operationId: getYieldBreakdown
+      summary: Yield base/incentive composition and effective APY
+      description: |
+        Returns the base (market) vs incentive (token-reward) split, incentive
+        share, and haircuted effective APY for the authenticated user's held
+        protocols (all protocols when they hold none) (#349).
+
+        Effective APY = base + incentive × (1 − INCENTIVE_HAIRCUT); protocols
+        with no decomposition fall back to the raw quoted supply APY. The
+        `caveat` travels with every response, and `effectiveApyEnabled` reports
+        whether `USE_EFFECTIVE_APY=true` is gating optimizer/agent consumption.
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Yield composition per held protocol.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                    format: uuid
+                  effectiveApyEnabled:
+                    type: boolean
+                  caveat:
+                    type: string
+                  protocols:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        protocol:
+                          type: string
+                        asset:
+                          type: string
+                        network:
+                          type: string
+                        supplyApy:
+                          type: number
+                        baseApy:
+                          type: number
+                          nullable: true
+                        incentiveApy:
+                          type: number
+                          nullable: true
+                        incentiveShare:
+                          type: number
+                          nullable: true
+                        effectiveApy:
+                          type: number
+                        rewardTokens:
+                          type: array
+                          nullable: true
+                          items:
+                            type: object
+                            properties:
+                              symbol:
+                                type: string
+                              address:
+                                type: string
+                              apy:
+                                type: number
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /analytics/apy-history:
     get:
@@ -983,5 +1133,3 @@ paths:
           description: All services ready.
         '503':
           description: One or more services not ready.
-
-

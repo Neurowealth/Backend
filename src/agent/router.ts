@@ -10,6 +10,7 @@ import {
   RebalanceThresholds,
   RebalanceStrategy,
   UserStrategyPreferences,
+  ExposureContext,
 } from './types'
 import { scanAllProtocols, getCurrentOnChainApy } from './scanner'
 import {
@@ -17,6 +18,16 @@ import {
   TargetAllocationStrategy,
   GoalTrackingStrategy,
 } from './strategies'
+import {
+  resolveExposureCap,
+  buildExposureSnapshot,
+  planCappedRebalance,
+  EffectiveExposureCap,
+  ExposureSnapshot,
+  CappedAllocationPlan,
+  sumCaps,
+} from './exposureCaps'
+import { estimateRebalanceCost, passesPaybackGate } from './rebalanceCost'
 import db from '../db'
 import { enqueueOutboxOp } from '../outbox/service'
 import { dispatchInBackground } from '../outbox/dispatcher'
@@ -78,31 +89,112 @@ function toApyBasisPoints(apyPercent: number): number {
 }
 
 /**
- * Estimate transaction costs for a rebalance
- * Accounts for gas fees and potential DEX slippage
+ * Build the exposure map + resolved caps for a user's WHOLE active portfolio
+ * (#346). The rebalancer sees one protocol batch at a time; this queries the
+ * caller's remaining active positions so cap enforcement always has the full
+ * per-protocol split, never just the batch.
+ *
+ * Returns null when the user has no caps or risk framing configured (the
+ * default path) — the caller then behaves byte-for-byte as before.
  */
-function estimateRebalanceCosts(
-  amount: string,
-  maxGasPercent: number
-): {
-  gasFeePercent: number
-  slippagePercent: number
-  totalCostPercent: number
-} {
-  // Estimate gas fee based on amount
-  // Typical Stellar Soroban gas: ~270-300 stroops base, plus per-instruction fees
-  const gasEstimateUSD = 0.5 // Estimate $0.50 base gas
-  const amountUSD = parseInt(amount) / 1e18 // Assuming amount is in wei
-  const gasFeePercent = amountUSD > 0 ? (gasEstimateUSD / amountUSD) * 100 : 0
+async function buildExposureContextForUser(
+  userIds: string[],
+  preferences: UserStrategyPreferences[]
+): Promise<{
+  exposure: ExposureContext
+  snapshot: ExposureSnapshot
+  caps: Record<string, EffectiveExposureCap>
+} | null> {
+  const pref = preferences[0]
+  const hasAnyConfiguredCap =
+    Boolean(pref?.exposureCaps) ||
+    typeof pref?.defaultMaxFraction === 'number' ||
+    pref?.riskTolerance !== undefined
 
-  // Estimate DEX slippage (typically 0.1-0.5% on significant trades)
-  const slippagePercent = Math.min(maxGasPercent * 0.5, 0.25)
+  // Caps are opt-in: with no override and no riskTolerance framing, no cap can
+  // ever bind, so we skip the extra exposure query entirely (matches the
+  // no-ceiling query-savings contract elsewhere in this file).
+  if (!pref || !hasAnyConfiguredCap) return null
+
+  const riskTolerance = pref.riskTolerance ?? 5
+  const overrideConfig = pref.exposureCaps
+    ? {
+        perProtocol: pref.exposureCaps,
+        defaultMaxFraction: pref.defaultMaxFraction,
+      }
+    : typeof pref.defaultMaxFraction === 'number'
+      ? { defaultMaxFraction: pref.defaultMaxFraction }
+      : undefined
+
+  const positions = await db.position.findMany({
+    where: {
+      userId: { in: userIds },
+      status: 'ACTIVE',
+    },
+    select: { protocolName: true, currentValue: true },
+  })
+
+  const absolute: Record<string, number> = {}
+  for (const p of positions) {
+    absolute[p.protocolName] =
+      (absolute[p.protocolName] ?? 0) + Number(p.currentValue)
+  }
+
+  const snapshot = buildExposureSnapshot(absolute)
+  const protocols = Object.keys(absolute)
+  const caps = resolveExposureCap(protocols, riskTolerance, overrideConfig)
+
+  const overCap = protocols.filter(
+    (p) => (snapshot.fractions[p] ?? 0) > caps[p].maxFraction + 1e-12
+  )
+  const capSum = sumCaps(protocols, snapshot, caps)
 
   return {
-    gasFeePercent: Math.min(gasFeePercent, maxGasPercent),
-    slippagePercent,
-    totalCostPercent: Math.min(gasFeePercent + slippagePercent, maxGasPercent),
+    exposure: {
+      fractions: snapshot.fractions,
+      caps: Object.fromEntries(
+        Object.entries(caps).map(([p, c]) => [
+          p,
+          {
+            maxFraction: c.maxFraction,
+            maxAbsolute: c.maxAbsolute,
+            source: c.source,
+          },
+        ])
+      ),
+      overCap,
+      unplaceable: capSum < 1 - 1e-9,
+    },
+    snapshot,
+    caps,
   }
+}
+
+/**
+ * Route a strategy's target preference into a cap-compliant allocation plan
+ * (#346). When caps are absent this returns a single full allocation to the
+ * preferred target — the exact pre-feature behavior, so the no-cap path never
+ * splits a move it did not before.
+ */
+function planFromStrategyDecision(
+  currentProtocol: string,
+  targetProtocol: string,
+  totalAmount: string,
+  snapshot: ExposureSnapshot,
+  caps: Record<string, EffectiveExposureCap>
+): CappedAllocationPlan {
+  if (Number(totalAmount) <= 0) {
+    return { allocations: [], unplacedFraction: 0, overCapProtocols: [] }
+  }
+
+  // Rank: preferred target first, then the rest of the user's held protocols
+  // sorted by their fraction descending (fill next-best under its own cap).
+  const others = Object.keys(caps)
+    .filter((p) => p !== targetProtocol && p !== currentProtocol)
+    .sort((a, b) => (snapshot.fractions[b] ?? 0) - (snapshot.fractions[a] ?? 0))
+  const preferredOrder = [targetProtocol, currentProtocol, ...others]
+
+  return planCappedRebalance(preferredOrder, 1, snapshot, caps)
 }
 
 /**
@@ -132,15 +224,32 @@ export async function compareProtocols(
     const bestProtocol = allProtocols[0]
     const rawImprovement = bestProtocol.apy - currentApy
 
-    // CRITICAL: Account for rebalance costs (gas + slippage)
-    const costs = estimateRebalanceCosts(amount, thresholds.maxGasPercent)
-    const netImprovement = rawImprovement - costs.totalCostPercent
+    // CRITICAL: Account for rebalance costs (network fee + slippage + entry/exit)
+    // via the grounded #347 model, and gate the move on the payback horizon.
+    const cost = estimateRebalanceCost({
+      fromProtocol: currentProtocol,
+      toProtocol: bestProtocol.name,
+      amount,
+      // Same-asset hop between lending protocols (no swap, hence no simulated
+      // price impact). Cross-asset paths would pass sameAsset:false.
+      sameAsset: true,
+      feeSnapshot: null, // no live oracle wired through the default path yet
+    })
+    const netImprovement = rawImprovement - cost.totalCostPct
+    const payback = passesPaybackGate(cost, currentApy, bestProtocol.apy)
 
-    // Only rebalance if NET improvement (after costs) exceeds threshold
+    // Fallback confidence → require a higher minimum (more cautious when blind).
+    const effectiveMinimum =
+      cost.dataConfidence === 'fallback'
+        ? thresholds.minimumImprovement * 2
+        : thresholds.minimumImprovement
+
+    // Only rebalance if NET improvement (after costs) exceeds threshold and the
+    // move recoups its cost within the payback horizon.
     const shouldRebalance =
-      netImprovement > thresholds.minimumImprovement &&
       bestProtocol.name !== currentProtocol &&
-      costs.totalCostPercent < thresholds.maxGasPercent
+      netImprovement > effectiveMinimum &&
+      payback.allowed
 
     const comparison: ProtocolComparison = {
       current: {
@@ -161,10 +270,11 @@ export async function compareProtocols(
       bestProtocol: bestProtocol.name,
       bestApy: bestProtocol.apy,
       rawImprovement: rawImprovement.toFixed(2),
-      gasFeePercent: costs.gasFeePercent.toFixed(4),
-      slippagePercent: costs.slippagePercent.toFixed(4),
-      totalCostPercent: costs.totalCostPercent.toFixed(4),
+      networkFeePercent: cost.networkFeePctOfAmount.toFixed(4),
+      priceImpactBps: cost.priceImpactBps,
+      totalCostPercent: cost.totalCostPct.toFixed(4),
       netImprovement: netImprovement.toFixed(2),
+      paybackDays: payback.paybackDays,
       shouldRebalance,
     })
 
@@ -416,6 +526,17 @@ export async function executeRebalanceIfNeeded(
       const protocolRiskScores =
         riskCeiling !== undefined ? await loadProtocolRiskScores() : undefined
 
+      // Exposure caps (#346): build the user's whole-portfolio exposure context
+      // once per tick. Null when no caps/riskTolerance framing is configured —
+      // the no-cap path is byte-for-byte the pre-feature behavior.
+      const userIds = Array.from(
+        new Set(userStrategyPreferences.map((p) => p.userId))
+      )
+      const exposureContext = await buildExposureContextForUser(
+        userIds,
+        userStrategyPreferences
+      )
+
       const decision = await strategy.analyze({
         currentProtocol,
         totalAmount,
@@ -432,32 +553,126 @@ export async function executeRebalanceIfNeeded(
               targetDate: activeGoal.targetDate,
             }
           : undefined,
+        exposure: exposureContext?.exposure,
       })
 
+      if (
+        decision.shouldRebalance &&
+        decision.targetProtocol !== currentProtocol
+      ) {
+        // Apply exposure caps to the strategy's target choice: clamp the move
+        // and route any residual to the next-best eligible protocol under its
+        // own cap. With no caps this is a single full move, unchanged.
+        const plan = exposureContext
+          ? planFromStrategyDecision(
+              currentProtocol,
+              decision.targetProtocol,
+              totalAmount,
+              exposureContext.snapshot,
+              exposureContext.caps
+            )
+          : {
+              allocations: [
+                {
+                  protocol: decision.targetProtocol,
+                  fraction: 1,
+                  capped: false,
+                  boundedBy: 'none' as const,
+                },
+              ],
+              unplacedFraction: 0,
+              overCapProtocols: [] as string[],
+            }
+
+        // If the preferred target itself had zero headroom, still try a real
+        // move into the next allocation; otherwise nothing can move.
+        const moves = plan.allocations
+          .filter((a) => a.fraction > 0 && a.protocol !== currentProtocol)
+          .map((a) => ({
+            toProtocol: a.protocol,
+            fraction: a.fraction,
+            capped: a.capped,
+            boundedBy: a.boundedBy,
+          }))
+
+        if (moves.length === 0) {
+          // Either already on target or the caps made every allocation zero.
+          if (plan.unplacedFraction > 0) {
+            await logAgentAction('REBALANCE', 'SKIPPED', {
+              input: {
+                currentProtocol,
+                targetProtocol: decision.targetProtocol,
+                reasoning: decision.reasoning,
+                event: 'agent.exposure_unplaceable',
+                reason:
+                  'Sum of exposure caps over the eligible set is below 100%; remainder stays in place.',
+              },
+            })
+          }
+          logger.info('No cap-compliant move possible; remainder stays put', {
+            currentProtocol,
+            targetProtocol: decision.targetProtocol,
+            unplacedFraction: plan.unplacedFraction,
+          })
+          return null
+        }
+
+        // Execute the first cap-compliant move (the largest non-zero allocation,
+        // which is the preferred target unless it was full). Residual that could
+        // not be placed stays in place per the unplaceable contract.
+        const first = moves[0]
+        const amountToMove = BigInt(
+          Math.floor(Number(totalAmount) * first.fraction)
+        )
+        logger.info('Capped rebalance move', {
+          from: currentProtocol,
+          to: first.toProtocol,
+          fractionOfPortfolio: first.fraction,
+          capped: first.capped,
+          boundedBy: first.boundedBy,
+          unplacedFraction: plan.unplacedFraction,
+        })
+
+        return await triggerRebalance(
+          currentProtocol,
+          first.toProtocol,
+          amountToMove.toString(),
+          userPositions.map((pos) => pos.id),
+          {
+            name: strategy.name,
+            reasoning: decision.reasoning,
+            deviationTrigger: decision.deviationTrigger,
+            followedStrategyId: userStrategyPreferences[0]?.followedStrategyId,
+          }
+        )
+      }
+
       if (!decision.shouldRebalance) {
+        // Over-cap correction (#346): even when APY alone wouldn't trigger a
+        // move, if the user is currently over a cap on a held protocol the next
+        // tick should reduce it toward the cap. Without a cost model yet, this
+        // surfaces the over-cap state via the decision record and skips the
+        // move (the fee-aware rebalancing issue #347 adds the cost gate that
+        // makes the correction actually fire).
         logger.info('No rebalance needed (strategy)', {
           strategy: strategy.name,
           reasoning: decision.reasoning,
+          overCapProtocols: exposureContext?.exposure.overCap ?? [],
+          capConstraints: Object.entries(
+            exposureContext?.exposure.caps ?? {}
+          ).map(([p, c]) => ({
+            protocol: p,
+            maxFraction: c.maxFraction,
+            maxAbsolute: c.maxAbsolute ?? undefined,
+            source: c.source,
+          })),
+          unplaceable: exposureContext?.exposure.unplaceable ?? false,
         })
         return null
       }
 
-      return await triggerRebalance(
-        currentProtocol,
-        decision.targetProtocol,
-        totalAmount,
-        userPositions.map((pos) => pos.id),
-        {
-          name: strategy.name,
-          reasoning: decision.reasoning,
-          deviationTrigger: decision.deviationTrigger,
-          // Attribution only (#285): which published strategy this config was
-          // copied from. Never used to make a decision — the config was already
-          // merged and risk-clamped by loop.ts before it got here. Undefined for
-          // every user who follows nothing, leaving the log row unchanged.
-          followedStrategyId: userStrategyPreferences[0]?.followedStrategyId,
-        }
-      )
+      // strategy said rebalance to the protocol we're already on — nothing to do.
+      return null
     }
 
     // Default: existing compareProtocols flow (backward compatible)

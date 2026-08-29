@@ -77,6 +77,42 @@ export const AGE_SATURATION_DAYS = 730 // ~2 years
 /** Score (0-100) assigned to protocols flagged insufficientHistory. */
 export const INSUFFICIENT_HISTORY_SCORE = 20
 
+/**
+ * #349 emissions-dependency penalty.
+ *
+ * A protocol whose yield is heavily incentive-driven (token rewards) carries
+ * extra risk — incentives can be diluted, vest, or be pulled. The penalty scales
+ * from 0 at `EMISSIONS_LOW_SHARE` to `EMISSIONS_MAX_PENALTY` at
+ * `EMISSIONS_HIGH_SHARE`, subtracted from the risk score (higher score = lower
+ * risk, so a strike against the score raises risk).
+ */
+export const EMISSIONS_LOW_SHARE = 0.4 // incentive share that starts to hurt
+export const EMISSIONS_HIGH_SHARE = 0.8 // share at which the penalty saturates
+export const EMISSIONS_MAX_PENALTY = 8 // max points subtracted (0-100 scale)
+
+/**
+ * Subtract an incentive-dependency penalty from a 0-100 risk score based on the
+ * incentive share (0-1). Fail-safe: unknown/absent share → +0, no penalty.
+ */
+export function applyEmissionsPenalty(
+  score: number,
+  incentiveShare: number | null | undefined
+): number {
+  if (
+    incentiveShare === null ||
+    incentiveShare === undefined ||
+    !Number.isFinite(incentiveShare)
+  ) {
+    return score
+  }
+  if (incentiveShare <= EMISSIONS_LOW_SHARE) return score
+  const t =
+    (incentiveShare - EMISSIONS_LOW_SHARE) /
+    (EMISSIONS_HIGH_SHARE - EMISSIONS_LOW_SHARE)
+  const penalty = EMISSIONS_MAX_PENALTY * Math.min(1, Math.max(0, t))
+  return Math.max(0, Math.round(score - penalty))
+}
+
 /** Component weights. Must sum to 1. */
 export const WEIGHTS = {
   audit: 0.35,
@@ -171,11 +207,15 @@ export function computeAgeFactor(protocolAgeDays: number): number {
  * @param protocolName  Must match the curated metadata / scanner protocol name.
  * @param samples       All available rate history for the protocol (any age).
  * @param now           The reference "now" (injected for deterministic tests).
+ * @param incentiveShare  #349: 0-1 share of yield from token incentives. When
+ *                        supplied, the emissions-dependency penalty (#349) is
+ *                        applied to the final score.
  */
 export function computeRiskScore(
   protocolName: string,
   samples: RateSample[],
-  now: Date
+  now: Date,
+  incentiveShare?: number | null
 ): RiskScoreResult {
   const meta = getProtocolMetadata(protocolName)
   const protocolAgeDays = computeProtocolAgeDays(meta.inceptionDate, now)
@@ -212,7 +252,8 @@ export function computeRiskScore(
     WEIGHTS.tvlTrend * tvlTrendFactor +
     WEIGHTS.age * ageFactor
 
-  const score = Math.round(clamp01(weighted) * 100)
+  const baseScore = Math.round(clamp01(weighted) * 100)
+  const score = applyEmissionsPenalty(baseScore, incentiveShare)
 
   return { protocolName, score, ...factors }
 }

@@ -218,6 +218,21 @@ one per user, and returns an empty Map when nobody in the batch follows anything
 `followedStrategyId` is threaded into the `AgentLog` row for auditability only —
 it never influences a decision.
 
+### Exposure & cost config threading (#346 / #347)
+
+The same loop threads two additional per-user controls alongside the ceiling,
+both additive to the pre-feature default path (a user with none configured is
+byte-for-byte unchanged):
+
+- **Exposure caps** (`defaultMaxFraction`, per-protocol `exposureCaps`) bound how
+  much of a portfolio a protocol may hold; a *follow* may only tighten them.
+  `src/agent/loop.ts` now passes these into its own `strategyConfig` and into
+  `UserStrategyPreferences`, and `src/agent/router.ts` enforces them.
+- **Rebalance cost + payback gate** decides *whether* a move is worth it.
+
+Both are documented together in
+[`REBALANCE_EXPOSURE_COST.md`](REBALANCE_EXPOSURE_COST.md).
+
 ---
 
 ## 5. Data model

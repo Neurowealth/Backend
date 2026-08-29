@@ -500,6 +500,13 @@ model ProtocolRate {
   tvl          Decimal? @db.Decimal(36, 2)
   network      Network
   rawResponse  String?
+
+  // #349: yield composition — base (market) rate vs incentive (token-reward)
+  // rate, plus the reward-token metadata the adapter returned.
+  baseApy       Decimal? @db.Decimal(10, 6)
+  incentiveApy  Decimal? @db.Decimal(10, 6)
+  rewardTokens  Json?
+
   fetchedAt    DateTime @default(now())
 
   @@unique([protocolName, assetSymbol, network, fetchedAt])
