@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
+import { idempotent } from '../middleware/idempotency'
 import { validate } from '../middleware/validate'
 import { logger } from '../utils/logger'
 import { sendError, sendNotFound } from '../utils/errors'
@@ -23,6 +24,7 @@ function computeNextRunAt(
 router.post(
   '/',
   requireAuth,
+  idempotent({ required: true, failClosed: true, ttlSeconds: 86400 }),
   validate({
     body: createRecurringDepositSchema,
     errorMessage: 'Validation error',

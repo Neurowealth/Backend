@@ -73,8 +73,12 @@ describe('Stellar Network Configuration', () => {
 
     it('should derive testnet RPC URL when not explicitly set', () => {
       process.env.STELLAR_NETWORK = 'testnet'
-      // CI's job env sets STELLAR_RPC_URL — clear it so derivation is exercised
       delete process.env.STELLAR_RPC_URL
+      const dotenv = require('dotenv')
+      jest.spyOn(dotenv, 'config').mockImplementation(() => {
+        delete process.env.STELLAR_RPC_URL
+        return {} as any
+      })
       process.env.STELLAR_AGENT_SECRET_KEY = 'S' + 'A'.repeat(55)
       process.env.VAULT_CONTRACT_ID = 'C' + 'B'.repeat(55)
       process.env.USDC_TOKEN_ADDRESS = 'C' + 'C'.repeat(55)

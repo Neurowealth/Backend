@@ -2,6 +2,7 @@ import { NextFunction, Request, Response } from 'express'
 import { JwtAdapter } from '../config'
 import db from '../db'
 import { logger } from '../utils/logger'
+import { authenticateApiKey, isUserApiKeyToken } from './apiKeyAuth'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -13,6 +14,7 @@ const AUTH_ERRORS = {
   INVALID_TOKEN: 'Invalid token',
   SESSION_NOT_FOUND: 'Session not found',
   SESSION_EXPIRED: 'Session expired',
+  SESSION_REVOKED: 'session_revoked',
   USER_INACTIVE: 'User account is inactive',
   INTERNAL_ERROR: 'Internal server error',
 } as const
@@ -28,6 +30,25 @@ function extractBearerToken(authHeader: string | undefined): string | null {
 
 function isExpired(date: Date): boolean {
   return date < new Date()
+}
+
+const lastSeenThrottle = new Map<string, number>()
+const LAST_SEEN_THROTTLE_MS = 60_000
+
+function updateLastSeenAsync(sessionId: string, ip: string | undefined): void {
+  const now = Date.now()
+  const last = lastSeenThrottle.get(sessionId) ?? 0
+  if (now - last < LAST_SEEN_THROTTLE_MS) return
+  lastSeenThrottle.set(sessionId, now)
+
+  db.session
+    .update({
+      where: { id: sessionId },
+      data: { lastSeenAt: new Date(), lastSeenIp: ip ?? null },
+    })
+    .catch((err) =>
+      logger.warn('[Auth] Failed to update lastSeenAt', { sessionId, err })
+    )
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
@@ -70,6 +91,11 @@ export async function requireAuth(
     return
   }
 
+  // #374 — route scoped per-user API keys via dedicated auth path
+  if (isUserApiKeyToken(token)) {
+    return authenticateApiKey(req, res, next)
+  }
+
   try {
     // 3. JWT signature verification
     const payload = await JwtAdapter.validateToken<{ id: string }>(token)
@@ -86,6 +112,12 @@ export async function requireAuth(
 
     if (!session) {
       res.status(401).json({ error: AUTH_ERRORS.SESSION_NOT_FOUND })
+      return
+    }
+
+    // #376 — revoked sessions fail immediately
+    if (session.revokedAt) {
+      res.status(401).json({ error: AUTH_ERRORS.SESSION_REVOKED })
       return
     }
 
@@ -109,12 +141,16 @@ export async function requireAuth(
     // 7. Attach identity to request
     req.userId = session.user.id
     req.stellarPubKey = session.walletAddress
+    req.authKind = 'session'
+    req.authScopes = ['*']
     req.auth = {
       userId: session.userId,
       sessionId: session.id,
       walletAddress: session.walletAddress,
       network: session.network,
     }
+
+    updateLastSeenAsync(session.id, req.ip)
 
     next()
   } catch (error) {

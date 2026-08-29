@@ -629,6 +629,9 @@ export const config = {
      */
     largeWithdrawalPortfolioFraction: parseFloat(
       process.env.ASSISTANT_LARGE_WITHDRAWAL_FRACTION || '0.5'
+  approvals: {
+    expirySweepIntervalMs: parseInt(
+      process.env.APPROVAL_EXPIRY_SWEEP_INTERVAL_MS || '60000'
     ),
   },
   outbox: {
@@ -654,5 +657,13 @@ export const config = {
       process.env.OUTBOX_PER_ACCOUNT_MAX_IN_FLIGHT || '1'
     ),
     batchSize: parseInt(process.env.OUTBOX_BATCH_SIZE || '20'),
+  },
+  apiKeys: {
+    maxActivePerUser: parseInt(process.env.USER_API_KEY_MAX_ACTIVE || '10'),
+    withdrawalsEnabled:
+      (process.env.USER_API_KEY_WITHDRAWALS_ENABLED ?? 'true') === 'true',
+  },
+  sessions: {
+    revokedRetainDays: parseInt(process.env.REVOKED_SESSION_RETAIN_DAYS || '7'),
   },
 }

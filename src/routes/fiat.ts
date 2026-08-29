@@ -15,6 +15,7 @@
 import { Router, Request, Response } from 'express'
 import express from 'express'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
+import { idempotent } from '../middleware/idempotency'
 import { validate } from '../middleware/validate'
 import { logger } from '../utils/logger'
 import { sendError } from '../utils/errors'
@@ -102,6 +103,7 @@ router.get(
 router.post(
   '/orders',
   requireAuth,
+  idempotent({ required: true, failClosed: true, ttlSeconds: 86400 }),
   validate({ body: createFiatOrderSchema, errorMessage: 'Validation error' }),
   enforceUserAccess,
   async (req: Request, res: Response) => {

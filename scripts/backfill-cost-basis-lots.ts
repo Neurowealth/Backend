@@ -44,8 +44,20 @@ async function main(): Promise<void> {
       amount: true,
       confirmedAt: true,
       createdAt: true,
+      selectedLotIds: true,
     },
   })
+
+  // #317 — each transaction records disposals under its owner's CURRENT
+  // accounting method (methods are forward-only; there is no historical
+  // per-transaction method to recover). Loaded once per distinct user
+  // rather than per transaction.
+  const userIds = [...new Set(transactions.map((t) => t.userId))]
+  const users = await db.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, accountingMethod: true },
+  })
+  const methodByUserId = new Map(users.map((u) => [u.id, u.accountingMethod]))
 
   logger.info('[Tax Backfill] Starting', {
     transactions: transactions.length,
@@ -78,7 +90,10 @@ async function main(): Promise<void> {
         tx.id,
         tx.assetSymbol,
         tx.amount,
-        effectiveAt
+        effectiveAt,
+        db,
+        methodByUserId.get(tx.userId),
+        tx.selectedLotIds
       )
     }
     processed++

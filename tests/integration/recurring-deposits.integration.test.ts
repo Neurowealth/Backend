@@ -29,6 +29,10 @@ jest.mock('../../src/middleware/authenticate', () => {
   return { requireAuth, enforceUserAccess }
 })
 
+jest.mock('../../src/middleware/idempotency', () => ({
+  idempotent: () => (_req: any, _res: any, next: any) => next(),
+}))
+
 jest.mock('../../src/utils/logger', () => ({
   logger: {
     info: jest.fn(),

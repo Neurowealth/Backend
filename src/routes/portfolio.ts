@@ -30,7 +30,9 @@ import {
   buildTaxReport,
   taxReportToCsvRows,
   TAX_REPORT_CSV_HEADERS,
+  MethodMismatchError,
 } from '../tax/report'
+import { AccountingMethod } from '@prisma/client'
 import { toCsv } from '../utils/csv'
 import goalsRouter from './goals'
 
@@ -53,6 +55,10 @@ const taxReportSchema = z.object({
   query: z.object({
     year: z.coerce.number().int().min(2000).max(2100),
     format: z.enum(['json', 'csv']).default('json'),
+    // #317 — whitelisted against the AccountingMethod enum (never a raw
+    // string into a switch/ORDER BY); optional confirmation gate, not a
+    // recompute switch — see src/tax/report.ts's buildTaxReport.
+    method: z.nativeEnum(AccountingMethod).optional(),
   }),
 })
 
@@ -343,7 +349,17 @@ router.get(
     }
 
     const year = req.query.year as unknown as number
-    const report = await buildTaxReport(userId, year)
+    const method = req.query.method as AccountingMethod | undefined
+
+    let report
+    try {
+      report = await buildTaxReport(userId, year, method)
+    } catch (err) {
+      if (err instanceof MethodMismatchError) {
+        return res.status(400).json({ error: err.message })
+      }
+      throw err
+    }
 
     if (req.query.format === 'csv') {
       res.setHeader('Content-Type', 'text/csv; charset=utf-8')

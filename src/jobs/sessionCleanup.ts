@@ -19,14 +19,30 @@ export async function cleanupExpiredSessions(): Promise<void> {
     const jobName = 'session_cleanup'
 
     try {
-      const result = await db.session.deleteMany({
-        where: { expiresAt: { lt: new Date() } },
-      })
+      const now = new Date()
+      const revokedCutoff = new Date(
+        now.getTime() - config.sessions.revokedRetainDays * 24 * 60 * 60 * 1000
+      )
+
+      const [expiredResult, revokedResult] = await Promise.all([
+        db.session.deleteMany({
+          where: { expiresAt: { lt: now } },
+        }),
+        db.session.deleteMany({
+          where: {
+            revokedAt: { not: null, lt: revokedCutoff },
+          },
+        }),
+      ])
+
+      const totalDeleted = expiredResult.count + revokedResult.count
       const durationMs = Date.now() - startTime
       const duration = durationMs / 1000
 
       logBackgroundJob(jobName, 'success', duration, correlationId, {
-        rowsDeleted: result.count,
+        rowsDeleted: totalDeleted,
+        expiredDeleted: expiredResult.count,
+        revokedDeleted: revokedResult.count,
       })
 
       recordBackgroundJob(jobName, 'success', duration)

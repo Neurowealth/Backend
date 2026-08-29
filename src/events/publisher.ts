@@ -31,6 +31,7 @@
 import db from '../db'
 import { logger } from '../utils/logger'
 import { dispatchWebhookEvent } from '../services/webhookDispatcher'
+import { enqueueUserWebhooks } from '../services/userWebhookDispatcher'
 import type { WebhookEvent } from '../validators/webhook-validators'
 import { mapUserEventPayloadToResponse } from '../utils/api-formatters'
 import { recordWsPublishFailure } from '../utils/metrics'
@@ -128,6 +129,21 @@ export async function publishUserEvent(
       }
 
       await broadcastEnvelope(envelope)
+
+      // Enqueue user-scoped webhook deliveries (#368)
+      await enqueueUserWebhooks(
+        id,
+        topic,
+        type,
+        Number(stored.seq),
+        stored.payload as Record<string, any>
+      ).catch((err) => {
+        logger.warn('[PublishUserEvent] Failed to enqueue user webhooks', {
+          userId: id,
+          seq: Number(stored.seq),
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
     } catch (error) {
       // A stream failure must not cost the webhook leg, and must not surface to
       // the caller — see the failure policy in this file's header.

@@ -26,6 +26,8 @@ import {
   cancelGoalHandler,
   getGoalProgressHandler,
 } from '../controllers/goal-controller'
+import { simulateGoalHandler } from '../controllers/goal-simulation-controller'
+import { simulateGoalSchema } from '../validators/simulation-validators'
 
 const router = Router()
 
@@ -63,6 +65,21 @@ router.get(
   requireAuth,
   validate({ params: goalIdParamSchema }),
   getGoalProgressHandler
+)
+
+/**
+ * POST /:id/simulate — Monte Carlo goal attainment probability (#319).
+ *
+ * Owner-scoped: the caller must own the goal. Returns attainment probability,
+ * percentile bands, sensitivity table, and an isSimulation disclaimer.
+ * Insufficient history returns an explicit insufficient_history outcome,
+ * not a guessed probability.
+ */
+router.post(
+  '/:id/simulate',
+  requireAuth,
+  validate(simulateGoalSchema),
+  simulateGoalHandler
 )
 
 export default router

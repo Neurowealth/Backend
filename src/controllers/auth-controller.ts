@@ -10,6 +10,10 @@ import db from '../db'
 import { stellarVerification } from '../utils/stellar/stellar-verification'
 import { attributeSignup } from '../referral/service'
 import { closeUserSockets } from '../ws/server'
+import { parseDeviceType } from '../utils/deviceType'
+import { resolveApproxLocation } from '../utils/geoip'
+import { createSessionDeepLinkToken } from '../utils/sessionDeepLink'
+import { publishUserEvent } from '../events/publisher'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -140,22 +144,42 @@ export async function verify(req: Request, res: Response): Promise<void> {
     }
 
     const refreshHash = await hashToken(refreshToken)
+    const userAgent = req.headers['user-agent'] ?? null
+    const ipAddress = req.ip ?? null
+    const deviceType = parseDeviceType(userAgent)
+    const approxLocation = resolveApproxLocation(ipAddress)
 
-    await db.session.create({
+    const session = await db.session.create({
       data: {
         userId: user.id,
-        token: accessToken, // access token stored for session lookup
+        token: accessToken,
         walletAddress: stellarPubKey,
         network,
-        expiresAt: accessExpires, // access token expiry
-        refreshTokenHash: refreshHash, // hashed refresh token
+        expiresAt: accessExpires,
+        refreshTokenHash: refreshHash,
         refreshTokenExpiresAt: refreshExpires,
-        ipAddress: req.ip ?? null,
-        userAgent: req.headers['user-agent'] ?? null,
+        ipAddress,
+        userAgent,
+        deviceType,
+        approxLocation,
+        lastSeenAt: new Date(),
+        lastSeenIp: ipAddress,
       },
     })
 
     logger.info(`[Auth] Session created for user ${user.id}`)
+
+    const deepLinkToken = createSessionDeepLinkToken(user.id, session.id)
+    publishUserEvent(user.id, 'alerts', 'security.new_session', {
+      sessionId: session.id,
+      deviceType,
+      approxLocation,
+      ipAddress: ipAddress ? `${ipAddress.slice(0, -3)}xxx` : null,
+      createdAt: session.createdAt.toISOString(),
+      revokeLink: `/sessions?highlight=${session.id}&token=${deepLinkToken}`,
+    }).catch((err) =>
+      logger.warn('[Auth] Failed to emit security.new_session', { err })
+    )
 
     res.status(200).json({
       accessToken,
@@ -217,6 +241,11 @@ export async function refresh(req: Request, res: Response): Promise<void> {
 
     if (!matched) {
       res.status(401).json({ error: 'Invalid or expired refresh token' })
+      return
+    }
+
+    if (matched.revokedAt) {
+      res.status(401).json({ error: 'session_revoked' })
       return
     }
 

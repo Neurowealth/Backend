@@ -189,4 +189,15 @@ router.delete(
   }
 )
 
+import {
+  snoozeAlertRule,
+  acknowledgeAlert,
+  listAlertFires,
+} from '../controllers/alert-ack-controller'
+
+// Snooze, Ack, and Fire history endpoints (#366)
+router.post('/:id/snooze', snoozeAlertRule)
+router.post('/:id/ack', acknowledgeAlert)
+router.get('/:id/fires', listAlertFires)
+
 export default router

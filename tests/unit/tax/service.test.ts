@@ -251,4 +251,140 @@ describe('recordDisposalsForWithdrawal', () => {
     expect(data.disposalPrice).toBeNull()
     expect(data.proceeds).toBeNull()
   })
+
+  // #317 — method-parameterized consumption
+  it('records LIFO disposals (newest lot first) when method=LIFO', async () => {
+    mockDb.lotDisposal.findFirst.mockResolvedValue(null)
+    mockDb.costBasisLot.findMany.mockResolvedValue([
+      {
+        id: 'lot-old',
+        remainingAmount: '40',
+        acquisitionPrice: '1',
+        acquiredAt: new Date('2026-01-01T00:00:00Z'),
+      },
+      {
+        id: 'lot-new',
+        remainingAmount: '100',
+        acquisitionPrice: '1',
+        acquiredAt: new Date('2026-02-01T00:00:00Z'),
+      },
+    ])
+    mockDb.costBasisLot.update.mockResolvedValue({})
+    mockDb.lotDisposal.create.mockResolvedValue({})
+
+    await recordDisposalsForWithdrawal(
+      'user-1',
+      'wtx-1',
+      'USDC',
+      '60',
+      disposedAt,
+      undefined,
+      'LIFO' as any
+    )
+
+    const first = mockDb.lotDisposal.create.mock.calls[0][0].data
+    expect(first.lotId).toBe('lot-new')
+    expect(first.amount.toString()).toBe('60')
+  })
+
+  it('records SPECIFIC_ID disposals against only the selected lots', async () => {
+    mockDb.lotDisposal.findFirst.mockResolvedValue(null)
+    mockDb.costBasisLot.findMany.mockResolvedValue([
+      {
+        id: 'lot-a',
+        remainingAmount: '40',
+        acquisitionPrice: '1',
+        acquiredAt: new Date('2026-01-01T00:00:00Z'),
+      },
+      {
+        id: 'lot-b',
+        remainingAmount: '100',
+        acquisitionPrice: '2',
+        acquiredAt: new Date('2026-02-01T00:00:00Z'),
+      },
+    ])
+    mockDb.costBasisLot.update.mockResolvedValue({})
+    mockDb.lotDisposal.create.mockResolvedValue({})
+
+    await recordDisposalsForWithdrawal(
+      'user-1',
+      'wtx-1',
+      'USDC',
+      '30',
+      disposedAt,
+      undefined,
+      'SPECIFIC_ID' as any,
+      ['lot-b']
+    )
+
+    expect(mockDb.lotDisposal.create).toHaveBeenCalledTimes(1)
+    const data = mockDb.lotDisposal.create.mock.calls[0][0].data
+    expect(data.lotId).toBe('lot-b')
+  })
+
+  it('treats an invalid SPECIFIC_ID selection like a shortfall: writes nothing, alerts critically, does not throw', async () => {
+    mockDb.lotDisposal.findFirst.mockResolvedValue(null)
+    mockDb.costBasisLot.findMany.mockResolvedValue([
+      {
+        id: 'lot-a',
+        remainingAmount: '40',
+        acquisitionPrice: '1',
+        acquiredAt: new Date('2026-01-01T00:00:00Z'),
+      },
+    ])
+
+    await expect(
+      recordDisposalsForWithdrawal(
+        'user-1',
+        'wtx-1',
+        'USDC',
+        '30',
+        disposedAt,
+        undefined,
+        'SPECIFIC_ID' as any
+        // no selectedLotIds provided
+      )
+    ).resolves.toBeUndefined()
+
+    expect(mockDb.costBasisLot.update).not.toHaveBeenCalled()
+    expect(mockDb.lotDisposal.create).not.toHaveBeenCalled()
+    expect(mockError).toHaveBeenCalled()
+    expect(mockEmit).toHaveBeenCalledTimes(1)
+    expect(mockEmit.mock.calls[0][0].severity).toBe('critical')
+    expect(mockEmit.mock.calls[0][0].title).toBe(
+      'Invalid SPECIFIC_ID lot selection'
+    )
+  })
+
+  it('defaults to FIFO when no method is passed (unchanged behavior)', async () => {
+    mockDb.lotDisposal.findFirst.mockResolvedValue(null)
+    mockDb.costBasisLot.findMany.mockResolvedValue([
+      {
+        id: 'lot-old',
+        remainingAmount: '40',
+        acquisitionPrice: '1',
+        acquiredAt: new Date('2026-01-01T00:00:00Z'),
+      },
+      {
+        id: 'lot-new',
+        remainingAmount: '100',
+        acquisitionPrice: '1',
+        acquiredAt: new Date('2026-02-01T00:00:00Z'),
+      },
+    ])
+    mockDb.costBasisLot.update.mockResolvedValue({})
+    mockDb.lotDisposal.create.mockResolvedValue({})
+
+    await recordDisposalsForWithdrawal(
+      'user-1',
+      'wtx-1',
+      'USDC',
+      '60',
+      disposedAt
+    )
+
+    expect(mockDb.lotDisposal.create.mock.calls[0][0].data.lotId).toBe(
+      'lot-old'
+    )
+  })
 })

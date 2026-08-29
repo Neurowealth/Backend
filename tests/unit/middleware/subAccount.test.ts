@@ -101,7 +101,6 @@ describe('requireSubAccountPermission Middleware', () => {
     it('should allow access with valid ACTIVE sub-account and required permission', async () => {
       req.auth = makeAuth('parent1')
       req.body = { userId: 'child1' }
-
       ;(db.subAccount.findUnique as jest.Mock).mockResolvedValue({
         id: 'sub1',
         parentUserId: 'parent1',
@@ -138,7 +137,6 @@ describe('requireSubAccountPermission Middleware', () => {
       req.auth = makeAuth('parent1')
       req.params = { userId: 'child1' }
       req.body = {}
-
       ;(db.subAccount.findUnique as jest.Mock).mockResolvedValue({
         id: 'sub1',
         parentUserId: 'parent1',
@@ -159,7 +157,6 @@ describe('requireSubAccountPermission Middleware', () => {
     it('should reject when no sub-account relationship exists', async () => {
       req.auth = makeAuth('parent1')
       req.body = { userId: 'child1' }
-
       ;(db.subAccount.findUnique as jest.Mock).mockResolvedValue(null)
 
       const middleware = requireSubAccountPermission('DEPOSIT')
@@ -174,7 +171,6 @@ describe('requireSubAccountPermission Middleware', () => {
     it('should reject when sub-account status is REVOKED', async () => {
       req.auth = makeAuth('parent1')
       req.body = { userId: 'child1' }
-
       ;(db.subAccount.findUnique as jest.Mock).mockResolvedValue({
         id: 'sub1',
         parentUserId: 'parent1',
@@ -195,7 +191,6 @@ describe('requireSubAccountPermission Middleware', () => {
     it('should reject when permission is not in the granted set', async () => {
       req.auth = makeAuth('parent1')
       req.body = { userId: 'child1' }
-
       ;(db.subAccount.findUnique as jest.Mock).mockResolvedValue({
         id: 'sub1',
         parentUserId: 'parent1',
@@ -271,7 +266,6 @@ describe('requireSubAccountPermission Middleware', () => {
     it('should not grant WITHDRAW when only DEPOSIT is granted', async () => {
       req.auth = makeAuth('parent1')
       req.body = { userId: 'child1' }
-
       ;(db.subAccount.findUnique as jest.Mock).mockResolvedValue({
         id: 'sub1',
         parentUserId: 'parent1',
@@ -290,7 +284,6 @@ describe('requireSubAccountPermission Middleware', () => {
     it('should not grant MANAGE_STRATEGY when DEPOSIT and VIEW are granted', async () => {
       req.auth = makeAuth('parent1')
       req.body = { userId: 'child1' }
-
       ;(db.subAccount.findUnique as jest.Mock).mockResolvedValue({
         id: 'sub1',
         parentUserId: 'parent1',

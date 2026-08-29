@@ -37,6 +37,10 @@ export function isUserEventTopic(value: unknown): value is UserEventTopic {
 export const SOCKET_ONLY_EVENT_TYPES = [
   /** Emitted alongside agent.rebalanced: this user's positions moved. */
   'portfolio.updated',
+  /** #374 — API key lifecycle notifications. */
+  'security.api_key_changed',
+  /** #376 — new session sign-in alert. */
+  'security.new_session',
 ] as const
 
 export type SocketOnlyEventType = (typeof SOCKET_ONLY_EVENT_TYPES)[number]
@@ -60,11 +64,22 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'recurring_deposit.executed': 'transactions',
   'recurring_deposit.failed': 'transactions',
   'outbox.op_failed': 'transactions',
+  // #314 — a PENDING_APPROVAL operation's lifecycle is itself a transaction
+  // state (gating a withdraw/deposit before it submits), so it shares the
+  // 'transactions' topic rather than introducing a new one.
+  'approval.requested': 'transactions',
+  'approval.approved': 'transactions',
+  'approval.rejected': 'transactions',
+  'approval.executed': 'transactions',
+  'approval.expired': 'transactions',
+  'approval.cancelled': 'transactions',
   'agent.rebalanced': 'agent',
   'alert_rule.triggered': 'alerts',
   'strategy.updated': 'strategies',
   'strategy.unpublished': 'strategies',
   'portfolio.updated': 'portfolio',
+  'security.api_key_changed': 'alerts',
+  'security.new_session': 'alerts',
 }
 
 const SOCKET_ONLY = new Set<string>(SOCKET_ONLY_EVENT_TYPES)

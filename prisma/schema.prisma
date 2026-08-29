@@ -137,6 +137,18 @@ enum RecurringDepositPlanStatus {
 // unpriced in the tax report — never silently zeroed.
 enum PriceSource {
   STABLECOIN_ASSUMPTION
+  // #317 — see src/tax/pricing.ts's source hierarchy.
+  USER_DECLARED // an explicit price the user supplied (e.g. at deposit time)
+  MARKET_FEED // a volatile-asset price feed snapshot — stubbed (always null) in v1
+}
+
+// #317 — cost-basis consumption order. FIFO is the default and preserves
+// every pre-existing user's realized-gain figures unchanged.
+enum AccountingMethod {
+  FIFO
+  LIFO
+  HIFO
+  SPECIFIC_ID
 }
 
 enum GoalStatus {
@@ -169,6 +181,8 @@ enum DeliveryChannel {
   WEBHOOK
   WHATSAPP
   BOTH
+  EMAIL
+  ALL
 }
 
 enum SubAccountPermission {
@@ -184,23 +198,29 @@ enum SubAccountStatus {
 }
 
 model User {
-  id                String   @id @default(uuid())
-  walletAddress     String   @unique
-  network           Network  @default(MAINNET)
+  id                String           @id @default(uuid())
+  walletAddress     String           @unique
+  network           Network          @default(MAINNET)
   displayName       String?
-  email             String?  @unique
+  email             String?          @unique
   avatarUrl         String?
   // E.164 WhatsApp number, when known. Nullable because most users onboard via
   // wallet auth and never link a number. Used as the WhatsApp delivery
   // destination for alert rules (#289); alerts on the WHATSAPP/BOTH channel are
   // skipped (logged, not errored) for users without a number on file.
-  phone             String?  @unique
-  riskTolerance     Int      @default(5)
+  phone             String?          @unique
+  riskTolerance     Int              @default(5)
   rebalanceStrategy String? // 'MAX_YIELD' | 'TARGET_ALLOCATION' | null (defaults to MAX_YIELD)
   strategyConfig    Json? // e.g. { "targetAllocations": { "Blend": 50, "Stellar DEX": 30, "Luma": 20 } }
-  isActive          Boolean  @default(true)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  isActive          Boolean          @default(true)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  // #317 — cost-basis consumption method for the tax report. Changing this
+  // is forward-only: methodEffectiveAt stamps when a change took effect, so
+  // disposals recorded before it are never retroactively recomputed (see
+  // docs/TAX_REPORT.md).
+  accountingMethod  AccountingMethod @default(FIFO)
+  methodEffectiveAt DateTime?
 
   sessions                Session[]
   positions               Position[]
@@ -223,10 +243,55 @@ model User {
   allocationSuggestions   AllocationSuggestion[]
   portfolioAttributions   PortfolioAttribution[]
   portfolioRiskAggregates PortfolioRiskAggregate[]
+  approvalPolicies        ApprovalPolicy[]         @relation("ApprovalPolicyPrincipal")
+  approvalRequests        ApprovalRequest[]        @relation("ApprovalRequestPrincipal")
   userEvents              UserEvent[]
   userEventSequence       UserEventSequence?
+  userApiKeys             UserApiKey[]
+  userWebhookEndpoints    UserWebhookEndpoint[]
+  emailIdentity           EmailIdentity?
 
   @@map("users")
+}
+
+model UserApiKey {
+  id               String    @id @default(uuid())
+  userId           String
+  name             String
+  scopes           String[]
+  hash             String
+  tokenPrefix      String
+  ipAllowlist      String[]  @default([])
+  rateLimitPerMin  Int?
+  allowWithdrawals Boolean   @default(false)
+  lastUsedAt       DateTime?
+  lastUsedIp       String?
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenPrefix])
+  @@map("user_api_keys")
+}
+
+model IdempotencyRecord {
+  id             String    @id @default(uuid())
+  userId         String
+  idempotencyKey String
+  fingerprint    String
+  status         String // in_progress | completed
+  statusCode     Int?
+  responseBody   Json?
+  completedAt    DateTime?
+  expiresAt      DateTime
+  createdAt      DateTime  @default(now())
+
+  @@unique([userId, idempotencyKey])
+  @@index([expiresAt])
+  @@map("idempotency_records")
 }
 
 model Session {
@@ -240,6 +305,13 @@ model Session {
   refreshTokenExpiresAt DateTime?
   ipAddress             String?
   userAgent             String?
+  label                 String?
+  deviceType            String?
+  lastSeenAt            DateTime?
+  lastSeenIp            String?
+  revokedAt             DateTime?
+  revokedReason         String?
+  approxLocation        String?
   createdAt             DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -247,6 +319,7 @@ model Session {
   @@index([userId])
   @@index([expiresAt])
   @@index([userId, expiresAt])
+  @@index([revokedAt])
   @@map("sessions")
 }
 
@@ -308,14 +381,14 @@ enum AuditBlockType {
 }
 
 model AuditBlock {
-  id           String        @id @default(uuid())
-  height       Int           @unique
+  id           String         @id @default(uuid())
+  height       Int            @unique
   prevHash     String
-  hash         String        @unique
+  hash         String         @unique
   blockType    AuditBlockType
-  payloadCount Int           @default(0)
+  payloadCount Int            @default(0)
   payloadHash  String
-  createdAt    DateTime      @default(now())
+  createdAt    DateTime       @default(now())
 
   @@index([blockType])
   @@index([createdAt])
@@ -323,11 +396,11 @@ model AuditBlock {
 }
 
 model AuditPayloadHash {
-  id         String   @id @default(uuid())
-  tableName  String
-  kind       String
+  id          String   @id @default(uuid())
+  tableName   String
+  kind        String
   payloadHash String
-  createdAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
 
   @@index([tableName])
   @@index([kind])
@@ -380,6 +453,11 @@ model Transaction {
   confirmedAt    DateTime?
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
+  // #317 — SPECIFIC_ID lot selection for a WITHDRAWAL, captured at request
+  // time so the Stellar event listener (the sole writer of disposal rows,
+  // see docs/TAX_REPORT.md) has it once the on-chain event confirms. Empty
+  // for every other accounting method and for all non-withdrawal types.
+  selectedLotIds String[]          @default([])
 
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   position     Position?     @relation(fields: [positionId], references: [id])
@@ -661,17 +739,21 @@ enum WebhookDeliveryStatus {
 }
 
 model WebhookSubscription {
-  id        String   @id @default(uuid())
-  userId    String
-  url       String
-  events    String[]
-  secret    String
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                 String    @id @default(uuid())
+  userId             String
+  url                String
+  events             String[]
+  secret             String
+  secretNext         String?
+  secretNextActiveAt DateTime?
+  isActive           Boolean   @default(true)
+  autoReplay         Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
-  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  deliveries WebhookDelivery[]
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries  WebhookDelivery[]
+  deadLetters WebhookDeadLetter[]
 
   @@index([userId])
   @@map("webhook_subscriptions")
@@ -697,6 +779,23 @@ model WebhookDelivery {
   @@map("webhook_deliveries")
 }
 
+model WebhookDeadLetter {
+  id             String   @id @default(uuid())
+  subscriptionId String
+  event          String
+  payload        Json
+  firstFailedAt  DateTime
+  lastError      String
+  attempts       Int
+  status         String // PENDING | REPLAYED | RESOLVED | DISCARDED
+  createdAt      DateTime @default(now())
+
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId, status])
+  @@map("webhook_dead_letters")
+}
+
 /// User-defined price & yield alert rule (#289).
 ///
 /// Evaluated on a schedule by src/jobs/alertRules.ts against the latest
@@ -717,6 +816,8 @@ model AlertRule {
   deliveryChannel DeliveryChannel
   cooldownMinutes Int             @default(60)
   lastFiredAt     DateTime?
+  snoozedUntil    DateTime?
+  snoozeReason    String?
   isActive        Boolean         @default(true)
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
@@ -747,6 +848,96 @@ model SubAccount {
   @@map("sub_accounts")
 }
 
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  EXECUTED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+/// Multi-signature approval policy (#314). Governs one permission class
+/// (WITHDRAW/DEPOSIT/MANAGE_STRATEGY) for a principal's own account
+/// (scopedToChildUserId = null) or for a specific sub-account relationship
+/// (scopedToChildUserId = the child). A null highValueThreshold means the
+/// policy applies to every operation of that permission, not just large ones.
+/// Pending requests snapshot the policy that created them (see
+/// ApprovalRequest.minApprovers) — editing or deactivating a policy never
+/// changes an already-open request, only new ones.
+model ApprovalPolicy {
+  id                  String               @id @default(uuid())
+  principalUserId     String
+  scopedToChildUserId String?
+  permission          SubAccountPermission
+  minApprovers        Int
+  highValueThreshold  Decimal?             @db.Decimal(36, 18)
+  approvalTimeoutMs   Int
+  isActive            Boolean              @default(true)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  principal User              @relation("ApprovalPolicyPrincipal", fields: [principalUserId], references: [id], onDelete: Cascade)
+  requests  ApprovalRequest[]
+
+  @@index([principalUserId, permission, isActive])
+  @@index([scopedToChildUserId, permission, isActive])
+  @@map("approval_policies")
+}
+
+/// One high-value/sensitive operation held at PENDING_APPROVAL. Status
+/// machine: PENDING -> APPROVED -> EXECUTED (terminal, on-chain finality,
+/// never un-executed); PENDING -> REJECTED / EXPIRED / CANCELLED. `payload`
+/// is the exact operation to re-run on execution (see
+/// src/approvals/service.ts's guardOperation/decide). `minApprovers` is
+/// snapshotted from the policy at request time so a later policy edit never
+/// changes an open request's threshold.
+model ApprovalRequest {
+  id             String               @id @default(uuid())
+  policyId       String
+  userId         String
+  actingAsUserId String
+  permission     SubAccountPermission
+  amount         Decimal              @db.Decimal(36, 18)
+  assetSymbol    String
+  payload        Json
+  status         ApprovalStatus       @default(PENDING)
+  minApprovers   Int
+  requestedAt    DateTime             @default(now())
+  expiresAt      DateTime
+  executedAt     DateTime?
+  executedTxId   String?
+  cancelledById  String?
+  reason         String?
+
+  policy    ApprovalPolicy @relation(fields: [policyId], references: [id])
+  user      User           @relation("ApprovalRequestPrincipal", fields: [userId], references: [id], onDelete: Cascade)
+  approvals Approval[]
+
+  @@index([userId, status])
+  @@index([status, expiresAt])
+  @@map("approval_requests")
+}
+
+/// One approver's decision on an ApprovalRequest. The unique constraint is
+/// the concurrency primitive: two approvals landing simultaneously cannot
+/// both be recorded for the same (request, approver) pair, and threshold-met
+/// detection is a conditional UPDATE on the request, never check-then-act.
+model Approval {
+  id             String   @id @default(uuid())
+  requestId      String
+  approverUserId String
+  approved       Boolean
+  note           String?
+  createdAt      DateTime @default(now())
+
+  request ApprovalRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, approverUserId])
+  @@index([requestId])
+  @@map("approvals")
+}
+
 /// Fiat on-ramp / off-ramp order (#290).
 /// Tracks the off-chain payment leg of a fiat<->crypto conversion handled by a
 /// third-party provider (e.g. MoonPay). The on-chain settlement is reconciled
@@ -754,35 +945,35 @@ model SubAccount {
 /// provider's webhook alone. No plaintext bank/card details are ever stored
 /// here — the provider's hosted checkout captures all PII/payment details.
 model FiatOrder {
-  id              String          @id @default(uuid())
-  userId          String
-  provider        String // e.g. "moonpay" — provider key, no provider-specific logic elsewhere
-  providerOrderId String
-  direction       FiatDirection
-  fiatAmount      Decimal         @db.Decimal(36, 18)
-  fiatCurrency    String
-  cryptoAmount    Decimal?        @db.Decimal(36, 18)
-  assetSymbol     String
-  status          FiatOrderStatus @default(PENDING)
-  transactionId   String? // linked once the resulting on-chain Transaction is matched
-  checkoutUrl     String? // provider hosted checkout URL (on-ramp)
-  kycUrl          String? // provider KYC next-step link, surfaced to the user when required
-  failureReason   String? // populated on FAILED/REFUNDED for operator/user visibility
-  settledAt       DateTime?
+  id                  String          @id @default(uuid())
+  userId              String
+  provider            String // e.g. "moonpay" — provider key, no provider-specific logic elsewhere
+  providerOrderId     String
+  direction           FiatDirection
+  fiatAmount          Decimal         @db.Decimal(36, 18)
+  fiatCurrency        String
+  cryptoAmount        Decimal?        @db.Decimal(36, 18)
+  assetSymbol         String
+  status              FiatOrderStatus @default(PENDING)
+  transactionId       String? // linked once the resulting on-chain Transaction is matched
+  checkoutUrl         String? // provider hosted checkout URL (on-ramp)
+  kycUrl              String? // provider KYC next-step link, surfaced to the user when required
+  failureReason       String? // populated on FAILED/REFUNDED for operator/user visibility
+  settledAt           DateTime?
   // Best-execution / rate-drift protection (#313). quoteRate/quotedCryptoAmount
   // and fees are captured from the locked quote at order-creation time so
   // cryptoAmount is never an unexplained number; settledRate/settledCryptoAmount
   // are populated at on-chain settlement so the quoted-vs-settled delta is
   // always inspectable on the order itself.
-  quoteRate           Decimal?   @db.Decimal(36, 18)
-  quotedCryptoAmount  Decimal?   @db.Decimal(36, 18)
+  quoteRate           Decimal?        @db.Decimal(36, 18)
+  quotedCryptoAmount  Decimal?        @db.Decimal(36, 18)
   fees                Json? // structured FeeBreakdown; null means the provider could not price it (unpriced, never assumed 0)
   providerQuoteId     String?
   rateLockExpiresAt   DateTime?
-  settledRate         Decimal?   @db.Decimal(36, 18)
-  settledCryptoAmount Decimal?   @db.Decimal(36, 18)
-  createdAt           DateTime   @default(now())
-  updatedAt           DateTime   @updatedAt
+  settledRate         Decimal?        @db.Decimal(36, 18)
+  settledCryptoAmount Decimal?        @db.Decimal(36, 18)
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
 
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   transaction Transaction? @relation(fields: [transactionId], references: [id])
@@ -1278,4 +1469,204 @@ model UserEventSequence {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_event_sequences")
+}
+
+model UserWebhookEndpoint {
+  id                  String    @id @default(uuid())
+  userId              String
+  url                 String
+  secretHash          String
+  events              String[]
+  topicScope          String[]
+  filterJson          Json?
+  status              String    @default("ACTIVE") // ACTIVE | PAUSED | DISABLED_BAD_ENDPOINT
+  consecutiveFailures Int       @default(0)
+  lastDeliveryAt      DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  user       User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries UserWebhookDelivery[]
+
+  @@index([userId, status])
+  @@map("user_webhook_endpoints")
+}
+
+model UserWebhookDelivery {
+  id            String    @id @default(uuid())
+  endpointId    String
+  userEventSeq  Int
+  eventType     String
+  status        String    @default("PENDING") // PENDING | DELIVERED | FAILED | DEAD
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime?
+  responseCode  Int?
+  error         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  endpoint UserWebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@unique([endpointId, userEventSeq])
+  @@index([endpointId])
+  @@index([status])
+  @@map("user_webhook_deliveries")
+}
+
+model AlertFire {
+  id                 String   @id @default(uuid())
+  ruleId             String
+  userId             String
+  firedAt            DateTime @default(now())
+  leafTrace          Json
+  deliveredVia       String[]
+  ackId              String?
+  escalated          Boolean  @default(false)
+  suppressedBySnooze Boolean  @default(false)
+
+  @@index([ruleId, firedAt])
+  @@index([userId, firedAt])
+  @@map("alert_fires")
+}
+
+model AlertAck {
+  id        String   @id @default(uuid())
+  ruleId    String
+  userId    String
+  fireId    String?
+  source    String // API | WHATSAPP | TELEGRAM | EMAIL
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([ruleId])
+  @@index([userId])
+  @@map("alert_acks")
+}
+
+model EmailIdentity {
+  id              String    @id @default(uuid())
+  userId          String    @unique
+  email           String    @unique
+  verifiedAt      DateTime?
+  verifyTokenHash String?
+  verifyExpiresAt DateTime?
+  status          String    @default("PENDING") // PENDING | VERIFIED | BOUNCED | COMPLAINED | SUPPRESSED
+  lastBounceAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_identities")
+}
+
+// --- Issue #372: Audit Anchoring ---
+model AuditAnchor {
+  id            String    @id @default(uuid())
+  blockHeight   Int
+  blockHash     String
+  stellarTxHash String    @unique
+  ledger        Int?
+  submittedAt   DateTime  @default(now())
+  confirmedAt   DateTime?
+
+  @@index([blockHeight])
+  @@map("audit_anchors")
+}
+
+// --- Issue #371: GDPR/CCPA Data Export & Right-to-Erasure ---
+model DataSubjectRequest {
+  id          String   @id @default(uuid())
+  userId      String
+  type        String   // EXPORT | ERASURE
+  status      String   // PENDING | PROCESSING | COMPLETED | PARTIAL | FAILED | REJECTED
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+
+  @@index([userId])
+  @@map("data_subject_requests")
+}
+
+model RedactionManifest {
+  id        String   @id @default(uuid())
+  requestId String
+  modelName String
+  recordId  String
+  action    String   // DELETED | ANONYMIZED
+  createdAt DateTime @default(now())
+
+  @@index([requestId])
+  @@map("redaction_manifests")
+}
+
+// --- Issue #373: Sanctions Screening Case Management & SAR Workflow ---
+enum CaseStatus {
+  OPEN
+  TRIAGE
+  INVESTIGATING
+  ESCALATED
+  PENDING_SAR
+  SAR_FILED
+  CLEARED
+  CLOSED_NO_ACTION
+}
+
+enum CasePriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model ComplianceCase {
+  id               String       @id @default(uuid())
+  userId           String
+  status           CaseStatus   @default(OPEN)
+  priority         CasePriority
+  openedReason     String       // "score_threshold" | "manual" | "sanctions_hit" | "law_enforcement_request"
+  triggerScore     Int?
+  scoreModelVersion String?
+  assignedTo       String?      // AdminApiKey.id / reviewer identity
+  slaDueAt         DateTime?
+  relatedTxnIds    String[]
+  relatedCaseIds   String[]
+  createdAt        DateTime     @default(now())
+  closedAt         DateTime?
+  outcome          String?      // mirrors terminal status + a reason
+
+  @@index([userId])
+  @@index([status])
+  @@map("compliance_cases")
+}
+
+model CaseEvent {
+  id        String   @id @default(uuid())
+  caseId    String
+  type      String   // NOTE | STATUS_CHANGE | ASSIGNMENT | EVIDENCE | DECISION | FREEZE | UNFREEZE | SAR_DRAFTED | SAR_FILED
+  actor     String   // reviewer identity
+  body      Json     // structured per type
+  createdAt DateTime @default(now())
+
+  @@index([caseId, createdAt])
+  @@map("case_events")
+}
+
+// --- Issue #370: FATF Travel Rule Data Collection ---
+model TravelRuleRecord {
+  id               String    @id @default(uuid())
+  transactionId    String?   // or outboxOpId / fiatOrderId
+  direction        String    // OUTBOUND | INBOUND
+  amountBaseCcy    Decimal   @db.Decimal(36,18)
+  baseCurrency     String
+  originator       Json      // { name, accountOrWallet, address?, idNumber?, idType? }
+  beneficiary      Json      // { name, accountOrWallet }
+  counterpartyVasp Json?     // { name, did?, classification: 'VASP'|'UNHOSTED'|'UNKNOWN' }
+  dataSource       String    // KYC_PROFILE | USER_ATTESTED | PROVIDER
+  status           String    // PENDING_DATA | READY | TRANSMITTED | EXEMPT
+  transmittedAt    DateTime?
+  createdAt        DateTime  @default(now())
+
+  @@index([transactionId])
+  @@index([status])
+  @@map("travel_rule_records")
 }

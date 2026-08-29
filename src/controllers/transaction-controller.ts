@@ -10,6 +10,7 @@ import { enqueueOutboxOp } from '../outbox/service'
 import { dispatchOne } from '../outbox/dispatcher'
 import { deriveIdempotencyKey } from '../outbox/idempotency'
 import { OutboxOpKind } from '../outbox/types'
+import { guardOperation } from '../approvals/service'
 
 /**
  * Persist the Transaction row (PENDING, no hash yet) and its outbox intent in
@@ -31,6 +32,10 @@ async function enqueueAndDispatch(params: {
   protocolName?: string
   memo?: string
   actingAsUserId?: string | null
+  // #317 — SPECIFIC_ID lot selection, WITHDRAWAL only. Captured here so the
+  // Stellar event listener has it once the on-chain withdrawal confirms
+  // (see src/tax/service.ts's recordDisposalsForWithdrawal).
+  selectedLotIds?: string[]
 }): Promise<Transaction> {
   const pending = await db.$transaction(async (tx) => {
     const transaction = await tx.transaction.create({
@@ -44,6 +49,7 @@ async function enqueueAndDispatch(params: {
         network: params.network,
         protocolName: params.protocolName,
         memo: params.memo,
+        selectedLotIds: params.selectedLotIds ?? [],
       },
     })
 
@@ -108,23 +114,40 @@ export interface ExecuteDepositParams {
   assetSymbol: string
   memo?: string
   actingAsUserId?: string | null
+  // Set only by src/approvals/executors.ts when re-running an already
+  // APPROVED request's payload — never by an HTTP route or job directly, or
+  // an approved request would re-trigger guardOperation and gate itself.
+  skipApprovalGuard?: boolean
 }
 
 export interface ExecuteDepositResult {
-  transaction: Transaction
-  status: 'CONFIRMED' | 'FAILED'
+  transaction: Transaction | null
+  status: 'CONFIRMED' | 'FAILED' | 'PENDING_APPROVAL'
+  approvalRequestId?: string
 }
 
 /**
  * Core deposit logic extracted for reuse by both the HTTP route and the
  * recurring deposit scheduler. Submits an on-chain transaction, persists
  * the Transaction row, and dispatches a webhook on success.
+ *
+ * Gated by an ApprovalPolicy (#314) before anything is submitted: this is
+ * the single interception point, so the HTTP deposit route AND
+ * src/jobs/recurringDeposits.ts (which calls this function directly) are
+ * both covered without duplicating the check.
  */
 export async function executeDeposit(
   params: ExecuteDepositParams
 ): Promise<ExecuteDepositResult> {
-  const { userId, walletAddress, amount, assetSymbol, memo, actingAsUserId } =
-    params
+  const {
+    userId,
+    walletAddress,
+    amount,
+    assetSymbol,
+    memo,
+    actingAsUserId,
+    skipApprovalGuard,
+  } = params
 
   const user = await db.user.findUnique({
     where: { id: userId },
@@ -132,6 +155,32 @@ export async function executeDeposit(
   })
   if (!user) {
     throw new Error('User not found')
+  }
+
+  if (!skipApprovalGuard) {
+    const guard = await guardOperation({
+      userId,
+      actingAsUserId,
+      permission: 'DEPOSIT',
+      amount,
+      assetSymbol,
+      payload: {
+        type: 'deposit',
+        userId,
+        walletAddress,
+        amount,
+        assetSymbol,
+        memo,
+        actingAsUserId,
+      },
+    })
+    if (!guard.allowed) {
+      return {
+        transaction: null,
+        status: 'PENDING_APPROVAL',
+        approvalRequestId: guard.requestId,
+      }
+    }
   }
 
   logger.info('Submitting on-chain deposit', {
@@ -202,6 +251,24 @@ export interface ExecuteWithdrawResult {
  * route below and by the assistant's withdraw tool
  * (src/agent/tools/actionTools.ts) — the assistant must go through the exact
  * same idempotent/audited path as every other caller, never a bespoke one.
+  // See ExecuteDepositParams.skipApprovalGuard.
+  skipApprovalGuard?: boolean
+  // #317 — SPECIFIC_ID lot selection, WITHDRAWAL only. Persisted so the
+  // Stellar event listener has it when the withdrawal confirms.
+  selectedLotIds?: string[]
+}
+
+export interface ExecuteWithdrawResult {
+  transaction: Transaction | null
+  status: 'CONFIRMED' | 'FAILED' | 'PENDING_APPROVAL'
+  approvalRequestId?: string
+}
+
+/**
+ * Core withdrawal logic, mirroring executeDeposit. Extracted so both the
+ * HTTP withdraw route and the approval service's post-approval execution
+ * path (src/approvals/executors.ts) run through the exact same gate and
+ * submission logic.
  */
 export async function executeWithdraw(
   params: ExecuteWithdrawParams
@@ -214,6 +281,8 @@ export async function executeWithdraw(
     protocolName,
     memo,
     actingAsUserId,
+    skipApprovalGuard,
+    selectedLotIds,
   } = params
 
   const user = await db.user.findUnique({
@@ -222,6 +291,34 @@ export async function executeWithdraw(
   })
   if (!user) {
     throw new Error('User not found')
+  }
+
+  if (!skipApprovalGuard) {
+    const guard = await guardOperation({
+      userId,
+      actingAsUserId,
+      permission: 'WITHDRAW',
+      amount,
+      assetSymbol,
+      payload: {
+        type: 'withdraw',
+        userId,
+        walletAddress,
+        amount,
+        assetSymbol,
+        protocolName,
+        memo,
+        actingAsUserId,
+        selectedLotIds,
+      },
+    })
+    if (!guard.allowed) {
+      return {
+        transaction: null,
+        status: 'PENDING_APPROVAL',
+        approvalRequestId: guard.requestId,
+      }
+    }
   }
 
   logger.info('Submitting on-chain withdrawal', {
@@ -241,6 +338,7 @@ export async function executeWithdraw(
     protocolName,
     memo,
     actingAsUserId,
+    selectedLotIds,
   })
 
   logger.info('On-chain withdrawal completed', {
@@ -277,7 +375,8 @@ export async function processOnChainTransaction(
   res: Response,
   type: 'DEPOSIT' | 'WITHDRAWAL'
 ) {
-  const { userId, amount, assetSymbol, protocolName, memo } = req.body
+  const { userId, amount, assetSymbol, protocolName, memo, selectedLotIds } =
+    req.body
 
   if (!req.auth) {
     return sendUnauthorized(res)
@@ -309,9 +408,29 @@ export async function processOnChainTransaction(
       protocolName,
       memo,
       actingAsUserId,
+      selectedLotIds,
     })
     const transaction = result.transaction
 
+
+    if (result.status === 'PENDING_APPROVAL') {
+      return res.status(202).json({
+        status: 'PENDING_APPROVAL',
+        approvalRequestId: result.approvalRequestId,
+      })
+    }
+
+    const transaction = result.transaction!
+    logger.info('On-chain withdrawal completed', {
+      correlationId: req.correlationId,
+      type,
+      userId,
+      txHash: transaction.txHash,
+      status: transaction.status,
+    })
+
+    // Notification already dispatched inside executeWithdraw above — do not
+    // re-publish here (that would double-fire transaction.confirmed).
     return res.status(201).json({
       txHash: transaction.txHash,
       status: transaction.status,
@@ -340,21 +459,29 @@ export async function processOnChainTransaction(
     actingAsUserId,
   })
 
+  if (result.status === 'PENDING_APPROVAL') {
+    return res.status(202).json({
+      status: 'PENDING_APPROVAL',
+      approvalRequestId: result.approvalRequestId,
+    })
+  }
+
+  const transaction = result.transaction!
   return res.status(201).json({
-    txHash: result.transaction.txHash,
-    status: result.transaction.status,
+    txHash: transaction.txHash,
+    status: transaction.status,
     transaction: {
-      id: result.transaction.id,
-      txHash: result.transaction.txHash,
-      status: result.transaction.status,
-      amount: Number(result.transaction.amount),
-      assetSymbol: result.transaction.assetSymbol,
-      protocolName: result.transaction.protocolName,
+      id: transaction.id,
+      txHash: transaction.txHash,
+      status: transaction.status,
+      amount: Number(transaction.amount),
+      assetSymbol: transaction.assetSymbol,
+      protocolName: transaction.protocolName,
     },
     whatsappReply: formatDepositReply({
-      amount: Number(result.transaction.amount),
-      assetSymbol: result.transaction.assetSymbol,
-      protocolName: result.transaction.protocolName,
+      amount: Number(transaction.amount),
+      assetSymbol: transaction.assetSymbol,
+      protocolName: transaction.protocolName,
     }),
   })
 }

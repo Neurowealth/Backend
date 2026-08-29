@@ -132,3 +132,46 @@ curl -X POST http://localhost:3000/api/webhooks \
 echo -n '<raw_body>' | openssl dgst -sha256 -hmac '<secret>'
 # should match X-Neurowealth-Signature header (minus "sha256=" prefix)
 ```
+
+---
+
+## Delivery Hardening (#377)
+
+### Signature v2 (replay protection)
+
+```
+X-NW-Webhook-Timestamp: <unix>
+X-NW-Webhook-Id: <deliveryId>
+X-NW-Webhook-Signature: v2,<hex> v1,<hex>
+```
+
+v2 signs `"<timestamp>.<deliveryId>.<body>"`. Consumers should reject if `|now - timestamp| > 300s` and dedupe on `X-NW-Webhook-Id`.
+
+### Secret rotation
+
+- `POST /api/webhooks/:id/rotate-secret` — sets `secretNext`, dual-signs during overlap
+- `POST /api/webhooks/:id/promote-secret` — promotes `secretNext` to `secret`
+
+### Dead-letter queue
+
+Exhausted deliveries (default 6 attempts, full-jitter backoff) move to `WebhookDeadLetter` as `PENDING`.
+
+- `POST /api/webhooks/dead-letters/:id/replay` — single replay with `X-NW-Webhook-Replay: true`
+- `POST /api/webhooks/:id/replay?since=` — bulk replay (max 50)
+
+### Circuit breaker
+
+Per-subscription breaker: `closed` → `open` (after 5 failures) → `half_open` (probe). Open subscriptions skip delivery but capture payloads in DLQ. Prolonged open auto-disables the subscription.
+
+### Health endpoint
+
+`GET /api/webhooks/:id/health` — circuit state, DLQ depth, recent failure rate.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WEBHOOK_MAX_ATTEMPTS` | 6 | Max delivery attempts |
+| `WEBHOOK_CIRCUIT_BREAKER_THRESHOLD` | 5 | Failures before open |
+| `WEBHOOK_AUTO_DISABLE_HOURS` | 24 | Auto-disable after open |
+| `WEBHOOK_SEND_V1_SIGNATURE` | true | Include v1 during deprecation |

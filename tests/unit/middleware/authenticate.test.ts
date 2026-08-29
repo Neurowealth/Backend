@@ -19,6 +19,7 @@ jest.mock('../../../src/db', () => ({
     session: {
       findUnique: jest.fn(),
       delete: jest.fn(),
+      update: jest.fn().mockResolvedValue({}),
     },
     user: {
       findUnique: jest.fn(),
@@ -134,7 +135,6 @@ describe('Authentication Middleware (Unified)', () => {
     it('should reject expired sessions and clean them up', async () => {
       const token = 'valid.jwt.token'
       req.headers = { authorization: `Bearer ${token}` }
-
       ;(JwtAdapter.validateToken as jest.Mock).mockResolvedValue({
         id: 'user1',
       })
@@ -154,7 +154,6 @@ describe('Authentication Middleware (Unified)', () => {
     it('should reject inactive users', async () => {
       const token = 'valid.jwt.token'
       req.headers = { authorization: `Bearer ${token}` }
-
       ;(JwtAdapter.validateToken as jest.Mock).mockResolvedValue({
         id: 'user1',
       })
@@ -175,7 +174,6 @@ describe('Authentication Middleware (Unified)', () => {
       const token = 'valid.jwt.token'
       req.headers = { authorization: `Bearer ${token}` }
       mockHeader(token)
-
       ;(JwtAdapter.validateToken as jest.Mock).mockResolvedValue({
         id: 'user1',
       })
@@ -222,7 +220,6 @@ describe('Authentication Middleware (Unified)', () => {
       const token = 'valid.jwt.token'
       req.headers = { authorization: `Bearer ${token}` }
       mockHeader(token)
-
       ;(JwtAdapter.validateToken as jest.Mock).mockResolvedValue({
         id: 'user1',
       })
@@ -323,7 +320,6 @@ describe('Authentication Middleware (Unified)', () => {
       const token = 'valid.jwt.token'
       req.headers = { authorization: `Bearer ${token}` }
       mockHeader(token)
-
       ;(JwtAdapter.validateToken as jest.Mock).mockResolvedValue({
         id: 'user1',
       })

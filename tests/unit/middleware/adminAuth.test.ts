@@ -55,7 +55,6 @@ describe('admin auth middleware', () => {
 
   it('accepts a valid bearer token that matches a hashed stored admin token', async () => {
     req.headers = { authorization: 'Bearer valid-admin-token' }
-
     ;(db as any).adminApiKey = {
       findMany: jest.fn().mockResolvedValue([
         {
@@ -145,7 +144,6 @@ describe('admin auth middleware', () => {
 
   it('rejects a valid-format token that does not match any stored hash', async () => {
     req.headers = { authorization: 'Bearer unknown-token' }
-
     ;(db as any).adminApiKey = {
       findMany: jest.fn().mockResolvedValue([
         {
@@ -169,7 +167,6 @@ describe('admin auth middleware', () => {
 
   it('accepts the legacy X-Admin-Token header', async () => {
     req.headers = { 'x-admin-token': 'legacy-token' }
-
     ;(db as any).adminApiKey = {
       findMany: jest.fn().mockResolvedValue([
         {
@@ -195,7 +192,6 @@ describe('admin auth middleware', () => {
 
   it('returns 500 when the database throws', async () => {
     req.headers = { authorization: 'Bearer any-token' }
-
     ;(db as any).adminApiKey = {
       findMany: jest.fn().mockRejectedValue(new Error('DB connection lost')),
     }

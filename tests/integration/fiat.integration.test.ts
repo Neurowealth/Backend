@@ -33,6 +33,10 @@ jest.mock('../../src/utils/logger', () => ({
   },
 }))
 
+jest.mock('../../src/middleware/idempotency', () => ({
+  idempotent: () => (_req: any, _res: any, next: any) => next(),
+}))
+
 // --- Service layer: mock so no DB / provider network is touched ---------------
 const mockGetFiatQuote = jest.fn()
 const mockGetBestExecutionQuote = jest.fn()

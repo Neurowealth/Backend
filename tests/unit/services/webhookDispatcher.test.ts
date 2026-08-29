@@ -8,12 +8,25 @@ jest.mock('../../../src/db', () => ({
 jest.mock('../../../src/utils/logger', () => ({
   logger: { warn: jest.fn(), error: jest.fn(), info: jest.fn() },
 }))
+jest.mock('../../../src/services/webhookCircuitBreaker', () => ({
+  isSubscriptionDeliverable: jest.fn().mockReturnValue(true),
+  recordDeliverySuccess: jest.fn(),
+  recordDeliveryFailure: jest.fn(),
+  recordHalfOpenProbe: jest.fn(),
+  getSubscriptionHealth: jest.fn().mockReturnValue({
+    state: 'closed',
+    consecutiveFailures: 0,
+    shouldAutoDisable: false,
+  }),
+}))
 
 const mockDb = db as any
+const MAX_ATTEMPTS = 6
 
 describe('webhookDispatcher', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    delete process.env.WEBHOOK_MAX_ATTEMPTS
     // Default: no subscriptions
     mockDb.webhookSubscription = {
       findMany: jest.fn().mockResolvedValue([]),
@@ -21,6 +34,9 @@ describe('webhookDispatcher', () => {
     mockDb.webhookDelivery = {
       create: jest.fn().mockResolvedValue({ id: 'delivery-1' }),
       update: jest.fn().mockResolvedValue({}),
+    }
+    mockDb.webhookDeadLetter = {
+      create: jest.fn().mockResolvedValue({ id: 'dl-1' }),
     }
     // Reset global fetch mock
     global.fetch = jest.fn()
@@ -49,7 +65,7 @@ describe('webhookDispatcher', () => {
       )
     })
 
-    it('retries up to 3 times and marks FAILED after all attempts fail', async () => {
+    it(`retries up to ${MAX_ATTEMPTS} times and marks FAILED after all attempts fail`, async () => {
       mockDb.webhookSubscription.findMany.mockResolvedValue([
         { id: 'sub-1', url: 'https://example.com/wh', secret: 'mysecret' },
       ])
@@ -60,18 +76,20 @@ describe('webhookDispatcher', () => {
       const dispatchPromise = dispatchWebhookEvent('deposit.received', {
         amount: '100',
       })
-      // Advance through all exponential back-off delays (1s, 2s)
       await jest.runAllTimersAsync()
       await dispatchPromise
       jest.useRealTimers()
 
-      // fetch called 3 times (MAX_ATTEMPTS)
-      expect(global.fetch).toHaveBeenCalledTimes(3)
+      expect(global.fetch).toHaveBeenCalledTimes(MAX_ATTEMPTS)
       expect(mockDb.webhookDelivery.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ status: 'FAILED', attempts: 3 }),
+          data: expect.objectContaining({
+            status: 'FAILED',
+            attempts: MAX_ATTEMPTS,
+          }),
         })
       )
+      expect(mockDb.webhookDeadLetter.create).toHaveBeenCalled()
     })
 
     it('succeeds on the second attempt after a transient failure', async () => {
@@ -98,7 +116,7 @@ describe('webhookDispatcher', () => {
       )
     })
 
-    it('sends X-Neurowealth-Signature header with sha256= prefix', async () => {
+    it('sends v2 webhook signature headers', async () => {
       mockDb.webhookSubscription.findMany.mockResolvedValue([
         { id: 'sub-1', url: 'https://example.com/wh', secret: 'mysecret' },
       ])
@@ -107,9 +125,12 @@ describe('webhookDispatcher', () => {
       await dispatchWebhookEvent('agent.rebalanced', { protocol: 'anchor' })
 
       const [, options] = (global.fetch as jest.Mock).mock.calls[0]
-      expect(
-        (options.headers as Record<string, string>)['X-Neurowealth-Signature']
-      ).toMatch(/^sha256=[0-9a-f]{64}$/)
+      const headers = options.headers as Record<string, string>
+      expect(headers['X-NW-Webhook-Signature']).toMatch(
+        /^v2,[0-9a-f]{64}( v1,[0-9a-f]{64})?$/
+      )
+      expect(headers['X-NW-Webhook-Id']).toBeDefined()
+      expect(headers['X-NW-Webhook-Timestamp']).toBeDefined()
     })
 
     it('queries subscriptions filtered by event type', async () => {
