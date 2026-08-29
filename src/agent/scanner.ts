@@ -6,6 +6,10 @@ import { logger } from '../utils/logger'
 import { YieldProtocol, ProtocolRate } from './types'
 import db from '../db'
 import { fetchWithRetry } from '../utils/fetchWithRetry'
+import {
+  effectiveApy,
+  shouldUseEffectiveApy,
+} from '../analytics/yieldComposition'
 
 const ASSET_SYMBOL = 'USDC'
 const MINIMUM_TVL = 10000
@@ -201,11 +205,26 @@ export async function scanAllProtocols(): Promise<YieldProtocol[]> {
   protocols.sort((a, b) => b.apy - a.apy)
   const filtered = protocols.filter((p) => !p.tvl || p.tvl >= MINIMUM_TVL)
 
+  // #349 flag-gated AGENT consumption: when USE_EFFECTIVE_APY=true, the APY the
+  // agent ranks by is the haircuted effective yield rather than the raw quoted
+  // rate. Gate is OFF by default (byte-for-byte unchanged until the flag is set).
+  // The DB keeps RAW quoted splits; only the in-memory ranking is overridden.
+  const consumed = shouldUseEffectiveApy()
+    ? filtered.map((p) => {
+        const eff = effectiveApy({
+          baseApy: p.baseApy,
+          incentiveApy: p.incentiveApy,
+          supplyApy: p.apy,
+        })
+        return eff !== null ? { ...p, apy: eff } : p
+      })
+    : filtered
+
   // Log metrics
   logger.info('Protocol scan complete', {
     protocols: filtered.length,
-    topApy: filtered[0]?.apy,
-    topProtocol: filtered[0]?.name,
+    topApy: consumed[0]?.apy,
+    topProtocol: consumed[0]?.name,
     metrics: Object.entries(metrics).map(([name, m]) => ({
       name,
       fetchDurationMs: m.duration,
@@ -214,8 +233,8 @@ export async function scanAllProtocols(): Promise<YieldProtocol[]> {
     })),
   })
 
-  await saveProtocolRates(filtered)
-  return filtered
+  await saveProtocolRates(consumed)
+  return consumed
 }
 
 function normalizeNetwork(): string {
@@ -243,6 +262,21 @@ async function saveProtocolRates(protocols: YieldProtocol[]): Promise<void> {
           supplyApy: protocol.apy as any,
           tvl: protocol.tvl === undefined ? undefined : (protocol.tvl as any),
           network: networkLabel as any,
+          // #349: yield composition is persisted RAW as returned by the adapter —
+          // the DB always holds the quoted split, never a haircuted value, so
+          // the flag that gates consumption can be toggled without repopulating.
+          baseApy:
+            protocol.baseApy === undefined
+              ? undefined
+              : (protocol.baseApy as any),
+          incentiveApy:
+            protocol.incentiveApy === undefined
+              ? undefined
+              : (protocol.incentiveApy as any),
+          rewardTokens:
+            protocol.rewardTokens === undefined
+              ? undefined
+              : (protocol.rewardTokens as any),
           rawResponse: JSON.stringify({
             fetchedAt: new Date(),
             source: protocol.name,

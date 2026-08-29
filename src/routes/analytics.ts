@@ -9,6 +9,8 @@ import {
   getStrategyRiskMetrics,
   getPersistedUserRisk,
 } from '../analytics/riskService'
+import { getPortfolioCorrelation } from '../analytics/correlationService'
+import { getYieldBreakdown } from '../analytics/yieldCompositionService'
 import { RiskWindow } from '../analytics/metrics'
 
 const router = Router()
@@ -338,6 +340,73 @@ router.get(
     const window = parsed.data.window as RiskWindow
     const result = await getStrategyRiskMetrics(publishedStrategyId, window)
     return res.status(200).json(result)
+  }
+)
+
+/**
+ * GET /analytics/correlation
+ * Returns the per-protocol APY correlation matrix and a weighted
+ * diversification score for the authenticated user's portfolio.
+ */
+router.get('/correlation', requireAuth, async (req: Request, res: Response) => {
+  const userId = req.auth!.userId
+  const parsed = riskQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    return res
+      .status(400)
+      .json({ error: 'Validation error', details: parsed.error.flatten() })
+  }
+
+  const window = parsed.data.window as RiskWindow
+  const lookbackDays = window === '90d' ? 90 : window === '60d' ? 60 : 30
+
+  const result = await getPortfolioCorrelation(userId, { lookbackDays })
+
+  // Null-on-degenerate: distinguish "genuinely high correlation" from
+  // "not enough data to say" — empty matrix + null score, never 0/1.
+  if (result.protocols.length < 2) {
+    return res.status(200).json({
+      userId,
+      window: parsed.data.window,
+      computed: false,
+      observationCount: result.observationCount,
+      protocols: [],
+      correlation: [],
+      averageCorrelation: null,
+      diversificationScore: null,
+      excluded: result.excluded,
+      caveat: result.caveat,
+    })
+  }
+
+  return res.status(200).json({
+    userId,
+    window: parsed.data.window,
+    computed: true,
+    observationCount: result.observationCount,
+    protocols: result.protocols,
+    correlation: result.correlation,
+    averageCorrelation: result.averageCorrelation,
+    diversificationScore: result.diversificationScore,
+    caveat: result.caveat,
+  })
+})
+
+/**
+ * GET /analytics/yield-breakdown
+ * Returns the base-vs-incentive composition and effective APY for the
+ * authenticated user's held protocols (all protocols when they hold none).
+ */
+router.get(
+  '/yield-breakdown',
+  requireAuth,
+  async (_req: Request, res: Response) => {
+    const userId = _req.auth!.userId
+    const result = await getYieldBreakdown(userId)
+    return res.status(200).json({
+      userId,
+      ...result,
+    })
   }
 )
 

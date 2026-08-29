@@ -5,6 +5,12 @@ import {
   StrategyParams,
   YieldProtocol,
 } from './types'
+import {
+  estimateRebalanceCost,
+  passesPaybackGate,
+  REBALANCE_MAX_PAYBACK_DAYS,
+  FeeSnapshot,
+} from './rebalanceCost'
 import { logger } from '../utils/logger'
 
 /**
@@ -116,12 +122,41 @@ export class MaxYieldStrategy implements RebalanceStrategy {
     }
 
     const rawImprovement = bestProtocol.apy - currentApy
-    const costs = estimateRebalanceCosts(totalAmount, thresholds.maxGasPercent)
-    const netImprovement = rawImprovement - costs.totalCostPercent
+    // #347: replace the stubbed cost with a grounded fee/slippage model. The
+    // payback gate decides "is it worth it" — the move must recoup its modeled
+    // cost within REBALANCE_MAX_PAYBACK_DAYS at the improved rate.
+    const cost = estimateRebalanceCost({
+      fromProtocol: currentProtocol,
+      toProtocol: bestProtocol.name,
+      amount: totalAmount,
+      assetSymbol: bestProtocol.assetSymbol,
+      feeSnapshot:
+        (params.feeSnapshot as FeeSnapshot | null | undefined) ?? null,
+      // Yield-hopping moves the same position between lending protocols (no
+      // cross-asset swap) — so there is no path-simulated price impact. A real
+      // cross-asset path would pass sameAsset:false.
+      sameAsset: true,
+      protocolEntryExitBps: params.protocolEntryExitBps,
+    })
+    const payback = passesPaybackGate(
+      cost,
+      currentApy,
+      bestProtocol.apy,
+      cost.dataConfidence === 'fallback'
+        ? 'low' // fallback already raises the threshold below; don't double-tighten
+        : (params.feeSnapshot?.congestionLevel ?? 'low')
+    )
+    const netImprovement = rawImprovement - cost.totalCostPct
 
-    const shouldRebalance =
-      netImprovement > thresholds.minimumImprovement &&
-      costs.totalCostPercent < thresholds.maxGasPercent
+    // Conservative-by-default: a fallback-confidence decision (fee oracle or
+    // path sim unavailable) requires a HIGHER minimum improvement — never a
+    // lower one. See the #347 acceptance criteria.
+    const effectiveMinimum =
+      cost.dataConfidence === 'fallback'
+        ? thresholds.minimumImprovement * FALLBACK_THRESHOLD_MULTIPLIER
+        : thresholds.minimumImprovement
+
+    const shouldRebalance = netImprovement > effectiveMinimum && payback.allowed
 
     if (shouldRebalance) {
       logger.info('MaxYieldStrategy: rebalance recommended', {
@@ -131,8 +166,11 @@ export class MaxYieldStrategy implements RebalanceStrategy {
         bestApy: bestProtocol.apy,
         rawImprovement: rawImprovement.toFixed(2),
         netImprovement: netImprovement.toFixed(2),
-        gasCost: costs.gasFeePercent.toFixed(4),
-        slippage: costs.slippagePercent.toFixed(4),
+        networkFeePercent: cost.networkFeePctOfAmount.toFixed(4),
+        priceImpactBps: cost.priceImpactBps,
+        totalCostPercent: cost.totalCostPct.toFixed(4),
+        paybackDays: payback.paybackDays,
+        dataConfidence: cost.dataConfidence,
       })
     }
 
@@ -140,8 +178,10 @@ export class MaxYieldStrategy implements RebalanceStrategy {
       shouldRebalance,
       targetProtocol: shouldRebalance ? bestProtocol.name : currentProtocol,
       reasoning: shouldRebalance
-        ? `Moving from ${currentProtocol} (${currentApy.toFixed(2)}%) to ${bestProtocol.name} (${bestProtocol.apy.toFixed(2)}%) — net gain ${netImprovement.toFixed(2)}% after gas/slippage`
-        : `Net improvement ${netImprovement.toFixed(2)}% below threshold ${thresholds.minimumImprovement}%`,
+        ? `Moving from ${currentProtocol} (${currentApy.toFixed(2)}%) to ${bestProtocol.name} (${bestProtocol.apy.toFixed(2)}%) — net gain ${netImprovement.toFixed(2)}% after fees, pays back in ${payback.paybackDays.toFixed(1)} days`
+        : `Net improvement ${netImprovement.toFixed(2)}% below threshold ${effectiveMinimum}%${
+            !payback.allowed ? ` (payback ${payback.reason})` : ''
+          }`,
       deviationTrigger: shouldRebalance
         ? `APY delta: ${rawImprovement.toFixed(2)}%`
         : undefined,
@@ -151,13 +191,23 @@ export class MaxYieldStrategy implements RebalanceStrategy {
         bestProtocol: bestProtocol.name,
         rawImprovement,
         netImprovement,
-        gasFeePercent: costs.gasFeePercent,
-        slippagePercent: costs.slippagePercent,
-        totalCostPercent: costs.totalCostPercent,
+        costBreakdown: cost.breakdown,
+        dataConfidence: cost.dataConfidence,
+        fallbackReasons: cost.fallbackReasons,
+        paybackDays: payback.paybackDays,
+        paybackAllowed: payback.allowed,
+        paybackReason: payback.reason,
       },
     }
   }
 }
+
+/**
+ * When the cost model had to fall back to constants (no fee oracle / no path
+ * sim), the minimum net improvement is RAISED by this factor so a blind
+ * decision is more conservative, never less. See #347 acceptance criteria.
+ */
+const FALLBACK_THRESHOLD_MULTIPLIER = 2
 
 export class TargetAllocationStrategy implements RebalanceStrategy {
   readonly name: StrategyName = 'TARGET_ALLOCATION'

@@ -126,6 +126,11 @@ A user may set an opt-in `riskCeiling` (stored in `User.strategyConfig.riskCeili
 `MaxYieldStrategy` and `TargetAllocationStrategy` **before** any yield/allocation
 optimization.
 
+The ceiling limits *which* protocols are eligible; the complementary
+**exposure caps** (#346, see
+[`REBALANCE_EXPOSURE_COST.md`](REBALANCE_EXPOSURE_COST.md)) limit *how much* of
+the portfolio any eligible protocol may hold.
+
 Two guarantees hold, and both are covered by tests:
 
 1. **Backward compatible / opt-in.** When `riskCeiling` is `undefined`, the
