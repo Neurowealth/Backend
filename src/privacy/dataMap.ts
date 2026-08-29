@@ -8,4 +8,4 @@ export const erasurePolicies = {
   ReferralConversion: 'ANONYMIZE',
   AuditBlock: 'IMMUTABLE',
   OutboxOp: 'IMMUTABLE',
-};
+}
