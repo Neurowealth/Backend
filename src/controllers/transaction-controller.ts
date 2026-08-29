@@ -237,20 +237,6 @@ export interface ExecuteWithdrawParams {
   protocolName?: string
   memo?: string
   actingAsUserId?: string | null
-}
-
-export interface ExecuteWithdrawResult {
-  transaction: Transaction
-  status: 'CONFIRMED' | 'FAILED'
-}
-
-/**
- * Core withdraw logic, extracted from the WITHDRAWAL branch of
- * processOnChainTransaction so it has a callable service-layer entry point
- * (the deposit side already had one via executeDeposit). Used by the HTTP
- * route below and by the assistant's withdraw tool
- * (src/agent/tools/actionTools.ts) — the assistant must go through the exact
- * same idempotent/audited path as every other caller, never a bespoke one.
   // See ExecuteDepositParams.skipApprovalGuard.
   skipApprovalGuard?: boolean
   // #317 — SPECIFIC_ID lot selection, WITHDRAWAL only. Persisted so the
@@ -263,6 +249,15 @@ export interface ExecuteWithdrawResult {
   status: 'CONFIRMED' | 'FAILED' | 'PENDING_APPROVAL'
   approvalRequestId?: string
 }
+
+/**
+ * Core withdraw logic, extracted from the WITHDRAWAL branch of
+ * processOnChainTransaction so it has a callable service-layer entry point
+ * (the deposit side already had one via executeDeposit). Used by the HTTP
+ * route below and by the assistant's withdraw tool
+ * (src/agent/tools/actionTools.ts) — the assistant must go through the exact
+ * same idempotent/audited path as every other caller, never a bespoke one.
+ */
 
 /**
  * Core withdrawal logic, mirroring executeDeposit. Extracted so both the
@@ -410,8 +405,6 @@ export async function processOnChainTransaction(
       actingAsUserId,
       selectedLotIds,
     })
-    const transaction = result.transaction
-
 
     if (result.status === 'PENDING_APPROVAL') {
       return res.status(202).json({

@@ -90,7 +90,7 @@ export const depositTool = defineTool({
       actingAsUserId: ctx.actingAsUserId ?? null,
     })
 
-    if (result.status !== 'CONFIRMED') {
+    if (result.status !== 'CONFIRMED' || !result.transaction) {
       return {
         ok: false,
         error: 'The deposit could not be confirmed. Please try again.',
@@ -170,7 +170,7 @@ export const withdrawTool = defineTool({
       actingAsUserId: ctx.actingAsUserId ?? null,
     })
 
-    if (result.status !== 'CONFIRMED') {
+    if (result.status !== 'CONFIRMED' || !result.transaction) {
       return {
         ok: false,
         error: 'The withdrawal could not be confirmed. Please try again.',

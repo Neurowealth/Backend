@@ -629,6 +629,8 @@ export const config = {
      */
     largeWithdrawalPortfolioFraction: parseFloat(
       process.env.ASSISTANT_LARGE_WITHDRAWAL_FRACTION || '0.5'
+    ),
+  },
   approvals: {
     expirySweepIntervalMs: parseInt(
       process.env.APPROVAL_EXPIRY_SWEEP_INTERVAL_MS || '60000'
