@@ -54,7 +54,7 @@ export type OutboxPayload =
       amount: number
       assetSymbol: string
       conversionId: string
-      leg: 'owner' | 'referred'
+      leg: 'owner' | 'referred' | 'tier2'
     }
 
 export interface OutboxOpRecord {
