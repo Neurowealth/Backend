@@ -12,12 +12,140 @@ import {
 import { getPortfolioCorrelation } from '../analytics/correlationService'
 import { getYieldBreakdown } from '../analytics/yieldCompositionService'
 import { RiskWindow } from '../analytics/metrics'
+import { toCsv, CsvValue } from '../utils/csv'
 
 const router = Router()
 
 const periodSchema = z.object({
   period: z.enum(['7d', '30d', '90d']).default('30d'),
 })
+
+const exportFormatSchema = z.object({
+  format: z.enum(['csv']).default('csv'),
+})
+
+/**
+ * CSV export headers/rows for /user-yield (#405). One row per yield
+ * snapshot point, with the period-level totals repeated on every row so the
+ * file stays self-describing once it leaves the API (pasted into a sheet,
+ * handed to an accountant).
+ */
+const USER_YIELD_CSV_HEADERS = [
+  'userId',
+  'period',
+  'totalYield',
+  'periodYield',
+  'averageApy',
+  'date',
+  'yieldAmount',
+  'apy',
+]
+
+function userYieldToCsvRows(data: {
+  userId: string
+  period: string
+  totalYield: number
+  periodYield: number
+  averageApy: number
+  points: { date: string; yieldAmount: number; apy: number }[]
+}): CsvValue[][] {
+  if (data.points.length === 0) {
+    return [
+      [
+        data.userId,
+        data.period,
+        data.totalYield,
+        data.periodYield,
+        data.averageApy,
+        null,
+        null,
+        null,
+      ],
+    ]
+  }
+
+  return data.points.map((p) => [
+    data.userId,
+    data.period,
+    data.totalYield,
+    data.periodYield,
+    data.averageApy,
+    p.date,
+    p.yieldAmount,
+    p.apy,
+  ])
+}
+
+/**
+ * CSV export headers/rows for /attribution (#405). One row per sector, with
+ * the portfolio-level attribution figures repeated on every row. When the
+ * attribution hasn't been computed yet, a single row records that.
+ */
+const ATTRIBUTION_CSV_HEADERS = [
+  'userId',
+  'window',
+  'computed',
+  'portfolioReturn',
+  'benchmarkReturn',
+  'vsBenchmark',
+  'allocationEffect',
+  'selectionEffect',
+  'unattributedEffect',
+  'reconciliationGap',
+  'reconciled',
+  'benchmarkVersion',
+  'computedAt',
+  'sector',
+  'sectorPortfolioWeight',
+  'sectorBenchmarkWeight',
+  'sectorPortfolioReturn',
+  'sectorBenchmarkReturn',
+  'sectorAllocationEffect',
+  'sectorSelectionEffect',
+]
+
+type AttributionResponse = ReturnType<typeof mapPortfolioAttributionToResponse>
+
+function attributionToCsvRows(
+  userId: string,
+  window: string,
+  attribution: AttributionResponse | null
+): CsvValue[][] {
+  if (!attribution) {
+    return [[userId, window, false, ...Array(17).fill(null)]]
+  }
+
+  const base = [
+    userId,
+    window,
+    true,
+    attribution.portfolioReturn,
+    attribution.benchmarkReturn,
+    attribution.vsBenchmark,
+    attribution.allocationEffect,
+    attribution.selectionEffect,
+    attribution.unattributedEffect,
+    attribution.reconciliationGap,
+    attribution.reconciled,
+    attribution.benchmarkVersion,
+    attribution.computedAt,
+  ]
+
+  if (attribution.sectors.length === 0) {
+    return [[...base, null, null, null, null, null, null, null]]
+  }
+
+  return attribution.sectors.map((sector) => [
+    ...base,
+    sector.sector,
+    sector.portfolioWeight,
+    sector.benchmarkWeight,
+    sector.portfolioReturn,
+    sector.benchmarkReturn,
+    sector.allocationEffect,
+    sector.selectionEffect,
+  ])
+}
 
 function periodToDays(period: string): number {
   return period === '7d' ? 7 : period === '30d' ? 30 : 90
@@ -131,6 +259,85 @@ router.get('/user-yield', requireAuth, async (req: Request, res: Response) => {
 })
 
 /**
+ * GET /analytics/user-yield/export
+ * CSV export of the same data as /user-yield (#405). Registered before
+ * /user-yield so "export" is never captured as anything else.
+ */
+router.get(
+  '/user-yield/export',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+    const period = periodSchema.safeParse(req.query)
+    const format = exportFormatSchema.safeParse(req.query)
+    if (!period.success || !format.success) {
+      return res.status(400).json({
+        error: 'Validation error',
+        details: {
+          ...(period.success ? {} : period.error.flatten()),
+          ...(format.success ? {} : format.error.flatten()),
+        },
+      })
+    }
+
+    const fromDate = new Date(
+      Date.now() - periodToDays(period.data.period) * 86400_000
+    )
+
+    const [positions, snapshots] = await Promise.all([
+      db.position.findMany({
+        where: { userId },
+        select: { yieldEarned: true, assetSymbol: true },
+      }),
+      db.yieldSnapshot.findMany({
+        where: { position: { userId }, snapshotAt: { gte: fromDate } },
+        orderBy: { snapshotAt: 'asc' },
+        select: { snapshotAt: true, yieldAmount: true, apy: true },
+      }),
+    ])
+
+    const totalYield = positions.reduce(
+      (sum, p) => sum + Number(p.yieldEarned),
+      0
+    )
+    const periodYield = snapshots.reduce(
+      (sum, s) => sum + Number(s.yieldAmount),
+      0
+    )
+    const averageApy =
+      snapshots.length > 0
+        ? snapshots.reduce((sum, s) => sum + Number(s.apy), 0) /
+          snapshots.length
+        : 0
+
+    const points = snapshots.map((s) => ({
+      date: s.snapshotAt.toISOString().slice(0, 10),
+      yieldAmount: Number(s.yieldAmount),
+      apy: Number(s.apy),
+    }))
+
+    const csv = toCsv(
+      USER_YIELD_CSV_HEADERS,
+      userYieldToCsvRows({
+        userId,
+        period: period.data.period,
+        totalYield,
+        periodYield,
+        averageApy,
+        points,
+      })
+    )
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="user-yield-${period.data.period}.csv"`
+    )
+    return res.status(200).send(csv)
+  }
+)
+
+/**
  * GET /analytics/protocol-performance
  * Returns historical APY rates per protocol (graph-ready).
  */
@@ -224,6 +431,51 @@ router.get('/attribution', requireAuth, async (req: Request, res: Response) => {
     ...mapPortfolioAttributionToResponse(row),
   })
 })
+
+/**
+ * GET /analytics/attribution/export
+ * CSV export of the same data as /attribution (#405). Registered before
+ * /attribution so "export" is never captured as a value in a future
+ * /attribution/:something route.
+ */
+router.get(
+  '/attribution/export',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+    const query = attributionQuerySchema.safeParse(req.query)
+    const format = exportFormatSchema.safeParse(req.query)
+    if (!query.success || !format.success) {
+      return res.status(400).json({
+        error: 'Validation error',
+        details: {
+          ...(query.success ? {} : query.error.flatten()),
+          ...(format.success ? {} : format.error.flatten()),
+        },
+      })
+    }
+
+    const windowDays = attributionWindowToDays(query.data.window)
+
+    const row = await db.portfolioAttribution.findUnique({
+      where: { userId_windowDays: { userId, windowDays } },
+    })
+
+    const attribution = row ? mapPortfolioAttributionToResponse(row) : null
+
+    const csv = toCsv(
+      ATTRIBUTION_CSV_HEADERS,
+      attributionToCsvRows(userId, query.data.window, attribution)
+    )
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="attribution-${query.data.window}.csv"`
+    )
+    return res.status(200).send(csv)
+  }
+)
 
 /**
  * GET /analytics/risk
