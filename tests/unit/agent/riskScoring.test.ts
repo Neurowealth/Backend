@@ -4,6 +4,7 @@ import {
   computeTvlTrendFactor,
   computeAgeFactor,
   filterToWindow,
+  applyEmissionsPenalty,
   RateSample,
   MIN_SAMPLES_FOR_HISTORY,
   TRAILING_WINDOW_DAYS,
@@ -226,5 +227,36 @@ describe('computeRiskScore', () => {
     const a = computeRiskScore('Blend', samples, NOW)
     const b = computeRiskScore('Blend', samples, NOW)
     expect(a).toEqual(b)
+  })
+})
+
+describe('applyEmissionsPenalty (#349)', () => {
+  it('is a no-op for low or unknown incentive share', () => {
+    expect(applyEmissionsPenalty(70, null)).toBe(70)
+    expect(applyEmissionsPenalty(70, undefined)).toBe(70)
+    expect(applyEmissionsPenalty(70, 0)).toBe(70)
+    expect(applyEmissionsPenalty(70, 0.4)).toBe(70) // exactly at the low threshold
+  })
+
+  it('subtracts a penalty that scales with incentive share and saturates', () => {
+    // 0.6 → halfway between 0.4 and 0.8 → half of max (8) → −4.
+    expect(applyEmissionsPenalty(70, 0.6)).toBe(66)
+    // 0.9 → past the high threshold → full max penalty (8).
+    expect(applyEmissionsPenalty(70, 0.9)).toBe(62)
+  })
+
+  it('never pushes the score below 0', () => {
+    expect(applyEmissionsPenalty(2, 0.9)).toBe(0)
+  })
+
+  it('flows through computeRiskScore when an incentive share is supplied', () => {
+    const samples = [
+      sample(10, 5.0, 1_000_000),
+      sample(5, 5.1, 1_050_000),
+      sample(1, 4.9, 1_100_000),
+    ]
+    const without = computeRiskScore('Blend', samples, NOW)
+    const heavy = computeRiskScore('Blend', samples, NOW, 0.9) // incentive-heavy
+    expect(heavy.score).toBeLessThan(without.score)
   })
 })

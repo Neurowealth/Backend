@@ -26,6 +26,9 @@ enum TransactionType {
   // activity so it is auditable and, for tax purposes (#284), identifiable as
   // realized income rather than a return on the user's own capital.
   REFERRAL_REWARD
+  // #340: Inbound transfers and claimable balance claims
+  INBOUND_TRANSFER
+  CLAIMABLE_BALANCE_CLAIM
 }
 
 enum TransactionStatus {
@@ -75,6 +78,8 @@ enum OutboxOpKind {
   RECURRING_DEPOSIT
   REFERRAL_REWARD
   YIELD_CLAIM
+  // #341: Treasury sweep operations
+  TREASURY_SWEEP
 }
 
 enum OutboxOpActor {
@@ -500,6 +505,13 @@ model ProtocolRate {
   tvl          Decimal? @db.Decimal(36, 2)
   network      Network
   rawResponse  String?
+
+  // #349: yield composition — base (market) rate vs incentive (token-reward)
+  // rate, plus the reward-token metadata the adapter returned.
+  baseApy       Decimal? @db.Decimal(10, 6)
+  incentiveApy  Decimal? @db.Decimal(10, 6)
+  rewardTokens  Json?
+
   fetchedAt    DateTime @default(now())
 
   @@unique([protocolName, assetSymbol, network, fetchedAt])
@@ -1669,4 +1681,123 @@ model TravelRuleRecord {
   @@index([transactionId])
   @@index([status])
   @@map("travel_rule_records")
+}
+
+// --- Issue #338: Path-Payment DEX Auto-Routing ---
+model AssetConversion {
+  id                String   @id @default(uuid())
+  transactionId     String?  @unique
+  sourceAsset       String
+  sourceAmount      Decimal  @db.Decimal(36, 18)
+  destAsset         String
+  destAmount        Decimal  @db.Decimal(36, 18)
+  quotedDestAmount  Decimal  @db.Decimal(36, 18)
+  realizedSlippageBps Int
+  path              Json     // asset ids, for audit
+  rpcSource         String
+  createdAt         DateTime @default(now())
+
+  @@index([transactionId])
+  @@map("asset_conversions")
+}
+
+// --- Issue #340: Claimable-Balance & Unmatched-Inbound Ingestion ---
+model InboundOperation {
+  id             String   @id @default(uuid())
+  account        String
+  txHash         String
+  operationIndex Int
+  amount         Decimal  @db.Decimal(36, 18)
+  asset          String
+  isProcessed    Boolean  @default(false)
+  processedAt    DateTime?
+  createdAt      DateTime @default(now())
+
+  @@unique([txHash, operationIndex])
+  @@index([account])
+  @@index([isProcessed])
+  @@map("inbound_operations")
+}
+
+model InboundCursor {
+  id        String   @id @default(uuid())
+  account   String   @unique
+  lastLedger Int
+  updatedAt DateTime @updatedAt
+
+  @@map("inbound_cursors")
+}
+
+// --- Issue #341: Split-Custody Treasury ---
+enum TreasuryTier {
+  HOT
+  WARM
+  COLD
+}
+
+model TreasuryAccount {
+  id             String       @id @default(uuid())
+  tier           TreasuryTier
+  publicKey      String       @unique
+  signerScheme   String       // "1-of-1" | "2-of-3" | "3-of-5"
+  targetLowXlm   Decimal      @db.Decimal(36, 18)
+  targetHighXlm  Decimal      @db.Decimal(36, 18)
+  assetPolicy    Json         // per-asset low/high bands
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+
+  @@index([tier])
+  @@index([isActive])
+  @@map("treasury_accounts")
+}
+
+model TreasurySweep {
+  id           String       @id @default(uuid())
+  fromTier     TreasuryTier
+  toTier       TreasuryTier
+  asset        String
+  amount       Decimal      @db.Decimal(36, 18)
+  outboxOpId   String?
+  status       String       // PLANNED | SUBMITTED | CONFIRMED | FAILED
+  reason       String       // "hot_over_high_band" | "warm_under_low_band" | "manual"
+  createdAt    DateTime     @default(now())
+  confirmedAt  DateTime?
+
+  @@index([status])
+  @@index([fromTier])
+  @@index([toTier])
+  @@map("treasury_sweeps")
+}
+
+model MultisigEnvelope {
+  id           String   @id @default(uuid())
+  sweepId      String?
+  publicKey    String
+  threshold    Int
+  signatures   Json     // collected signatures
+  status       String   // PENDING | COLLECTING | READY | EXPIRED
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([status])
+  @@index([expiresAt])
+  @@map("multisig_envelopes")
+}
+
+// --- Issue #350: Liquidity Risk & Time-to-Exit Estimation ---
+model ProtocolLiquiditySnapshot {
+  id                   String   @id @default(uuid())
+  protocolName         String
+  assetSymbol          String
+  poolTvl              Decimal  @db.Decimal(36, 18)
+  availableLiquidity    Decimal  @db.Decimal(36, 18)
+  dailyVolume          Decimal  @db.Decimal(36, 18)
+  withdrawalQueueDepth  Int?
+  depthCurve           Json     // [{ sizeUsd, priceImpactBps }]
+  fetchedAt            DateTime @default(now())
+
+  @@unique([protocolName, assetSymbol, fetchedAt])
+  @@index([protocolName, assetSymbol])
+  @@index([fetchedAt])
+  @@map("protocol_liquidity_snapshots")
 }

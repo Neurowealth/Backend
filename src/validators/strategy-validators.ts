@@ -57,8 +57,36 @@ export const strategyLabelSchema = z
   })
 
 /**
+ * A per-protocol exposure cap override (#346): a maxFraction in (0,1] and/or a
+ * non-negative maxAbsolute. Validated here so a malformed cap set is rejected at
+ * write time with a named issue rather than wedging the agent loop later.
+ */
+const exposureCapOverrideSchema = z
+  .object({
+    maxFraction: z
+      .number()
+      .finite()
+      .gt(0, 'maxFraction must be greater than 0')
+      .lte(1, 'maxFraction must be at most 1')
+      .optional(),
+    maxAbsolute: z
+      .union([
+        z.number().finite().nonnegative(),
+        z
+          .string()
+          .regex(/^\d+(\.\d+)?$/, 'maxAbsolute must be a non-negative number'),
+      ])
+      .optional(),
+  })
+  .refine((v) => v.maxFraction !== undefined || v.maxAbsolute !== undefined, {
+    message: 'each exposure cap must define maxFraction and/or maxAbsolute',
+  })
+
+/**
  * The exact three keys the agent loop reads. Nothing else is copied to a
  * follower — notably `riskTolerance`, which stays personal to each user.
+ * `exposureCaps` and `defaultMaxFraction` (#346) are per-user risk controls and
+ * ARE copied under the tighten-only rule, so a valid cap set is required here.
  */
 export const publishableConfigSchema = z
   .object({
@@ -67,6 +95,15 @@ export const publishableConfigSchema = z
       .record(z.string().min(1).max(100), z.number().finite().min(0).max(100))
       .optional(),
     riskCeiling: z.number().int().min(0).max(100).optional(),
+    defaultMaxFraction: z
+      .number()
+      .finite()
+      .gt(0, 'defaultMaxFraction must be greater than 0')
+      .lte(1, 'defaultMaxFraction must be at most 1')
+      .optional(),
+    exposureCaps: z
+      .record(z.string().min(1).max(100), exposureCapOverrideSchema)
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if (data.strategyName === 'TARGET_ALLOCATION') {

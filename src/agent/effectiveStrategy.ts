@@ -41,12 +41,21 @@ export interface StrategyConfigShape {
   strategyName?: StrategyName | null
   targetAllocations?: Record<string, number>
   riskCeiling?: number
+  /**
+   * Per-protocol exposure caps (#346). Pure data parsed from Json; validation
+   * of values happens at the write-site validator (see
+   * validateExposureCapConfig), this just coerces the shape safely.
+   */
+  exposureCaps?: Record<string, { maxFraction?: number; maxAbsolute?: string }>
+  defaultMaxFraction?: number
 }
 
 export interface EffectiveStrategyConfig {
   strategyName: StrategyName | null
   targetAllocations?: Record<string, number>
   riskCeiling?: number
+  exposureCaps?: Record<string, { maxFraction?: number; maxAbsolute?: string }>
+  defaultMaxFraction?: number
 }
 
 const KNOWN_STRATEGY_NAMES: readonly StrategyName[] = [
@@ -106,6 +115,40 @@ export function parseStrategyConfig(value: unknown): StrategyConfigShape {
     config.riskCeiling = raw.riskCeiling
   }
 
+  if (
+    typeof raw.defaultMaxFraction === 'number' &&
+    Number.isFinite(raw.defaultMaxFraction)
+  ) {
+    config.defaultMaxFraction = raw.defaultMaxFraction
+  }
+
+  if (
+    typeof raw.exposureCaps === 'object' &&
+    raw.exposureCaps !== null &&
+    !Array.isArray(raw.exposureCaps)
+  ) {
+    const caps: NonNullable<StrategyConfigShape['exposureCaps']> = {}
+    for (const [protocol, value] of Object.entries(
+      raw.exposureCaps as Record<string, unknown>
+    )) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        continue
+      }
+      const o = value as Record<string, unknown>
+      const entry: { maxFraction?: number; maxAbsolute?: string } = {}
+      if (typeof o.maxFraction === 'number' && Number.isFinite(o.maxFraction)) {
+        entry.maxFraction = o.maxFraction
+      }
+      if (typeof o.maxAbsolute === 'string') {
+        entry.maxAbsolute = o.maxAbsolute
+      }
+      caps[protocol] = entry
+    }
+    if (Object.keys(caps).length > 0) {
+      config.exposureCaps = caps
+    }
+  }
+
   return config
 }
 
@@ -124,6 +167,63 @@ export function stricterRiskCeiling(
 }
 
 /**
+ * The stricter of two optional per-protocol exposure caps (#346). Lower fraction
+ * is stricter (holds less in one protocol), so the tighter of the two wins —
+ * a follow can only ever tighten a follower's concentration, mirroring the
+ * risk-ceiling invariant.
+ */
+function stricterExposureCaps(
+  own: StrategyConfigShape['exposureCaps'],
+  followed: StrategyConfigShape['exposureCaps']
+): StrategyConfigShape['exposureCaps'] {
+  if (!followed) return own
+  if (!own) return followed
+  const out: NonNullable<StrategyConfigShape['exposureCaps']> = {}
+  const protocols = new Set([...Object.keys(own), ...Object.keys(followed)])
+  for (const p of protocols) {
+    const a = own[p]?.maxFraction
+    const b = followed[p]?.maxFraction
+    const absA = own[p]?.maxAbsolute
+    const absB = followed[p]?.maxAbsolute
+    const entry: { maxFraction?: number; maxAbsolute?: string } = {}
+    // Stricter fraction = lower; if only one side defines it, that one wins
+    // only if the other is absent (a follow may tighten, not loosen).
+    if (a !== undefined && b !== undefined) {
+      entry.maxFraction = Math.min(a, b)
+    } else if (a !== undefined) {
+      entry.maxFraction = a
+    } else if (b !== undefined) {
+      entry.maxFraction = b
+    }
+    // Absolute: the lower bound wins when both present.
+    if (absA !== undefined && absB !== undefined) {
+      entry.maxAbsolute = Number(absA) <= Number(absB) ? absA : absB
+    } else if (absA !== undefined) {
+      entry.maxAbsolute = absA
+    } else if (absB !== undefined) {
+      entry.maxAbsolute = absB
+    }
+    if (entry.maxFraction !== undefined || entry.maxAbsolute !== undefined) {
+      out[p] = entry
+    }
+  }
+  return out
+}
+
+/**
+ * The stricter of two defaultMaxFraction values (#346). Lower caps more, so
+ * the lower wins. Absent (undefined) means no default, losing to any present.
+ */
+function stricterDefaultMaxFraction(
+  a: number | undefined,
+  b: number | undefined
+): number | undefined {
+  if (a === undefined) return b
+  if (b === undefined) return a
+  return Math.min(a, b)
+}
+
+/**
  * Merge a follower's own config with the config they follow.
  *
  * With no follow this is the identity on `own` (see the no-follow contract in
@@ -131,7 +231,8 @@ export function stricterRiskCeiling(
  * its allocations WHOLESALE rather than key-by-key: pairing the publisher's
  * strategy with the follower's leftover allocations would produce a
  * configuration neither party chose. `riskCeiling` is the deliberate exception
- * — it clamps to the stricter of the two.
+ * — it clamps to the stricter of the two. `exposureCaps`/`defaultMaxFraction`
+ * (#346) follow the same tighten-only rule as `riskCeiling`.
  */
 export function resolveEffectiveConfig(
   own: StrategyConfigShape,
@@ -142,6 +243,8 @@ export function resolveEffectiveConfig(
       strategyName: own.strategyName ?? null,
       targetAllocations: own.targetAllocations,
       riskCeiling: own.riskCeiling,
+      exposureCaps: own.exposureCaps,
+      defaultMaxFraction: own.defaultMaxFraction,
     }
   }
 
@@ -153,6 +256,11 @@ export function resolveEffectiveConfig(
       ? followed.targetAllocations
       : (followed.targetAllocations ?? own.targetAllocations),
     riskCeiling: stricterRiskCeiling(own.riskCeiling, followed.riskCeiling),
+    exposureCaps: stricterExposureCaps(own.exposureCaps, followed.exposureCaps),
+    defaultMaxFraction: stricterDefaultMaxFraction(
+      own.defaultMaxFraction,
+      followed.defaultMaxFraction
+    ),
   }
 }
 
@@ -173,10 +281,22 @@ export function normalizeStrategyConfig(config: StrategyConfigShape): string {
         .join(',')
     : ''
 
+  const caps = config.exposureCaps
+    ? Object.keys(config.exposureCaps)
+        .sort()
+        .map((k) => {
+          const c = config.exposureCaps![k]
+          return `${k}=${c.maxFraction ?? ''}/${c.maxAbsolute ?? ''}`
+        })
+        .join(',')
+    : ''
+
   return JSON.stringify({
     strategyName: config.strategyName ?? null,
     targetAllocations: allocations,
     riskCeiling: config.riskCeiling ?? null,
+    defaultMaxFraction: config.defaultMaxFraction ?? null,
+    exposureCaps: caps,
   })
 }
 

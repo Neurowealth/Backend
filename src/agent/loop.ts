@@ -147,6 +147,8 @@ async function rebalanceCheckJob(): Promise<void> {
           targetAllocations:
             user.strategyConfig?.targetAllocations || undefined,
           riskCeiling: user.strategyConfig?.riskCeiling,
+          exposureCaps: user.strategyConfig?.exposureCaps,
+          defaultMaxFraction: user.strategyConfig?.defaultMaxFraction,
         }
         const follow = followsByUser.get(pos.userId)
         effectiveByUser.set(pos.userId, {
@@ -215,6 +217,12 @@ async function rebalanceCheckJob(): Promise<void> {
                 // Under a follow this is already clamped to the STRICTER of
                 // publisher and follower — see resolveEffectiveConfig.
                 riskCeiling: config.riskCeiling,
+                // Exposure caps (#346): per-protocol overrides + user default
+                // fraction, resolved (tighten-only under a follow) by
+                // resolveEffectiveConfig. Absent for users who never configured
+                // them.
+                exposureCaps: config.exposureCaps,
+                defaultMaxFraction: config.defaultMaxFraction,
                 followedStrategyId: follow?.followedStrategyId ?? undefined,
               }
             })
