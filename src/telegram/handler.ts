@@ -29,9 +29,6 @@ import {
   listAlertRulesForWallet,
   deleteAlertRuleForWallet,
 } from './alertManager'
-// Affirmative/negative/summarize semantics live in ONE place, shared with the
-// WhatsApp handler, so both channels read "yes"/"no" identically.
-import { isAffirmative, isNegative, summarizeIntent } from '../whatsapp/handler'
 import {
   formatAlertCreatedReply,
   formatAlertListReply,
@@ -60,6 +57,38 @@ const FINANCIAL_ACTIONS: ReadonlySet<Intent['action']> = new Set([
 
 function isFinancialIntent(intent: Intent): boolean {
   return FINANCIAL_ACTIONS.has(intent.action)
+}
+
+// The affirmative/negative/summarize semantics below are mirrored VERBATIM
+// from src/whatsapp/handler.ts — keep them identical so both channels read
+// "yes"/"no" the same way (duplicated deliberately, not imported, to keep the
+// Telegram import graph lean of the WhatsApp transport stack).
+/** Affirmative reply to a pending confirmation ("yes", "confirm", "yeah"…). */
+function isAffirmative(message: string): boolean {
+  return /^\s*(yes|yep|yeah|yup|confirm|confirmed|ok|okay|sure|correct|do it|go ahead|proceed|y)\s*[.!]*\s*$/i.test(
+    message
+  )
+}
+
+/** Negative reply to a pending confirmation ("no", "cancel", "stop"…). */
+function isNegative(message: string): boolean {
+  return /^\s*(no|nope|nah|cancel|stop|abort|don'?t|never mind|nevermind|n)\s*[.!]*\s*$/i.test(
+    message
+  )
+}
+
+/** Human-readable echo of a financial intent for the confirmation prompt. */
+function summarizeIntent(intent: Intent): string {
+  switch (intent.action) {
+    case 'deposit':
+      return `deposit ${intent.amount ?? ''}`.trim()
+    case 'withdraw':
+      return intent.all
+        ? 'withdraw all'
+        : `withdraw ${intent.amount ?? ''}`.trim()
+    default:
+      return intent.action
+  }
 }
 
 /**
