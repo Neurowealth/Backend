@@ -29,6 +29,7 @@ import {
 } from './types'
 import { MoonPayProvider } from './providers/moonpay'
 import { SandboxProvider } from './providers/sandbox'
+import { TransakProvider } from './providers/transak'
 
 const registry = new Map<string, FiatRampProvider>()
 
@@ -180,6 +181,11 @@ const sandboxEnabled =
 if (sandboxEnabled) {
   register(new SandboxProvider())
 }
+
+// Second live vendor (#399) — registered unconditionally so orders can fail
+// over to it whenever the default provider is unhealthy, just like any other
+// healthy provider in the registry.
+register(new TransakProvider())
 
 /** The provider key used for newly created orders absent any other signal. */
 export function defaultProviderName(): string {
