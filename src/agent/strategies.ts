@@ -4,6 +4,7 @@ import {
   StrategyDecision,
   StrategyParams,
   YieldProtocol,
+  RankedCandidate,
 } from './types'
 import {
   estimateRebalanceCost,
@@ -46,6 +47,72 @@ export function applyRiskCeiling(
   })
 }
 
+/**
+ * Build the ranked candidate list for the rationale ledger (#343). Order is the
+ * priority order the strategy already used — highest-ranked first. Every
+ * non-chosen candidate carries a rejection reason: `over_risk_ceiling` when a
+ * ceiling excluded it, `risk_score_unknown` when fail-closed excluded it, or
+ * the caller's `lowerReason` (e.g. 'lower_apy' / 'lower_target_weight') when it
+ * simply lost to the winner.
+ */
+export function rankCandidates(
+  ordered: YieldProtocol[],
+  params: {
+    riskCeiling?: number
+    protocolRiskScores?: Record<string, number>
+    chosenProtocol: string | null
+    lowerReason: string
+  }
+): RankedCandidate[] {
+  const ceiling = params.riskCeiling
+
+  // Backward-compatibility: when ceiling is undefined, scores are ignored
+  // entirely so a user who never sets a ceiling sees byte-for-byte identical
+  // behaviour (see comment on applyRiskCeiling and the no-op test).
+  if (ceiling === undefined) {
+    return ordered.map((p) => {
+      const winner =
+        params.chosenProtocol !== null && p.name === params.chosenProtocol
+      return {
+        protocol: p.name,
+        apy: Number.isFinite(p.apy) ? p.apy : null,
+        riskScore: null,
+        eligible: true,
+        rejectionReason: winner ? null : params.lowerReason,
+      }
+    })
+  }
+
+  const scoreMap = params.protocolRiskScores ?? {}
+
+  return ordered.map((p) => {
+    const score = scoreMap[p.name]
+    const knownScore = score !== undefined
+    const passes = knownScore && score >= ceiling
+    const winner =
+      params.chosenProtocol !== null && p.name === params.chosenProtocol
+
+    let rejectionReason: string | null = null
+    if (!winner) {
+      if (!knownScore) {
+        rejectionReason = 'risk_score_unknown'
+      } else if (!passes) {
+        rejectionReason = 'over_risk_ceiling'
+      } else {
+        rejectionReason = params.lowerReason
+      }
+    }
+
+    return {
+      protocol: p.name,
+      apy: Number.isFinite(p.apy) ? p.apy : null,
+      riskScore: knownScore ? score : null,
+      eligible: passes,
+      rejectionReason,
+    }
+  })
+}
+
 function estimateRebalanceCosts(
   amount: string,
   maxGasPercent: number
@@ -85,6 +152,7 @@ export class MaxYieldStrategy implements RebalanceStrategy {
         shouldRebalance: false,
         targetProtocol: currentProtocol,
         reasoning: 'No protocols available for comparison',
+        blockedReason: 'no_candidates',
       }
     }
 
@@ -105,7 +173,14 @@ export class MaxYieldStrategy implements RebalanceStrategy {
         shouldRebalance: false,
         targetProtocol: currentProtocol,
         reasoning: NO_ELIGIBLE_PROTOCOLS_REASON,
+        blockedReason: 'risk_ceiling',
         details: { riskCeiling, eligibleCount: 0 },
+        candidates: rankCandidates(availableProtocols, {
+          riskCeiling,
+          protocolRiskScores,
+          chosenProtocol: null,
+          lowerReason: 'lower_apy',
+        }),
       }
     }
 
@@ -118,6 +193,12 @@ export class MaxYieldStrategy implements RebalanceStrategy {
         shouldRebalance: false,
         targetProtocol: currentProtocol,
         reasoning: `Already on the highest-yielding protocol (${currentProtocol} at ${currentApy.toFixed(2)}%)`,
+        candidates: rankCandidates(availableProtocols, {
+          riskCeiling,
+          protocolRiskScores,
+          chosenProtocol: currentProtocol,
+          lowerReason: 'lower_apy',
+        }),
       }
     }
 
@@ -185,6 +266,17 @@ export class MaxYieldStrategy implements RebalanceStrategy {
       deviationTrigger: shouldRebalance
         ? `APY delta: ${rawImprovement.toFixed(2)}%`
         : undefined,
+      blockedReason: !shouldRebalance
+        ? !payback.allowed
+          ? 'cost_exceeds_gain'
+          : 'below_min_improvement'
+        : undefined,
+      candidates: rankCandidates(availableProtocols, {
+        riskCeiling,
+        protocolRiskScores,
+        chosenProtocol: shouldRebalance ? bestProtocol.name : null,
+        lowerReason: 'lower_apy',
+      }),
       details: {
         currentApy,
         bestApy: bestProtocol.apy,
@@ -266,6 +358,62 @@ export class TargetAllocationStrategy implements RebalanceStrategy {
       .filter(([name]) => passesCeiling(name))
       .sort(([, a], [, b]) => b - a)
 
+    // #343 — ranked candidate list for the rationale ledger. Ordered by target
+    // weight (the allocation preference the strategy optimizes), with APY/risk
+    // resolved from the scanned protocol set.
+    const apyByName = new Map(
+      availableProtocols.map((p) => [p.name, p.apy] as const)
+    )
+    const rankedByTargetWeight = (chosenProtocol: string | null) =>
+      Object.entries(targets)
+        .sort(([, a], [, b]) => b - a)
+        .filter(([name]) => true)
+        .map(([name, weight]) => {
+          // Backward-compat: when no ceiling, scores are ignored entirely
+          if (riskCeiling === undefined) {
+            const winner = chosenProtocol !== null && name === chosenProtocol
+            let rejectionReason: string | null = null
+            if (!winner) {
+              rejectionReason =
+                name === currentProtocol
+                  ? 'current_position'
+                  : 'lower_target_weight'
+            }
+            return {
+              protocol: name,
+              apy: apyByName.get(name) ?? null,
+              riskScore: null,
+              eligible: true,
+              rejectionReason,
+              _weight: weight,
+            }
+          }
+          const score = scoreMap[name]
+          const knownScore = score !== undefined
+          const passes = knownScore && score >= riskCeiling
+          const winner = chosenProtocol !== null && name === chosenProtocol
+          let rejectionReason: string | null = null
+          if (!winner) {
+            if (!knownScore) {
+              rejectionReason = 'risk_score_unknown'
+            } else if (!passes) {
+              rejectionReason = 'over_risk_ceiling'
+            } else if (name === currentProtocol) {
+              rejectionReason = 'current_position'
+            } else {
+              rejectionReason = 'lower_target_weight'
+            }
+          }
+          return {
+            protocol: name,
+            apy: apyByName.get(name) ?? null,
+            riskScore: knownScore ? score : null,
+            eligible: passes,
+            rejectionReason,
+            _weight: weight,
+          }
+        })
+
     if (bestTargetProtocol.length === 0) {
       // Distinguish "ceiling excluded everything" from "nothing else configured"
       // so the user's stated risk tolerance is surfaced, never silently dropped.
@@ -285,7 +433,11 @@ export class TargetAllocationStrategy implements RebalanceStrategy {
             shouldRebalance: false,
             targetProtocol: currentProtocol,
             reasoning: NO_ELIGIBLE_PROTOCOLS_REASON,
+            blockedReason: 'risk_ceiling',
             details: { riskCeiling, eligibleCount: 0 },
+            candidates: rankedByTargetWeight(null).map(
+              ({ _weight: _w, ...c }: any) => c
+            ),
           }
         }
       }
@@ -293,6 +445,9 @@ export class TargetAllocationStrategy implements RebalanceStrategy {
         shouldRebalance: false,
         targetProtocol: currentProtocol,
         reasoning: `Only one protocol configured in targets — no rebalance target available`,
+        candidates: rankedByTargetWeight(currentProtocol).map(
+          ({ _weight: _w, ...c }: any) => c
+        ),
       }
     }
 
@@ -313,6 +468,10 @@ export class TargetAllocationStrategy implements RebalanceStrategy {
           shouldRebalance: false,
           targetProtocol: currentProtocol,
           reasoning: `Rebalance from ${currentProtocol} to ${highestTargetProtocol} would exceed max gas cost`,
+          blockedReason: 'cost_exceeds_gain',
+          candidates: rankedByTargetWeight(null).map(
+            ({ _weight: _w, ...c }: any) => c
+          ),
         }
       }
 
@@ -331,6 +490,9 @@ export class TargetAllocationStrategy implements RebalanceStrategy {
         targetProtocol: highestTargetProtocol,
         reasoning: `Target allocation for ${currentProtocol} (${currentTarget}%) is significantly below ${highestTargetProtocol} (${highestTarget}%) — rebalancing to preferred protocol`,
         deviationTrigger: `Target ratio ${ratio.toFixed(2)} below threshold`,
+        candidates: rankedByTargetWeight(highestTargetProtocol).map(
+          ({ _weight: _w, ...c }: any) => c
+        ),
         details: {
           currentProtocol,
           currentTarget,
@@ -347,6 +509,9 @@ export class TargetAllocationStrategy implements RebalanceStrategy {
       shouldRebalance: false,
       targetProtocol: currentProtocol,
       reasoning: `Target allocation for ${currentProtocol} (${currentTarget}%) is within acceptable range of highest target ${highestTargetProtocol} (${highestTarget}%)`,
+      candidates: rankedByTargetWeight(currentProtocol).map(
+        ({ _weight: _w, ...c }: any) => c
+      ),
       details: {
         currentProtocol,
         currentTarget,
@@ -430,6 +595,12 @@ export class GoalTrackingStrategy implements RebalanceStrategy {
         targetProtocol: currentProtocol,
         reasoning: 'Savings goal is already achieved',
         details: { goal },
+        candidates: rankCandidates(availableProtocols, {
+          riskCeiling,
+          protocolRiskScores,
+          chosenProtocol: currentProtocol,
+          lowerReason: 'lower_apy',
+        }),
       }
     }
 
@@ -441,6 +612,12 @@ export class GoalTrackingStrategy implements RebalanceStrategy {
         targetProtocol: currentProtocol,
         reasoning: 'Savings goal target date has passed without being met',
         details: { goal },
+        candidates: rankCandidates(availableProtocols, {
+          riskCeiling,
+          protocolRiskScores,
+          chosenProtocol: currentProtocol,
+          lowerReason: 'lower_apy',
+        }),
       }
     }
 
@@ -465,7 +642,14 @@ export class GoalTrackingStrategy implements RebalanceStrategy {
         shouldRebalance: false,
         targetProtocol: currentProtocol,
         reasoning: NO_ELIGIBLE_PROTOCOLS_REASON,
+        blockedReason: 'risk_ceiling',
         details: { requiredApy, riskCeiling, eligibleCount: 0 },
+        candidates: rankCandidates(availableProtocols, {
+          riskCeiling,
+          protocolRiskScores,
+          chosenProtocol: null,
+          lowerReason: 'lower_apy',
+        }),
       }
     }
 
@@ -480,12 +664,19 @@ export class GoalTrackingStrategy implements RebalanceStrategy {
         shouldRebalance: false,
         targetProtocol: currentProtocol,
         reasoning: `Target requires ${requiredApy.toFixed(2)}% APY, which exceeds the best available within your risk tolerance (${maxEligibleApy.toFixed(2)}%) — target not reachable within your risk tolerance`,
+        blockedReason: 'no_candidates',
         details: {
           requiredApy,
           maxEligibleApy,
           riskCeiling,
           unreachable: true,
         },
+        candidates: rankCandidates(availableProtocols, {
+          riskCeiling,
+          protocolRiskScores,
+          chosenProtocol: null,
+          lowerReason: 'lower_apy',
+        }),
       }
     }
 
@@ -495,6 +686,12 @@ export class GoalTrackingStrategy implements RebalanceStrategy {
         targetProtocol: currentProtocol,
         reasoning: `On track — current ${currentApy.toFixed(2)}% APY meets the ${requiredApy.toFixed(2)}% required to reach your goal by ${goal.targetDate.toISOString().slice(0, 10)}`,
         details: { requiredApy, currentApy, onTrack: true },
+        candidates: rankCandidates(availableProtocols, {
+          riskCeiling,
+          protocolRiskScores,
+          chosenProtocol: currentProtocol,
+          lowerReason: 'lower_apy',
+        }),
       }
     }
 

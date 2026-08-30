@@ -63,6 +63,7 @@ import { attachWebSocketServer, closeWebSocketServer } from './ws/server'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
 import agentRouter from './routes/agent'
+import agentDecisionsRouter from './routes/agent-decisions'
 import authRouter from './routes/auth'
 import whatsappRouter from './routes/whatsapp'
 import telegramRouter from './routes/telegram'
@@ -291,6 +292,7 @@ interface ApiRoute {
 }
 
 const apiRoutes: ApiRoute[] = [
+  { path: 'agent/decisions', handlers: [agentDecisionsRouter] },
   { path: 'agent', handlers: [internalRateLimiter, agentRouter] },
   { path: 'auth', handlers: [authRateLimiter, authRouter] },
   { path: 'whatsapp', handlers: [webhookRateLimiter, whatsappRouter] },

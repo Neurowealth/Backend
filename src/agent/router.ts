@@ -11,6 +11,7 @@ import {
   RebalanceStrategy,
   UserStrategyPreferences,
   ExposureContext,
+  DecisionTrace,
 } from './types'
 import { scanAllProtocols, getCurrentOnChainApy } from './scanner'
 import {
@@ -32,6 +33,7 @@ import db from '../db'
 import { enqueueOutboxOp } from '../outbox/service'
 import { dispatchInBackground } from '../outbox/dispatcher'
 import { deriveIdempotencyKey } from '../outbox/idempotency'
+import { persistRebalanceDecision } from './rebalanceDecision'
 
 const DEFAULT_THRESHOLDS: RebalanceThresholds = {
   minimumImprovement: 0.5, // Must improve by at least 0.5%
@@ -262,6 +264,26 @@ export async function compareProtocols(
       best: bestProtocol,
       improvement: netImprovement,
       shouldRebalance,
+      trace: {
+        currentApy,
+        chosenProtocol: shouldRebalance ? bestProtocol.name : null,
+        chosenApy: shouldRebalance ? bestProtocol.apy : null,
+        rawImprovement,
+        netImprovement,
+        estCostPercent: cost.totalCostPct,
+        costBreakdown: cost.breakdown as unknown as Record<string, unknown>,
+        thresholds,
+        candidates: allProtocols.map((p) => {
+          const winner = shouldRebalance && p.name === bestProtocol.name
+          return {
+            protocol: p.name,
+            apy: Number.isFinite(p.apy) ? p.apy : null,
+            riskScore: null,
+            eligible: true,
+            rejectionReason: winner ? null : 'lower_apy',
+          }
+        }),
+      },
     }
 
     logger.info('Protocol comparison complete', {
@@ -330,6 +352,7 @@ export async function triggerRebalance(
     // when the on-chain event arrives. txHash is therefore not known yet at
     // this point — RebalanceDetails.txHash is left undefined.
     let txHash: string | undefined
+    let outboxOpId: string | undefined
 
     if (positionIds.length > 0) {
       const representativePosition = await db.position.findFirst({
@@ -381,6 +404,7 @@ export async function triggerRebalance(
           return op.id
         })
 
+        outboxOpId = opId
         dispatchInBackground(opId)
       } else {
         logger.warn('No position found to persist rebalance transaction', {
@@ -396,6 +420,7 @@ export async function triggerRebalance(
       toProtocol,
       amount,
       txHash,
+      outboxOpId,
       timestamp: new Date(),
       improvedBy: comparison.improvement,
     }
@@ -469,6 +494,13 @@ export async function triggerRebalance(
   }
 }
 
+export interface RebalanceBatchContext {
+  batchKey?: string
+  strategyName?: string | null
+  strategyIsFollowed?: boolean
+  followedStrategyId?: string | null
+}
+
 /**
  * Execute rebalance if conditions are met
  * Accounts for transaction costs in decision
@@ -477,7 +509,8 @@ export async function executeRebalanceIfNeeded(
   currentProtocol: string,
   userPositions: Array<{ id: string; amount: string; userId?: string }>,
   thresholds?: RebalanceThresholds,
-  userStrategyPreferences?: UserStrategyPreferences[]
+  userStrategyPreferences?: UserStrategyPreferences[],
+  batchContext?: RebalanceBatchContext
 ): Promise<RebalanceDetails | null> {
   try {
     const totalAmount = userPositions
@@ -485,18 +518,145 @@ export async function executeRebalanceIfNeeded(
       .toString()
 
     const effectiveThresholds = thresholds ?? getThresholds()
+    const affectedUserIds = Array.from(
+      new Set(
+        [
+          ...(userPositions.map((p) => p.userId).filter(Boolean) as string[]),
+          ...(userStrategyPreferences?.map((p) => p.userId) ?? []),
+        ].filter(Boolean)
+      )
+    )
+    const affectedPositions = userPositions.length
+    const ctxStrategyName =
+      batchContext?.strategyName ??
+      userStrategyPreferences?.[0]?.strategyName ??
+      null
+    const ctxStrategyIsFollowed =
+      batchContext?.strategyIsFollowed ??
+      Boolean(userStrategyPreferences?.[0]?.followedStrategyId)
+    const ctxFollowedStrategyId =
+      batchContext?.followedStrategyId ??
+      userStrategyPreferences?.[0]?.followedStrategyId ??
+      null
+    const ctxBatchKey =
+      batchContext?.batchKey ??
+      `${currentProtocol}:${ctxStrategyName ?? 'DEFAULT'}:${ctxFollowedStrategyId ?? 'none'}`
+
+    const recordDecision = async (args: {
+      outcome: 'REBALANCED' | 'HELD' | 'BLOCKED'
+      blockedReason?: string | null
+      toProtocol?: string | null
+      rationale?: string | null
+      trace: DecisionTrace
+      outboxOpId?: string | null
+    }): Promise<string | null> => {
+      return persistRebalanceDecision({
+        batchKey: ctxBatchKey,
+        fromProtocol: currentProtocol,
+        toProtocol: args.toProtocol ?? null,
+        outcome: args.outcome,
+        blockedReason: args.blockedReason ?? null,
+        strategyName: ctxStrategyName,
+        strategyIsFollowed: ctxStrategyIsFollowed,
+        followedStrategyId: ctxFollowedStrategyId,
+        thresholds: effectiveThresholds,
+        trace: args.trace,
+        rationale: args.rationale ?? null,
+        affectedUserIds,
+        affectedPositions,
+        outboxOpId: args.outboxOpId ?? null,
+      })
+    }
+
+    const buildStrategyTrace = (
+      decision: any,
+      currentApyVal: number | null,
+      allProtos: any[]
+    ): DecisionTrace => {
+      const details: any = decision.details ?? {}
+      const candidates: any[] = decision.candidates ?? []
+      const chosenName: string | null = decision.shouldRebalance
+        ? decision.targetProtocol
+        : null
+      const chosenCandidate =
+        candidates.find((c: any) => c.protocol === chosenName) ?? null
+      const chosenApy: number | null =
+        chosenCandidate?.apy ??
+        (typeof details.bestApy === 'number' ? details.bestApy : null)
+      const rawImprovement: number | null =
+        typeof details.rawImprovement === 'number'
+          ? details.rawImprovement
+          : null
+      const netImprovement: number | null =
+        typeof details.netImprovement === 'number'
+          ? details.netImprovement
+          : null
+      const costBreakdown: Record<string, unknown> | null =
+        details.costBreakdown ?? null
+      const estCostPercent: number | null =
+        costBreakdown && typeof (costBreakdown as any).totalCostPct === 'number'
+          ? (costBreakdown as any).totalCostPct
+          : typeof details.totalCostPercent === 'number'
+            ? details.totalCostPercent
+            : null
+      return {
+        currentApy: currentApyVal,
+        chosenProtocol: chosenName,
+        chosenApy,
+        rawImprovement,
+        netImprovement,
+        estCostPercent,
+        costBreakdown,
+        thresholds: effectiveThresholds,
+        candidates,
+      }
+    }
 
     // Use strategy engine when user preferences are present
     if (userStrategyPreferences && userStrategyPreferences.length > 0) {
       const currentApy = await getCurrentOnChainApy(currentProtocol)
       if (!currentApy) {
         logger.warn(`Cannot get current APY for ${currentProtocol}`)
+        const trace: DecisionTrace = {
+          currentApy: null,
+          chosenProtocol: null,
+          chosenApy: null,
+          rawImprovement: null,
+          netImprovement: null,
+          estCostPercent: null,
+          costBreakdown: null,
+          thresholds: effectiveThresholds,
+          candidates: [],
+        }
+        await recordDecision({
+          outcome: 'BLOCKED',
+          blockedReason: 'no_candidates',
+          rationale: 'Cannot get current APY',
+          trace,
+        })
         return null
       }
 
       const allProtocols = await scanAllProtocols()
       if (allProtocols.length === 0) {
         logger.warn('No protocols available for comparison')
+        const trace: DecisionTrace = {
+          currentApy,
+          chosenProtocol: null,
+          chosenApy: null,
+          rawImprovement: null,
+          netImprovement: null,
+          estCostPercent: null,
+          costBreakdown: null,
+          thresholds: effectiveThresholds,
+          candidates: [],
+        }
+        await recordDecision({
+          outcome: 'BLOCKED',
+          blockedReason: 'no_candidates',
+          rationale: 'No protocols available for comparison',
+          trace,
+        })
         return null
       }
 
@@ -614,6 +774,13 @@ export async function executeRebalanceIfNeeded(
             targetProtocol: decision.targetProtocol,
             unplacedFraction: plan.unplacedFraction,
           })
+          const trace0 = buildStrategyTrace(decision, currentApy, allProtocols)
+          await recordDecision({
+            outcome: plan.unplacedFraction > 0 ? 'BLOCKED' : 'HELD',
+            blockedReason: plan.unplacedFraction > 0 ? 'no_candidates' : null,
+            rationale: decision.reasoning,
+            trace: trace0,
+          })
           return null
         }
 
@@ -633,7 +800,7 @@ export async function executeRebalanceIfNeeded(
           unplacedFraction: plan.unplacedFraction,
         })
 
-        return await triggerRebalance(
+        const rebalanceResult = await triggerRebalance(
           currentProtocol,
           first.toProtocol,
           amountToMove.toString(),
@@ -645,6 +812,30 @@ export async function executeRebalanceIfNeeded(
             followedStrategyId: userStrategyPreferences[0]?.followedStrategyId,
           }
         )
+        if (rebalanceResult) {
+          const traceReb = buildStrategyTrace(
+            decision,
+            currentApy,
+            allProtocols
+          )
+          // Override chosen to the actual capped target
+          const cappedChosen = traceReb.candidates.find(
+            (c) => c.protocol === first.toProtocol
+          )
+          if (cappedChosen) {
+            traceReb.chosenProtocol = first.toProtocol
+            traceReb.chosenApy = cappedChosen.apy
+          }
+          const decisionId = await recordDecision({
+            outcome: 'REBALANCED',
+            toProtocol: first.toProtocol,
+            rationale: decision.reasoning,
+            trace: traceReb,
+            outboxOpId: rebalanceResult.outboxOpId ?? null,
+          })
+          if (decisionId) rebalanceResult.decisionId = decisionId
+        }
+        return rebalanceResult
       }
 
       if (!decision.shouldRebalance) {
@@ -668,10 +859,30 @@ export async function executeRebalanceIfNeeded(
           })),
           unplaceable: exposureContext?.exposure.unplaceable ?? false,
         })
+        const traceNoReb = buildStrategyTrace(
+          decision,
+          currentApy,
+          allProtocols
+        )
+        const isBlocked = Boolean((decision as any).blockedReason)
+        await recordDecision({
+          outcome: isBlocked ? 'BLOCKED' : 'HELD',
+          blockedReason: (decision as any).blockedReason ?? null,
+          rationale: decision.reasoning,
+          trace: traceNoReb,
+        })
         return null
       }
 
       // strategy said rebalance to the protocol we're already on — nothing to do.
+      {
+        const traceHold = buildStrategyTrace(decision, currentApy, allProtocols)
+        await recordDecision({
+          outcome: 'HELD',
+          rationale: decision.reasoning,
+          trace: traceHold,
+        })
+      }
       return null
     }
 
@@ -688,10 +899,38 @@ export async function executeRebalanceIfNeeded(
           ? `Net improvement ${comparison.improvement.toFixed(2)}% (after fees) below threshold`
           : 'Unable to compare protocols',
       })
+      const traceDefault: DecisionTrace = comparison?.trace ?? {
+        currentApy: null,
+        chosenProtocol: null,
+        chosenApy: null,
+        rawImprovement: null,
+        netImprovement: null,
+        estCostPercent: null,
+        costBreakdown: null,
+        thresholds: effectiveThresholds,
+        candidates: [],
+      }
+      const isCurrentBest = comparison
+        ? comparison.best.name === currentProtocol
+        : false
+      await recordDecision({
+        outcome: !comparison || !isCurrentBest ? 'BLOCKED' : 'HELD',
+        blockedReason: !comparison
+          ? 'no_candidates'
+          : isCurrentBest
+            ? null
+            : comparison.improvement <= effectiveThresholds.minimumImprovement
+              ? 'below_min_improvement'
+              : 'cost_exceeds_gain',
+        rationale: comparison
+          ? `Net improvement ${comparison.improvement.toFixed(2)}%`
+          : 'Unable to compare protocols',
+        trace: traceDefault,
+      })
       return null
     }
 
-    return await triggerRebalance(
+    const defaultRebalanceResult = await triggerRebalance(
       currentProtocol,
       comparison.best.name,
       totalAmount,
@@ -702,6 +941,17 @@ export async function executeRebalanceIfNeeded(
         deviationTrigger: `APY delta: ${(comparison.best.apy - comparison.current.apy).toFixed(2)}%`,
       }
     )
+    if (defaultRebalanceResult && comparison.trace) {
+      const decisionId = await recordDecision({
+        outcome: 'REBALANCED',
+        toProtocol: comparison.best.name,
+        rationale: `Moving from ${currentProtocol} to ${comparison.best.name}`,
+        trace: comparison.trace,
+        outboxOpId: defaultRebalanceResult.outboxOpId ?? null,
+      })
+      if (decisionId) defaultRebalanceResult.decisionId = decisionId
+    }
+    return defaultRebalanceResult
   } catch (error) {
     logger.error('Rebalance execution check failed', {
       currentProtocol,
