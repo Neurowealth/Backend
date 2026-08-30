@@ -16,6 +16,9 @@ import {
   formatWithdrawConfirmation,
 } from './formatters'
 import { logger } from '../utils/logger'
+import { config } from '../config'
+import db from '../db'
+import { handleAssistantMessage } from '../agent/assistant/assistant'
 
 export type TelegramResponse = {
   body: string
@@ -23,6 +26,42 @@ export type TelegramResponse = {
 
 function formatUnknownMessage(): string {
   return `Sorry, I didn't understand that.\n${formatHelpMessage()}`
+}
+
+/**
+ * Tool-calling assistant fallback (#318), mirroring
+ * src/whatsapp/handler.ts's tryAssistantFallback — same rollout gate
+ * (config.assistant.enabled, off by default) and the same "never make an
+ * unknown message worse" contract: any failure here returns null and the
+ * caller falls back to formatUnknownMessage().
+ */
+async function tryAssistantFallback(
+  text: string,
+  chatId: string
+): Promise<TelegramResponse | null> {
+  if (!config.assistant.enabled) return null
+
+  try {
+    const walletAddress = getUserWalletAddress(chatId)
+    if (!walletAddress) return null
+    const user = await db.user.findFirst({
+      where: { walletAddress },
+      select: { id: true },
+    })
+    if (!user) return null
+
+    const reply = await handleAssistantMessage({
+      userId: user.id,
+      channel: 'telegram',
+      message: text,
+    })
+    return { body: reply.text }
+  } catch (error) {
+    logger.error('[Assistant] Telegram assistant fallback failed', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return null
+  }
 }
 
 function extractLinkCode(message: string): string | null {
@@ -94,6 +133,8 @@ export async function handleTelegramMessage(
 
   const intent = await parseIntent(message)
   if (intent.action === 'unknown') {
+    const assistantReply = await tryAssistantFallback(message, normalizedChatId)
+    if (assistantReply) return assistantReply.body
     return formatUnknownMessage()
   }
 

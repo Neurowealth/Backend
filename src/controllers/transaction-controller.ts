@@ -251,6 +251,15 @@ export interface ExecuteWithdrawResult {
 }
 
 /**
+ * Core withdraw logic, extracted from the WITHDRAWAL branch of
+ * processOnChainTransaction so it has a callable service-layer entry point
+ * (the deposit side already had one via executeDeposit). Used by the HTTP
+ * route below and by the assistant's withdraw tool
+ * (src/agent/tools/actionTools.ts) — the assistant must go through the exact
+ * same idempotent/audited path as every other caller, never a bespoke one.
+ */
+
+/**
  * Core withdrawal logic, mirroring executeDeposit. Extracted so both the
  * HTTP withdraw route and the approval service's post-approval execution
  * path (src/approvals/executors.ts) run through the exact same gate and

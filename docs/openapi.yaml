@@ -17,6 +17,15 @@ servers:
 tags:
   - name: Analytics
     description: Portfolio performance and risk analytics
+  - name: Assistant
+    description: |
+      Tool-calling conversational assistant (#318). Replaces the rule-based
+      NLP parser as the recognition layer for open-ended requests. The model
+      never moves money or changes state directly — it may only propose a
+      call from a fixed, allowlisted tool registry, and every non-read-only
+      tool is dry-run and gated behind an explicit confirmation before it
+      executes through the same verified, idempotent, audited service paths
+      every other feature uses.
   - name: Auth
     description: Authentication and session management
   - name: Portfolio
@@ -55,6 +64,45 @@ components:
       type: number
       format: double
       nullable: true
+
+    # ── Assistant (#318) ─────────────────────────────────────────────────────
+    AssistantChatRequest:
+      type: object
+      required: [message]
+      additionalProperties: false
+      properties:
+        message:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        targetUserId:
+          type: string
+          format: uuid
+          description: |
+            Act on this linked sub-account instead of the caller's own
+            account. Omit (or pass the caller's own id) to act on the
+            caller's own account.
+
+    AssistantChatResponse:
+      type: object
+      required: [reply, usedFallback, pendingConfirmation]
+      properties:
+        reply:
+          type: string
+          description: The assistant's reply, ready to display verbatim.
+        usedFallback:
+          type: boolean
+          description: |
+            True when the model was unavailable or the token budget was
+            exhausted and this reply is a graceful degradation rather than a
+            model-generated answer.
+        pendingConfirmation:
+          type: boolean
+          description: |
+            True when this reply is a confirmation prompt for a proposed
+            action. The caller's next message on the same channel/account
+            must be an affirmative or negative reply — it is interpreted as
+            the confirmation decision, not a new request.
 
     # ── Risk metrics ─────────────────────────────────────────────────────────
     RiskMetrics:
@@ -575,6 +623,88 @@ components:
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 paths:
+
+  # ── Assistant endpoints (#318) ────────────────────────────────────────────────
+
+  /assistant/chat:
+    post:
+      operationId: assistantChat
+      summary: Send a message to the tool-calling assistant
+      description: |
+        Sends one message to the conversational assistant and returns its
+        reply. The assistant may read live account data to ground its answer,
+        or propose an action (deposit, withdraw, rebalance, adjust strategy,
+        follow/unfollow a marketplace strategy, create a recurring deposit,
+        create an alert rule) — action proposals are always previewed
+        (dry-run) and returned as a confirmation prompt; the SAME action only
+        executes once the caller's next message is an affirmative reply
+        (`pendingConfirmation: true` on this response). A negative reply
+        cancels it; anything else re-prompts without executing or dropping
+        the pending action.
+
+        **Sub-accounts**: pass `targetUserId` to act on a linked child
+        account. The caller must hold an ACTIVE `SubAccount` link with the
+        permission the specific proposed tool requires (same enforcement as
+        `src/middleware/subAccount.ts`); a caller with no link, or the wrong
+        permission, gets `403` before the message even reaches the model.
+
+        **Degradation**: if the model is unavailable or the caller's token
+        budget is exhausted, this still returns `200` with a graceful reply
+        and `usedFallback: true` — never a `5xx` or a hang.
+      tags: [Assistant]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssistantChatRequest'
+            examples:
+              read_only:
+                summary: Open-ended read request
+                value:
+                  message: "what's my portfolio worth right now?"
+              action_proposal:
+                summary: A request that proposes an action
+                value:
+                  message: "withdraw 50 USDC"
+              sub_account:
+                summary: Acting on a linked sub-account
+                value:
+                  message: "what's the balance on my kid's account?"
+                  targetUserId: "3f8e1c2a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+      responses:
+        '200':
+          description: The assistant's reply.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssistantChatResponse'
+              examples:
+                grounded_answer:
+                  summary: Grounded read-only answer
+                  value:
+                    reply: "Your portfolio is currently worth 150.00 USDC."
+                    usedFallback: false
+                    pendingConfirmation: false
+                confirmation_prompt:
+                  summary: Action proposed — awaiting confirmation
+                  value:
+                    reply: 'I''d like to: *Withdraw 50 USDC*. Reply "yes" to confirm or "no" to cancel.'
+                    usedFallback: false
+                    pendingConfirmation: true
+                degraded:
+                  summary: Model unavailable — graceful fallback
+                  value:
+                    reply: "I'm having trouble understanding requests like that right now. Please try a specific command (e.g. \"balance\", \"deposit 10\"), or try again shortly."
+                    usedFallback: true
+                    pendingConfirmation: false
+        '400':
+          description: Validation failed (empty/oversized message, malformed targetUserId).
+        '401':
+          description: Missing/invalid bearer token, or no permission on the requested sub-account.
+
   # ── Risk endpoints ───────────────────────────────────────────────────────────
 
   /analytics/risk:
