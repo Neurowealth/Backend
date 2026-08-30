@@ -6,10 +6,22 @@
  * provider exclusively through {@link getDefaultTranscriptionProvider}, so
  * swapping STT vendors is a one-line registry change (plus config) with no edits
  * to the handler — the same pattern as the fiat provider registry.
+ *
+ * Multi-provider fallback (#400): the registry ships two vendors and
+ * {@link getDefaultTranscriptionProvider} returns a composite that runs the
+ * configured primary first and transparently retries the configured fallback
+ * when the primary is unavailable.
  */
 import { config } from '../../config'
-import { TranscriptionProvider } from './types'
+import { logger } from '../../utils/logger'
+import {
+  AudioInput,
+  TranscriptionProvider,
+  TranscriptionResult,
+  TranscriptionUnavailableError,
+} from './types'
 import { OpenAiTranscriptionProvider } from './openaiProvider'
+import { DeepgramTranscriptionProvider } from './deepgramProvider'
 
 const registry = new Map<string, TranscriptionProvider>()
 
@@ -17,8 +29,8 @@ function register(provider: TranscriptionProvider): void {
   registry.set(provider.name, provider)
 }
 
-// v1 ships a single provider. Add further vendors here — nothing else changes.
 register(new OpenAiTranscriptionProvider())
+register(new DeepgramTranscriptionProvider())
 
 /** Resolve a provider by key. Throws if the key is unknown/unconfigured. */
 export function getTranscriptionProvider(name: string): TranscriptionProvider {
@@ -29,9 +41,49 @@ export function getTranscriptionProvider(name: string): TranscriptionProvider {
   return provider
 }
 
-/** The active provider for incoming voice notes (from config). */
+/**
+ * Composite provider (#400) that delegates to `primary` and, on a
+ * {@link TranscriptionUnavailableError} (outage/transport/auth failure),
+ * retries through `fallback`. An {@link UnsupportedAudioError} is NOT retried:
+ * the audio itself is the problem, so a second vendor would fail identically —
+ * and it is the handler's job to tell the user their format wasn't understood,
+ * not that transcription is down.
+ */
+class FallbackTranscriptionProvider implements TranscriptionProvider {
+  readonly name: string
+
+  constructor(
+    private readonly primary: TranscriptionProvider,
+    private readonly fallback: TranscriptionProvider
+  ) {
+    this.name = `${primary.name}->${fallback.name}`
+  }
+
+  async transcribe(audio: AudioInput): Promise<TranscriptionResult> {
+    try {
+      return await this.primary.transcribe(audio)
+    } catch (err) {
+      if (!(err instanceof TranscriptionUnavailableError)) {
+        throw err
+      }
+      logger.warn(
+        `[Transcription] Primary provider "${this.primary.name}" unavailable; falling back to "${this.fallback.name}": ${err.message}`
+      )
+      return await this.fallback.transcribe(audio)
+    }
+  }
+}
+
+/** The active provider (or fallback pair) for incoming voice notes. */
 export function getDefaultTranscriptionProvider(): TranscriptionProvider {
-  return getTranscriptionProvider(config.transcription.provider)
+  const primary = getTranscriptionProvider(config.transcription.provider)
+  const fallback = getTranscriptionProvider(
+    config.transcription.fallbackProvider
+  )
+  if (primary === fallback) {
+    return primary
+  }
+  return new FallbackTranscriptionProvider(primary, fallback)
 }
 
 /**

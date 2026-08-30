@@ -186,6 +186,44 @@ describe('WhatsApp voice notes (#288)', () => {
     expect(res.body).toMatch(/aren't available right now|type your command/i)
   })
 
+  it('falls through to the secondary provider when the primary is down (#400)', async () => {
+    await verifiedUser(PHONE)
+    useProvider(async () => {
+      throw new TranscriptionUnavailableError('openai 503')
+    })
+    registerTranscriptionProvider({
+      name: 'deepgram', // the configured fallback key
+      transcribe: async () => ({ text: 'balance', confidence: 0.94 }),
+    })
+
+    const res = await handleWhatsAppMessage(PHONE, '', MEDIA)
+
+    // The primary is down, but transcription still succeeds via the fallback.
+    expect(res.body).toMatch(/balance/i)
+  })
+
+  it('does not attempt the fallback for an unsupported audio format (#400)', async () => {
+    await verifiedUser(PHONE)
+    const fallbackTranscribe = jest.fn(async () => ({
+      text: 'balance',
+      confidence: 0.94,
+    }))
+    useProvider(async () => {
+      throw new UnsupportedAudioError('weird codec')
+    })
+    registerTranscriptionProvider({
+      name: 'deepgram',
+      transcribe: fallbackTranscribe,
+    })
+
+    const res = await handleWhatsAppMessage(PHONE, '', MEDIA)
+
+    expect(res.body).toMatch(/format|type your command/i)
+    // An UnsupportedAudioError is never masked as an outage — the fallback
+    // must not be consulted for an audio the primary itself rejected.
+    expect(fallbackTranscribe).not.toHaveBeenCalled()
+  })
+
   it('falls through to unknown for transcribed nonsense (same as typed nonsense)', async () => {
     await verifiedUser(PHONE)
     useProvider(async () => ({ text: 'asdfghjkl qwerty', confidence: 0.95 }))
