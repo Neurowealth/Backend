@@ -668,4 +668,15 @@ export const config = {
   sessions: {
     revokedRetainDays: parseInt(process.env.REVOKED_SESSION_RETAIN_DAYS || '7'),
   },
+  nlp: {
+    /**
+     * Minimum confidence (0-1) a parsed Intent must carry to be acted on
+     * directly (#401). Below this, the rule-based parser returns a
+     * 'clarification' intent instead of guessing at the nearest pattern or
+     * falling straight through to 'unknown'.
+     */
+    confidenceThreshold: parseFloat(
+      process.env.NLP_CONFIDENCE_THRESHOLD || '0.6'
+    ),
+  },
 }

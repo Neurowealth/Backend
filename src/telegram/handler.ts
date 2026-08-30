@@ -103,6 +103,8 @@ async function executeIntent(
     }
     case 'help':
       return { body: formatHelpMessage() }
+    case 'clarification':
+      return { body: intent.prompt }
     default:
       return { body: formatUnknownMessage() }
   }
