@@ -16,19 +16,26 @@ A referral is one `ReferralConversion` row that moves through these states:
 | State | Meaning | Set by |
 | --- | --- | --- |
 | `PENDING` | Attributed at signup; no deposit yet | `attributeSignup` during `POST /auth/verify` |
-| `ACTIVATED` | A confirmed deposit crossed the threshold; a payout is owed | `checkAndActivateOnDeposit`, inside the deposit DB transaction |
+| `ACTIVATED` | A confirmed deposit crossed the threshold; a payout is owed | `checkAndActivateOnDeposit`, or an admin approving a `FLAGGED` conversion |
+| `FLAGGED` | Deposit crossed the threshold, but the fraud heuristic found a shared IP/device signal — held for manual review, **not** activated | `checkAndActivateOnDeposit`, inside the deposit DB transaction |
 | `REWARDED` | Both legs paid on-chain (terminal) | `payoutActivatedConversions` sweep |
-| `EXPIRED` | Attribution lapsed without activation (reserved) | — |
+| `EXPIRED` | Attribution lapsed without activation, or a `FLAGGED` conversion was rejected on review | `resolveFlaggedConversion` (rejection) |
 
 ```
 signup w/ code           confirmed deposit ≥ threshold        payout sweep
       │                            │                               │
       ▼                            ▼                               ▼
    PENDING ───────────────────► ACTIVATED ───────────────────► REWARDED
+                                   ▲   │
+                        approve    │   │ fraud signal found
+                                   │   ▼
+                                 FLAGGED ────reject────────────► EXPIRED
 ```
 
 Once a row is `ACTIVATED` it is never un-activated (on-chain finality). A row
 stuck at `ACTIVATED` simply means a payout is still owed and will be retried.
+A row stuck at `FLAGGED` means it is waiting on an admin decision — see
+[Fraud/abuse review](#fraudabuse-review) below.
 
 ## Why the steps are split
 
@@ -68,6 +75,35 @@ do not sum to activation — this is the guard against dust self-referral
 farming. Activation pins `activationTxId` to the real, confirmed
 `Transaction` that satisfied it.
 
+## Fraud/abuse review
+
+Before a qualifying deposit activates a conversion, `checkAndActivateOnDeposit`
+runs `evaluateReferralFraudRisk` (#397): it looks for **IP or device
+(user-agent) overlap** between the referrer's and the referred user's
+`Session` rows — the signature of one operator signing up multiple accounts
+from the same device/network to farm the reward.
+
+This is a heuristic, not a hard block — shared IPs/devices happen legitimately
+(family, office, campus wifi), so a hit never blocks the conversion outright.
+Instead the conversion is moved to `FLAGGED` (not `ACTIVATED`), with:
+
+- `fraudReasons` — which signal(s) fired (`shared_ip`, `shared_device_fingerprint`)
+- `flaggedAt` — when
+- `activationTxId` — the deposit that would have activated it, kept for the reviewer
+
+and a `warning` alert is emitted on the `referral-fraud` component.
+
+An admin resolves a `FLAGGED` conversion via `resolveFlaggedConversion`
+(`POST /api/admin/referrals/{id}/review`, scope `referrals:write`):
+
+- **approve** → `ACTIVATED` (exactly as if the heuristic hadn't fired; the
+  original deposit's `activationTxId` is reused, `activatedAt` set to now)
+- **reject** → `EXPIRED` (can never be paid out)
+
+`GET /api/admin/referrals/flagged` (scope `referrals:read`) lists the review
+queue, oldest first. `reviewedAt`/`reviewedBy`/`reviewDecision` record the
+outcome either way.
+
 ## Payout
 
 The sweep scans `ACTIVATED` conversions (oldest first, batched) and pays each
@@ -93,6 +129,8 @@ Setting an owner/referred reward amount to `0` disables that leg.
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/referrals/code` | Bearer | Caller's code (created on first call, idempotent) |
 | `GET` | `/api/v1/referrals/{userId}` | Bearer (owner-scoped) | Referrals attributed to the user, newest first |
+| `GET` | `/api/admin/referrals/flagged` | Admin (`referrals:read`) | `FLAGGED` conversions awaiting review, oldest first |
+| `POST` | `/api/admin/referrals/{id}/review` | Admin (`referrals:write`) | Resolve a `FLAGGED` conversion — body `{ "decision": "approve" \| "reject" }` |
 
 Signup attribution is **not** a route — it is the `referralCode` field on
 `POST /api/v1/auth/verify`.
@@ -113,7 +151,9 @@ Signup attribution is **not** a route — it is the `referralCode` field on
 - `ReferralCode` — one per user (`ownerUserId` unique); the shareable `code`.
 - `ReferralConversion` — one attribution + its lifecycle. `referredUserId` is
   unique. Holds `activationTxId`, `ownerRewardTxId`, `referredRewardTxId`, and
-  `payoutError` for retriable visibility.
+  `payoutError` for retriable visibility, plus (#397) `fraudReasons`,
+  `flaggedAt`, `reviewedAt`, `reviewedBy`, and `reviewDecision` for the
+  fraud/abuse review trail.
 
 ## Operational notes
 

@@ -123,6 +123,12 @@ enum ReferralStatus {
   ACTIVATED
   REWARDED
   EXPIRED
+  // #397 — fraud/abuse heuristics found signals (shared IP and/or device
+  // fingerprint between referrer and referred account) at activation time.
+  // Held here instead of activating automatically; resolved by an admin via
+  // resolveFlaggedConversion() into either ACTIVATED (approved) or EXPIRED
+  // (rejected). Never silently blocked or paid out.
+  FLAGGED
 }
 
 enum DepositCadence {
@@ -1054,13 +1060,22 @@ model ReferralConversion {
   referralCodeId     String
   referredUserId     String         @unique
   activatedAt        DateTime?
-  activationTxId     String? // the confirmed deposit Transaction that satisfied activation
+  activationTxId     String? // the confirmed deposit Transaction that satisfied (or would have satisfied) activation
   status             ReferralStatus @default(PENDING)
   ownerRewardTxId    String? // REFERRAL_REWARD Transaction paid to the referrer
   referredRewardTxId String? // REFERRAL_REWARD Transaction paid to the referred user
   payoutError        String? // last payout failure reason — kept for retriable visibility
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  // #397 — fraud/abuse review trail. fraudReasons/flaggedAt are set when the
+  // heuristic in evaluateReferralFraudRisk() flags a conversion instead of
+  // activating it; reviewedAt/reviewedBy/reviewDecision are set once an admin
+  // resolves it via resolveFlaggedConversion().
+  fraudReasons   String[] @default([])
+  flaggedAt      DateTime?
+  reviewedAt     DateTime?
+  reviewedBy     String?
+  reviewDecision String? // 'approved' | 'rejected'
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   referralCode ReferralCode @relation(fields: [referralCodeId], references: [id], onDelete: Cascade)
   referredUser User         @relation(fields: [referredUserId], references: [id], onDelete: Cascade)

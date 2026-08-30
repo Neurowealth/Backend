@@ -12,6 +12,8 @@ import {
   attributeSignup,
   checkAndActivateOnDeposit,
   payoutActivatedConversions,
+  evaluateReferralFraudRisk,
+  resolveFlaggedConversion,
 } from '../../../src/referral/service'
 
 jest.mock('../../../src/db', () => ({ __esModule: true, default: {} }))
@@ -99,6 +101,10 @@ beforeEach(() => {
   mockDb.user = { findUnique: jest.fn() }
   mockDb.transaction = { create: jest.fn(), update: jest.fn() }
   mockDb.$transaction = jest.fn((fn: (tx: any) => unknown) => fn(mockDb))
+  // #397 — fraud heuristic reads Session rows for both parties. Empty by
+  // default so existing activation tests (no fraud signal) are unaffected;
+  // the fraud-specific describe block below overrides per test.
+  mockDb.session = { findMany: jest.fn().mockResolvedValue([]) }
 })
 
 describe('attributeSignup', () => {
@@ -170,6 +176,7 @@ describe('checkAndActivateOnDeposit', () => {
     mockDb.referralConversion.findUnique.mockResolvedValue({
       id: 'conv-1',
       status: 'PENDING',
+      referralCode: { ownerUserId: 'owner-1' },
     })
     mockDb.referralConversion.update.mockResolvedValue({})
 
@@ -200,6 +207,7 @@ describe('checkAndActivateOnDeposit', () => {
     mockDb.referralConversion.findUnique.mockResolvedValue({
       id: 'conv-1',
       status: 'ACTIVATED',
+      referralCode: { ownerUserId: 'owner-1' },
     })
     await checkAndActivateOnDeposit('referred-1', 'tx-2', '100')
     expect(mockDb.referralConversion.update).not.toHaveBeenCalled()
@@ -215,14 +223,217 @@ describe('checkAndActivateOnDeposit', () => {
   it('uses the provided transaction client', async () => {
     const txClient = {
       referralConversion: {
-        findUnique: jest
-          .fn()
-          .mockResolvedValue({ id: 'conv-1', status: 'PENDING' }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'conv-1',
+          status: 'PENDING',
+          referralCode: { ownerUserId: 'owner-1' },
+        }),
         update: jest.fn().mockResolvedValue({}),
       },
+      session: { findMany: jest.fn().mockResolvedValue([]) },
     } as any
     await checkAndActivateOnDeposit('referred-1', 'tx-1', '25', txClient)
     expect(txClient.referralConversion.update).toHaveBeenCalled()
+    expect(mockDb.referralConversion.update).not.toHaveBeenCalled()
+  })
+})
+
+// #397 — fraud/abuse heuristics. Session rows are the only fraud-relevant
+// input; everything else about the deposit/activation path is already
+// covered above, so these tests isolate the heuristic itself and its wiring
+// into checkAndActivateOnDeposit's flag-instead-of-activate branch.
+describe('evaluateReferralFraudRisk', () => {
+  function sessionsFor(
+    userId: string,
+    rows: {
+      ipAddress?: string | null
+      lastSeenIp?: string | null
+      userAgent?: string | null
+    }[]
+  ) {
+    return rows.map((r) => ({
+      ipAddress: r.ipAddress ?? null,
+      lastSeenIp: r.lastSeenIp ?? null,
+      userAgent: r.userAgent ?? null,
+    }))
+  }
+
+  it('is not suspicious when the referrer and referred user share no IP or device signal', async () => {
+    mockDb.session.findMany
+      .mockResolvedValueOnce(
+        sessionsFor('owner-1', [
+          { ipAddress: '1.1.1.1', userAgent: 'ua-owner' },
+        ])
+      )
+      .mockResolvedValueOnce(
+        sessionsFor('referred-1', [
+          { ipAddress: '2.2.2.2', userAgent: 'ua-referred' },
+        ])
+      )
+
+    const result = await evaluateReferralFraudRisk('owner-1', 'referred-1')
+    expect(result.suspicious).toBe(false)
+    expect(result.signals).toEqual([])
+  })
+
+  it('flags a shared IP address between referrer and referred sessions', async () => {
+    mockDb.session.findMany
+      .mockResolvedValueOnce(
+        sessionsFor('owner-1', [
+          { ipAddress: '9.9.9.9', userAgent: 'ua-owner' },
+        ])
+      )
+      .mockResolvedValueOnce(
+        sessionsFor('referred-1', [
+          { lastSeenIp: '9.9.9.9', userAgent: 'ua-referred' },
+        ])
+      )
+
+    const result = await evaluateReferralFraudRisk('owner-1', 'referred-1')
+    expect(result.suspicious).toBe(true)
+    expect(result.signals.map((s) => s.reason)).toContain('shared_ip')
+  })
+
+  it('flags a shared device/user-agent fingerprint between referrer and referred sessions', async () => {
+    mockDb.session.findMany
+      .mockResolvedValueOnce(
+        sessionsFor('owner-1', [
+          { ipAddress: '1.1.1.1', userAgent: 'Mozilla/5.0 SameDevice' },
+        ])
+      )
+      .mockResolvedValueOnce(
+        sessionsFor('referred-1', [
+          { ipAddress: '2.2.2.2', userAgent: 'Mozilla/5.0 SameDevice' },
+        ])
+      )
+
+    const result = await evaluateReferralFraudRisk('owner-1', 'referred-1')
+    expect(result.suspicious).toBe(true)
+    expect(result.signals.map((s) => s.reason)).toContain(
+      'shared_device_fingerprint'
+    )
+  })
+
+  it('treats null/empty session fields as never matching (no false positive on missing data)', async () => {
+    mockDb.session.findMany
+      .mockResolvedValueOnce(
+        sessionsFor('owner-1', [{ ipAddress: null, userAgent: null }])
+      )
+      .mockResolvedValueOnce(
+        sessionsFor('referred-1', [{ ipAddress: null, userAgent: null }])
+      )
+
+    const result = await evaluateReferralFraudRisk('owner-1', 'referred-1')
+    expect(result.suspicious).toBe(false)
+  })
+
+  it('matches IPs and user agents case-insensitively / trimmed', async () => {
+    mockDb.session.findMany
+      .mockResolvedValueOnce(
+        sessionsFor('owner-1', [{ userAgent: '  Mozilla/5.0 Shared  ' }])
+      )
+      .mockResolvedValueOnce(
+        sessionsFor('referred-1', [{ userAgent: 'mozilla/5.0 shared' }])
+      )
+
+    const result = await evaluateReferralFraudRisk('owner-1', 'referred-1')
+    expect(result.suspicious).toBe(true)
+  })
+})
+
+describe('checkAndActivateOnDeposit — fraud flag path', () => {
+  it('flags instead of activating when the heuristic finds a shared IP, and does not roll back the deposit', async () => {
+    mockDb.referralConversion.findUnique.mockResolvedValue({
+      id: 'conv-1',
+      status: 'PENDING',
+      referralCode: { ownerUserId: 'owner-1' },
+    })
+    mockDb.referralConversion.update.mockResolvedValue({})
+    mockDb.session.findMany
+      .mockResolvedValueOnce([
+        { ipAddress: '5.5.5.5', lastSeenIp: null, userAgent: null },
+      ]) // owner
+      .mockResolvedValueOnce([
+        { ipAddress: '5.5.5.5', lastSeenIp: null, userAgent: null },
+      ]) // referred
+
+    await expect(
+      checkAndActivateOnDeposit('referred-1', 'tx-1', '25')
+    ).resolves.toBeUndefined()
+
+    const updateArg = mockDb.referralConversion.update.mock.calls[0][0]
+    expect(updateArg.data.status).toBe('FLAGGED')
+    expect(updateArg.data.fraudReasons).toContain('shared_ip')
+    expect(updateArg.data.flaggedAt).toBeInstanceOf(Date)
+    // The would-have-activated deposit is still recorded for the reviewer.
+    expect(updateArg.data.activationTxId).toBe('tx-1')
+    // Never set to ACTIVATED when flagged.
+    expect(updateArg.data.activatedAt).toBeUndefined()
+    expect(mockEmit).toHaveBeenCalled()
+  })
+
+  it('activates normally (unchanged) when the heuristic finds nothing suspicious', async () => {
+    mockDb.referralConversion.findUnique.mockResolvedValue({
+      id: 'conv-1',
+      status: 'PENDING',
+      referralCode: { ownerUserId: 'owner-1' },
+    })
+    mockDb.referralConversion.update.mockResolvedValue({})
+    // Default beforeEach mock already returns [] for both session lookups.
+
+    await checkAndActivateOnDeposit('referred-1', 'tx-1', '25')
+
+    const updateArg = mockDb.referralConversion.update.mock.calls[0][0]
+    expect(updateArg.data.status).toBe('ACTIVATED')
+  })
+})
+
+describe('resolveFlaggedConversion', () => {
+  it('approves a FLAGGED conversion into ACTIVATED', async () => {
+    mockDb.referralConversion.findUnique.mockResolvedValue({
+      id: 'conv-1',
+      status: 'FLAGGED',
+    })
+    mockDb.referralConversion.update.mockResolvedValue({})
+
+    await resolveFlaggedConversion('conv-1', 'approve', 'admin-1')
+
+    const updateArg = mockDb.referralConversion.update.mock.calls[0][0]
+    expect(updateArg.data.status).toBe('ACTIVATED')
+    expect(updateArg.data.activatedAt).toBeInstanceOf(Date)
+    expect(updateArg.data.reviewDecision).toBe('approved')
+    expect(updateArg.data.reviewedBy).toBe('admin-1')
+  })
+
+  it('rejects a FLAGGED conversion into EXPIRED', async () => {
+    mockDb.referralConversion.findUnique.mockResolvedValue({
+      id: 'conv-1',
+      status: 'FLAGGED',
+    })
+    mockDb.referralConversion.update.mockResolvedValue({})
+
+    await resolveFlaggedConversion('conv-1', 'reject', 'admin-1')
+
+    const updateArg = mockDb.referralConversion.update.mock.calls[0][0]
+    expect(updateArg.data.status).toBe('EXPIRED')
+    expect(updateArg.data.reviewDecision).toBe('rejected')
+  })
+
+  it('throws for a conversion that does not exist', async () => {
+    mockDb.referralConversion.findUnique.mockResolvedValue(null)
+    await expect(
+      resolveFlaggedConversion('missing', 'approve')
+    ).rejects.toThrow(/not found/)
+  })
+
+  it('throws when the conversion is not currently FLAGGED', async () => {
+    mockDb.referralConversion.findUnique.mockResolvedValue({
+      id: 'conv-1',
+      status: 'ACTIVATED',
+    })
+    await expect(resolveFlaggedConversion('conv-1', 'approve')).rejects.toThrow(
+      /not flagged/
+    )
     expect(mockDb.referralConversion.update).not.toHaveBeenCalled()
   })
 })

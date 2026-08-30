@@ -38,6 +38,110 @@ const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no ambiguous 0/O/1/I
 const CODE_LENGTH = 8
 const CODE_MAX_ATTEMPTS = 5
 
+// ---------------------------------------------------------------------------
+// Fraud/abuse heuristics (#397)
+// ---------------------------------------------------------------------------
+
+export interface ReferralFraudSignal {
+  reason: string
+  detail: string
+}
+
+export interface ReferralFraudAssessment {
+  suspicious: boolean
+  signals: ReferralFraudSignal[]
+}
+
+/** Lowercased, trimmed; empty/placeholder values never count as a match. */
+function normalizeSignalValue(value: string | null | undefined): string | null {
+  if (!value) return null
+  const normalized = value.trim().toLowerCase()
+  return normalized.length > 0 ? normalized : null
+}
+
+interface SignalSession {
+  ipAddress: string | null
+  lastSeenIp: string | null
+  userAgent: string | null
+}
+
+function collectSessionValues(
+  sessions: SignalSession[],
+  pick: (s: SignalSession) => (string | null)[]
+): Set<string> {
+  const values = new Set<string>()
+  for (const session of sessions) {
+    for (const raw of pick(session)) {
+      const normalized = normalizeSignalValue(raw)
+      if (normalized) values.add(normalized)
+    }
+  }
+  return values
+}
+
+/**
+ * Evaluates a referrer/referred pair for signs of referral-ring abuse (one
+ * operator farming the reward across multiple accounts) using IP and
+ * device-fingerprint overlap between their sessions.
+ *
+ * Deliberately heuristic, not a hard block: shared IPs/devices happen
+ * legitimately (family, office, shared campus wifi), so this only produces
+ * signals for the caller to route to manual review — see
+ * checkAndActivateOnDeposit, which flags rather than silently blocks.
+ */
+export async function evaluateReferralFraudRisk(
+  ownerUserId: string,
+  referredUserId: string,
+  database: Db = db
+): Promise<ReferralFraudAssessment> {
+  const [ownerSessions, referredSessions] = await Promise.all([
+    (database as any).session.findMany({
+      where: { userId: ownerUserId },
+      select: { ipAddress: true, lastSeenIp: true, userAgent: true },
+    }),
+    (database as any).session.findMany({
+      where: { userId: referredUserId },
+      select: { ipAddress: true, lastSeenIp: true, userAgent: true },
+    }),
+  ])
+
+  const signals: ReferralFraudSignal[] = []
+
+  const ownerIps = collectSessionValues(ownerSessions, (s) => [
+    s.ipAddress,
+    s.lastSeenIp,
+  ])
+  const referredIps = collectSessionValues(referredSessions, (s) => [
+    s.ipAddress,
+    s.lastSeenIp,
+  ])
+  const sharedIps = [...ownerIps].filter((ip) => referredIps.has(ip))
+
+  if (sharedIps.length > 0) {
+    signals.push({
+      reason: 'shared_ip',
+      detail: `${sharedIps.length} shared IP address(es) between referrer and referred account`,
+    })
+  }
+
+  // User-agent string is a coarse device-fingerprint proxy — the platform
+  // does not currently collect a dedicated fingerprint hash.
+  const ownerAgents = collectSessionValues(ownerSessions, (s) => [s.userAgent])
+  const referredAgents = collectSessionValues(referredSessions, (s) => [
+    s.userAgent,
+  ])
+  const sharedAgents = [...ownerAgents].filter((ua) => referredAgents.has(ua))
+
+  if (sharedAgents.length > 0) {
+    signals.push({
+      reason: 'shared_device_fingerprint',
+      detail: `${sharedAgents.length} shared device/user-agent fingerprint(s) between referrer and referred account`,
+    })
+  }
+
+  return { suspicious: signals.length > 0, signals }
+}
+
 function generateCandidateCode(): string {
   const bytes = randomBytes(CODE_LENGTH)
   let out = ''
@@ -160,8 +264,13 @@ export async function attributeSignup(
  * Called from the confirmed-deposit path (handleDepositEvent) INSIDE the deposit
  * DB transaction. If the depositing user has a PENDING conversion and this
  * confirmed deposit crosses the activation threshold on its own (single-deposit
- * policy), mark the conversion ACTIVATED and pin activationTxId to this real,
- * confirmed Transaction. Does not pay out — the payout job handles that.
+ * policy), evaluates fraud/abuse heuristics (#397) and either:
+ *   - marks the conversion ACTIVATED and pins activationTxId to this real,
+ *     confirmed Transaction (clean case — unchanged from before #397), or
+ *   - marks it FLAGGED with the triggering signals for manual review, WITHOUT
+ *     activating — see resolveFlaggedConversion for how a flagged conversion
+ *     is later approved or rejected by an admin.
+ * Does not pay out — the payout job only ever sweeps ACTIVATED conversions.
  *
  * Must never throw for referral reasons: a referral bookkeeping problem must not
  * roll back the deposit itself. Any error is logged and swallowed.
@@ -178,6 +287,7 @@ export async function checkAndActivateOnDeposit(
   try {
     const conversion = await (database as any).referralConversion.findUnique({
       where: { referredUserId },
+      include: { referralCode: true },
     })
     if (!conversion || conversion.status !== ReferralStatus.PENDING) return
 
@@ -187,6 +297,55 @@ export async function checkAndActivateOnDeposit(
     // Single-deposit policy: one confirmed deposit must cross the threshold on
     // its own. Documented in docs/REFERRAL_PROGRAM.md.
     if (amount.lessThan(threshold)) return
+
+    const risk = await evaluateReferralFraudRisk(
+      conversion.referralCode.ownerUserId,
+      referredUserId,
+      database
+    )
+
+    if (risk.suspicious) {
+      const reasons = risk.signals.map((s) => s.reason)
+
+      await (database as any).referralConversion.update({
+        where: { id: conversion.id },
+        data: {
+          status: ReferralStatus.FLAGGED,
+          fraudReasons: reasons,
+          flaggedAt: new Date(),
+          // Kept so a reviewer can see which deposit would have activated
+          // this — resolveFlaggedConversion sets activatedAt on approval.
+          activationTxId: transactionId,
+        },
+      })
+
+      logger.warn(
+        '[Referral] Conversion flagged for manual review — not activated',
+        {
+          conversionId: conversion.id,
+          referredUserId,
+          transactionId,
+          reasons,
+        }
+      )
+
+      await alertingService
+        .emit(
+          {
+            title: 'Referral conversion flagged for review',
+            description: `Conversion ${conversion.id} was not auto-activated: ${risk.signals
+              .map((s) => s.detail)
+              .join('; ')}.`,
+            severity: 'warning',
+            component: 'referral-fraud',
+            metadata: { conversionId: conversion.id, referredUserId, reasons },
+          },
+          `referral:fraud:${conversion.id}`
+        )
+        .catch(() => {})
+
+      return
+    }
 
     await (database as any).referralConversion.update({
       where: { id: conversion.id },
@@ -211,6 +370,66 @@ export async function checkAndActivateOnDeposit(
       error: err instanceof Error ? err.message : String(err),
     })
   }
+}
+
+/**
+ * Resolve a FLAGGED conversion (#397) — the only way one leaves the FLAGGED
+ * state. 'approve' activates it exactly as checkAndActivateOnDeposit would
+ * have absent the fraud signal (activatedAt set now, activationTxId already
+ * pinned from the flagging deposit); 'reject' moves it to EXPIRED so it can
+ * never be paid out. Throws if the conversion doesn't exist or isn't
+ * currently FLAGGED — callers (e.g. the admin route) should surface that as
+ * a 404/409 rather than silently no-op, since this is an explicit human
+ * decision.
+ */
+export async function resolveFlaggedConversion(
+  conversionId: string,
+  decision: 'approve' | 'reject',
+  reviewerId?: string
+): Promise<void> {
+  const conversion = await db.referralConversion.findUnique({
+    where: { id: conversionId },
+  })
+  if (!conversion) {
+    throw new Error(`Referral conversion ${conversionId} not found`)
+  }
+  if (conversion.status !== ReferralStatus.FLAGGED) {
+    throw new Error(
+      `Referral conversion ${conversionId} is not flagged for review (status=${conversion.status})`
+    )
+  }
+
+  if (decision === 'approve') {
+    await db.referralConversion.update({
+      where: { id: conversionId },
+      data: {
+        status: ReferralStatus.ACTIVATED,
+        activatedAt: new Date(),
+        reviewedAt: new Date(),
+        reviewedBy: reviewerId ?? null,
+        reviewDecision: 'approved',
+      },
+    })
+    logger.info('[Referral] Flagged conversion approved by reviewer', {
+      conversionId,
+      reviewerId,
+    })
+    return
+  }
+
+  await db.referralConversion.update({
+    where: { id: conversionId },
+    data: {
+      status: ReferralStatus.EXPIRED,
+      reviewedAt: new Date(),
+      reviewedBy: reviewerId ?? null,
+      reviewDecision: 'rejected',
+    },
+  })
+  logger.info('[Referral] Flagged conversion rejected by reviewer', {
+    conversionId,
+    reviewerId,
+  })
 }
 
 /** Resolve the on-chain wallet address a reward should be paid to. */
@@ -463,4 +682,17 @@ export async function listReferrals(ownerUserId: string) {
     code: referralCode?.code ?? null,
     referrals: referralCode?.conversions ?? [],
   }
+}
+
+/**
+ * List FLAGGED conversions awaiting manual review (#397), oldest first so a
+ * reviewer works the backlog in order. Used by the admin review route.
+ */
+export async function listFlaggedConversions(limit = 100) {
+  return db.referralConversion.findMany({
+    where: { status: ReferralStatus.FLAGGED },
+    orderBy: { flaggedAt: 'asc' },
+    take: limit,
+    include: { referralCode: true },
+  })
 }

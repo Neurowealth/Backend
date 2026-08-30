@@ -35,6 +35,10 @@ export const ADMIN_SCOPES = [
   // #314 — admin cancellation of a PENDING_APPROVAL request (the issue's
   // "requester or admin" cancel rule).
   'approvals:write',
+  // #397 — review FLAGGED referral conversions (approve/reject a
+  // fraud-heuristic hold) without granting broader write access.
+  'referrals:read',
+  'referrals:write',
   'super',
 ] as const
 export type AdminScope = (typeof ADMIN_SCOPES)[number]
