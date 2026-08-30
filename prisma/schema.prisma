@@ -855,6 +855,8 @@ model SubAccount {
   status       SubAccountStatus       @default(ACTIVE)
   createdAt    DateTime               @default(now())
   revokedAt    DateTime?
+  dailyLimit   Decimal?               @db.Decimal(36, 18)
+  transactionLimit Decimal?           @db.Decimal(36, 18)
 
   parent User @relation("ParentOf", fields: [parentUserId], references: [id], onDelete: Cascade)
   child  User @relation("ChildOf", fields: [childUserId], references: [id], onDelete: Cascade)
@@ -1064,6 +1066,7 @@ model ReferralConversion {
   status             ReferralStatus @default(PENDING)
   ownerRewardTxId    String? // REFERRAL_REWARD Transaction paid to the referrer
   referredRewardTxId String? // REFERRAL_REWARD Transaction paid to the referred user
+  tier2RewardTxId   String?
   payoutError        String? // last payout failure reason — kept for retriable visibility
   // #397 — fraud/abuse review trail. fraudReasons/flaggedAt are set when the
   // heuristic in evaluateReferralFraudRisk() flags a conversion instead of

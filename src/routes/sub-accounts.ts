@@ -16,6 +16,8 @@ const createSubAccountSchema = z.object({
     .array(z.enum(PERMISSION_VALUES as [string, ...string[]]))
     .min(1)
     .max(4),
+  dailyLimit: z.number().positive().optional(),
+  transactionLimit: z.number().positive().optional(),
 })
 
 const updatePermissionsSchema = z.object({
@@ -31,7 +33,7 @@ router.post(
   requireAuth,
   validate({ body: createSubAccountSchema, errorMessage: 'Validation error' }),
   async (req: Request, res: Response) => {
-    const { childUserId, permissions } = req.body
+    const { childUserId, permissions, dailyLimit, transactionLimit } = req.body
     const parentUserId = req.auth!.userId
 
     // Prevent self-referencing
@@ -101,6 +103,8 @@ router.post(
         parentUserId,
         childUserId,
         permissions: permissions as SubAccountPermission[],
+        dailyLimit: dailyLimit ?? null,
+        transactionLimit: transactionLimit ?? null,
       },
     })
 
