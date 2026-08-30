@@ -459,7 +459,7 @@ async function payOneReward(
   amount: number,
   network: Network,
   conversionId: string,
-  leg: 'owner' | 'referred'
+  leg: 'owner' | 'referred' | 'tier2'
 ): Promise<string> {
   const address = await resolveRewardAddress(recipientUserId)
   if (!address) {
@@ -667,7 +667,7 @@ export async function payoutActivatedConversions(): Promise<{
 
 async function recordPayoutFailure(
   conversionId: string,
-  leg: 'owner' | 'referred',
+  leg: 'owner' | 'referred' | 'tier2',
   err: unknown
 ): Promise<void> {
   const message = err instanceof Error ? err.message : String(err)
