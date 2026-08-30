@@ -54,6 +54,7 @@ import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { scheduleAllocationSuggestions } from './jobs/allocationSuggestions'
 import { scheduleAttribution } from './jobs/attribution'
 import { scheduleOutboxDispatcher } from './outbox/dispatcher'
+import { startFeeOracle, stopFeeOracle } from './stellar/feeOracle'
 import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
 import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { scheduleApprovalExpiry } from './jobs/approvalExpiry'
@@ -91,6 +92,7 @@ import keysRouter from './routes/keys'
 import sessionsRouter from './routes/sessions'
 import streamRouter from './routes/stream'
 import notificationsRouter from './routes/notifications'
+import networkRouter from './routes/network'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -292,6 +294,7 @@ interface ApiRoute {
 }
 
 const apiRoutes: ApiRoute[] = [
+  { path: 'network', handlers: [networkRouter] },
   { path: 'agent/decisions', handlers: [agentDecisionsRouter] },
   { path: 'agent', handlers: [internalRateLimiter, agentRouter] },
   { path: 'auth', handlers: [authRateLimiter, authRouter] },
@@ -435,6 +438,11 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Approval expiry sweep timer cleared')
   }
 
+  try {
+    stopFeeOracle()
+    logger.info('[Shutdown] Fee oracle stopped')
+  } catch {}
+
   if (!httpServer) {
     logger.warn('[Shutdown] No HTTP server to close')
     process.exit(0)
@@ -552,6 +560,16 @@ async function initServices(): Promise<void> {
       error: msg,
     })
     throw new Error(`AgentLoop: ${msg}`)
+  }
+
+  // 4. Fee oracle (#342) — best-effort, never blocks startup
+  try {
+    await startFeeOracle()
+    logger.info('[Startup] Fee oracle started ✓')
+  } catch (error) {
+    logger.error('[Startup] Fee oracle failed to start — continuing with defaults', {
+      error: error instanceof Error ? error.message : String(error),
+    })
   }
 }
 

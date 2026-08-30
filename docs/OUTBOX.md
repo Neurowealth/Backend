@@ -188,6 +188,15 @@ fully `AdminAuditLog`-audited (`src/routes/admin.ts`):
 | `outbox_op_latency_seconds` | Histogram | `kind` — creation to confirmation |
 | `outbox_fee_bump_total` | Counter | `kind` |
 | `outbox_stuck_submitted` | Gauge | — ops `SUBMITTED` past the timeout; the "lost in flight" alarm |
+| `fee_oracle_recommended_base_fee` | Gauge | — current p70 |
+| `fee_oracle_aggressive_base_fee` | Gauge | — current p95 |
+| `fee_oracle_ledger_capacity_usage` | Gauge | — 0..1 |
+| `fee_oracle_congestion_level` | Gauge | — 0=low,1=elevated,2=high,3=severe |
+| `fee_oracle_staleness_seconds` | Gauge | — seconds since last good sample |
+| `fee_oracle_clamp_total` | Counter | `bound` (`min`\|`max`) |
+| `outbox_low_deferred_total` | Counter | — LOW deferred due to high congestion |
+| `outbox_aggressive_fee_used_total` | Counter | — CRITICAL used aggressive fee |
+| `outbox_max_fee_hit_total` | Counter | `priority` |
 
 ## Configuration (`src/config/env.ts` → `config.outbox`)
 
@@ -199,9 +208,59 @@ fully `AdminAuditLog`-audited (`src/routes/admin.ts`):
 | `OUTBOX_SUBMITTED_TIMEOUT_MS` | `90000` | How long `SUBMITTED` may sit unconfirmed before fee-bump escalation |
 | `OUTBOX_FEE_BUMP_MULTIPLIER` | `2` | Fee multiplier per bump (compounds) |
 | `OUTBOX_FEE_BUMP_MAX_ATTEMPTS` | `3` | Fee-bump cap before a stuck op is escalated to `FAILED` |
+| `OUTBOX_MAX_ABS_FEE` | `100000` | Absolute fee cap in stroops |
+| `OUTBOX_LOW_DEFER_MS` | `15000` | LOW defer interval during high congestion |
+| `OUTBOX_LOW_MAX_DEFER_MS` | `300000` | Max total defer for a LOW op |
 | `OUTBOX_GLOBAL_MAX_IN_FLIGHT` | `10` | Global in-flight cap |
 | `OUTBOX_PER_ACCOUNT_MAX_IN_FLIGHT` | `1` | Per-signer in-flight cap (serial per account) |
 | `OUTBOX_BATCH_SIZE` | `20` | Ops claimed per sweep |
+| `FEE_ORACLE_POLL_MS` | `10000` | Fee oracle poll cadence |
+| `FEE_ORACLE_TTL_MS` | `30000` | Snapshot TTL |
+| `FEE_ORACLE_MIN` | `100` | Min base fee (stroops) |
+| `FEE_ORACLE_MAX` | `50000` | Max base fee (stroops) |
+| `FEE_ORACLE_DEFAULT_BASE_FEE` | `100` | Fallback base fee |
+
+## Fee oracle & congestion policy (#342)
+
+The outbox no longer sets fees blindly and bumps only after failure.
+
+### Fee oracle (`src/stellar/feeOracle.ts`)
+
+A small service that polls `server.getFeeStats()` and `server.getLatestLedger()` every `FEE_ORACLE_POLL_MS` (default 10s) via the resilient RPC client, keeps a short in-memory history (and a Redis-mirrored snapshot at `fee-oracle:snapshot`), and publishes:
+
+```ts
+FeeSnapshot {
+  recommendedBaseFee: number   // p70 inclusion fee, floored 100 stroops
+  aggressiveBaseFee: number    // p95, for CRITICAL ops
+  congestionLevel: 'low'|'elevated'|'high'|'severe'
+  ledgerCapacityUsage: number  // 0..1
+  sampledAt: string
+  ttlMs: number
+}
+```
+
+`congestionLevel` is derived from `ledgerCapacityUsage` and the `min→p95` spread, with hysteresis and a 30s dwell so a single noisy sample does not flap. Recommended/aggressive fees are clamped to `[FEE_ORACLE_MIN, FEE_ORACLE_MAX]` (`100`–`50000` stroops) and floored at `100`. On poll failure the snapshot goes stale; consumers fall back to `FEE_ORACLE_DEFAULT_BASE_FEE` (100) and staleness is a metric + `fee-oracle:stale` alert. `ttlMs` (default 30s) is evaluated on the consumer clock with 1s grace. Redis absence is logged, not fatal — in-memory still serves.
+
+### Dispatcher integration
+
+`submitClaimedOp` reads the current snapshot before the first attempt:
+
+*   `NORMAL` (deposits): `recommendedBaseFee`
+*   `LOW` (rebalances): `recommendedBaseFee`, but if `congestionLevel >= high` the op is **deferred** — left `PENDING` with `nextAttemptAt = now + OUTBOX_LOW_DEFER_MS` (default 15s), bounded by `OUTBOX_LOW_MAX_DEFER_MS` (default 5m) after which it dispatches regardless (a rebalance is never cancelled, only delayed). Counter `outbox_low_deferred_total`.
+*   `CRITICAL` (withdrawals): `aggressiveBaseFee` when `congestionLevel >= elevated`, otherwise `recommendedBaseFee`. Never waits. Counter `outbox_aggressive_fee_used_total`.
+
+Per-attempt `computeFeeMultiplier` still compounds on top (`feeBumpMultiplier ** min(attempts-1, feeBumpMaxAttempts)`), but the product `baseFee * multiplier` is now capped by an **absolute** `OUTBOX_MAX_ABS_FEE` (default 100000 stroops) so a high oracle base cannot compound without bound. Hitting the cap on a `CRITICAL` op still submits at the cap and emits a critical `outbox:max-fee-hit` alert (`outbox_max_fee_hit_total{priority}`).
+
+`reconcileStuckSubmitted` uses the *current* oracle base for its fee-bump resubmission, not a multiple of the original.
+
+### API surface
+
+*   `GET /api/v1/network/conditions` (public, rate-limited) → current `FeeSnapshot` + per-priority `etaBands` derived from `outbox_op_latency_seconds` percentiles.
+*   `POST /api/v1/deposit` and `POST /api/v1/withdraw` responses now include `estFee` (stroops) and `estConfirmationSeconds` from the oracle.
+
+### Telemetry
+
+Gauges `fee_oracle_recommended_base_fee`, `fee_oracle_aggressive_base_fee`, `fee_oracle_ledger_capacity_usage`, `fee_oracle_congestion_level` (0..3), `fee_oracle_staleness_seconds`; counters `fee_oracle_clamp_total{bound}`, `outbox_low_deferred_total`, `outbox_aggressive_fee_used_total`, `outbox_max_fee_hit_total{priority}`. Grafana `latency` dashboard panel + alerts `oracle stale > N s`, `severe > M min`.
 
 ## Out of scope
 

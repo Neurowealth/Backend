@@ -643,6 +643,80 @@ export function updateOutboxStuckSubmitted(count: number): void {
   outboxStuckSubmitted.set(count)
 }
 
+// ── Fee Oracle Metrics (#342) ────────────────────────────────────────────────
+
+export const feeOracleRecommendedBaseFee = new client.Gauge({
+  name: 'fee_oracle_recommended_base_fee',
+  help: 'Recommended base fee in stroops (p70 of inclusion fees, floored at 100)',
+  registers: [register],
+})
+
+export const feeOracleAggressiveBaseFee = new client.Gauge({
+  name: 'fee_oracle_aggressive_base_fee',
+  help: 'Aggressive base fee in stroops (p95) for CRITICAL ops during congestion',
+  registers: [register],
+})
+
+export const feeOracleLedgerCapacityUsage = new client.Gauge({
+  name: 'fee_oracle_ledger_capacity_usage',
+  help: 'Ledger capacity usage 0..1 from latest ledger',
+  registers: [register],
+})
+
+export const feeOracleCongestionLevel = new client.Gauge({
+  name: 'fee_oracle_congestion_level',
+  help: 'Congestion level as numeric enum (0=low,1=elevated,2=high,3=severe)',
+  registers: [register],
+})
+
+export const feeOracleStalenessSeconds = new client.Gauge({
+  name: 'fee_oracle_staleness_seconds',
+  help: 'Seconds since last successful fee oracle sample',
+  registers: [register],
+})
+
+export const feeOracleClampTotal = new client.Counter({
+  name: 'fee_oracle_clamp_total',
+  help: 'Fee oracle clamps to min/max bounds',
+  labelNames: ['bound'] as const,
+  registers: [register],
+})
+
+export const outboxLowDeferredTotal = new client.Counter({
+  name: 'outbox_low_deferred_total',
+  help: 'LOW ops deferred due to high congestion',
+  registers: [register],
+})
+
+export const outboxAggressiveFeeUsedTotal = new client.Counter({
+  name: 'outbox_aggressive_fee_used_total',
+  help: 'CRITICAL ops that used aggressive base fee during congestion',
+  registers: [register],
+})
+
+export const outboxMaxFeeHitTotal = new client.Counter({
+  name: 'outbox_max_fee_hit_total',
+  help: 'Ops that hit OUTBOX_MAX_ABS_FEE cap',
+  labelNames: ['priority'] as const,
+  registers: [register],
+})
+
+export function recordFeeOracleClamp(bound: 'min' | 'max'): void {
+  feeOracleClampTotal.inc({ bound })
+}
+
+export function recordOutboxLowDeferred(): void {
+  outboxLowDeferredTotal.inc()
+}
+
+export function recordOutboxAggressiveFeeUsed(): void {
+  outboxAggressiveFeeUsedTotal.inc()
+}
+
+export function recordOutboxMaxFeeHit(priority: string): void {
+  outboxMaxFeeHitTotal.inc({ priority })
+}
+
 // ── Real-time WebSocket streaming metrics (#316) ─────────────────────────────
 
 export const wsConnectionsActive = new client.Gauge({

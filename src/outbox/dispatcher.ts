@@ -21,6 +21,7 @@
 import { logger } from '../utils/logger'
 import { config } from '../config/env'
 import { alertingService } from '../services/alerting'
+import db from '../db'
 import { publishUserEvent } from '../events/publisher'
 import { EVENT_TYPE_TOPIC } from '../events/types'
 import { TransactionResult } from '../stellar/types'
@@ -47,7 +48,11 @@ import {
   recordOutboxLatency,
   updateOutboxQueueDepth,
   updateOutboxStuckSubmitted,
+  recordOutboxLowDeferred,
+  recordOutboxAggressiveFeeUsed,
+  recordOutboxMaxFeeHit,
 } from '../utils/metrics'
+import { getFeeSnapshot, isStale as isFeeSnapshotStale } from '../stellar/feeOracle'
 
 function signerLock() {
   return getSignerLock(
@@ -67,6 +72,30 @@ function computeFeeMultiplier(attempts: number): number {
     config.outbox.feeBumpMaxAttempts
   )
   return config.outbox.feeBumpMultiplier ** bumps
+}
+
+const CONGESTION_ORDER: Record<string, number> = {
+  low: 0,
+  elevated: 1,
+  high: 2,
+  severe: 3,
+}
+
+function shouldDeferLowOp(op: OutboxOpRecord, congestion: string): boolean {
+  if (op.priority !== 'LOW') return false
+  if ((CONGESTION_ORDER[congestion] ?? 0) < CONGESTION_ORDER['high']) return false
+  const ageMs = Date.now() - new Date(op.createdAt).getTime()
+  if (ageMs > config.outbox.lowMaxDeferMs) return false
+  return true
+}
+
+function getBaseFeeForOp(op: OutboxOpRecord): { baseFee: number; isAggressive: boolean } {
+  const snapshot = getFeeSnapshot()
+  const level = snapshot.congestionLevel
+  if (op.priority === 'CRITICAL' && (CONGESTION_ORDER[level] ?? 0) >= CONGESTION_ORDER['elevated']) {
+    return { baseFee: snapshot.aggressiveBaseFee, isAggressive: true }
+  }
+  return { baseFee: snapshot.recommendedBaseFee, isAggressive: false }
 }
 
 async function onTerminalFailure(
@@ -118,7 +147,32 @@ async function onTerminalFailure(
  * caller's existing error handling is unaffected by the outbox underneath it.
  */
 async function submitClaimedOp(op: OutboxOpRecord): Promise<TransactionResult> {
-  const feeMultiplier = computeFeeMultiplier(op.attempts)
+  const { baseFee, isAggressive } = getBaseFeeForOp(op)
+  if (isAggressive) recordOutboxAggressiveFeeUsed()
+
+  const attemptMultiplier = computeFeeMultiplier(op.attempts)
+  const rawFee = baseFee * attemptMultiplier
+  const effectiveFee = Math.min(rawFee, config.outbox.maxAbsFee)
+  const hitCap = rawFee > config.outbox.maxAbsFee
+  if (hitCap) {
+    recordOutboxMaxFeeHit(op.priority)
+    if (op.priority === 'CRITICAL') {
+      await alertingService
+        .emit(
+          {
+            title: 'Outbox fee cap hit on CRITICAL op',
+            description: `CRITICAL op ${op.id} hit OUTBOX_MAX_ABS_FEE ${config.outbox.maxAbsFee} stroops (raw ${rawFee}). Submitting at cap.`,
+            severity: 'critical',
+            component: 'outbox',
+            metadata: { opId: op.id, rawFee, cap: config.outbox.maxAbsFee },
+          },
+          'outbox:max-fee-hit'
+        )
+        .catch(() => {})
+    }
+  }
+  // Contract expects multiplier relative to BASE_FEE (100 stroops)
+  const feeMultiplier = Math.max(1, Math.round(effectiveFee / 100))
   const lock = signerLock()
 
   try {
@@ -208,6 +262,27 @@ export async function dispatchOne(opId: string): Promise<TransactionResult> {
     )
   }
 
+  // LOW deferral during high/severe congestion (bounded)
+  try {
+    const snap = getFeeSnapshot()
+    if (shouldDeferLowOp(op, snap.congestionLevel)) {
+      const deferUntil = new Date(Date.now() + config.outbox.lowDeferMs)
+      await (db as any).outboxOp.update({
+        where: { id: op.id },
+        data: { nextAttemptAt: deferUntil },
+      })
+      recordOutboxLowDeferred()
+      throw new Error(`LOW op ${opId} deferred due to high congestion (${snap.congestionLevel})`)
+    }
+  } catch (err) {
+    // If the error is our deferral throw, rethrow; otherwise log and proceed
+    if (err instanceof Error && err.message.includes('deferred due to high congestion')) throw err
+    logger.warn('[Outbox] Defer check failed, proceeding to dispatch', {
+      opId: op.id,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
+
   const signerPublicKey = await resolveSignerPublicKey(op.payload, op.userId)
   const claimed = await claimOp(opId, signerPublicKey)
   if (!claimed) {
@@ -291,6 +366,30 @@ export async function runDispatchSweep(): Promise<void> {
         userId: op.userId,
       })
       continue
+    }
+
+    // LOW deferral during high/severe congestion (bounded)
+    try {
+      const snap = getFeeSnapshot()
+      if (shouldDeferLowOp(op, snap.congestionLevel)) {
+        const deferUntil = new Date(Date.now() + config.outbox.lowDeferMs)
+        await (db as any).outboxOp.update({
+          where: { id: op.id },
+          data: { nextAttemptAt: deferUntil },
+        })
+        recordOutboxLowDeferred()
+        logger.info('[Outbox] LOW op deferred due to high congestion', {
+          opId: op.id,
+          congestion: snap.congestionLevel,
+          deferUntil: deferUntil.toISOString(),
+        })
+        continue
+      }
+    } catch (err) {
+      logger.warn('[Outbox] Defer check failed, proceeding to dispatch', {
+        opId: op.id,
+        error: err instanceof Error ? err.message : String(err),
+      })
     }
 
     let signerPublicKey: string

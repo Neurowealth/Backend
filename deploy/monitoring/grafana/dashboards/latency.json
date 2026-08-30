@@ -39,6 +39,38 @@
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 12, "w": 24, "h": 6 },
       "targets": [{ "expr": "histogram_quantile(0.95, rate(analytics_request_duration_seconds_bucket[5m]))", "legendFormat": "{{endpoint}}" }]
+    },
+    {
+      "id": 6,
+      "title": "Fee Oracle Recommended Base Fee (stroops)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 18, "w": 12, "h": 6 },
+      "targets": [{ "expr": "fee_oracle_recommended_base_fee", "legendFormat": "recommended" }, { "expr": "fee_oracle_aggressive_base_fee", "legendFormat": "aggressive" }]
+    },
+    {
+      "id": 7,
+      "title": "Ledger Capacity Usage",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 18, "w": 12, "h": 6 },
+      "targets": [{ "expr": "fee_oracle_ledger_capacity_usage", "legendFormat": "capacity" }, { "expr": "fee_oracle_congestion_level", "legendFormat": "congestion" }]
+    },
+    {
+      "id": 8,
+      "title": "Fee Oracle Staleness (s)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 6 },
+      "targets": [{ "expr": "fee_oracle_staleness_seconds", "legendFormat": "staleness" }]
+    },
+    {
+      "id": 9,
+      "title": "Outbox Deferrals & Fee Events",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 6 },
+      "targets": [
+        { "expr": "rate(outbox_low_deferred_total[5m])", "legendFormat": "low_deferred" },
+        { "expr": "rate(outbox_aggressive_fee_used_total[5m])", "legendFormat": "aggressive" },
+        { "expr": "rate(outbox_max_fee_hit_total[5m])", "legendFormat": "max_fee_hit {{priority}}" }
+      ]
     }
   ]
 }

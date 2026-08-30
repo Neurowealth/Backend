@@ -15,6 +15,8 @@ servers:
     description: API base
 
 tags:
+  - name: Network
+    description: Stellar network fee oracle and congestion (public).
   - name: Analytics
     description: Portfolio performance and risk analytics
   - name: Assistant
@@ -1419,6 +1421,73 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UnauthorizedError'
+
+  # ── Network conditions (#342) ─────────────────────────────────────────────────
+
+  /network/conditions:
+    get:
+      operationId: getNetworkConditions
+      summary: Current network fee and congestion snapshot
+      description: |
+        Adaptive base-fee oracle snapshot (#342) — recommended base fee (p70),
+        aggressive base fee (p95), congestion level with hysteresis, ledger
+        capacity usage, plus per-priority ETA bands derived from recent
+        outbox latency percentiles. Public, rate-limited.
+      tags: [Network]
+      security: []
+      responses:
+        '200':
+          description: Fee snapshot + ETA bands.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      recommendedBaseFee:
+                        type: integer
+                      aggressiveBaseFee:
+                        type: integer
+                      congestionLevel:
+                        type: string
+                        enum: [low, elevated, high, severe]
+                      ledgerCapacityUsage:
+                        type: number
+                      sampledAt:
+                        type: string
+                        format: date-time
+                      ttlMs:
+                        type: integer
+                      stale:
+                        type: boolean
+                      etaBands:
+                        type: object
+                        properties:
+                          LOW:
+                            type: object
+                            properties:
+                              minSeconds:
+                                type: integer
+                              maxSeconds:
+                                type: integer
+                          NORMAL:
+                            type: object
+                            properties:
+                              minSeconds:
+                                type: integer
+                              maxSeconds:
+                                type: integer
+                          CRITICAL:
+                            type: object
+                            properties:
+                              minSeconds:
+                                type: integer
+                              maxSeconds:
+                                type: integer
 
   # ── Real-time WebSocket stream (#316) ─────────────────────────────────────────
 

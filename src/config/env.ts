@@ -659,6 +659,18 @@ export const config = {
       process.env.OUTBOX_PER_ACCOUNT_MAX_IN_FLIGHT || '1'
     ),
     batchSize: parseInt(process.env.OUTBOX_BATCH_SIZE || '20'),
+    maxAbsFee: parseInt(process.env.OUTBOX_MAX_ABS_FEE || '100000'),
+    lowDeferMs: parseInt(process.env.OUTBOX_LOW_DEFER_MS || '15000'),
+    lowMaxDeferMs: parseInt(process.env.OUTBOX_LOW_MAX_DEFER_MS || '300000'),
+  },
+  feeOracle: {
+    pollMs: parseInt(process.env.FEE_ORACLE_POLL_MS || '10000'),
+    ttlMs: parseInt(process.env.FEE_ORACLE_TTL_MS || '30000'),
+    min: parseInt(process.env.FEE_ORACLE_MIN || '100'),
+    max: parseInt(process.env.FEE_ORACLE_MAX || '50000'),
+    defaultBaseFee: parseInt(
+      process.env.FEE_ORACLE_DEFAULT_BASE_FEE || '100'
+    ),
   },
   apiKeys: {
     maxActivePerUser: parseInt(process.env.USER_API_KEY_MAX_ACTIVE || '10'),
