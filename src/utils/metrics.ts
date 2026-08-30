@@ -717,6 +717,33 @@ export function recordOutboxMaxFeeHit(priority: string): void {
   outboxMaxFeeHitTotal.inc({ priority })
 }
 
+// ── Sponsored Reserves Metrics (#339) ──────────────────────────────────────
+
+export const reserveOutstandingXlm = new client.Gauge({
+  name: 'reserve_sponsorship_outstanding_xlm',
+  help: 'Sum of xlmReserved for ACTIVE ReserveSponsorship rows — platform outstanding reserve liability',
+  registers: [register],
+})
+
+export const sponsorAvailableXlmGauge = new client.Gauge({
+  name: 'sponsor_available_xlm',
+  help: 'Available XLM per sponsor account (balance - selling liabilities)',
+  labelNames: ['sponsorAccount'] as const,
+  registers: [register],
+})
+
+export const reserveReconciliationDrift = new client.Gauge({
+  name: 'reserve_reconciliation_drift_xlm',
+  help: 'Drift between recorded xlmReserved and on-chain base reserve',
+  registers: [register],
+})
+
+export const sponsorCapacityExhaustedTotal = new client.Counter({
+  name: 'sponsor_capacity_exhausted_total',
+  help: 'Times provisioning refused due to sponsor_capacity_exhausted',
+  registers: [register],
+})
+
 // ── Real-time WebSocket streaming metrics (#316) ─────────────────────────────
 
 export const wsConnectionsActive = new client.Gauge({

@@ -1406,4 +1406,78 @@ router.get(
   }
 )
 
+/**
+ * GET /api/v1/admin/reserves — reserve sponsorship overview (#339)
+ * Admin-scoped, audit-logged.
+ */
+router.get(
+  '/reserves',
+  requireAdminScope('read'),
+  async (req: Request, res: Response) => {
+    try {
+      const rows: any[] = await prisma.reserveSponsorship.findMany({
+        where: { status: 'ACTIVE' },
+      })
+      const outstanding = rows.reduce((sum: number, r: any) => sum + Number(r.xlmReserved), 0)
+
+      // per-sponsor balances (best-effort)
+      const bySponsor = new Map<string, { count: number; reserved: number }>()
+      for (const r of rows) {
+        const cur = bySponsor.get(r.sponsorAccount) ?? { count: 0, reserved: 0 }
+        cur.count++
+        cur.reserved += Number(r.xlmReserved)
+        bySponsor.set(r.sponsorAccount, cur)
+      }
+
+      const perSponsor: Array<{
+        sponsorAccount: string
+        activeCount: number
+        reservedXlm: number
+        availableXlm: number | null
+      }> = []
+      for (const [sponsorAccount, info] of bySponsor) {
+        let availableXlm: number | null = null
+        try {
+          const { getAccount } = await import('../stellar/client')
+          const acct: any = await getAccount(sponsorAccount).catch(() => null)
+          if (acct && acct.balances) {
+            const native = acct.balances.find((b: any) => b.asset_type === 'native')
+            const bal = native ? parseFloat(native.balance) : 0
+            const liab = native?.selling_liabilities ? parseFloat(native.selling_liabilities) : 0
+            availableXlm = bal - liab
+          }
+        } catch {}
+        perSponsor.push({
+          sponsorAccount,
+          activeCount: info.count,
+          reservedXlm: info.reserved,
+          availableXlm,
+        })
+      }
+
+      // drift is computed by reconciliation job; expose last known drift gauge
+      // For endpoint we recompute quickly: out-of-sync where ledger says gone
+      // For MVP return counts only, detailed drift is in job logs/alerts
+
+      auditLog(req, res, 'LIST_RESERVES', 'success', {
+        outstanding,
+        sponsors: perSponsor.length,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: {
+          outstandingXlm: outstanding,
+          perSponsor,
+          totalActive: rows.length,
+        },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'LIST_RESERVES', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
 export default router

@@ -672,6 +672,14 @@ export const config = {
       process.env.FEE_ORACLE_DEFAULT_BASE_FEE || '100'
     ),
   },
+  sponsor: {
+    minXlmFloor: parseFloat(process.env.SPONSOR_MIN_XLM_FLOOR || '10'),
+  },
+  reserveReconciliation: {
+    intervalMs: parseInt(
+      process.env.RESERVE_RECONCILIATION_INTERVAL_MS || '3600000'
+    ),
+  },
   apiKeys: {
     maxActivePerUser: parseInt(process.env.USER_API_KEY_MAX_ACTIVE || '10'),
     withdrawalsEnabled:

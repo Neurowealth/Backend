@@ -58,6 +58,7 @@ import { startFeeOracle, stopFeeOracle } from './stellar/feeOracle'
 import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
 import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { scheduleApprovalExpiry } from './jobs/approvalExpiry'
+import { scheduleReserveReconciliation } from './jobs/reserveReconciliation'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { startEventBridge, stopEventBridge } from './events/bridge'
 import { attachWebSocketServer, closeWebSocketServer } from './ws/server'
@@ -131,6 +132,7 @@ let attributionHandle: NodeJS.Timeout | null = null
 let outboxDispatcherHandle: NodeJS.Timeout | null = null
 let portfolioRiskJobHandle: NodeJS.Timeout | null = null
 let approvalExpiryHandle: NodeJS.Timeout | null = null
+let reserveReconciliationHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -438,6 +440,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Approval expiry sweep timer cleared')
   }
 
+  if (reserveReconciliationHandle) {
+    clearInterval(reserveReconciliationHandle)
+    reserveReconciliationHandle = null
+    logger.info('[Shutdown] Reserve reconciliation timer cleared')
+  }
+
   try {
     stopFeeOracle()
     logger.info('[Shutdown] Fee oracle stopped')
@@ -646,6 +654,7 @@ async function main(): Promise<void> {
   attributionHandle = scheduleAttribution()
   portfolioRiskJobHandle = schedulePortfolioRiskJob()
   approvalExpiryHandle = scheduleApprovalExpiry()
+  reserveReconciliationHandle = scheduleReserveReconciliation()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

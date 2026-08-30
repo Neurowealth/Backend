@@ -80,6 +80,8 @@ enum OutboxOpKind {
   YIELD_CLAIM
   // #341: Treasury sweep operations
   TREASURY_SWEEP
+  // #339: Sponsored account provisioning
+  ACCOUNT_PROVISION
 }
 
 enum OutboxOpActor {
@@ -754,6 +756,23 @@ model CustodialWallet {
   @@index([keyVersion])
   @@index([encryptionKeyId])
   @@map("custodial_wallets")
+}
+
+// #339: Sponsored reserves — one row per platform-sponsored ledger entry
+model ReserveSponsorship {
+  id             String   @id @default(uuid())
+  sponsoredId    String // CustodialWallet.id
+  sponsorAccount String // sponsor public key
+  entryType      String // ACCOUNT | TRUSTLINE | OFFER
+  ledgerKey      String // sponsored ledger entry key for revoke
+  xlmReserved    Decimal  @db.Decimal(36, 18)
+  status         String // ACTIVE | REVOKED | RECLAIMED
+  createdAt      DateTime @default(now())
+  revokedAt      DateTime?
+
+  @@index([sponsoredId])
+  @@index([sponsorAccount, status])
+  @@map("reserve_sponsorships")
 }
 
 enum KeyStatus {

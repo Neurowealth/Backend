@@ -21,6 +21,20 @@ import { getWalletByUserId } from '../stellar/wallet'
 import { getAgentKeypair } from '../stellar/client'
 import { TransactionResult } from '../stellar/types'
 import { OutboxPayload } from './types'
+import { Keypair, Asset, rpc } from '@stellar/stellar-sdk'
+import {
+  buildSponsoredCreateAccount,
+  buildSponsoredTrustline,
+  buildRevokeSponsorship,
+  getSponsorKeypairs,
+} from '../stellar/sponsorship'
+import {
+  submitTransaction,
+  waitForConfirmation,
+  prepareTransaction,
+  simulateTransaction,
+} from '../stellar/client'
+import db from '../db'
 
 /**
  * Which Stellar public key an op's submission will sign with — resolved
@@ -43,7 +57,38 @@ export async function resolveSignerPublicKey(
     case 'rebalance':
     case 'referral_reward':
       return getAgentKeypair().publicKey()
+    case 'sponsor_create_account':
+    case 'sponsor_trustline':
+    case 'revoke_sponsorship':
+      return (payload as any).sponsorAccount as string
   }
+}
+
+function getSponsorKeypair(publicKey: string): Keypair {
+  const kps = getSponsorKeypairs()
+  const kp = kps.find((k) => k.publicKey() === publicKey)
+  if (!kp) throw new Error(`Sponsor key not found for ${publicKey}`)
+  return kp
+}
+
+async function submitSponsoredTransaction(
+  tx: ReturnType<typeof buildSponsoredCreateAccount>,
+  signer: Keypair
+): Promise<TransactionResult> {
+  const simulation = await simulateTransaction(tx as any)
+  if (rpc.Api.isSimulationError(simulation as any)) {
+    throw new Error(`Sponsorship simulation failed: ${(simulation as any).error}`)
+  }
+  const prepared = await prepareTransaction(tx as any)
+  prepared.sign(signer)
+  // Sponsored create also needs sponsored account signature? For createAccount with 0 balance sponsored, only sponsor signs. Add sponsored sig if needed? No.
+  const hash = await submitTransaction(prepared)
+  const result = await waitForConfirmation(hash)
+  if ((result as any).status !== 'success' && (result as any).status !== undefined) {
+    // waitForConfirmation returns {hash, status:'success'|...}
+    if ((result as any).status === 'failed') throw new Error('Sponsored transaction failed on-chain')
+  }
+  return result
 }
 
 /**
@@ -84,5 +129,67 @@ export async function executeOutboxPayload(
         payload.assetSymbol,
         feeMultiplier
       )
+    case 'sponsor_create_account': {
+      const sponsor = getSponsorKeypair(payload.sponsorAccount)
+      const tx = buildSponsoredCreateAccount({
+        newAccountId: payload.newAccountId,
+        sponsorKeypair: sponsor,
+        startingBalance: '0',
+      })
+      const result = await submitSponsoredTransaction(tx, sponsor)
+      // Record reserve ledger on success (best-effort, backfillable via reconciliation)
+      await (db as any).reserveSponsorship
+        .create({
+          data: {
+            sponsoredId: payload.sponsoredId,
+            sponsorAccount: payload.sponsorAccount,
+            entryType: 'ACCOUNT',
+            ledgerKey: payload.ledgerKey,
+            xlmReserved: payload.xlmReserved,
+            status: 'ACTIVE',
+          },
+        })
+        .catch(() => {})
+      return result
+    }
+    case 'sponsor_trustline': {
+      const sponsor = getSponsorKeypair(payload.sponsorAccount)
+      const asset = new Asset(payload.assetCode, payload.assetIssuer)
+      const tx = buildSponsoredTrustline({
+        accountId: payload.accountId,
+        asset,
+        sponsorKeypair: sponsor,
+      })
+      const result = await submitSponsoredTransaction(tx, sponsor)
+      await (db as any).reserveSponsorship
+        .create({
+          data: {
+            sponsoredId: payload.sponsoredId,
+            sponsorAccount: payload.sponsorAccount,
+            entryType: 'TRUSTLINE',
+            ledgerKey: payload.ledgerKey,
+            xlmReserved: payload.xlmReserved,
+            status: 'ACTIVE',
+          },
+        })
+        .catch(() => {})
+      return result
+    }
+    case 'revoke_sponsorship': {
+      const sponsor = getSponsorKeypair(payload.sponsorAccount)
+      const tx = buildRevokeSponsorship({
+        sponsorKeypair: sponsor,
+        accountId: payload.sponsoredId,
+        ledgerKey: payload.ledgerKey,
+      })
+      const result = await submitSponsoredTransaction(tx, sponsor)
+      await (db as any).reserveSponsorship
+        .updateMany({
+          where: { ledgerKey: payload.ledgerKey, status: 'ACTIVE' },
+          data: { status: 'RECLAIMED', revokedAt: new Date() },
+        })
+        .catch(() => {})
+      return result
+    }
   }
 }

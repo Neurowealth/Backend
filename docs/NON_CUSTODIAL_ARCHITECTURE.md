@@ -280,7 +280,19 @@ If the non-custodial migration causes issues:
 | Phase 3 (deprecation) | If `custodial_wallets` still exist, re-enable custodial endpoints. If table is dropped, restore from backup |
 | Phase 4 (cleanup) | Re-add `WALLET_ENCRYPTION_KEY` and `custodial_wallets` model if needed (full schema revert) |
 
-## 7. Migration Checklist
+## 7. Reserve Sponsorship
+
+Every custodial Stellar account needs a base reserve (1 XLM) plus 0.5 XLM per trustline. Without sponsorship a stablecoin-only user cannot hold assets.
+
+*   **Create:** `buildSponsoredCreateAccount({newAccountId, sponsorKeypair})` wraps `CreateAccount(0)` between `BeginSponsoringFutureReserves`/`EndSponsoringFutureReserves` so the sponsor (from `STELLAR_SPONSOR_KEYS` pool, hash-tracked via `keys/registry.ts`) pays the reserve. `createCustodialWallet` enqueues this via `OutboxOpKind.ACCOUNT_PROVISION` behind `SPONSORED_RESERVES_ENABLED` (default on).
+*   **Trustline:** `buildSponsoredTrustline({accountId, asset:` USDC `, sponsor})` sandwiches `ChangeTrust` similarly; only for classic `G...` USDC (Soroban `C...` needs no trustline). Sponsored before first deposit of a new asset.
+*   **Ledger:** `ReserveSponsorship` (one row per sponsored entry, `xlmReserved` 1 / 0.5, `status ACTIVE|REVOKED|RECLAIMED`, `ledgerKey` for revoke) tracks outstanding liability (`SUM WHERE ACTIVE` → gauge `reserve_sponsorship_outstanding_xlm`).
+*   **Multi-sponsor:** `STELLAR_SPONSOR_KEYS` comma-separated, `pickSponsor()` selects most available XLM above `SPONSOR_MIN_XLM_FLOOR` (default 10 XLM); if none, `503 sponsor_capacity_exhausted` + critical alert, never silently under-reserves.
+*   **Revoke:** `buildRevokeSponsorship` leaf-first (trustlines before account) for close; reconciliation job walks on-chain sponsor fields and joins pending outbox before alerting on drift.
+
+See `docs/RUNBOOK.md` #8 and `docs/OUTBOX.md` Fee oracle section for operational details.
+
+## 8. Migration Checklist
 
 - [ ] Phase 1: `POST /api/vault/submit-transaction` endpoint implemented with XDR validation
 - [ ] Phase 1: Idempotency check via `txHash` uniqueness

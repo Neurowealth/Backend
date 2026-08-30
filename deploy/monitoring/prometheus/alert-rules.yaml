@@ -47,6 +47,33 @@ groups:
           summary: "High failure rate detected"
           description: "Failure rate is {{ $value }}/min (> 10)"
 
+      - alert: SponsorLowXlm
+        expr: sponsor_available_xlm < 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Sponsor account low on XLM"
+          description: "Sponsor {{ $labels.sponsorAccount }} has {{ $value }} XLM available (< 10) — top up immediately"
+
+      - alert: FeeOracleStale
+        expr: fee_oracle_staleness_seconds > 60
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fee oracle stale"
+          description: "Fee oracle has not updated for {{ $value }}s (> 60s)"
+
+      - alert: SevereCongestion
+        expr: fee_oracle_congestion_level == 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Severe network congestion"
+          description: "Congestion level severe for 5 minutes — LOW ops deferring"
+
   - name: neurowealth_warning
     interval: 30s
     rules:
