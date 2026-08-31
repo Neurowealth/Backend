@@ -45,9 +45,11 @@ beforeEach(() => {
   jest.clearAllMocks()
   mockDb.lotDisposal = { findMany: jest.fn() }
   mockDb.user = {
-    findUnique: jest
-      .fn()
-      .mockResolvedValue({ accountingMethod: 'FIFO', methodEffectiveAt: null }),
+    findUnique: jest.fn().mockResolvedValue({
+      accountingMethod: 'FIFO',
+      methodEffectiveAt: null,
+      taxJurisdiction: 'US',
+    }),
   }
 })
 
@@ -107,6 +109,10 @@ describe('buildTaxReport', () => {
       costBasis: '30',
       realizedGain: '10',
       pricedDisposalCount: 1,
+      shortTermGain: '10',
+      longTermGain: '0',
+      allowanceApplied: '0',
+      realizedGainAfterAllowance: '10',
     })
     expect(report.caveats.unpricedDisposalCount).toBe(1)
     expect(report.caveats.unpricedAssets).toEqual(['XLM'])
@@ -138,6 +144,7 @@ describe('buildTaxReport', () => {
     mockDb.user.findUnique.mockResolvedValue({
       accountingMethod: 'HIFO',
       methodEffectiveAt: null,
+      taxJurisdiction: 'US',
     })
     mockDb.lotDisposal.findMany.mockResolvedValue([])
 
@@ -150,6 +157,7 @@ describe('buildTaxReport', () => {
     mockDb.user.findUnique.mockResolvedValue({
       accountingMethod: 'LIFO',
       methodEffectiveAt: null,
+      taxJurisdiction: 'US',
     })
     mockDb.lotDisposal.findMany.mockResolvedValue([])
 
@@ -174,6 +182,7 @@ describe('buildTaxReport', () => {
     mockDb.user.findUnique.mockResolvedValue({
       accountingMethod: 'HIFO',
       methodEffectiveAt: new Date('2026-06-01T00:00:00Z'),
+      taxJurisdiction: 'US',
     })
     mockDb.lotDisposal.findMany.mockResolvedValue([])
 
@@ -186,6 +195,7 @@ describe('buildTaxReport', () => {
     mockDb.user.findUnique.mockResolvedValue({
       accountingMethod: 'HIFO',
       methodEffectiveAt: new Date('2025-06-01T00:00:00Z'),
+      taxJurisdiction: 'US',
     })
     mockDb.lotDisposal.findMany.mockResolvedValue([])
 
