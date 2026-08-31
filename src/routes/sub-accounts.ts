@@ -103,8 +103,8 @@ router.post(
         parentUserId,
         childUserId,
         permissions: permissions as SubAccountPermission[],
-        dailyLimit: dailyLimit ?? null,
-        transactionLimit: transactionLimit ?? null,
+        ...(dailyLimit !== undefined ? { dailyLimit } : {}),
+        ...(transactionLimit !== undefined ? { transactionLimit } : {}),
       },
     })
 
