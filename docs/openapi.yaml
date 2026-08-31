@@ -1238,6 +1238,40 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /analytics/user-yield/export:
+    get:
+      operationId: exportUserYield
+      summary: User yield summary (CSV export)
+      description: |
+        Same data as GET /analytics/user-yield, as a downloadable CSV — one
+        row per yield snapshot point, with the period totals repeated on
+        every row (#405).
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Period'
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [csv]
+            default: csv
+      responses:
+        '200':
+          description: CSV file.
+          content:
+            text/csv:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /analytics/protocol-performance:
     get:
       operationId: getProtocolPerformance

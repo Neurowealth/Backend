@@ -37,7 +37,8 @@ export function requireSubAccountPermission(permission: SubAccountPermission) {
       const result = await checkSubAccountPermission(
         req.auth.userId,
         targetUserId,
-        permission
+        permission,
+        permission === 'WITHDRAW' ? Number(req.body?.amount) : undefined
       )
 
       if (!result.allowed) {
@@ -86,7 +87,8 @@ export type SubAccountPermissionCheck =
 export async function checkSubAccountPermission(
   parentUserId: string,
   childUserId: string,
-  permission: SubAccountPermission
+  permission: SubAccountPermission,
+  amount?: number
 ): Promise<SubAccountPermissionCheck> {
   const subAccount = await db.subAccount.findUnique({
     where: {
@@ -100,6 +102,33 @@ export async function checkSubAccountPermission(
 
   if (!subAccount.permissions.includes(permission)) {
     return { allowed: false, reason: 'no_permission' }
+  }
+
+  if (permission === 'WITHDRAW' && amount !== undefined) {
+    if (
+      subAccount.transactionLimit != null &&
+      amount > Number(subAccount.transactionLimit)
+    )
+      return { allowed: false, reason: 'no_permission' }
+    if (subAccount.dailyLimit != null) {
+      const since = new Date()
+      since.setUTCHours(0, 0, 0, 0)
+      const spent = await db.transaction.aggregate({
+        where: {
+          actingAsUserId: parentUserId,
+          userId: childUserId,
+          type: 'WITHDRAWAL',
+          createdAt: { gte: since },
+          status: { not: 'FAILED' },
+        },
+        _sum: { amount: true },
+      })
+      if (
+        Number(spent._sum.amount ?? 0) + amount >
+        Number(subAccount.dailyLimit)
+      )
+        return { allowed: false, reason: 'no_permission' }
+    }
   }
 
   return { allowed: true }

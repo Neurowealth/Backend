@@ -15,6 +15,7 @@ import { referralUserParamsSchema } from '../validators/referral-validators'
 import {
   getMyReferralCode,
   getReferrals,
+  getReferralLeaderboard,
 } from '../controllers/referral-controller'
 
 const router = Router()
@@ -22,6 +23,7 @@ const router = Router()
 // The caller's own code. Must precede the /:userId route so "code" is not
 // captured as a userId.
 router.get('/code', requireAuth, getMyReferralCode)
+router.get('/leaderboard', getReferralLeaderboard)
 
 router.get(
   '/:userId',

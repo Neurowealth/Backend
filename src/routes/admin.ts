@@ -1213,6 +1213,80 @@ router.post(
 )
 
 /**
+ * GET /api/admin/referrals/flagged
+ * Lists referral conversions the fraud heuristic held for manual review
+ * (#397) instead of auto-activating. Required scope: referrals:read
+ */
+router.get(
+  '/referrals/flagged',
+  requireAdminScope('referrals:read'),
+  async (req: Request, res: Response) => {
+    try {
+      const { listFlaggedConversions } = await import('../referral/service')
+      const flagged = await listFlaggedConversions()
+      auditLog(req, res, 'LIST_FLAGGED_REFERRALS', 'success', {
+        count: flagged.length,
+      })
+      res.status(200).json({ success: true, data: flagged })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'LIST_FLAGGED_REFERRALS', 'failure', {
+        error: message,
+      })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/referrals/:id/review
+ * Resolves a FLAGGED referral conversion (#397) — body: { "decision":
+ * "approve" | "reject" }. Approving activates it exactly as an unflagged
+ * conversion would have; rejecting moves it to EXPIRED so it can never be
+ * paid out. Required scope: referrals:write
+ */
+router.post(
+  '/referrals/:id/review',
+  requireAdminScope('referrals:write'),
+  async (req: Request, res: Response) => {
+    const { decision } = req.body ?? {}
+    if (decision !== 'approve' && decision !== 'reject') {
+      return res.status(400).json({
+        success: false,
+        error: 'decision must be "approve" or "reject"',
+      })
+    }
+
+    try {
+      const { resolveFlaggedConversion } = await import('../referral/service')
+      const adminAuth = res.locals.adminAuth
+      await resolveFlaggedConversion(
+        req.params.id,
+        decision,
+        adminAuth?.id ?? 'admin'
+      )
+      auditLog(req, res, 'REFERRAL_REVIEW', 'success', {
+        conversionId: req.params.id,
+        decision,
+      })
+      res
+        .status(200)
+        .json({ success: true, data: { id: req.params.id, decision } })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'REFERRAL_REVIEW', 'failure', {
+        conversionId: req.params.id,
+        decision,
+        error: message,
+      })
+      // Not-found / wrong-state errors from resolveFlaggedConversion are
+      // caller mistakes (stale UI, double-submit), not server failures.
+      res.status(409).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
  * GET /api/admin/users/:id/sessions — list sessions for a user (#376)
  */
 router.get(

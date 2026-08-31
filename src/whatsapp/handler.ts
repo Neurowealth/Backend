@@ -345,6 +345,9 @@ async function executeIntent(
       return { body: formatAlertDeletedReply(deleted) }
     }
 
+    case 'clarification':
+      return { body: intent.prompt }
+
     case 'unknown':
     default:
       return { body: formatUnknownMessage() }

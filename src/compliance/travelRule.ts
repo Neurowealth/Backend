@@ -1,6 +1,5 @@
-import { PrismaClient } from '@prisma/client'
+import db from '../db'
 
-const prisma = new PrismaClient()
 const TRAVEL_RULE_THRESHOLD = 1000 // e.g. USD
 
 export async function detectTravelRule(
@@ -9,7 +8,7 @@ export async function detectTravelRule(
   direction: 'INBOUND' | 'OUTBOUND'
 ) {
   if (amountInBaseCurrency >= TRAVEL_RULE_THRESHOLD) {
-    await prisma.travelRuleRecord.create({
+    await db.travelRuleRecord.create({
       data: {
         transactionId: outboxOpId,
         direction,

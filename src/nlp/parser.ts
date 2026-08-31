@@ -1,47 +1,64 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { HttpClientAdapter } from '../utils/http-client'
 import { config } from '../config'
+import { responses } from './responses'
 
 /**
  * Represents a parsed user intent for the financial bot.
  *
  * This is a discriminated union so TypeScript can safely narrow the
  * available properties based on `action`.
+ *
+ * Every variant carries a `confidence` in [0, 1] (#401): 1 for a clean
+ * deterministic regex match, a fixed heuristic for a Claude classification
+ * (Claude doesn't expose a calibrated probability), and 0 for `unknown`.
+ * `parseWithRegex` uses this score internally to decide between returning a
+ * specific intent and returning `clarification` — callers that only switch
+ * on `action` can ignore the field entirely.
  */
 export type Intent =
   | {
       action: 'deposit'
+      confidence: number
       amount?: number
       currency?: string
     }
   | {
       action: 'withdraw'
+      confidence: number
       amount?: number
       currency?: string
       all?: boolean
     }
   | {
       action: 'balance'
+      confidence: number
     }
   | {
       action: 'earnings'
+      confidence: number
     }
   | {
       action: 'help'
+      confidence: number
     }
   | {
       action: 'goal'
+      confidence: number
     }
   | {
       action: 'create_recurring_deposit'
+      confidence: number
       amount?: number
       cadence?: 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY'
     }
   | {
       action: 'pause_recurring_deposit'
+      confidence: number
     }
   | {
       action: 'alert_create'
+      confidence: number
       metric: string
       protocolName: string
       comparator: string
@@ -49,13 +66,28 @@ export type Intent =
     }
   | {
       action: 'alert_list'
+      confidence: number
     }
   | {
       action: 'alert_delete'
+      confidence: number
       alertId?: string
     }
   | {
       action: 'unknown'
+      confidence: number
+    }
+  | {
+      /**
+       * The parser recognized signals for two or more competing actions
+       * (e.g. both "deposit" and "withdraw") but wasn't confident enough in
+       * either to act on it directly. `prompt` is ready to show verbatim;
+       * `candidates` lists the actions it couldn't choose between.
+       */
+      action: 'clarification'
+      confidence: number
+      prompt: string
+      candidates: string[]
     }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +265,110 @@ function isValidIntent(value: unknown): value is Intent {
 }
 
 // ---------------------------------------------------------------------------
+// Ambiguity detection (#401)
+// ---------------------------------------------------------------------------
+
+interface IntentSignal {
+  action: string
+  /** Short human phrase for the clarification prompt, e.g. "deposit money". */
+  label: string
+  pattern: RegExp
+}
+
+/**
+ * Loose keyword signals for each action family — deliberately broader than
+ * the strict patterns above, so a message that mentions an action without
+ * fully matching its pattern still registers as "about" that action. Used
+ * only to detect competing intents in a message the strict patterns above
+ * couldn't already resolve; never used to pick an action outright.
+ */
+const INTENT_SIGNALS: IntentSignal[] = [
+  {
+    action: 'deposit',
+    label: 'deposit money',
+    pattern: /\bdeposit(?:s|ing)?\b|\badd\s+(?:money|funds)\b|\bput\s+in\b/i,
+  },
+  {
+    action: 'withdraw',
+    label: 'withdraw money',
+    pattern: /\bwithdraw(?:s|al|ing)?\b|\btake\s+out\b|\bcash\s+out\b/i,
+  },
+  {
+    action: 'balance',
+    label: 'check your balance',
+    pattern: /\bbalance\b/i,
+  },
+  {
+    action: 'earnings',
+    label: 'check your earnings',
+    pattern: /\b(?:earnings|yield|apy|performance)\b/i,
+  },
+  {
+    action: 'goal',
+    label: 'check your savings goal',
+    pattern: /\bgoal\b/i,
+  },
+  {
+    action: 'create_recurring_deposit',
+    label: 'set up a recurring deposit',
+    pattern: /\brecurring\b|\bautomatic\b|\bscheduled\b/i,
+  },
+  {
+    action: 'pause_recurring_deposit',
+    label: 'pause your recurring deposit',
+    pattern: /\bpause\b/i,
+  },
+  {
+    action: 'alert_create',
+    label: 'set up an alert',
+    pattern: /\balert\b/i,
+  },
+]
+
+function detectIntentSignals(lowerMsg: string): IntentSignal[] {
+  return INTENT_SIGNALS.filter((signal) => signal.pattern.test(lowerMsg))
+}
+
+/**
+ * Confidence for a message that carries signals for `signalCount` competing
+ * actions. Two competing actions halve confidence from a hypothetical
+ * certain match; each additional competing action divides it further, with
+ * a floor so the score stays a meaningful (if low) number rather than
+ * collapsing to ~0.
+ */
+function ambiguityConfidence(signalCount: number): number {
+  return Math.max(0.15, 1 / signalCount)
+}
+
+/**
+ * When a message couldn't be resolved to a single confident intent but
+ * mentions two or more known actions (e.g. "should I deposit or withdraw?"),
+ * returns a 'clarification' intent asking the user to pick one — rather than
+ * silently guessing the nearest pattern or falling straight through to
+ * 'unknown'. Returns null when there's zero or one signal (nothing to
+ * disambiguate) or when the resulting confidence isn't actually below the
+ * configured threshold.
+ */
+function buildClarificationIntent(lowerMsg: string): Intent | null {
+  const signals = detectIntentSignals(lowerMsg)
+  if (signals.length < 2) {
+    return null
+  }
+
+  const confidence = ambiguityConfidence(signals.length)
+  if (confidence >= config.nlp.confidenceThreshold) {
+    return null
+  }
+
+  return {
+    action: 'clarification',
+    confidence,
+    candidates: signals.map((s) => s.action),
+    prompt: responses.clarification(signals.map((s) => s.label)),
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Regex parser
 // ---------------------------------------------------------------------------
 
@@ -265,6 +401,7 @@ export function parseWithRegex(message: string): Intent | null {
   ) {
     return {
       action: 'withdraw',
+      confidence: 1,
       all: true,
     }
   }
@@ -286,10 +423,12 @@ export function parseWithRegex(message: string): Intent | null {
         action === 'deposit'
           ? {
               action: 'deposit',
+              confidence: 1,
               amount,
             }
           : {
               action: 'withdraw',
+              confidence: 1,
               amount,
             }
 
@@ -312,6 +451,7 @@ export function parseWithRegex(message: string): Intent | null {
   ) {
     return {
       action: 'balance',
+      confidence: 1,
     }
   }
 
@@ -329,6 +469,7 @@ export function parseWithRegex(message: string): Intent | null {
   ) {
     return {
       action: 'earnings',
+      confidence: 1,
     }
   }
 
@@ -345,6 +486,7 @@ export function parseWithRegex(message: string): Intent | null {
   ) {
     return {
       action: 'goal',
+      confidence: 1,
     }
   }
 
@@ -355,6 +497,7 @@ export function parseWithRegex(message: string): Intent | null {
   if (/^(?:help|commands|what\s+can\s+you\s+do)[.!?]*$/i.test(lowerMsg)) {
     return {
       action: 'help',
+      confidence: 1,
     }
   }
 
@@ -379,6 +522,7 @@ export function parseWithRegex(message: string): Intent | null {
     if (amount !== null && cadence !== null) {
       return {
         action: 'create_recurring_deposit',
+        confidence: 1,
         amount,
         cadence,
       }
@@ -404,6 +548,7 @@ export function parseWithRegex(message: string): Intent | null {
     if (amount !== null && cadence !== null) {
       return {
         action: 'create_recurring_deposit',
+        confidence: 1,
         amount,
         cadence,
       }
@@ -421,6 +566,7 @@ export function parseWithRegex(message: string): Intent | null {
   ) {
     return {
       action: 'pause_recurring_deposit',
+      confidence: 1,
     }
   }
 
@@ -434,6 +580,7 @@ export function parseWithRegex(message: string): Intent | null {
   ) {
     return {
       action: 'alert_list',
+      confidence: 1,
     }
   }
 
@@ -452,6 +599,7 @@ export function parseWithRegex(message: string): Intent | null {
   if (alertDeleteMatch) {
     return {
       action: 'alert_delete',
+      confidence: 1,
       alertId: alertDeleteMatch[1],
     }
   }
@@ -496,6 +644,7 @@ export function parseWithRegex(message: string): Intent | null {
 
       return {
         action: 'alert_create',
+        confidence: 1,
         metric,
         protocolName,
         comparator,
@@ -505,10 +654,11 @@ export function parseWithRegex(message: string): Intent | null {
   }
 
   // -------------------------------------------------------------------------
-  // No match
+  // No confident match — check for competing-intent ambiguity (#401) before
+  // giving up entirely, e.g. "should I deposit or withdraw?"
   // -------------------------------------------------------------------------
 
-  return null
+  return buildClarificationIntent(lowerMsg)
 }
 
 // ---------------------------------------------------------------------------
@@ -648,7 +798,7 @@ Do not invent an alert ID.
     )
 
     if (!contentBlock || contentBlock.type !== 'text') {
-      return { action: 'unknown' }
+      return { action: 'unknown', confidence: 0 }
     }
 
     const textContent = contentBlock.text.trim()
@@ -657,7 +807,7 @@ Do not invent an alert ID.
     const end = textContent.lastIndexOf('}')
 
     if (start === -1 || end === -1 || end < start) {
-      return { action: 'unknown' }
+      return { action: 'unknown', confidence: 0 }
     }
 
     const jsonStr = textContent.substring(start, end + 1)
@@ -665,12 +815,15 @@ Do not invent an alert ID.
     const parsed: unknown = JSON.parse(jsonStr)
 
     if (!isValidIntent(parsed)) {
-      return { action: 'unknown' }
+      return { action: 'unknown', confidence: 0 }
     }
 
-    return parsed
+    // Claude doesn't expose a calibrated probability, so a valid
+    // classification gets a fixed heuristic confidence — comfortably above
+    // the default threshold, but (unlike a regex match) not certain.
+    return { ...parsed, confidence: parsed.action === 'unknown' ? 0 : 0.85 }
   } catch {
-    return { action: 'unknown' }
+    return { action: 'unknown', confidence: 0 }
   }
 }
 
@@ -684,15 +837,20 @@ Do not invent an alert ID.
  * Parsing order:
  *
  * 1. Empty input -> unknown
- * 2. Regex -> deterministic/local result
+ * 2. Regex -> deterministic/local result, including a 'clarification' intent
+ *    (#401) when the message names two or more competing actions without a
+ *    confident single match — see buildClarificationIntent above
  * 3. Claude -> only when AI_MODE !== "local"
  * 4. Unknown fallback
  *
- * This guarantees the parser never throws.
+ * This guarantees the parser never throws. Every returned Intent carries a
+ * `confidence`; callers that want to gate on it can compare against
+ * config.nlp.confidenceThreshold, the same threshold this function's own
+ * clarification step already uses.
  */
 export async function parseIntent(message: string): Promise<Intent> {
   if (!message || message.trim() === '') {
-    return { action: 'unknown' }
+    return { action: 'unknown', confidence: 0 }
   }
 
   try {
@@ -709,5 +867,5 @@ export async function parseIntent(message: string): Promise<Intent> {
     // Intent parsing must never break the WhatsApp handler.
   }
 
-  return { action: 'unknown' }
+  return { action: 'unknown', confidence: 0 }
 }

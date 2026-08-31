@@ -26,4 +26,26 @@ export const responses = {
   // message into a known intent (i.e. Intent.action === 'unknown').
   unrecognized: () =>
     "I'm sorry, I couldn't understand that command. Please try 'deposit 100', 'withdraw everything', or 'balance'.",
+
+  // Prompt shown when the parser recognized signals for one or more actions
+  // but wasn't confident enough to act on any of them directly (#401) — e.g.
+  // a message that could plausibly be a deposit or a withdrawal. `labels` are
+  // short human phrases like "deposit money" or "check your balance"; at
+  // least one is always provided.
+  clarification: (labels: string[]) => {
+    if (labels.length === 0) {
+      return "I'm not sure what you'd like to do. Could you rephrase that?"
+    }
+
+    if (labels.length === 1) {
+      return `Did you want to ${labels[0]}? Could you give me a bit more detail?`
+    }
+
+    const list =
+      labels.length === 2
+        ? labels.join(' or ')
+        : `${labels.slice(0, -1).join(', ')}, or ${labels[labels.length - 1]}`
+
+    return `Did you mean to ${list}?`
+  },
 }

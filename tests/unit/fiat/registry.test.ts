@@ -17,13 +17,15 @@ function loadRegistry(env: Record<string, string>) {
 }
 
 describe('fiat provider registry — health tracking + circuit breaker', () => {
-  it('registers moonpay and sandbox by default outside production', () => {
+  it('registers moonpay, sandbox, and transak by default outside production', () => {
     const registry = loadRegistry({
       NODE_ENV: 'test',
       FIAT_ENABLE_SANDBOX_PROVIDER: 'true',
     })
     const names = registry.getAllProviders().map((p: any) => p.name)
-    expect(names).toEqual(expect.arrayContaining(['moonpay', 'sandbox']))
+    expect(names).toEqual(
+      expect.arrayContaining(['moonpay', 'sandbox', 'transak'])
+    )
   })
 
   it('opens the circuit after the configured consecutive-failure threshold', () => {
@@ -79,7 +81,7 @@ describe('fiat provider registry — health tracking + circuit breaker', () => {
     })
     registry.recordProviderFailure('moonpay')
     const healthy = registry.getHealthyProviders().map((p: any) => p.name)
-    expect(healthy).toEqual(['sandbox'])
+    expect(healthy).toEqual(expect.arrayContaining(['sandbox', 'transak']))
   })
 })
 
@@ -139,6 +141,7 @@ describe('fiat provider registry — selection policy', () => {
     })
     registry.recordProviderFailure('moonpay')
     registry.recordProviderFailure('sandbox')
+    registry.recordProviderFailure('transak')
 
     expect(() =>
       registry.selectProviderForOrder({ policy: 'DEFAULT' })
@@ -151,6 +154,7 @@ describe('fiat provider registry — selection policy', () => {
         expect.arrayContaining([
           expect.objectContaining({ provider: 'moonpay' }),
           expect.objectContaining({ provider: 'sandbox' }),
+          expect.objectContaining({ provider: 'transak' }),
         ])
       )
     }
@@ -184,6 +188,7 @@ describe('fiat provider registry — admin manual failover', () => {
     expect(snapshots.map((s: any) => s.provider).sort()).toEqual([
       'moonpay',
       'sandbox',
+      'transak',
     ])
     expect(snapshots.every((s: any) => s.healthy)).toBe(true)
   })

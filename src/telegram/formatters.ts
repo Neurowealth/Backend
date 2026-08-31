@@ -4,6 +4,9 @@ export function formatHelpMessage(): string {
     '- /balance → check your wallet balance',
     '- /deposit <amount> → get deposit instructions',
     '- /withdraw <amount> → withdraw funds (if available)',
+    '- "alert me when Blend apy < 5" → create a price/yield alert',
+    '- "list my alerts" → see your alert rules',
+    '- "delete alert <id>" → remove an alert rule',
     '- /earnings → see your performance',
     '- /help → show this message again',
   ].join('\n')

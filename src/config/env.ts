@@ -434,11 +434,22 @@ export const config = {
   },
   transcription: {
     provider: process.env.TRANSCRIPTION_PROVIDER || 'openai',
+    /**
+     * Secondary provider used when the primary is unavailable (#400). The
+     * registry wraps both into a single provider that retries the fallback
+     * only on a TranscriptionUnavailableError — not on UnsupportedAudioError,
+     * where a second vendor would fail identically.
+     */
+    fallbackProvider: process.env.TRANSCRIPTION_FALLBACK_PROVIDER || 'deepgram',
     openaiApiKey: process.env.OPENAI_API_KEY || '',
+    deepgramApiKey: process.env.DEEPGRAM_API_KEY || '',
     model: process.env.TRANSCRIPTION_MODEL || 'whisper-1',
+    deepgramModel: process.env.DEEPGRAM_MODEL || 'nova-2',
     apiUrl:
       process.env.TRANSCRIPTION_API_URL ||
       'https://api.openai.com/v1/audio/transcriptions',
+    deepgramApiUrl:
+      process.env.DEEPGRAM_API_URL || 'https://api.deepgram.com/v1/listen',
     confidenceThreshold: parseFloat(
       process.env.TRANSCRIPTION_CONFIDENCE_THRESHOLD || '0.6'
     ),
@@ -575,6 +586,9 @@ export const config = {
     ),
     ownerReward: parseFloat(process.env.REFERRAL_OWNER_REWARD || '5'),
     referredReward: parseFloat(process.env.REFERRAL_REFERRED_REWARD || '5'),
+    tier2Enabled:
+      (process.env.REFERRAL_TIER2_ENABLED || 'false').toLowerCase() === 'true',
+    tier2Reward: parseFloat(process.env.REFERRAL_TIER2_REWARD || '1'),
     rewardAsset: process.env.REFERRAL_REWARD_ASSET || 'USDC',
     rewardContractMethod:
       process.env.REFERRAL_REWARD_CONTRACT_METHOD || 'transfer_reward',
@@ -687,5 +701,16 @@ export const config = {
   },
   sessions: {
     revokedRetainDays: parseInt(process.env.REVOKED_SESSION_RETAIN_DAYS || '7'),
+  },
+  nlp: {
+    /**
+     * Minimum confidence (0-1) a parsed Intent must carry to be acted on
+     * directly (#401). Below this, the rule-based parser returns a
+     * 'clarification' intent instead of guessing at the nearest pattern or
+     * falling straight through to 'unknown'.
+     */
+    confidenceThreshold: parseFloat(
+      process.env.NLP_CONFIDENCE_THRESHOLD || '0.6'
+    ),
   },
 }
