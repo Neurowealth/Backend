@@ -1358,4 +1358,207 @@ router.post(
   }
 )
 
+/**
+ * GET /api/admin/agent/decisions — unrestricted, admin-scoped decision listing (#343)
+ *
+ * Unrestricted visibility for support/audit: no affectedUserIds filter. Paginated
+ * and filterable by outcome / fromProtocol / date range. Always audit-logged.
+ */
+router.get(
+  '/agent/decisions',
+  requireAdminScope('read'),
+  async (req: Request, res: Response) => {
+    try {
+      const outcome = req.query.outcome as string | undefined
+      const fromProtocol = req.query.fromProtocol as string | undefined
+      const from = req.query.from as string | undefined
+      const to = req.query.to as string | undefined
+      const correlationId = req.query.correlationId as string | undefined
+      const batchKey = req.query.batchKey as string | undefined
+      const page = Math.max(
+        1,
+        parseInt((req.query.page as string) ?? '1', 10) || 1
+      )
+      const limit = Math.min(
+        50,
+        Math.max(1, parseInt((req.query.limit as string) ?? '10', 10) || 10)
+      )
+      const skip = (page - 1) * limit
+
+      const where: any = {}
+      if (outcome) where.outcome = outcome
+      if (fromProtocol) where.fromProtocol = fromProtocol
+      if (correlationId) where.correlationId = correlationId
+      if (batchKey) where.batchKey = batchKey
+      if (from || to) {
+        where.createdAt = {}
+        if (from) where.createdAt.gte = new Date(from)
+        if (to) where.createdAt.lte = new Date(to)
+      }
+
+      const [total, rows] = await Promise.all([
+        prisma.rebalanceDecision.count({ where }),
+        prisma.rebalanceDecision.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take: limit,
+        }),
+      ])
+
+      const toNum = (v: unknown): number | null => {
+        if (v === null || v === undefined) return null
+        if (typeof v === 'object' && v !== null && 'toNumber' in (v as any)) {
+          try {
+            return (v as any).toNumber()
+          } catch {
+            return Number(v as any)
+          }
+        }
+        const n = Number(v)
+        return Number.isFinite(n) ? n : null
+      }
+
+      // Outbox join for deep-link → failure context
+      const outboxIds = rows
+        .map((r: any) => r.outboxOpId)
+        .filter(Boolean) as string[]
+      let statusByOpId = new Map<string, string>()
+      if (outboxIds.length > 0) {
+        const ops = await prisma.outboxOp.findMany({
+          where: { id: { in: outboxIds } },
+          select: { id: true, status: true },
+        })
+        statusByOpId = new Map(ops.map((o: any) => [o.id, o.status]))
+      }
+
+      const decisions = rows.map((row: any) => ({
+        id: row.id,
+        correlationId: row.correlationId,
+        batchKey: row.batchKey,
+        fromProtocol: row.fromProtocol,
+        toProtocol: row.toProtocol ?? null,
+        outcome: row.outcome,
+        blockedReason: row.blockedReason ?? null,
+        strategyName: row.strategyName ?? null,
+        strategyIsFollowed: row.strategyIsFollowed,
+        followedStrategyId: row.followedStrategyId ?? null,
+        thresholds: row.thresholds,
+        currentApy: toNum(row.currentApy),
+        chosenApy: toNum(row.chosenApy),
+        rawImprovement: toNum(row.rawImprovement),
+        estCostPercent: toNum(row.estCostPercent),
+        netImprovement: toNum(row.netImprovement),
+        candidates: row.candidates ?? [],
+        rationale: row.rationale ?? null,
+        affectedUserIds: row.affectedUserIds,
+        affectedPositions: row.affectedPositions,
+        outboxOpId: row.outboxOpId ?? null,
+        outboxStatus: row.outboxOpId
+          ? (statusByOpId.get(row.outboxOpId) ?? null)
+          : null,
+        heldSince: row.heldSince ? new Date(row.heldSince).toISOString() : null,
+        lastEvaluatedAt: row.lastEvaluatedAt
+          ? new Date(row.lastEvaluatedAt).toISOString()
+          : null,
+        createdAt: new Date(row.createdAt).toISOString(),
+      }))
+
+      auditLog(req, res, 'LIST_AGENT_DECISIONS', 'success', {
+        total,
+        page,
+        limit,
+        filters: { outcome, fromProtocol, from, to, correlationId, batchKey },
+      })
+
+      res.status(200).json({ page, limit, total, decisions })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'LIST_AGENT_DECISIONS', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * GET /api/v1/admin/reserves — reserve sponsorship overview (#339)
+ * Admin-scoped, audit-logged.
+ */
+router.get(
+  '/reserves',
+  requireAdminScope('read'),
+  async (req: Request, res: Response) => {
+    try {
+      const rows: any[] = await prisma.reserveSponsorship.findMany({
+        where: { status: 'ACTIVE' },
+      })
+      const outstanding = rows.reduce(
+        (sum: number, r: any) => sum + Number(r.xlmReserved),
+        0
+      )
+
+      // per-sponsor balances (best-effort)
+      const bySponsor = new Map<string, { count: number; reserved: number }>()
+      for (const r of rows) {
+        const cur = bySponsor.get(r.sponsorAccount) ?? { count: 0, reserved: 0 }
+        cur.count++
+        cur.reserved += Number(r.xlmReserved)
+        bySponsor.set(r.sponsorAccount, cur)
+      }
+
+      const perSponsor: Array<{
+        sponsorAccount: string
+        activeCount: number
+        reservedXlm: number
+        availableXlm: number | null
+      }> = []
+      for (const [sponsorAccount, info] of bySponsor) {
+        let availableXlm: number | null = null
+        try {
+          const { getAccount } = await import('../stellar/client')
+          const acct: any = await getAccount(sponsorAccount).catch(() => null)
+          if (acct && acct.balances) {
+            const native = acct.balances.find(
+              (b: any) => b.asset_type === 'native'
+            )
+            const bal = native ? parseFloat(native.balance) : 0
+            const liab = native?.selling_liabilities
+              ? parseFloat(native.selling_liabilities)
+              : 0
+            availableXlm = bal - liab
+          }
+        } catch {}
+        perSponsor.push({
+          sponsorAccount,
+          activeCount: info.count,
+          reservedXlm: info.reserved,
+          availableXlm,
+        })
+      }
+
+      // drift is computed by reconciliation job; expose last known drift gauge
+      // For endpoint we recompute quickly: out-of-sync where ledger says gone
+      // For MVP return counts only, detailed drift is in job logs/alerts
+
+      auditLog(req, res, 'LIST_RESERVES', 'success', {
+        outstanding,
+        sponsors: perSponsor.length,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: {
+          outstandingXlm: outstanding,
+          perSponsor,
+          totalActive: rows.length,
+        },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'LIST_RESERVES', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
 export default router

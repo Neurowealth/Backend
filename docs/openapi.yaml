@@ -15,6 +15,8 @@ servers:
     description: API base
 
 tags:
+  - name: Network
+    description: Stellar network fee oracle and congestion (public).
   - name: Analytics
     description: Portfolio performance and risk analytics
   - name: Assistant
@@ -26,6 +28,10 @@ tags:
       tool is dry-run and gated behind an explicit confirmation before it
       executes through the same verified, idempotent, audited service paths
       every other feature uses.
+  - name: Agent
+    description: Explainable rebalance decisions (#343) — the per-decision rationale ledger.
+  - name: Admin
+    description: Operational tooling and audit (requires admin-scoped credentials).
   - name: Auth
     description: Authentication and session management
   - name: Portfolio
@@ -64,6 +70,156 @@ components:
       type: number
       format: double
       nullable: true
+
+    RankedCandidate:
+      type: object
+      required: [protocol, eligible]
+      properties:
+        protocol:
+          type: string
+        apy:
+          $ref: '#/components/schemas/NullableDecimal'
+        riskScore:
+          type: integer
+          nullable: true
+        eligible:
+          type: boolean
+        rejectionReason:
+          type: string
+          nullable: true
+          description: null on the chosen protocol; otherwise over_risk_ceiling | risk_score_unknown | lower_apy | lower_target_weight | current_position | etc.
+
+    RebalanceDecision:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        correlationId:
+          type: string
+        batchKey:
+          type: string
+        fromProtocol:
+          type: string
+        toProtocol:
+          type: string
+          nullable: true
+        outcome:
+          type: string
+          enum: [REBALANCED, HELD, BLOCKED]
+        blockedReason:
+          type: string
+          nullable: true
+          description: risk_ceiling | below_min_improvement | cost_exceeds_gain | no_candidates
+        strategyName:
+          type: string
+          nullable: true
+        strategyIsFollowed:
+          type: boolean
+        followedStrategyId:
+          type: string
+          format: uuid
+          nullable: true
+        thresholds:
+          type: object
+          properties:
+            minimumImprovement:
+              type: number
+            maxGasPercent:
+              type: number
+        currentApy:
+          $ref: '#/components/schemas/NullableDecimal'
+        chosenApy:
+          $ref: '#/components/schemas/NullableDecimal'
+        rawImprovement:
+          $ref: '#/components/schemas/NullableDecimal'
+        estCostPercent:
+          $ref: '#/components/schemas/NullableDecimal'
+        netImprovement:
+          $ref: '#/components/schemas/NullableDecimal'
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/RankedCandidate'
+        rationale:
+          type: string
+          nullable: true
+        outboxOpId:
+          type: string
+          format: uuid
+          nullable: true
+        outboxStatus:
+          type: string
+          nullable: true
+          description: Joined from outbox_ops.status when outboxOpId present.
+        heldSince:
+          type: string
+          format: date-time
+          nullable: true
+        lastEvaluatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    RebalanceDecisionAdmin:
+      allOf:
+        - $ref: '#/components/schemas/RebalanceDecision'
+        - type: object
+          properties:
+            affectedUserIds:
+              type: array
+              items:
+                type: string
+                format: uuid
+            affectedPositions:
+              type: integer
+
+    StressScenario:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+        shocks:
+          type: object
+        provenance:
+          type: string
+
+    StressResult:
+      type: object
+      properties:
+        scenarioId:
+          type: string
+        label:
+          type: string
+        preValueUsd:
+          type: number
+        postValueUsd:
+          type: number
+        impactUsd:
+          type: number
+        impactPct:
+          type: number
+        perPosition:
+          type: array
+          items:
+            type: object
+        modeledRecoveryDays:
+          type: integer
+          nullable: true
+        permanentImpairment:
+          type: boolean
+        caveat:
+          type: string
+        asOf:
+          type: string
+          format: date-time
 
     # ── Assistant (#318) ─────────────────────────────────────────────────────
     AssistantChatRequest:
@@ -1143,6 +1299,354 @@ paths:
                     type: array
                     items:
                       type: object
+
+  # ── Agent decisions (#343) ────────────────────────────────────────────────────
+
+  /agent/decisions:
+    get:
+      operationId: listAgentDecisions
+      summary: List own rebalance decisions
+      description: |
+        Owner-scoped decision listing for the per-decision rationale ledger (#343).
+        Visible iff the caller is in `affectedUserIds`; the response is projected
+        to that user's view (no sibling `affectedUserIds`, no other user's position
+        sizes). The decision is the batch evaluation that the agent loop ran for
+        `protocol:strategy:followId` — REBALANCED, HELD, or BLOCKED — with the
+        snapshotted thresholds, the APY inputs, the ranked candidates and their
+        per-candidate rejection reasons, and — when the decision linked an
+        `outboxOpId` — its current outbox `status` so the UI can explain
+        “decided to rebalance → on-chain submission failed”.
+
+        **Real-time counterpart**: every new decision row emits `agent.decision_recorded`
+        on the same users' streams (seq-ordered, replayable).
+      tags: [Agent]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: outcome
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [REBALANCED, HELD, BLOCKED]
+        - name: fromProtocol
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Inclusive lower bound on `createdAt`.
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Inclusive upper bound on `createdAt`.
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+      responses:
+        '200':
+          description: Paginated decision listing (user-projected).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  total:
+                    type: integer
+                  decisions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RebalanceDecision'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /agent/decisions/{id}:
+    get:
+      operationId: getAgentDecision
+      summary: Get one rebalance decision (full trace)
+      description: |
+        Full trace for a single decision, including the ranked `candidates`.
+        Visible iff the caller is in `affectedUserIds`; otherwise 404.
+      tags: [Agent]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Full decision trace (user-projected).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RebalanceDecision'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Decision not found or not visible to caller.
+
+  /admin/agent/decisions:
+    get:
+      operationId: listAdminAgentDecisions
+      summary: Admin — list all rebalance decisions
+      description: |
+        Unrestricted, admin-scoped decision listing for support/audit.
+        Requires `read` admin scope; every call is written to `AdminAuditLog`
+        as `LIST_AGENT_DECISIONS`.
+      tags: [Admin]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: outcome
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [REBALANCED, HELD, BLOCKED]
+        - name: fromProtocol
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: correlationId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: batchKey
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+      responses:
+        '200':
+          description: Paginated decision listing (admin — includes affectedUserIds).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  total:
+                    type: integer
+                  decisions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RebalanceDecisionAdmin'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Missing or insufficient admin scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedError'
+
+  # ── Network conditions (#342) ─────────────────────────────────────────────────
+
+  /network/conditions:
+    get:
+      operationId: getNetworkConditions
+      summary: Current network fee and congestion snapshot
+      description: |
+        Adaptive base-fee oracle snapshot (#342) — recommended base fee (p70),
+        aggressive base fee (p95), congestion level with hysteresis, ledger
+        capacity usage, plus per-priority ETA bands derived from recent
+        outbox latency percentiles. Public, rate-limited.
+      tags: [Network]
+      security: []
+      responses:
+        '200':
+          description: Fee snapshot + ETA bands.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      recommendedBaseFee:
+                        type: integer
+                      aggressiveBaseFee:
+                        type: integer
+                      congestionLevel:
+                        type: string
+                        enum: [low, elevated, high, severe]
+                      ledgerCapacityUsage:
+                        type: number
+                      sampledAt:
+                        type: string
+                        format: date-time
+                      ttlMs:
+                        type: integer
+                      stale:
+                        type: boolean
+                      etaBands:
+                        type: object
+                        properties:
+                          LOW:
+                            type: object
+                            properties:
+                              minSeconds:
+                                type: integer
+                              maxSeconds:
+                                type: integer
+                          NORMAL:
+                            type: object
+                            properties:
+                              minSeconds:
+                                type: integer
+                              maxSeconds:
+                                type: integer
+                          CRITICAL:
+                            type: object
+                            properties:
+                              minSeconds:
+                                type: integer
+                              maxSeconds:
+                                type: integer
+
+  # ── Stress testing (#351) ─────────────────────────────────────────────────────
+
+  /analytics/stress/scenarios:
+    get:
+      operationId: getStressScenarios
+      summary: List built-in stress scenarios
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Scenario library.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scenarios:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StressScenario'
+                  caveat:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /analytics/stress:
+    post:
+      operationId: runStressTest
+      summary: Run scenario stress test on current portfolio
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scenarioId:
+                  type: string
+                  example: stablecoin_depeg_2022
+                custom:
+                  type: object
+                  properties:
+                    assetPriceShockPct:
+                      type: object
+                      additionalProperties:
+                        type: number
+                    apyShockPct:
+                      oneOf:
+                        - type: number
+                        - type: object
+                          additionalProperties:
+                            type: number
+                    incentiveApyToZero:
+                      type: boolean
+                    protocolLossPct:
+                      type: object
+                      additionalProperties:
+                        type: number
+                    recoveryDays:
+                      type: integer
+                runAll:
+                  type: boolean
+                asOf:
+                  type: string
+                  format: date-time
+      responses:
+        '200':
+          description: Stress result (or ranked runAll).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StressResult'
+        '400':
+          $ref: '#/components/responses/Unauthorized'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   # ── Real-time WebSocket stream (#316) ─────────────────────────────────────────
 

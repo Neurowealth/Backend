@@ -463,3 +463,22 @@ psql "$DATABASE_URL" -c "
   ORDER BY ledger DESC LIMIT 10;
 "
 ```
+
+## 8. Sponsor Account Top-Up
+
+Sponsored reserves move the XLM cost from user to sponsor accounts (`STELLAR_SPONSOR_KEYS`). Monitor `GET /api/v1/admin/reserves` (admin-scoped, audit-logged) for `outstandingXlm` and `perSponsor[].availableXlm`. Alert `SponsorLowXlm` fires when any sponsor `< 10 XLM` for 5m.
+
+**Top-up:**
+```bash
+# Check
+curl -H "Authorization: Bearer $ADMIN_API_TOKEN" http://localhost:3001/api/v1/admin/reserves | jq
+
+# Fund sponsor from treasury/ops hot wallet via Stellar Laboratory or
+stellar account fund --destination <sponsorPublicKey> --amount 100 --network public
+
+# Verify
+curl -s http://localhost:3001/metrics | grep sponsor_available_xlm
+psql "$DATABASE_URL" -c "SELECT \"sponsorAccount\", count(*), sum(\"xlmReserved\") FROM reserve_sponsorships WHERE status='ACTIVE' GROUP BY \"sponsorAccount\";"
+```
+
+No auto top-up — operational runbook only. Reconciliation job (`reserveReconciliation` hourly) flags drift where on-chain sponsor ≠ ledger.

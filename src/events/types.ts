@@ -37,6 +37,8 @@ export function isUserEventTopic(value: unknown): value is UserEventTopic {
 export const SOCKET_ONLY_EVENT_TYPES = [
   /** Emitted alongside agent.rebalanced: this user's positions moved. */
   'portfolio.updated',
+  /** #343 — a rebalance decision was recorded; deep-linkable explanation. */
+  'agent.decision_recorded',
   /** #374 — API key lifecycle notifications. */
   'security.api_key_changed',
   /** #376 — new session sign-in alert. */
@@ -74,6 +76,7 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'approval.expired': 'transactions',
   'approval.cancelled': 'transactions',
   'agent.rebalanced': 'agent',
+  'agent.decision_recorded': 'agent',
   'alert_rule.triggered': 'alerts',
   'strategy.updated': 'strategies',
   'strategy.unpublished': 'strategies',

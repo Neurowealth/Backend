@@ -211,6 +211,16 @@ const USER_EVENT_PAYLOAD_ALLOWLIST: Record<string, readonly string[]> = {
     'improvedBy',
     'timestamp',
   ],
+  // #343 — the deep-link pointer to a recorded rebalance decision's rationale.
+  // Fields the client needs to explain a move, never another user's data.
+  'agent.decision_recorded': [
+    'decisionId',
+    'outcome',
+    'fromProtocol',
+    'toProtocol',
+    'blockedReason',
+    'createdAt',
+  ],
   'fiat.order.settled': [
     'orderId',
     'provider',

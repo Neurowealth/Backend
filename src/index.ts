@@ -54,15 +54,18 @@ import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { scheduleAllocationSuggestions } from './jobs/allocationSuggestions'
 import { scheduleAttribution } from './jobs/attribution'
 import { scheduleOutboxDispatcher } from './outbox/dispatcher'
+import { startFeeOracle, stopFeeOracle } from './stellar/feeOracle'
 import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
 import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { scheduleApprovalExpiry } from './jobs/approvalExpiry'
+import { scheduleReserveReconciliation } from './jobs/reserveReconciliation'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { startEventBridge, stopEventBridge } from './events/bridge'
 import { attachWebSocketServer, closeWebSocketServer } from './ws/server'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
 import agentRouter from './routes/agent'
+import agentDecisionsRouter from './routes/agent-decisions'
 import authRouter from './routes/auth'
 import whatsappRouter from './routes/whatsapp'
 import telegramRouter from './routes/telegram'
@@ -90,6 +93,7 @@ import keysRouter from './routes/keys'
 import sessionsRouter from './routes/sessions'
 import streamRouter from './routes/stream'
 import notificationsRouter from './routes/notifications'
+import networkRouter from './routes/network'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -128,6 +132,7 @@ let attributionHandle: NodeJS.Timeout | null = null
 let outboxDispatcherHandle: NodeJS.Timeout | null = null
 let portfolioRiskJobHandle: NodeJS.Timeout | null = null
 let approvalExpiryHandle: NodeJS.Timeout | null = null
+let reserveReconciliationHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -291,6 +296,8 @@ interface ApiRoute {
 }
 
 const apiRoutes: ApiRoute[] = [
+  { path: 'network', handlers: [networkRouter] },
+  { path: 'agent/decisions', handlers: [agentDecisionsRouter] },
   { path: 'agent', handlers: [internalRateLimiter, agentRouter] },
   { path: 'auth', handlers: [authRateLimiter, authRouter] },
   { path: 'whatsapp', handlers: [webhookRateLimiter, whatsappRouter] },
@@ -433,6 +440,17 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Approval expiry sweep timer cleared')
   }
 
+  if (reserveReconciliationHandle) {
+    clearInterval(reserveReconciliationHandle)
+    reserveReconciliationHandle = null
+    logger.info('[Shutdown] Reserve reconciliation timer cleared')
+  }
+
+  try {
+    stopFeeOracle()
+    logger.info('[Shutdown] Fee oracle stopped')
+  } catch {}
+
   if (!httpServer) {
     logger.warn('[Shutdown] No HTTP server to close')
     process.exit(0)
@@ -551,6 +569,19 @@ async function initServices(): Promise<void> {
     })
     throw new Error(`AgentLoop: ${msg}`)
   }
+
+  // 4. Fee oracle (#342) — best-effort, never blocks startup
+  try {
+    await startFeeOracle()
+    logger.info('[Startup] Fee oracle started ✓')
+  } catch (error) {
+    logger.error(
+      '[Startup] Fee oracle failed to start — continuing with defaults',
+      {
+        error: error instanceof Error ? error.message : String(error),
+      }
+    )
+  }
 }
 
 async function main(): Promise<void> {
@@ -626,6 +657,7 @@ async function main(): Promise<void> {
   attributionHandle = scheduleAttribution()
   portfolioRiskJobHandle = schedulePortfolioRiskJob()
   approvalExpiryHandle = scheduleApprovalExpiry()
+  reserveReconciliationHandle = scheduleReserveReconciliation()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

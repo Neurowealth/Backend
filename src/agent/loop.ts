@@ -173,7 +173,7 @@ async function rebalanceCheckJob(): Promise<void> {
       // grouping is identical to before this feature.
       const byProtocolAndStrategy = new Map<
         string,
-        { protocol: string; positions: PositionWithUser[] }
+        { protocol: string; positions: PositionWithUser[]; batchKey: string }
       >()
       for (const pos of positions) {
         const { config, follow } = effectiveByUser.get(pos.userId)!
@@ -184,6 +184,7 @@ async function rebalanceCheckJob(): Promise<void> {
           byProtocolAndStrategy.set(key, {
             protocol: pos.protocolName,
             positions: [],
+            batchKey: key,
           })
         }
         byProtocolAndStrategy.get(key)!.positions.push(pos)
@@ -236,7 +237,13 @@ async function rebalanceCheckJob(): Promise<void> {
             userId: p.userId,
           })),
           thresholds,
-          userStrategyPreferences
+          userStrategyPreferences,
+          {
+            batchKey: batch.batchKey,
+            strategyName: lead.config.strategyName ?? null,
+            strategyIsFollowed: Boolean(lead.follow),
+            followedStrategyId: lead.follow?.followedStrategyId ?? null,
+          }
         )
 
         if (result) {

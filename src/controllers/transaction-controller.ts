@@ -11,6 +11,7 @@ import { dispatchOne } from '../outbox/dispatcher'
 import { deriveIdempotencyKey } from '../outbox/idempotency'
 import { OutboxOpKind } from '../outbox/types'
 import { guardOperation } from '../approvals/service'
+import { getFeeSnapshot } from '../stellar/feeOracle'
 
 /**
  * Persist the Transaction row (PENDING, no hash yet) and its outbox intent in
@@ -422,6 +423,21 @@ export async function processOnChainTransaction(
       status: transaction.status,
     })
 
+    // Fee oracle estimate for honest UI numbers
+    const snapW = getFeeSnapshot()
+    const estFeeW =
+      snapW.congestionLevel === 'low'
+        ? snapW.recommendedBaseFee
+        : snapW.aggressiveBaseFee
+    const etaW =
+      snapW.congestionLevel === 'severe'
+        ? 15
+        : snapW.congestionLevel === 'high'
+          ? 10
+          : snapW.congestionLevel === 'elevated'
+            ? 6
+            : 4
+
     // Notification already dispatched inside executeWithdraw above — do not
     // re-publish here (that would double-fire transaction.confirmed).
     return res.status(201).json({
@@ -435,6 +451,8 @@ export async function processOnChainTransaction(
         assetSymbol: transaction.assetSymbol,
         protocolName: transaction.protocolName,
       },
+      estFee: estFeeW,
+      estConfirmationSeconds: etaW,
       whatsappReply: formatWithdrawReply({
         amount: Number(transaction.amount),
         assetSymbol: transaction.assetSymbol,
@@ -460,6 +478,16 @@ export async function processOnChainTransaction(
   }
 
   const transaction = result.transaction!
+  const snapD = getFeeSnapshot()
+  const estFeeD = snapD.recommendedBaseFee
+  const etaD =
+    snapD.congestionLevel === 'severe'
+      ? 30
+      : snapD.congestionLevel === 'high'
+        ? 20
+        : snapD.congestionLevel === 'elevated'
+          ? 12
+          : 8
   return res.status(201).json({
     txHash: transaction.txHash,
     status: transaction.status,
@@ -471,6 +499,8 @@ export async function processOnChainTransaction(
       assetSymbol: transaction.assetSymbol,
       protocolName: transaction.protocolName,
     },
+    estFee: estFeeD,
+    estConfirmationSeconds: etaD,
     whatsappReply: formatDepositReply({
       amount: Number(transaction.amount),
       assetSymbol: transaction.assetSymbol,

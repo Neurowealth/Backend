@@ -80,6 +80,8 @@ enum OutboxOpKind {
   YIELD_CLAIM
   // #341: Treasury sweep operations
   TREASURY_SWEEP
+  // #339: Sponsored account provisioning
+  ACCOUNT_PROVISION
 }
 
 enum OutboxOpActor {
@@ -588,6 +590,57 @@ model AgentLog {
   @@map("agent_logs")
 }
 
+// #343 — Explainable rebalance decisions. One row per (protocol, strategy,
+// follow) batch evaluation per tick, written whether or not a rebalance fired,
+// so "held" and "blocked" decisions are as visible as "rebalanced" ones.
+//
+// `candidates` is the full ranked protocol list with the reason each non-winner
+// lost (lower APY, over risk ceiling, fail-closed risk-score absence, below
+// net-improvement threshold). `thresholds` is snapshotted at decision time so a
+// later config change never rewrites what the agent actually used.
+//
+// Consecutive identical HELD decisions for a batch collapse into one row via
+// the `heldSince` / `lastEvaluatedAt` window (see
+// src/agent/rebalanceDecision.ts); a change in inputs starts a new row.
+model RebalanceDecision {
+  id                 String   @id @default(uuid())
+  correlationId      String
+  // protocol:strategy:followId from src/agent/loop.ts
+  batchKey           String
+  fromProtocol       String
+  toProtocol         String? // null when the decision was "hold"
+  outcome            String // REBALANCED | HELD | BLOCKED
+  blockedReason      String? // risk_ceiling | below_min_improvement | cost_exceeds_gain | no_candidates | exposure_unplaceable
+  strategyName       String?
+  strategyIsFollowed Boolean  @default(false)
+  followedStrategyId String?
+  thresholds         Json // { minimumImprovement, maxGasPercent } in effect
+  currentApy         Decimal? @db.Decimal(12, 6)
+  chosenApy          Decimal? @db.Decimal(12, 6)
+  rawImprovement     Decimal? @db.Decimal(12, 6)
+  estCostPercent     Decimal? @db.Decimal(12, 6)
+  netImprovement     Decimal? @db.Decimal(12, 6)
+  candidates         Json // ranked: [{ protocol, apy, riskScore, eligible, rejectionReason }]
+  // Server-side templated rationale from structured inputs — never free-form
+  // user text (see docs/AGENT_DECISIONS.md).
+  rationale          String? @db.Text
+  affectedUserIds    String[]
+  affectedPositions  Int
+  outboxOpId         String?
+  // Window for consecutive identical HELD collapsing. Set on first HELD,
+  // `lastEvaluatedAt` is bumped on each collapsed repeat. Null for
+  // REBALANCED/BLOCKED rows.
+  heldSince          DateTime?
+  lastEvaluatedAt    DateTime?
+  createdAt          DateTime @default(now())
+
+  @@index([correlationId])
+  @@index([fromProtocol, createdAt])
+  @@index([batchKey, outcome, createdAt])
+  @@index([outcome, createdAt])
+  @@map("rebalance_decisions")
+}
+
 model EventCursor {
   id                  String   @id @default(uuid())
   contractId          String   @unique
@@ -709,6 +762,23 @@ model CustodialWallet {
   @@index([keyVersion])
   @@index([encryptionKeyId])
   @@map("custodial_wallets")
+}
+
+// #339: Sponsored reserves — one row per platform-sponsored ledger entry
+model ReserveSponsorship {
+  id             String   @id @default(uuid())
+  sponsoredId    String // CustodialWallet.id
+  sponsorAccount String // sponsor public key
+  entryType      String // ACCOUNT | TRUSTLINE | OFFER
+  ledgerKey      String // sponsored ledger entry key for revoke
+  xlmReserved    Decimal  @db.Decimal(36, 18)
+  status         String // ACTIVE | REVOKED | RECLAIMED
+  createdAt      DateTime @default(now())
+  revokedAt      DateTime?
+
+  @@index([sponsoredId])
+  @@index([sponsorAccount, status])
+  @@map("reserve_sponsorships")
 }
 
 enum KeyStatus {

@@ -12,6 +12,13 @@ import {
 import { getPortfolioCorrelation } from '../analytics/correlationService'
 import { getYieldBreakdown } from '../analytics/yieldCompositionService'
 import { RiskWindow } from '../analytics/metrics'
+import {
+  getBuiltInScenarios,
+  getScenarioById,
+  validateCustomScenario,
+  STRESS_CAVEAT,
+} from '../analytics/scenarios'
+import { applyScenario } from '../analytics/stress'
 import { toCsv, CsvValue } from '../utils/csv'
 
 const router = Router()
@@ -661,5 +668,163 @@ router.get(
     })
   }
 )
+
+/**
+ * GET /analytics/stress/scenarios
+ */
+router.get(
+  '/stress/scenarios',
+  requireAuth,
+  async (_req: Request, res: Response) => {
+    const scenarios = getBuiltInScenarios().map((s) => ({
+      id: s.id,
+      label: s.label,
+      description: s.description,
+      shocks: s.shocks,
+      provenance: s.provenance,
+    }))
+    return res.status(200).json({ scenarios, caveat: STRESS_CAVEAT })
+  }
+)
+
+const stressBodySchema = z
+  .object({
+    scenarioId: z.string().min(1).optional(),
+    custom: z
+      .object({
+        assetPriceShockPct: z.record(z.string(), z.number()).optional(),
+        apyShockPct: z
+          .union([z.number(), z.record(z.string(), z.number())])
+          .optional(),
+        incentiveApyToZero: z.boolean().optional(),
+        protocolLossPct: z.record(z.string(), z.number()).optional(),
+        recoveryDays: z.number().int().min(1).max(365).optional(),
+      })
+      .optional(),
+    runAll: z.boolean().optional(),
+    asOf: z.string().datetime({ offset: true }).optional(),
+  })
+  .refine((d) => Boolean(d.scenarioId) !== Boolean(d.custom), {
+    message: 'Provide exactly one of scenarioId or custom',
+    path: ['custom'],
+  })
+
+/**
+ * POST /analytics/stress
+ */
+router.post('/stress', requireAuth, async (req: Request, res: Response) => {
+  const parsed = stressBodySchema.safeParse(req.body)
+  if (!parsed.success) {
+    return res
+      .status(400)
+      .json({ error: 'Validation error', details: parsed.error.flatten() })
+  }
+  const { scenarioId, custom, runAll, asOf } = parsed.data
+  const userId = req.auth!.userId
+  const asOfDate = asOf ? new Date(asOf) : new Date()
+
+  const positionsRaw = await db.position.findMany({
+    where: { userId, status: 'ACTIVE' },
+    select: { protocolName: true, assetSymbol: true, currentValue: true },
+  })
+
+  if (positionsRaw.length === 0) {
+    return res.status(200).json({
+      result: null,
+      reason: 'no active positions',
+      caveat: STRESS_CAVEAT,
+      asOf: asOfDate.toISOString(),
+    })
+  }
+
+  // Enrich positions with latest apy decomposition for incentive handling
+  const protocolNames = [...new Set(positionsRaw.map((p) => p.protocolName))]
+  const latestRates = await db.protocolRate.findMany({
+    where: { protocolName: { in: protocolNames } },
+    orderBy: { fetchedAt: 'desc' },
+    distinct: ['protocolName'],
+    select: {
+      protocolName: true,
+      supplyApy: true,
+      baseApy: true,
+      incentiveApy: true,
+    },
+  } as any)
+  const rateByProtocol = new Map(
+    latestRates.map((r: any) => [r.protocolName, r])
+  )
+
+  const portfolio = {
+    positions: positionsRaw.map((p: any) => {
+      const rate: any = rateByProtocol.get(p.protocolName)
+      return {
+        protocol: p.protocolName,
+        asset: p.assetSymbol,
+        preValue: Number(p.currentValue),
+        apy: rate ? Number(rate.supplyApy) : null,
+        baseApy: rate?.baseApy != null ? Number(rate.baseApy) : null,
+        incentiveApy:
+          rate?.incentiveApy != null ? Number(rate.incentiveApy) : null,
+      }
+    }),
+  }
+
+  const runOne = (
+    scenario: import('../analytics/scenarios').StressScenario
+  ) => {
+    const result = applyScenario(portfolio, scenario, asOfDate)
+    if (!result)
+      return {
+        scenarioId: scenario.id,
+        label: scenario.label,
+        result: null,
+        reason: 'no active positions',
+        caveat: STRESS_CAVEAT,
+        asOf: asOfDate.toISOString(),
+      }
+    return {
+      scenarioId: scenario.id,
+      label: scenario.label,
+      ...result,
+      caveat: STRESS_CAVEAT,
+    }
+  }
+
+  if (runAll) {
+    const all = getBuiltInScenarios()
+      .map(runOne)
+      .sort((a: any, b: any) => {
+        const av = a.impactPct ?? 0
+        const bv = b.impactPct ?? 0
+        return av - bv // most negative first
+      })
+    return res.status(200).json({
+      runAll: true,
+      scenarios: all,
+      caveat: STRESS_CAVEAT,
+      asOf: asOfDate.toISOString(),
+    })
+  }
+
+  let scenario: import('../analytics/scenarios').StressScenario | undefined
+  if (scenarioId) {
+    scenario = getScenarioById(scenarioId)
+    if (!scenario)
+      return res.status(400).json({ error: `Unknown scenarioId ${scenarioId}` })
+  } else if (custom) {
+    const v = validateCustomScenario(custom)
+    if (!v.valid) return res.status(400).json({ error: (v as any).reason })
+    scenario = {
+      id: 'custom',
+      label: 'Custom Scenario',
+      description: 'User-supplied custom shock',
+      shocks: custom as any,
+      provenance: 'custom',
+    }
+  }
+
+  const out = runOne(scenario!)
+  return res.status(200).json(out)
+})
 
 export default router

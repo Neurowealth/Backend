@@ -7,6 +7,7 @@ import {
   getOrRegisterKey,
   hashKey,
 } from '../keys/registry'
+import { pickSponsor, SponsorCapacityExhaustedError } from './sponsorship'
 
 const ALGORITHM = 'aes-256-gcm'
 const HEX_64_REGEX = /^[0-9a-fA-F]{64}$/
@@ -290,7 +291,147 @@ export async function createCustodialWallet(userId: string) {
   })
 
   logger.info(`[Wallet] Created for user ${userId}: ${wallet.publicKey}`)
+
+  // #339: Sponsored reserves — platform pays base reserve via outbox (durable, retriable)
+  if (process.env.SPONSORED_RESERVES_ENABLED !== 'false') {
+    // fire-and-forget: wallet creation succeeds even if sponsorship enqueue fails;
+    // reconciliation job will flag drift.
+    void provisionSponsoredAccount(wallet).catch((err) => {
+      logger.warn(
+        '[Wallet] Sponsored provision failed (wallet still created)',
+        {
+          userId,
+          publicKey: wallet.publicKey,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      )
+    })
+  }
+
   return wallet
+}
+
+async function provisionSponsoredAccount(wallet: {
+  id: string
+  publicKey: string
+}) {
+  const { enqueueOutboxOp } = await import('../outbox/service')
+  const { deriveIdempotencyKey } = await import('../outbox/idempotency')
+  const { dispatchInBackground } = await import('../outbox/dispatcher')
+  const { alertingService } = await import('../services/alerting')
+
+  let sponsor: Keypair
+  try {
+    sponsor = await pickSponsor()
+  } catch (err) {
+    if (err instanceof SponsorCapacityExhaustedError) {
+      logger.error('[Wallet] Sponsor capacity exhausted', {
+        walletId: wallet.id,
+        publicKey: wallet.publicKey,
+      })
+      await alertingService
+        .emit(
+          {
+            title: 'Sponsor capacity exhausted',
+            description: `No sponsor account above SPONSOR_MIN_XLM_FLOOR for wallet ${wallet.publicKey}. Provisioning degraded.`,
+            severity: 'critical',
+            component: 'sponsor-pool',
+            metadata: { walletId: wallet.id },
+          },
+          'sponsor:capacity-exhausted'
+        )
+        .catch(() => {})
+      throw err
+    }
+    throw err
+  }
+
+  const ledgerKey = `${wallet.publicKey}:ACCOUNT`
+  const xlmReserved = '1'
+
+  // Idempotent: one row per wallet sponsorship attempt
+  const idempotencyKey = deriveIdempotencyKey(
+    'ACCOUNT_PROVISION',
+    wallet.id,
+    wallet.publicKey
+  )
+
+  await db.$transaction(async (tx) => {
+    const op = await enqueueOutboxOp(tx as any, {
+      idempotencyKey,
+      userId: wallet.id, // sponsoredId stored as userId for outbox scoping; admin can list by kind
+      kind: 'ACCOUNT_PROVISION' as any,
+      actor: 'SYSTEM' as any,
+      payload: {
+        method: 'sponsor_create_account',
+        sponsoredId: wallet.id,
+        sponsorAccount: sponsor.publicKey(),
+        newAccountId: wallet.publicKey,
+        ledgerKey,
+        xlmReserved,
+      } as any,
+    })
+
+    // Only dispatch if newly created; enqueue is idempotent
+    dispatchInBackground(op.id)
+  })
+}
+
+/**
+ * Sponsored trustline — call before first deposit of a new classic asset.
+ * No-op if SPONSORED_RESERVES_ENABLED is false or asset is Soroban (C...).
+ */
+export async function ensureSponsoredTrustline(
+  wallet: { id: string; publicKey: string },
+  assetCode: string,
+  assetIssuer: string
+): Promise<void> {
+  if (process.env.SPONSORED_RESERVES_ENABLED === 'false') return
+  if (!assetIssuer || assetIssuer.startsWith('C')) return
+
+  const ledgerKey = `${wallet.publicKey}:TRUSTLINE:${assetCode}:${assetIssuer}`
+  const existing = await (db as any).reserveSponsorship.findFirst({
+    where: { sponsoredId: wallet.id, ledgerKey, status: 'ACTIVE' },
+  })
+  if (existing) return
+
+  const { enqueueOutboxOp } = await import('../outbox/service')
+  const { deriveIdempotencyKey } = await import('../outbox/idempotency')
+  const { dispatchInBackground } = await import('../outbox/dispatcher')
+
+  let sponsor: Keypair
+  try {
+    sponsor = await pickSponsor()
+  } catch (err) {
+    if (err instanceof SponsorCapacityExhaustedError) throw err
+    throw err
+  }
+
+  const idempotencyKey = deriveIdempotencyKey(
+    'ACCOUNT_PROVISION',
+    wallet.id,
+    ledgerKey
+  )
+
+  await db.$transaction(async (tx) => {
+    const op = await enqueueOutboxOp(tx as any, {
+      idempotencyKey,
+      userId: wallet.id,
+      kind: 'ACCOUNT_PROVISION' as any,
+      actor: 'SYSTEM' as any,
+      payload: {
+        method: 'sponsor_trustline',
+        sponsoredId: wallet.id,
+        sponsorAccount: sponsor.publicKey(),
+        accountId: wallet.publicKey,
+        assetCode,
+        assetIssuer,
+        ledgerKey,
+        xlmReserved: '0.5',
+      } as any,
+    })
+    dispatchInBackground(op.id)
+  })
 }
 
 /**

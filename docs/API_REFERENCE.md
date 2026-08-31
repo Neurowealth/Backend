@@ -629,6 +629,8 @@ Response 201:
 "assetSymbol": "USDC",
 "protocolName": "Blend"
 },
+"estFee": 100,
+"estConfirmationSeconds": 8,
 "whatsappReply": "..."
 }
 
@@ -697,6 +699,8 @@ Response 201:
 "assetSymbol": "USDC",
 "protocolName": "Blend"
 },
+"estFee": 500,
+"estConfirmationSeconds": 4,
 "whatsappReply": "..."
 }
 
@@ -780,3 +784,30 @@ Response 404:
 - deposit.ts: POST /api/deposit
 - withdraw.ts: POST /api/withdraw
 - vault.ts: GET /api/vault/state, GET /api/vault/balance
+- network.ts: GET /api/v1/network/conditions
+
+---
+
+## Network
+
+### GET /api/v1/network/conditions
+
+- Auth: none (public, rate-limited)
+- Description: Current fee oracle snapshot and per-priority ETA bands.
+- Request params: none
+
+Response 200:
+{
+"recommendedBaseFee": 100,
+"aggressiveBaseFee": 500,
+"congestionLevel": "low",
+"ledgerCapacityUsage": 0.3,
+"sampledAt": "2026-08-30T00:00:00.000Z",
+"ttlMs": 30000,
+"stale": false,
+"etaBands": {
+  "LOW": { "minSeconds": 10, "maxSeconds": 30 },
+  "NORMAL": { "minSeconds": 5, "maxSeconds": 15 },
+  "CRITICAL": { "minSeconds": 2, "maxSeconds": 8 }
+}
+}
