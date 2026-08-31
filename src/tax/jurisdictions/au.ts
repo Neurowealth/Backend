@@ -15,9 +15,7 @@ function taxYearFor(_forDate: Date, taxYearLabel: number): TaxYearBoundary {
   // `taxYearLabel` names the year the tax year *starts* in — AU FY2025-26
   // runs 2025-07-01 to 2026-06-30, taxYearLabel = 2025.
   const start = new Date(Date.UTC(taxYearLabel, AU_TAX_YEAR_START_MONTH, 1))
-  const end = new Date(
-    Date.UTC(taxYearLabel + 1, AU_TAX_YEAR_START_MONTH, 1)
-  )
+  const end = new Date(Date.UTC(taxYearLabel + 1, AU_TAX_YEAR_START_MONTH, 1))
   return {
     start,
     end,

@@ -113,7 +113,10 @@ function holdingPeriodDaysBetween(acquiredAt: Date, disposedAt: Date): number {
   return Math.floor((disposedAt.getTime() - acquiredAt.getTime()) / msPerDay)
 }
 
-function isLongTerm(profile: TaxProfile, holdingPeriodDays: number): boolean | null {
+function isLongTerm(
+  profile: TaxProfile,
+  holdingPeriodDays: number
+): boolean | null {
   if (profile.holdingPeriod.longTermEffect.kind === 'NONE') {
     return null
   }
@@ -145,8 +148,11 @@ export async function buildTaxReport(
   }
 
   const profile = resolveJurisdiction(user.taxJurisdiction)
-  const { start: yearStart, end: yearEnd, label: taxYearLabel } =
-    profile.taxYearFor(new Date(Date.UTC(year, 0, 1)), year)
+  const {
+    start: yearStart,
+    end: yearEnd,
+    label: taxYearLabel,
+  } = profile.taxYearFor(new Date(Date.UTC(year, 0, 1)), year)
 
   const rows = await (database as any).lotDisposal.findMany({
     where: {
