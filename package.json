@@ -89,7 +89,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@aws-sdk/client-ssm": "^3.1075.0",
+    "@aws-sdk/client-ssm": "^3.1120.0",
     "@redocly/cli": "^2.34.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.17",
