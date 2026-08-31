@@ -575,9 +575,12 @@ async function initServices(): Promise<void> {
     await startFeeOracle()
     logger.info('[Startup] Fee oracle started ✓')
   } catch (error) {
-    logger.error('[Startup] Fee oracle failed to start — continuing with defaults', {
-      error: error instanceof Error ? error.message : String(error),
-    })
+    logger.error(
+      '[Startup] Fee oracle failed to start — continuing with defaults',
+      {
+        error: error instanceof Error ? error.message : String(error),
+      }
+    )
   }
 }
 

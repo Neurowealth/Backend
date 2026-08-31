@@ -42,12 +42,16 @@ const STABLECOIN_RE = /^(USDC|USDT|DAI|USD.*|STABLECOIN)$/i
 
 function matchesAssetShock(asset: string, shockKey: string): boolean {
   const key = shockKey.trim()
-  if (/^(USD_STABLECOIN|STABLECOIN)$/i.test(key)) return STABLECOIN_RE.test(asset)
+  if (/^(USD_STABLECOIN|STABLECOIN)$/i.test(key))
+    return STABLECOIN_RE.test(asset)
   if (/^XLM$/i.test(key)) return /^XLM$/i.test(asset)
   return asset.toLowerCase() === key.toLowerCase()
 }
 
-function resolveAssetShockPct(asset: string, map?: Record<string, number>): number | null {
+function resolveAssetShockPct(
+  asset: string,
+  map?: Record<string, number>
+): number | null {
   if (!map) return null
   // exact match first (case-insensitive)
   for (const [k, v] of Object.entries(map)) {
@@ -60,7 +64,10 @@ function resolveAssetShockPct(asset: string, map?: Record<string, number>): numb
   return null
 }
 
-function resolveApyShockPct(protocol: string, shock: number | Record<string, number> | undefined): number {
+function resolveApyShockPct(
+  protocol: string,
+  shock: number | Record<string, number> | undefined
+): number {
   if (shock === undefined) return 0
   if (typeof shock === 'number') return shock
   for (const [k, v] of Object.entries(shock)) {
@@ -69,7 +76,10 @@ function resolveApyShockPct(protocol: string, shock: number | Record<string, num
   return 0
 }
 
-function resolveProtocolLoss(protocol: string, map?: Record<string, number>): number {
+function resolveProtocolLoss(
+  protocol: string,
+  map?: Record<string, number>
+): number {
   if (!map) return 0
   for (const [k, v] of Object.entries(map)) {
     if (protocol.toLowerCase() === k.toLowerCase()) return v
@@ -116,7 +126,10 @@ export function applyScenario(
     }
 
     // 2) price shock
-    const priceShock = resolveAssetShockPct(pos.asset, shocks.assetPriceShockPct)
+    const priceShock = resolveAssetShockPct(
+      pos.asset,
+      shocks.assetPriceShockPct
+    )
     if (priceShock !== null && priceShock !== 0) {
       curValue *= 1 + priceShock / 100
       drivers.push(`price:${priceShock}%`)
@@ -133,7 +146,7 @@ export function applyScenario(
 
     if (shocks.incentiveApyToZero) {
       if (incentiveApy != null && Number.isFinite(incentiveApy)) {
-        apy = (baseApy ?? 0)
+        apy = baseApy ?? 0
         drivers.push('incentiveToZero')
       } else if ((pos.apy ?? 0) > 0) {
         // fallback flat 15% share assumption
@@ -180,7 +193,7 @@ export function applyScenario(
       permanentImpairment = true
       modeledRecoveryDays = null
     } else {
-      const dailyYield = postValueUsd * (postYieldPct / 100) / 365
+      const dailyYield = (postValueUsd * (postYieldPct / 100)) / 365
       if (dailyYield <= 0) {
         permanentImpairment = true
       } else {
@@ -189,7 +202,9 @@ export function applyScenario(
         modeledRecoveryDays = Math.ceil(rawDays)
         if (modeledRecoveryDays > recoveryDays * 4) {
           // linear recovery assumption flagged as long
-          caveats.push(`Modeled recovery ${modeledRecoveryDays}d exceeds scenario window ${recoveryDays}d`)
+          caveats.push(
+            `Modeled recovery ${modeledRecoveryDays}d exceeds scenario window ${recoveryDays}d`
+          )
         }
       }
     }
@@ -198,7 +213,9 @@ export function applyScenario(
   }
 
   if (assumedIncentiveShare) {
-    caveats.push('Assumed 15% incentive share for incentiveApyToZero fallback; no decomposition available')
+    caveats.push(
+      'Assumed 15% incentive share for incentiveApyToZero fallback; no decomposition available'
+    )
   }
 
   return {

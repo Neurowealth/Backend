@@ -77,16 +77,22 @@ async function submitSponsoredTransaction(
 ): Promise<TransactionResult> {
   const simulation = await simulateTransaction(tx as any)
   if (rpc.Api.isSimulationError(simulation as any)) {
-    throw new Error(`Sponsorship simulation failed: ${(simulation as any).error}`)
+    throw new Error(
+      `Sponsorship simulation failed: ${(simulation as any).error}`
+    )
   }
   const prepared = await prepareTransaction(tx as any)
   prepared.sign(signer)
   // Sponsored create also needs sponsored account signature? For createAccount with 0 balance sponsored, only sponsor signs. Add sponsored sig if needed? No.
   const hash = await submitTransaction(prepared)
   const result = await waitForConfirmation(hash)
-  if ((result as any).status !== 'success' && (result as any).status !== undefined) {
+  if (
+    (result as any).status !== 'success' &&
+    (result as any).status !== undefined
+  ) {
     // waitForConfirmation returns {hash, status:'success'|...}
-    if ((result as any).status === 'failed') throw new Error('Sponsored transaction failed on-chain')
+    if ((result as any).status === 'failed')
+      throw new Error('Sponsored transaction failed on-chain')
   }
   return result
 }

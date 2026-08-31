@@ -32,7 +32,11 @@ export async function reconcileOnce(): Promise<{
 
   // per-sponsor balances
   try {
-    const sponsorKeys = (process.env.STELLAR_SPONSOR_KEYS || process.env.STELLAR_SPONSOR_SECRET_KEY || '')
+    const sponsorKeys = (
+      process.env.STELLAR_SPONSOR_KEYS ||
+      process.env.STELLAR_SPONSOR_SECRET_KEY ||
+      ''
+    )
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean)
@@ -45,11 +49,18 @@ export async function reconcileOnce(): Promise<{
         const kp = Keypair.fromSecret(secret)
         const acct: any = await getAccount(kp.publicKey()).catch(() => null)
         if (acct && acct.balances) {
-          const native = acct.balances.find((b: any) => b.asset_type === 'native')
+          const native = acct.balances.find(
+            (b: any) => b.asset_type === 'native'
+          )
           const bal = native ? parseFloat(native.balance) : 0
-          const liabilities = native?.selling_liabilities ? parseFloat(native.selling_liabilities) : 0
+          const liabilities = native?.selling_liabilities
+            ? parseFloat(native.selling_liabilities)
+            : 0
           const avail = bal - liabilities
-          sponsorAvailableXlmGauge.set({ sponsorAccount: kp.publicKey() }, avail)
+          sponsorAvailableXlmGauge.set(
+            { sponsorAccount: kp.publicKey() },
+            avail
+          )
           // low sponsor alert handled elsewhere; set metric only
         }
       } catch {}
@@ -58,11 +69,16 @@ export async function reconcileOnce(): Promise<{
 
   // check pending outbox ops to avoid false drift
   const pendingOps = await (db as any).outboxOp.findMany({
-    where: { kind: 'ACCOUNT_PROVISION', status: { in: ['PENDING', 'SUBMITTED'] } },
+    where: {
+      kind: 'ACCOUNT_PROVISION',
+      status: { in: ['PENDING', 'SUBMITTED'] },
+    },
     select: { payload: true },
   })
   const pendingSponsoredIds = new Set(
-    pendingOps.map((op: any) => (op.payload as any)?.sponsoredId).filter(Boolean)
+    pendingOps
+      .map((op: any) => (op.payload as any)?.sponsoredId)
+      .filter(Boolean)
   )
 
   let driftCount = 0
@@ -88,11 +104,14 @@ export async function reconcileOnce(): Promise<{
         // entry gone but we think active -> drift
         driftCount++
         driftXlm += Number(row.xlmReserved)
-        logger.warn('[ReserveReconciliation] Active sponsorship but account missing on-chain', {
-          sponsoredId: row.sponsoredId,
-          publicKey: wallet.publicKey,
-          ledgerKey: row.ledgerKey,
-        })
+        logger.warn(
+          '[ReserveReconciliation] Active sponsorship but account missing on-chain',
+          {
+            sponsoredId: row.sponsoredId,
+            publicKey: wallet.publicKey,
+            ledgerKey: row.ledgerKey,
+          }
+        )
         continue
       }
 
@@ -125,7 +144,10 @@ export async function reconcileOnce(): Promise<{
   reserveReconciliationDrift.set(driftXlm)
 
   if (driftCount > 0) {
-    logger.warn('[ReserveReconciliation] Drift detected', { driftCount, driftXlm })
+    logger.warn('[ReserveReconciliation] Drift detected', {
+      driftCount,
+      driftXlm,
+    })
     await alertingService
       .emit(
         {
@@ -139,7 +161,9 @@ export async function reconcileOnce(): Promise<{
       )
       .catch(() => {})
   } else {
-    logger.info('[ReserveReconciliation] No drift', { outstandingXlm: outstanding })
+    logger.info('[ReserveReconciliation] No drift', {
+      outstandingXlm: outstanding,
+    })
   }
 
   return { driftCount, outstandingXlm: outstanding }

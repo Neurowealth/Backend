@@ -32,7 +32,10 @@ export class SponsorCapacityExhaustedError extends Error {
 }
 
 function getSponsorSecretKeys(): string[] {
-  const raw = process.env.STELLAR_SPONSOR_KEYS || process.env.STELLAR_SPONSOR_SECRET_KEY || ''
+  const raw =
+    process.env.STELLAR_SPONSOR_KEYS ||
+    process.env.STELLAR_SPONSOR_SECRET_KEY ||
+    ''
   if (raw.trim()) {
     return raw
       .split(',')
@@ -71,7 +74,10 @@ export function resolveUsdcAsset(): Asset | null {
     return new Asset(code, issuer)
   }
   // Fallback testnet USDC issuer (Stellar Laboratory)
-  return new Asset(code, 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5')
+  return new Asset(
+    code,
+    'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
+  )
 }
 
 export function buildSponsoredCreateAccount(params: {
@@ -107,8 +113,16 @@ export function buildSponsoredCreateAccount(params: {
 
   // Assert balanced Begin/End in same transaction (unit test guard)
   const ops = (tx as any).operations as any[]
-  const begins = ops.filter((op: any) => op.body?.switch?.name === 'beginSponsoringFutureReserves' || op.type === 'beginSponsoringFutureReserves').length
-  const ends = ops.filter((op: any) => op.body?.switch?.name === 'endSponsoringFutureReserves' || op.type === 'endSponsoringFutureReserves').length
+  const begins = ops.filter(
+    (op: any) =>
+      op.body?.switch?.name === 'beginSponsoringFutureReserves' ||
+      op.type === 'beginSponsoringFutureReserves'
+  ).length
+  const ends = ops.filter(
+    (op: any) =>
+      op.body?.switch?.name === 'endSponsoringFutureReserves' ||
+      op.type === 'endSponsoringFutureReserves'
+  ).length
   // Fallback string check for SDK version differences
   const txXdr = tx.toXDR()
   const hasBegin = txXdr.includes('beginSponsoring')
@@ -116,9 +130,12 @@ export function buildSponsoredCreateAccount(params: {
   // We keep a lightweight assertion: every begin must have matching end
   if (!hasBegin || !hasEnd) {
     // still log for observability
-    logger.warn('[Sponsorship] Sponsored createAccount missing Begin/End sandwich', {
-      newAccountId,
-    })
+    logger.warn(
+      '[Sponsorship] Sponsored createAccount missing Begin/End sandwich',
+      {
+        newAccountId,
+      }
+    )
   }
 
   return tx
@@ -219,9 +236,13 @@ export async function pickSponsor(): Promise<Keypair> {
     try {
       const account = await getAccount(kp.publicKey())
       // account.balances is array of {asset_type, balance, selling_liabilities?}
-      const native = (account as any).balances?.find((b: any) => b.asset_type === 'native')
+      const native = (account as any).balances?.find(
+        (b: any) => b.asset_type === 'native'
+      )
       const balance = native ? parseFloat(native.balance) : 0
-      const liabilities = native?.selling_liabilities ? parseFloat(native.selling_liabilities) : 0
+      const liabilities = native?.selling_liabilities
+        ? parseFloat(native.selling_liabilities)
+        : 0
       const available = balance - liabilities
       if (available >= floor && available > bestBal) {
         best = kp
@@ -236,7 +257,9 @@ export async function pickSponsor(): Promise<Keypair> {
   }
 
   if (!best) {
-    const err = new SponsorCapacityExhaustedError('sponsor_capacity_exhausted: no sponsor above floor')
+    const err = new SponsorCapacityExhaustedError(
+      'sponsor_capacity_exhausted: no sponsor above floor'
+    )
     // critical alert is emitted by caller
     throw err
   }

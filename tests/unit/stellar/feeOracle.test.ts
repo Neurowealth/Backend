@@ -8,7 +8,12 @@ import {
 } from '../../../src/stellar/feeOracle'
 
 jest.mock('../../../src/utils/logger', () => ({
-  logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+  logger: {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+  },
 }))
 
 jest.mock('../../../src/services/alerting', () => ({

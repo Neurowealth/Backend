@@ -297,18 +297,24 @@ export async function createCustodialWallet(userId: string) {
     // fire-and-forget: wallet creation succeeds even if sponsorship enqueue fails;
     // reconciliation job will flag drift.
     void provisionSponsoredAccount(wallet).catch((err) => {
-      logger.warn('[Wallet] Sponsored provision failed (wallet still created)', {
-        userId,
-        publicKey: wallet.publicKey,
-        error: err instanceof Error ? err.message : String(err),
-      })
+      logger.warn(
+        '[Wallet] Sponsored provision failed (wallet still created)',
+        {
+          userId,
+          publicKey: wallet.publicKey,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      )
     })
   }
 
   return wallet
 }
 
-async function provisionSponsoredAccount(wallet: { id: string; publicKey: string }) {
+async function provisionSponsoredAccount(wallet: {
+  id: string
+  publicKey: string
+}) {
   const { enqueueOutboxOp } = await import('../outbox/service')
   const { deriveIdempotencyKey } = await import('../outbox/idempotency')
   const { dispatchInBackground } = await import('../outbox/dispatcher')
@@ -344,7 +350,11 @@ async function provisionSponsoredAccount(wallet: { id: string; publicKey: string
   const xlmReserved = '1'
 
   // Idempotent: one row per wallet sponsorship attempt
-  const idempotencyKey = deriveIdempotencyKey('ACCOUNT_PROVISION', wallet.id, wallet.publicKey)
+  const idempotencyKey = deriveIdempotencyKey(
+    'ACCOUNT_PROVISION',
+    wallet.id,
+    wallet.publicKey
+  )
 
   await db.$transaction(async (tx) => {
     const op = await enqueueOutboxOp(tx as any, {
@@ -397,7 +407,11 @@ export async function ensureSponsoredTrustline(
     throw err
   }
 
-  const idempotencyKey = deriveIdempotencyKey('ACCOUNT_PROVISION', wallet.id, ledgerKey)
+  const idempotencyKey = deriveIdempotencyKey(
+    'ACCOUNT_PROVISION',
+    wallet.id,
+    ledgerKey
+  )
 
   await db.$transaction(async (tx) => {
     const op = await enqueueOutboxOp(tx as any, {

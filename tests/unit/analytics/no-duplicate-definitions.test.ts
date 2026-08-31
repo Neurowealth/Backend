@@ -64,7 +64,8 @@ describe('Anti-Duplication Guard: Risk Analytics Engine', () => {
       // delegating adapter (arrow const) that calls the canonical metrics.ts
       // implementation. It is NOT a duplicate implementation.
       // Normalize to forward slashes for Windows compat (path.sep is '\' on Windows).
-      if (filePath.replace(/\\/g, '/').endsWith('agent/strategyMetrics.ts')) continue
+      if (filePath.replace(/\\/g, '/').endsWith('agent/strategyMetrics.ts'))
+        continue
 
       const content = fs.readFileSync(filePath, 'utf8')
       const lines = content.split('\n')

@@ -8,7 +8,12 @@ import {
 import { Asset } from '@stellar/stellar-sdk'
 
 jest.mock('../../../src/utils/logger', () => ({
-  logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+  logger: {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+  },
 }))
 
 describe('sponsorship builders', () => {
@@ -16,26 +21,43 @@ describe('sponsorship builders', () => {
   const newAccount = Keypair.random().publicKey()
 
   it('buildSponsoredCreateAccount wraps createAccount between Begin/End', () => {
-    const tx = buildSponsoredCreateAccount({ newAccountId: newAccount, sponsorKeypair: sponsor, startingBalance: '0' })
+    const tx = buildSponsoredCreateAccount({
+      newAccountId: newAccount,
+      sponsorKeypair: sponsor,
+      startingBalance: '0',
+    })
     const ops: any[] = (tx as any).operations
     expect(ops.length).toBe(3)
     expect(assertBalancedSponsorship(ops)).toBe(true)
     // Ensure every Begin has matching End in same tx via operation type check
-    const types = ops.map((op: any) => op.type || op.body?.switch?.name || JSON.stringify(op).slice(0, 80)).join(',')
+    const types = ops
+      .map(
+        (op: any) =>
+          op.type || op.body?.switch?.name || JSON.stringify(op).slice(0, 80)
+      )
+      .join(',')
     // At least one begin and one end exist (type strings vary by SDK version)
     expect(ops.length).toBeGreaterThanOrEqual(3)
   })
 
   it('buildSponsoredTrustline sandwiches ChangeTrust', () => {
     const asset = new Asset('USDC', sponsor.publicKey())
-    const tx = buildSponsoredTrustline({ accountId: newAccount, asset, sponsorKeypair: sponsor })
+    const tx = buildSponsoredTrustline({
+      accountId: newAccount,
+      asset,
+      sponsorKeypair: sponsor,
+    })
     const ops: any[] = (tx as any).operations
     expect(ops.length).toBe(3)
     expect(assertBalancedSponsorship(ops)).toBe(true)
   })
 
   it('buildRevokeSponsorship creates single revoke op', () => {
-    const tx = buildRevokeSponsorship({ sponsorKeypair: sponsor, accountId: newAccount, ledgerKey: `${newAccount}:ACCOUNT` })
+    const tx = buildRevokeSponsorship({
+      sponsorKeypair: sponsor,
+      accountId: newAccount,
+      ledgerKey: `${newAccount}:ACCOUNT`,
+    })
     const ops: any[] = (tx as any).operations
     expect(ops.length).toBe(1)
     // balanced check: no begin/end, but should not be unbalanced negative
@@ -43,8 +65,17 @@ describe('sponsorship builders', () => {
   })
 
   it('assertBalancedSponsorship fails on partial sandwich', () => {
-    expect(assertBalancedSponsorship([{ type: 'beginSponsoringFutureReserves' }] as any)).toBe(false)
-    expect(assertBalancedSponsorship([{ type: 'beginSponsoringFutureReserves' }, { type: 'endSponsoringFutureReserves' }] as any)).toBe(true)
+    expect(
+      assertBalancedSponsorship([
+        { type: 'beginSponsoringFutureReserves' },
+      ] as any)
+    ).toBe(false)
+    expect(
+      assertBalancedSponsorship([
+        { type: 'beginSponsoringFutureReserves' },
+        { type: 'endSponsoringFutureReserves' },
+      ] as any)
+    ).toBe(true)
   })
 
   it('leaf-first revoke ordering: trustlines before account', () => {

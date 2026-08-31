@@ -1492,7 +1492,10 @@ router.get(
       const rows: any[] = await prisma.reserveSponsorship.findMany({
         where: { status: 'ACTIVE' },
       })
-      const outstanding = rows.reduce((sum: number, r: any) => sum + Number(r.xlmReserved), 0)
+      const outstanding = rows.reduce(
+        (sum: number, r: any) => sum + Number(r.xlmReserved),
+        0
+      )
 
       // per-sponsor balances (best-effort)
       const bySponsor = new Map<string, { count: number; reserved: number }>()
@@ -1515,9 +1518,13 @@ router.get(
           const { getAccount } = await import('../stellar/client')
           const acct: any = await getAccount(sponsorAccount).catch(() => null)
           if (acct && acct.balances) {
-            const native = acct.balances.find((b: any) => b.asset_type === 'native')
+            const native = acct.balances.find(
+              (b: any) => b.asset_type === 'native'
+            )
             const bal = native ? parseFloat(native.balance) : 0
-            const liab = native?.selling_liabilities ? parseFloat(native.selling_liabilities) : 0
+            const liab = native?.selling_liabilities
+              ? parseFloat(native.selling_liabilities)
+              : 0
             availableXlm = bal - liab
           }
         } catch {}

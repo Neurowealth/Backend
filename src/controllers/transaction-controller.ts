@@ -426,7 +426,9 @@ export async function processOnChainTransaction(
     // Fee oracle estimate for honest UI numbers
     const snapW = getFeeSnapshot()
     const estFeeW =
-      snapW.congestionLevel === 'low' ? snapW.recommendedBaseFee : snapW.aggressiveBaseFee
+      snapW.congestionLevel === 'low'
+        ? snapW.recommendedBaseFee
+        : snapW.aggressiveBaseFee
     const etaW =
       snapW.congestionLevel === 'severe'
         ? 15

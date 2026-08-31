@@ -682,9 +682,7 @@ export const config = {
     ttlMs: parseInt(process.env.FEE_ORACLE_TTL_MS || '30000'),
     min: parseInt(process.env.FEE_ORACLE_MIN || '100'),
     max: parseInt(process.env.FEE_ORACLE_MAX || '50000'),
-    defaultBaseFee: parseInt(
-      process.env.FEE_ORACLE_DEFAULT_BASE_FEE || '100'
-    ),
+    defaultBaseFee: parseInt(process.env.FEE_ORACLE_DEFAULT_BASE_FEE || '100'),
   },
   sponsor: {
     minXlmFloor: parseFloat(process.env.SPONSOR_MIN_XLM_FLOOR || '10'),

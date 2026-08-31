@@ -119,16 +119,17 @@ export function isStale(snapshot: FeeSnapshot, nowMs = Date.now()): boolean {
   return nowMs - sampled > snapshot.ttlMs + 1000
 }
 
-async function fetchFeeStats(): Promise<{ min: number; p70: number; p95: number }> {
+async function fetchFeeStats(): Promise<{
+  min: number
+  p70: number
+  p95: number
+}> {
   const client = getResilientClient()
   // Try getFeeStats via resilient execute; fallback to raw server
-  const raw: any = await client.execute(
-    async (server: any) => {
-      if (typeof server.getFeeStats === 'function') return server.getFeeStats()
-      throw new Error('getFeeStats not available')
-    },
-    'feeOracle.getFeeStats'
-  )
+  const raw: any = await client.execute(async (server: any) => {
+    if (typeof server.getFeeStats === 'function') return server.getFeeStats()
+    throw new Error('getFeeStats not available')
+  }, 'feeOracle.getFeeStats')
   // Stellar RPC FeeStats shape varies: handle multiple shapes
   // sorobanInclusionFee: { min, p70, p95 } or feeCharged: { min, p70, p95 }
   const inclusion = raw?.sorobanInclusionFee ?? raw?.feeCharged ?? raw
@@ -145,10 +146,18 @@ async function fetchLedgerCapacity(): Promise<number> {
     'feeOracle.getLatestLedger'
   )
   // ledgerCapacityUsage 0..1 may be in ledger, or feeStats; fallback
-  if (typeof ledger?.ledgerCapacityUsage === 'number') return ledger.ledgerCapacityUsage
-  if (typeof ledger?.sequence === 'number' && typeof ledger?.protocolVersion === 'number') {
+  if (typeof ledger?.ledgerCapacityUsage === 'number')
+    return ledger.ledgerCapacityUsage
+  if (
+    typeof ledger?.sequence === 'number' &&
+    typeof ledger?.protocolVersion === 'number'
+  ) {
     // fallback: use tx count heuristic if available
-    if (typeof ledger?.txCount === 'number' && typeof ledger?.maxTxSetSize === 'number' && ledger.maxTxSetSize > 0) {
+    if (
+      typeof ledger?.txCount === 'number' &&
+      typeof ledger?.maxTxSetSize === 'number' &&
+      ledger.maxTxSetSize > 0
+    ) {
       return Math.min(1, ledger.txCount / ledger.maxTxSetSize)
     }
   }
@@ -157,7 +166,10 @@ async function fetchLedgerCapacity(): Promise<number> {
 
 async function pollOnce(): Promise<void> {
   try {
-    const [stats, capacity] = await Promise.all([fetchFeeStats(), fetchLedgerCapacity()])
+    const [stats, capacity] = await Promise.all([
+      fetchFeeStats(),
+      fetchLedgerCapacity(),
+    ])
 
     let p70 = stats.p70
     let p95 = stats.p95
@@ -175,7 +187,13 @@ async function pollOnce(): Promise<void> {
     const aggressive = clampFee(Math.max(100, percentile(sorted, 95) || p95))
 
     const dwellOk = Date.now() - levelSinceMs >= DWELL_MS
-    const nextLevel = deriveCongestionLevel(capacity, min, p95, currentLevel, dwellOk)
+    const nextLevel = deriveCongestionLevel(
+      capacity,
+      min,
+      p95,
+      currentLevel,
+      dwellOk
+    )
     if (nextLevel !== currentLevel) {
       currentLevel = nextLevel
       levelSinceMs = Date.now()
@@ -199,7 +217,11 @@ async function pollOnce(): Promise<void> {
     feeOracleStalenessSeconds.set(0)
 
     // Redis mirror best-effort
-    await cacheSet(REDIS_KEY, snapshot, Math.ceil(snapshot.ttlMs / 1000) + 5).catch(() => {})
+    await cacheSet(
+      REDIS_KEY,
+      snapshot,
+      Math.ceil(snapshot.ttlMs / 1000) + 5
+    ).catch(() => {})
 
     logger.info('[FeeOracle] Snapshot published', {
       recommendedBaseFee: recommended,
@@ -212,7 +234,8 @@ async function pollOnce(): Promise<void> {
     logger.error('[FeeOracle] Poll failed', { error: msg })
     // staleness metric
     if (currentSnapshot) {
-      const staleness = (Date.now() - new Date(currentSnapshot.sampledAt).getTime()) / 1000
+      const staleness =
+        (Date.now() - new Date(currentSnapshot.sampledAt).getTime()) / 1000
       feeOracleStalenessSeconds.set(Math.max(0, staleness))
       if (staleness * 1000 > config.feeOracle.ttlMs) {
         alertingService
@@ -222,7 +245,10 @@ async function pollOnce(): Promise<void> {
               description: `Fee oracle has not produced a fresh snapshot for ${Math.round(staleness)}s (TTL ${config.feeOracle.ttlMs}ms). Consumers falling back to default fee.`,
               severity: 'warning',
               component: 'fee-oracle',
-              metadata: { stalenessSeconds: staleness, ttlMs: config.feeOracle.ttlMs },
+              metadata: {
+                stalenessSeconds: staleness,
+                ttlMs: config.feeOracle.ttlMs,
+              },
             },
             'fee-oracle:stale'
           )

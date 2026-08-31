@@ -52,7 +52,10 @@ import {
   recordOutboxAggressiveFeeUsed,
   recordOutboxMaxFeeHit,
 } from '../utils/metrics'
-import { getFeeSnapshot, isStale as isFeeSnapshotStale } from '../stellar/feeOracle'
+import {
+  getFeeSnapshot,
+  isStale as isFeeSnapshotStale,
+} from '../stellar/feeOracle'
 
 function signerLock() {
   return getSignerLock(
@@ -83,16 +86,23 @@ const CONGESTION_ORDER: Record<string, number> = {
 
 function shouldDeferLowOp(op: OutboxOpRecord, congestion: string): boolean {
   if (op.priority !== 'LOW') return false
-  if ((CONGESTION_ORDER[congestion] ?? 0) < CONGESTION_ORDER['high']) return false
+  if ((CONGESTION_ORDER[congestion] ?? 0) < CONGESTION_ORDER['high'])
+    return false
   const ageMs = Date.now() - new Date(op.createdAt).getTime()
   if (ageMs > config.outbox.lowMaxDeferMs) return false
   return true
 }
 
-function getBaseFeeForOp(op: OutboxOpRecord): { baseFee: number; isAggressive: boolean } {
+function getBaseFeeForOp(op: OutboxOpRecord): {
+  baseFee: number
+  isAggressive: boolean
+} {
   const snapshot = getFeeSnapshot()
   const level = snapshot.congestionLevel
-  if (op.priority === 'CRITICAL' && (CONGESTION_ORDER[level] ?? 0) >= CONGESTION_ORDER['elevated']) {
+  if (
+    op.priority === 'CRITICAL' &&
+    (CONGESTION_ORDER[level] ?? 0) >= CONGESTION_ORDER['elevated']
+  ) {
     return { baseFee: snapshot.aggressiveBaseFee, isAggressive: true }
   }
   return { baseFee: snapshot.recommendedBaseFee, isAggressive: false }
@@ -272,11 +282,17 @@ export async function dispatchOne(opId: string): Promise<TransactionResult> {
         data: { nextAttemptAt: deferUntil },
       })
       recordOutboxLowDeferred()
-      throw new Error(`LOW op ${opId} deferred due to high congestion (${snap.congestionLevel})`)
+      throw new Error(
+        `LOW op ${opId} deferred due to high congestion (${snap.congestionLevel})`
+      )
     }
   } catch (err) {
     // If the error is our deferral throw, rethrow; otherwise log and proceed
-    if (err instanceof Error && err.message.includes('deferred due to high congestion')) throw err
+    if (
+      err instanceof Error &&
+      err.message.includes('deferred due to high congestion')
+    )
+      throw err
     logger.warn('[Outbox] Defer check failed, proceeding to dispatch', {
       opId: op.id,
       error: err instanceof Error ? err.message : String(err),
