@@ -155,6 +155,18 @@ enum PriceSource {
   MARKET_FEED // a volatile-asset price feed snapshot — stubbed (always null) in v1
 }
 
+// #356 — selects the declarative tax profile (src/tax/jurisdictions/) applied
+// to a user's report: tax-year boundaries, holding-period thresholds, loss
+// matching, allowances, and export format. US is the default and preserves
+// every pre-existing user's report shape unchanged.
+enum TaxJurisdiction {
+  US
+  UK
+  DE
+  AU
+  CA
+}
+
 // #317 — cost-basis consumption order. FIFO is the default and preserves
 // every pre-existing user's realized-gain figures unchanged.
 enum AccountingMethod {
@@ -234,6 +246,11 @@ model User {
   // docs/TAX_REPORT.md).
   accountingMethod  AccountingMethod @default(FIFO)
   methodEffectiveAt DateTime?
+  // #356 — selects the tax profile applied by buildTaxReport. Changing this
+  // is forward-only, same convention as accountingMethod: it affects future
+  // reports, never rewrites past disposal rows (which carry no jurisdiction
+  // of their own — see src/tax/jurisdictions/).
+  taxJurisdiction   TaxJurisdiction  @default(US)
 
   sessions                Session[]
   positions               Position[]
