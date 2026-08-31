@@ -177,6 +177,50 @@ components:
             affectedPositions:
               type: integer
 
+    StressScenario:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+        shocks:
+          type: object
+        provenance:
+          type: string
+
+    StressResult:
+      type: object
+      properties:
+        scenarioId:
+          type: string
+        label:
+          type: string
+        preValueUsd:
+          type: number
+        postValueUsd:
+          type: number
+        impactUsd:
+          type: number
+        impactPct:
+          type: number
+        perPosition:
+          type: array
+          items:
+            type: object
+        modeledRecoveryDays:
+          type: integer
+          nullable: true
+        permanentImpairment:
+          type: boolean
+        caveat:
+          type: string
+        asOf:
+          type: string
+          format: date-time
+
     # ── Assistant (#318) ─────────────────────────────────────────────────────
     AssistantChatRequest:
       type: object
@@ -1488,6 +1532,87 @@ paths:
                                 type: integer
                               maxSeconds:
                                 type: integer
+
+  # ── Stress testing (#351) ─────────────────────────────────────────────────────
+
+  /analytics/stress/scenarios:
+    get:
+      operationId: getStressScenarios
+      summary: List built-in stress scenarios
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Scenario library.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scenarios:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StressScenario'
+                  caveat:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /analytics/stress:
+    post:
+      operationId: runStressTest
+      summary: Run scenario stress test on current portfolio
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scenarioId:
+                  type: string
+                  example: stablecoin_depeg_2022
+                custom:
+                  type: object
+                  properties:
+                    assetPriceShockPct:
+                      type: object
+                      additionalProperties:
+                        type: number
+                    apyShockPct:
+                      oneOf:
+                        - type: number
+                        - type: object
+                          additionalProperties:
+                            type: number
+                    incentiveApyToZero:
+                      type: boolean
+                    protocolLossPct:
+                      type: object
+                      additionalProperties:
+                        type: number
+                    recoveryDays:
+                      type: integer
+                runAll:
+                  type: boolean
+                asOf:
+                  type: string
+                  format: date-time
+      responses:
+        '200':
+          description: Stress result (or ranked runAll).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StressResult'
+        '400':
+          $ref: '#/components/responses/Unauthorized'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   # ── Real-time WebSocket stream (#316) ─────────────────────────────────────────
 
