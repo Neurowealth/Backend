@@ -63,7 +63,9 @@ describe('Anti-Duplication Guard: Risk Analytics Engine', () => {
       // Skip strategyMetrics.ts — it re-exports inferPeriodsPerYear as a
       // delegating adapter (arrow const) that calls the canonical metrics.ts
       // implementation. It is NOT a duplicate implementation.
-      if (filePath.endsWith('agent/strategyMetrics.ts')) continue
+      // Normalize separators so this matches on both POSIX and Windows.
+      if (filePath.split('\\').join('/').endsWith('agent/strategyMetrics.ts'))
+        continue
 
       const content = fs.readFileSync(filePath, 'utf8')
       const lines = content.split('\n')

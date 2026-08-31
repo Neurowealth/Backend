@@ -1,6 +1,6 @@
-import { PrismaClient, CaseStatus } from '@prisma/client'
+import { CaseStatus } from '@prisma/client'
+import db from '../db'
 
-const prisma = new PrismaClient()
 const CASE_OPEN_SCORE = 75
 
 /**
@@ -23,12 +23,12 @@ export async function checkAndOpenCase(
 ) {
   if (score >= CASE_OPEN_SCORE) {
     // Open or attach to case
-    const existingCase = await prisma.complianceCase.findFirst({
+    const existingCase = await db.complianceCase.findFirst({
       where: { userId, status: { notIn: TERMINAL_CASE_STATUSES } },
     })
 
     if (existingCase) {
-      await prisma.caseEvent.create({
+      await db.caseEvent.create({
         data: {
           caseId: existingCase.id,
           type: 'EVIDENCE',
@@ -37,7 +37,7 @@ export async function checkAndOpenCase(
         },
       })
     } else {
-      await prisma.complianceCase.create({
+      await db.complianceCase.create({
         data: {
           userId,
           priority: 'HIGH',

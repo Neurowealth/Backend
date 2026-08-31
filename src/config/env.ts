@@ -434,11 +434,22 @@ export const config = {
   },
   transcription: {
     provider: process.env.TRANSCRIPTION_PROVIDER || 'openai',
+    /**
+     * Secondary provider used when the primary is unavailable (#400). The
+     * registry wraps both into a single provider that retries the fallback
+     * only on a TranscriptionUnavailableError — not on UnsupportedAudioError,
+     * where a second vendor would fail identically.
+     */
+    fallbackProvider: process.env.TRANSCRIPTION_FALLBACK_PROVIDER || 'deepgram',
     openaiApiKey: process.env.OPENAI_API_KEY || '',
+    deepgramApiKey: process.env.DEEPGRAM_API_KEY || '',
     model: process.env.TRANSCRIPTION_MODEL || 'whisper-1',
+    deepgramModel: process.env.DEEPGRAM_MODEL || 'nova-2',
     apiUrl:
       process.env.TRANSCRIPTION_API_URL ||
       'https://api.openai.com/v1/audio/transcriptions',
+    deepgramApiUrl:
+      process.env.DEEPGRAM_API_URL || 'https://api.deepgram.com/v1/listen',
     confidenceThreshold: parseFloat(
       process.env.TRANSCRIPTION_CONFIDENCE_THRESHOLD || '0.6'
     ),
