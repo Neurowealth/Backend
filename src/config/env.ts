@@ -575,6 +575,9 @@ export const config = {
     ),
     ownerReward: parseFloat(process.env.REFERRAL_OWNER_REWARD || '5'),
     referredReward: parseFloat(process.env.REFERRAL_REFERRED_REWARD || '5'),
+    tier2Enabled:
+      (process.env.REFERRAL_TIER2_ENABLED || 'false').toLowerCase() === 'true',
+    tier2Reward: parseFloat(process.env.REFERRAL_TIER2_REWARD || '1'),
     rewardAsset: process.env.REFERRAL_REWARD_ASSET || 'USDC',
     rewardContractMethod:
       process.env.REFERRAL_REWARD_CONTRACT_METHOD || 'transfer_reward',

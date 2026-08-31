@@ -3,7 +3,30 @@
 import { Request, Response } from 'express'
 import { logger } from '../utils/logger'
 import { sendError, sendUnauthorized } from '../utils/errors'
-import { getOrCreateReferralCode, listReferrals } from '../referral/service'
+import {
+  getOrCreateReferralCode,
+  listReferrals,
+  referralLeaderboard,
+} from '../referral/service'
+
+export async function getReferralLeaderboard(
+  req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const page = Math.max(1, Number(req.query.page) || 1)
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20))
+    const displayName = req.query.displayName === 'true'
+    res.json({
+      page,
+      limit,
+      leaderboard: await referralLeaderboard(page, limit, displayName),
+    })
+  } catch (error) {
+    logger.error('[Referral] Failed to load leaderboard:', error)
+    sendError(res, 500, 'Failed to retrieve leaderboard')
+  }
+}
 
 /**
  * GET /api/referrals/code

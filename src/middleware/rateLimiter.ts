@@ -3,6 +3,8 @@ import rateLimit from 'express-rate-limit'
 import { config } from '../config/env'
 import { recordRateLimitHit } from '../utils/metrics'
 import { logger } from '../utils/logger'
+import db from '../db'
+import crypto from 'node:crypto'
 
 // ── Trusted-IP / service-token bypass ─────────────────────────────────────
 
@@ -117,7 +119,18 @@ export function buildRateLimiter(
 
   const limiter = rateLimit({
     windowMs: opts.windowMs,
-    max: opts.max,
+    max: async (req: Request) => {
+      const token = req.header('Authorization')?.replace(/^Bearer\s+/, '')
+      if (!token?.startsWith('nwk_')) return opts.max
+      const keyId = token.split('_')[1]
+      const tokenPrefix =
+        'sha256:' + crypto.createHash('sha256').update(token).digest('hex')
+      const key = await (db as any).userApiKey.findFirst({
+        where: { id: keyId, tokenPrefix, revokedAt: null },
+        select: { rateLimitPerMin: true },
+      })
+      return key?.rateLimitPerMin ?? opts.max
+    },
     standardHeaders: true,
     legacyHeaders: false,
     skip: opts.skip,

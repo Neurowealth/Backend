@@ -459,7 +459,7 @@ async function payOneReward(
   amount: number,
   network: Network,
   conversionId: string,
-  leg: 'owner' | 'referred'
+  leg: 'owner' | 'referred' | 'tier2'
 ): Promise<string> {
   const address = await resolveRewardAddress(recipientUserId)
   if (!address) {
@@ -562,7 +562,7 @@ export async function payoutActivatedConversions(): Promise<{
     })
     const network = referredUser?.network ?? Network.MAINNET
 
-    let { ownerRewardTxId, referredRewardTxId } = conversion
+    let { ownerRewardTxId, referredRewardTxId, tier2RewardTxId } = conversion
     let hadError = false
 
     // Owner leg.
@@ -605,6 +605,48 @@ export async function payoutActivatedConversions(): Promise<{
       }
     }
 
+    if (
+      !tier2RewardTxId &&
+      config.referral.tier2Enabled &&
+      config.referral.tier2Reward > 0
+    ) {
+      const parentCode = await db.referralCode.findFirst({
+        where: { ownerUserId: ownerUserId },
+        select: { ownerUserId: true },
+      })
+      // A tier-2 relationship is represented by the owner's own active code
+      // being attributed to its parent; inactive/deleted codes earn nothing.
+      const parentConversion =
+        parentCode &&
+        (await db.referralConversion.findFirst({
+          where: {
+            referralCode: { ownerUserId: { not: ownerUserId } },
+            referredUserId: ownerUserId,
+            status: { in: [ReferralStatus.ACTIVATED, ReferralStatus.REWARDED] },
+          },
+          include: { referralCode: true },
+        }))
+      const tier2Owner = parentConversion?.referralCode.ownerUserId
+      if (tier2Owner) {
+        try {
+          tier2RewardTxId = await payOneReward(
+            tier2Owner,
+            config.referral.tier2Reward,
+            network,
+            conversion.id,
+            'tier2'
+          )
+          await db.referralConversion.update({
+            where: { id: conversion.id },
+            data: { tier2RewardTxId, payoutError: null },
+          })
+        } catch (err) {
+          hadError = true
+          await recordPayoutFailure(conversion.id, 'tier2', err)
+        }
+      }
+    }
+
     if (hadError) continue // stays ACTIVATED — retried next sweep
 
     // Every owed leg is now paid. Advance to REWARDED (terminal).
@@ -625,7 +667,7 @@ export async function payoutActivatedConversions(): Promise<{
 
 async function recordPayoutFailure(
   conversionId: string,
-  leg: 'owner' | 'referred',
+  leg: 'owner' | 'referred' | 'tier2',
   err: unknown
 ): Promise<void> {
   const message = err instanceof Error ? err.message : String(err)
@@ -682,6 +724,44 @@ export async function listReferrals(ownerUserId: string) {
     code: referralCode?.code ?? null,
     referrals: referralCode?.conversions ?? [],
   }
+}
+
+export async function referralLeaderboard(
+  page = 1,
+  limit = 20,
+  includeDisplayName = false
+) {
+  const rows = await db.referralConversion.groupBy({
+    by: ['referralCodeId'],
+    where: { status: ReferralStatus.REWARDED },
+    _count: { id: true },
+    orderBy: { _count: { id: 'desc' } },
+    skip: (page - 1) * limit,
+    take: limit,
+  })
+  const codes = await db.referralCode.findMany({
+    where: { id: { in: rows.map((r) => r.referralCodeId) } },
+    select: { id: true, ownerUserId: true },
+  })
+  const users = includeDisplayName
+    ? await db.user.findMany({
+        where: { id: { in: codes.map((c) => c.ownerUserId) } },
+        select: { id: true, displayName: true },
+      })
+    : []
+  return rows.map((row) => {
+    const ownerId = codes.find((c) => c.id === row.referralCodeId)?.ownerUserId
+    return {
+      userId: ownerId,
+      activatedConversions: row._count.id,
+      ...(includeDisplayName
+        ? {
+            displayName:
+              users.find((u) => u.id === ownerId)?.displayName ?? null,
+          }
+        : {}),
+    }
+  })
 }
 
 /**
