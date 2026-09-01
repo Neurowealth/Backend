@@ -22,10 +22,12 @@
 import { Router } from 'express'
 import { requireAuth } from '../middleware/authenticate'
 import { validate } from '../middleware/validate'
+import { simulateRateLimiter } from '../middleware/rateLimiter'
 import {
   publishStrategySchema,
   marketplaceQuerySchema,
   strategyIdParamSchema,
+  strategySimulateSchema,
 } from '../validators/strategy-validators'
 import {
   publishStrategyHandler,
@@ -34,6 +36,7 @@ import {
   getFollowingHandler,
   followStrategyHandler,
   unfollowStrategyHandler,
+  simulateStrategyHandler,
 } from '../controllers/strategy-controller'
 
 const router = Router()
@@ -41,8 +44,15 @@ const router = Router()
 // Every route in this file is user-facing and owner-scoped.
 router.use(requireAuth)
 
-// Literal segments first, so "publish"/"marketplace"/"following" are never
-// captured as a strategy id by the /:id/* routes below.
+// Literal segments first, so "publish"/"marketplace"/"following"/"simulate"
+// are never captured as a strategy id by the /:id/* routes below.
+router.post(
+  '/simulate',
+  simulateRateLimiter,
+  validate({ body: strategySimulateSchema }),
+  simulateStrategyHandler
+)
+
 router.post(
   '/publish',
   validate({ body: publishStrategySchema }),

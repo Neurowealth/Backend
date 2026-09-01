@@ -260,6 +260,165 @@ components:
             must be an affirmative or negative reply — it is interpreted as
             the confirmation decision, not a new request.
 
+    # ── Strategy What-If simulation (#344) ────────────────────────────────────
+    StrategySimulateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        strategy:
+          type: string
+          enum: [MAX_YIELD, TARGET_ALLOCATION, GOAL_TRACKING]
+          nullable: true
+          description: Strategy to simulate. Mutually exclusive with followStrategyId.
+        targetAllocations:
+          type: object
+          additionalProperties:
+            type: number
+            minimum: 0
+            maximum: 100
+          description: |
+            Protocol name → target weight (%). After config resolution these
+            must sum to 100 for TARGET_ALLOCATION, enforced in the service.
+        riskCeiling:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: |
+            Risk ceiling to simulate. Always clamped to the stricter of the
+            caller's own and any applied ceiling.
+        followStrategyId:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Simulate the config of a published strategy to follow. Mutually
+            exclusive with the inline strategy/targetAllocations/riskCeiling.
+        historyWindowDays:
+          type: integer
+          minimum: 1
+          maximum: 180
+          default: 90
+          description: Historical replay window; capped at 180 days.
+        assumeInitialDeposit:
+          type: boolean
+          description: |
+            When the caller has no active positions, replay a nominal $1000
+            instead of zero.
+
+    StrategySimulateResponse:
+      type: object
+      required: [immediate, historical, simulationToken, asOf, effectiveConfig, dataCaveats, label]
+      properties:
+        immediate:
+          $ref: '#/components/schemas/StrategyImmediateDecision'
+        historical:
+          $ref: '#/components/schemas/StrategyHistoricalReplay'
+        simulationToken:
+          type: string
+          description: Opaque sha-256 binding the preview to the exact config + window.
+        asOf:
+          type: string
+          format: date-time
+        effectiveConfig:
+          type: object
+          properties:
+            strategyName:
+              type: string
+              enum: [MAX_YIELD, TARGET_ALLOCATION, GOAL_TRACKING]
+              nullable: true
+            targetAllocations:
+              type: object
+              additionalProperties:
+                type: number
+            riskCeiling:
+              type: integer
+              nullable: true
+        dataCaveats:
+          type: array
+          items:
+            type: string
+          description: Window-truncation and missing-protocol caveats, never silent.
+        label:
+          type: string
+
+    StrategyImmediateDecision:
+      type: object
+      required: [action, targetProtocol, moves, trace, reasoning]
+      properties:
+        action:
+          type: string
+          enum: [rebalance, hold, blocked]
+        targetProtocol:
+          type: string
+          nullable: true
+        moves:
+          type: array
+          items:
+            type: object
+            properties:
+              toProtocol:
+                type: string
+              fraction:
+                type: number
+        trace:
+          type: object
+          description: Shape-parity with the persisted DecisionTrace.
+        reasoning:
+          type: string
+
+    StrategyHistoricalReplay:
+      type: object
+      required:
+        - rebalanceCount
+        - turnoverRatio
+        - totalFeesPaid
+        - endingValue
+        - startingValue
+        - counterfactualEndingValue
+        - finalProtocol
+        - timeSeries
+        - realizedGainPct
+        - counterfactualGainPct
+        - dataCaveats
+      properties:
+        rebalanceCount:
+          type: integer
+        turnoverRatio:
+          type: number
+        totalFeesPaid:
+          type: string
+        endingValue:
+          type: string
+        startingValue:
+          type: string
+        counterfactualEndingValue:
+          type: string
+        finalProtocol:
+          type: string
+          nullable: true
+        timeSeries:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+                format: date
+              simulatedValue:
+                type: string
+              counterfactualValue:
+                type: string
+        realizedGainPct:
+          type: number
+          nullable: true
+        counterfactualGainPct:
+          type: number
+          nullable: true
+        dataCaveats:
+          type: array
+          items:
+            type: string
+
     # ── Risk metrics ─────────────────────────────────────────────────────────
     RiskMetrics:
       type: object
@@ -860,6 +1019,66 @@ paths:
           description: Validation failed (empty/oversized message, malformed targetUserId).
         '401':
           description: Missing/invalid bearer token, or no permission on the requested sub-account.
+
+  # ── Strategy What-If simulation (#344) ─────────────────────────────────────
+
+  /strategies/simulate:
+    post:
+      operationId: simulateStrategy
+      summary: Dry-run a hypothetical strategy change (what-if)
+      description: |
+        Simulates a hypothetical strategy config on the caller's current
+        positions and public `ProtocolRate` history without applying it. Pure
+        read — **zero side effects** (no outbox/event/log/transaction/DB write).
+
+        Returns two legs:
+          * `immediate` — what the agent would do right now (`rebalance` /
+            `hold` / `blocked`) plus a `trace` shape-parity with the persisted
+            `DecisionTrace`.
+          * `historical` — a non-compounding daily replay over retained history,
+            side-by-side with a counterfactual "held in the starting protocol"
+            leg; rebalances subtract the live `estimateRebalanceCost`.
+
+        Resolution precedence: followed config (current follow or
+        `followStrategyId`) → submitted inline config → the caller's own config.
+        The effective risk ceiling is always the stricter of the caller's and
+        any applied ceiling. `followStrategyId` is mutually exclusive with an
+        inline `strategy`/`targetAllocations`/`riskCeiling`.
+      tags: [Strategy]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StrategySimulateRequest'
+            examples:
+              what_if:
+                summary: Inline what-if
+                value:
+                  strategy: MAX_YIELD
+                  riskCeiling: 70
+                  historyWindowDays: 90
+              follow_target:
+                summary: Simulate the config of a followed strategy
+                value:
+                  followStrategyId: cccccccc-cccc-4ccc-8ccc-cccccccccccc
+      responses:
+        '200':
+          description: The what-if preview.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StrategySimulateResponse'
+        '400':
+          description: SimulationValidationError (weights do not sum to 100, GOAL_TRACKING without an active goal, window over cap, follow/inline conflict).
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: SimulationNotFoundError (unknown owner or unpublished follow target).
+        '429':
+          description: Rate limited (simulateRateLimiter, 6 req/min).
 
   # ── Risk endpoints ───────────────────────────────────────────────────────────
 

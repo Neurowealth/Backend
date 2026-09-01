@@ -175,5 +175,56 @@ export const strategyIdParamSchema = z.object({
   id: z.string().uuid('Invalid strategy ID'),
 })
 
+/**
+ * POST /strategies/simulate (#344)
+ *
+ * Dry-run a hypothetical strategy config. `followStrategyId` is mutually
+ * exclusive with the inline `strategy`/`targetAllocations`/`riskCeiling`. The
+ * historical replay window is capped at SIMULATE_MAX_WINDOW_DAYS (180) to bound
+ * compute. TARGET_ALLOCATION weight-sum-to-100 is enforced in the service once
+ * the effective config is resolved (a follow may contribute allocations), so it
+ * is not duplicated here.
+ */
+export const strategySimulateSchema = z
+  .object({
+    strategy: z
+      .enum(['MAX_YIELD', 'TARGET_ALLOCATION', 'GOAL_TRACKING'])
+      .nullable()
+      .optional(),
+    targetAllocations: z
+      .record(z.string().min(1).max(100), z.number().finite().min(0).max(100))
+      .optional(),
+    riskCeiling: z.number().int().min(0).max(100).optional(),
+    followStrategyId: z
+      .string()
+      .uuid('Invalid strategy ID')
+      .nullable()
+      .optional(),
+    historyWindowDays: z
+      .number()
+      .int()
+      .min(1)
+      .max(180, 'historyWindowDays is capped at 180 days')
+      .default(90)
+      .optional(),
+    assumeInitialDeposit: z.boolean().optional(),
+  })
+  .superRefine((data, ctx) => {
+    const hasInline =
+      data.strategy != null ||
+      data.targetAllocations !== undefined ||
+      data.riskCeiling !== undefined
+    if (data.followStrategyId && hasInline) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['followStrategyId'],
+        message:
+          'followStrategyId is mutually exclusive with inline strategy config',
+      })
+    }
+  })
+
+export type StrategySimulateInput = z.infer<typeof strategySimulateSchema>
+
 export type PublishStrategyInput = z.infer<typeof publishStrategySchema>
 export type MarketplaceQuery = z.infer<typeof marketplaceQuerySchema>

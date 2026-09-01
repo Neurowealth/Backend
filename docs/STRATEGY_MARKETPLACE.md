@@ -271,6 +271,7 @@ deprecated `/api/strategies` alias) via the `apiRoutes` table in `src/index.ts`.
 | `GET`  | `/strategies/following`    | The caller's active follow, or `{ follow: null }`  |
 | `POST` | `/strategies/:id/follow`   |                                                    |
 | `POST` | `/strategies/:id/unfollow` | Also releases an orphaned follow                   |
+| `POST` | `/strategies/simulate`     | #344 dry-run what-if (see § 6.1)                   |
 
 **Not** `/api/agent/strategies/*` as the issue proposed: `src/routes/agent.ts`
 sits behind `internalAuthGuard`, an operator/machine guard that authenticates by
@@ -288,6 +289,60 @@ leaderboard. The envelope follows the flat `{ page, limit, total, strategies }`
 shape of `src/routes/transactions.ts`.
 
 **Self-follow** is disallowed → `StrategySelfFollowError` → 409.
+
+---
+
+## 6.1 What-If simulation (`POST /strategies/simulate`, #344)
+
+A **dry-run** of a hypothetical strategy change before the user commits to it.
+It is a pure read endpoint — **zero side effects**: it never writes an
+`OutboxOp`, `AgentLog`, `Transaction`, `RebalanceDecision`, `User`,
+`PublishedStrategy` or `Position` row. Reads only the caller's own
+`Position` rows plus the public `ProtocolRate` / `ProtocolRiskScore` tables,
+and the same public protocol scan the agent loop uses.
+
+| Field | Type | Notes |
+| ----- | ---- | ----- |
+| `strategy` | enum | `MAX_YIELD` \| `TARGET_ALLOCATION` \| `GOAL_TRACKING` |
+| `targetAllocations` | map | Protocol → weight (%). Must sum to 100 after resolution. |
+| `riskCeiling` | int 0–100 | Strictly clamped against the caller's own / follow ceiling. |
+| `followStrategyId` | uuid | Mutually exclusive with an inline `strategy` config. |
+| `historyWindowDays` | int 1–180 | Default 90. Capped at `SIMULATE_MAX_WINDOW_DAYS` (180). |
+| `assumeInitialDeposit` | bool | When the caller has no positions, replay a nominal $1000. |
+
+**Resolution precedence** (mirrors `resolveEffectiveConfig`, #285): followed
+config (current follow, or the strategy named by `followStrategyId`) → submitted
+inline config → the caller's own config. The effective risk ceiling is always
+the **stricter** of the caller's own and any applied ceiling — a simulation may
+only tighten exposure, never widen it.
+
+The response returns two legs plus an opaque `simulationToken` (a sha-256 of the
+canonical config + window):
+
+* `immediate` — what the agent would do *right now* on the caller's live
+  positions (`rebalance` / `hold` / `blocked`) plus a `trace` shape-parity with
+  the persisted `DecisionTrace`.
+* `historical` — a non-compounding daily replay over the retained `ProtocolRate`
+  history, side-by-side with a **counterfactual** leg (same starting value in
+  the same holding protocol, never rebalancing, never paying fees). Rebalances
+  subtract the **same** `estimateRebalanceCost` the live agent uses.
+
+Rates are computed with `Prisma.Decimal` throughout; the historical leg's move
+amounts are encoded as `value × 10^18` (the same convention as `src/agent/backtest.ts`)
+so the shared cost model divides back to human units and yields realistic fees —
+deliberately *not* the latent plain-integer encoding in `actionTools.ts:265`.
+
+**Data caveats** surface instead of fabrications: a window is truncated to the
+available retained history, and a protocol with no history in the window is
+treated as unavailable (never zero-filled) — both reported in `dataCaveats`.
+
+Short-TTL result cache (120 s) is keyed by
+`strategy-simulate:{userId}:{simulationToken}`.
+
+Errors: `400 SimulationValidationError` (weights ≠ 100, `GOAL_TRACKING` without
+an active goal, cap/mutual-exclusion violations), `404 SimulationNotFoundError`
+(unknown owner or unpublished follow target), `429` rate-limited
+(`simulateRateLimiter`, 6 req/min).
 
 ---
 

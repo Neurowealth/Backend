@@ -116,6 +116,43 @@ riskCeiling? }`** — the three keys `src/agent/loop.ts` actually reads.
 
 ---
 
+## Issue #344 — Strategy What-If Simulation (`POST /strategies/simulate`)
+
+1. **The endpoint is a pure read — zero side effects.** It never writes an
+   `OutboxOp`, `AgentLog`, `Transaction`, `RebalanceDecision`, `User`,
+   `PublishedStrategy`, or `Position` row. `src/strategy/simulation-service.ts`
+   enforces this by convention; `src/agent/simulate.ts` enforces it
+   **structurally** (no `src/stellar/*` import, no db, no outbox/event writer),
+   verified by a test that reads the module source.
+2. **All accrual math is `Prisma.Decimal`.** Daily return is simple
+   (non-compounding) `apy/100/365.25` applied to the running value —
+   deliberately not the compounding the backtest engine uses, and never a plain
+   float. See the #344 request: momentum must never come from float drift.
+3. **The historical leg reuses the live cost model with the backtest engine's
+   amount encoding.** Move amounts are encoded as `value × 10^18` (the
+   `src/agent/backtest.ts` convention) so `estimateRebalanceCost` divides back
+   to human units and yields realistic fee percentages. We deliberately do NOT
+   mirror the latent plain-integer encoding in `src/agent/tools/actionTools.ts:265`
+   (which would drive network-fee percent toward ~1e15 and block every move).
+4. **The counterfactual is a clean hold.** Same starting value in the same
+   starting protocol for the whole window, never rebalancing, never paying fees.
+   It answers "what if I had just left it alone?" in direct side-by-side with
+   the strategy leg.
+5. **A protocol with no retained history is treated as unavailable — never
+   zero-filled or extrapolated.** Missing protocols and a truncated window are
+   surfaced as `dataCaveats`, not silently hidden.
+6. **Replay bounds.** `historyWindowDays` is capped at 180
+   (`SIMULATE_MAX_WINDOW_DAYS`) at both the validator and the service, and the
+   replay series is clamped at both ends to retained observations.
+7. **Resolution precedence and risk tightening** follow `resolveEffectiveConfig`
+   (#285): followed config → submitted inline config → caller's own config, and
+   the effective risk ceiling is always the stricter of the caller's and any
+   applied ceiling. A simulation can only tighten exposure.
+8. **Short-TTL cache.** Results are cached 120 s under
+   `strategy-simulate:{userId}:{simulationToken}` where `simulationToken` is a
+   sha-256 of the canonical config + window, so identical previews are cheap and
+   never leak across users.
+
 ## Issue #316 — Authenticated Real-Time WebSocket Streaming
 
 1. **The durable stream is Postgres, not a Redis Stream.** `src/config/redis.ts`
