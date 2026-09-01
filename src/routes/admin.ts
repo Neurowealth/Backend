@@ -1606,12 +1606,10 @@ router.post(
         auditLog(req, res, 'TRIP_AGENT_BREAKER', 'failure', {
           error: 'invalid_scope',
         })
-        res
-          .status(400)
-          .json({
-            success: false,
-            error: 'scope must be GLOBAL, PROTOCOL or USER',
-          })
+        res.status(400).json({
+          success: false,
+          error: 'scope must be GLOBAL, PROTOCOL or USER',
+        })
         return
       }
 
@@ -1620,12 +1618,10 @@ router.post(
           auditLog(req, res, 'TRIP_AGENT_BREAKER', 'failure', {
             error: 'missing_scope_key',
           })
-          res
-            .status(400)
-            .json({
-              success: false,
-              error: 'scopeKey is required for PROTOCOL and USER trips',
-            })
+          res.status(400).json({
+            success: false,
+            error: 'scopeKey is required for PROTOCOL and USER trips',
+          })
           return
         }
       }
