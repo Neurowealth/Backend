@@ -206,7 +206,8 @@ function planFromStrategyDecision(
 export async function compareProtocols(
   currentProtocol: string,
   amount: string = '0',
-  thresholds: RebalanceThresholds = DEFAULT_THRESHOLDS
+  thresholds: RebalanceThresholds = DEFAULT_THRESHOLDS,
+  excludedProtocols: string[] = []
 ): Promise<ProtocolComparison | null> {
   try {
     // Get current on-chain APY
@@ -216,8 +217,13 @@ export async function compareProtocols(
       return null
     }
 
-    // Get best available protocol from latest scan
-    const allProtocols = await scanAllProtocols()
+    // Get best available protocol from latest scan (#345: exclude protocols
+    // whose circuit breaker is OPEN — never move INTO a broken protocol).
+    let allProtocols = await scanAllProtocols()
+    if (excludedProtocols.length > 0) {
+      const excluded = new Set(excludedProtocols)
+      allProtocols = allProtocols.filter((p) => !excluded.has(p.name))
+    }
     if (allProtocols.length === 0) {
       logger.warn('No protocols available for comparison')
       return null
@@ -499,6 +505,11 @@ export interface RebalanceBatchContext {
   strategyName?: string | null
   strategyIsFollowed?: boolean
   followedStrategyId?: string | null
+  /**
+   * #345 — protocol names with an OPEN circuit breaker. Excluded as rebalance
+   * targets so a broken protocol is never moved INTO.
+   */
+  blockedProtocols?: string[]
 }
 
 /**
@@ -541,6 +552,11 @@ export async function executeRebalanceIfNeeded(
     const ctxBatchKey =
       batchContext?.batchKey ??
       `${currentProtocol}:${ctxStrategyName ?? 'DEFAULT'}:${ctxFollowedStrategyId ?? 'none'}`
+
+    // #345 — protocols with an OPEN circuit breaker are excluded as rebalance
+    // targets (their existing positions may still be rebalanced OUT, but the
+    // agent never moves money INTO a broken protocol).
+    const blockedProtocols = batchContext?.blockedProtocols ?? []
 
     const recordDecision = async (args: {
       outcome: 'REBALANCED' | 'HELD' | 'BLOCKED'
@@ -637,7 +653,11 @@ export async function executeRebalanceIfNeeded(
         return null
       }
 
-      const allProtocols = await scanAllProtocols()
+      let allProtocols = await scanAllProtocols()
+      if (blockedProtocols.length > 0) {
+        const excluded = new Set(blockedProtocols)
+        allProtocols = allProtocols.filter((p) => !excluded.has(p.name))
+      }
       if (allProtocols.length === 0) {
         logger.warn('No protocols available for comparison')
         const trace: DecisionTrace = {
@@ -890,7 +910,8 @@ export async function executeRebalanceIfNeeded(
     const comparison = await compareProtocols(
       currentProtocol,
       totalAmount,
-      effectiveThresholds
+      effectiveThresholds,
+      blockedProtocols
     )
 
     if (!comparison || !comparison.shouldRebalance) {

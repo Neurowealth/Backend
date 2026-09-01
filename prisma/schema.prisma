@@ -1906,3 +1906,34 @@ model ProtocolLiquiditySnapshot {
   @@index([fetchedAt])
   @@map("protocol_liquidity_snapshots")
 }
+
+// --- Issue #345: Agent Circuit Breaker ---
+enum BreakerScope {
+  GLOBAL
+  PROTOCOL
+  USER
+}
+
+enum BreakerState {
+  CLOSED
+  OPEN
+  HALF_OPEN
+}
+
+model AgentCircuitBreaker {
+  id           String       @id @default(uuid())
+  scope        BreakerScope
+  scopeKey     String       // "" for GLOBAL, protocolName, or userId
+  state        BreakerState @default(CLOSED)
+  trippedRule  String?      // "abnormal_loss" | "depeg" | "oscillation" | "stale_data" | "manual"
+  trippedAt    DateTime?
+  detail       Json?        // the measurements that tripped it
+  resetBy      String?      // admin identity on manual reset
+  resetAt      DateTime?
+  autoResetAt  DateTime?    // earliest time HALF_OPEN is allowed
+  updatedAt    DateTime     @updatedAt
+
+  @@unique([scope, scopeKey])
+  @@index([state])
+  @@map("agent_circuit_breakers")
+}

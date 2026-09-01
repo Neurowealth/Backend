@@ -48,6 +48,24 @@ The backend exposes Prometheus-compatible metrics through the `/metrics` endpoin
 - `agent_rebalances_triggered_total` - Counter
 - `agent_snapshot_duration_seconds` - Histogram
 
+### Agent Circuit Breaker Metrics (#345)
+
+- `agent_breaker_state` - Gauge, labels `scope` (`GLOBAL`|`PROTOCOL`|`USER`) and `scopeKey`; 0 = CLOSED, 1 = HALF_OPEN, 2 = OPEN. Written every agent breaker evaluation tick and on every transition.
+- `agent_breaker_trips_total` - Counter, labels `scope`, `rule` (`abnormal_loss`|`depeg`|`oscillation`|`stale_data`|`manual`). Increments whenever a breaker trips or re-trips.
+
+Query examples:
+
+```
+# Any circuit breaker open right now
+agent_breaker_state == 2
+
+# Global halt (stops all agent rebalancing)
+agent_breaker_state{scope="GLOBAL"} == 2
+
+# Breaker trip rate by rule
+sum(rate(agent_breaker_trips_total[15m])) by (rule)
+```
+
 ### Database Metrics
 
 - `db_operation_duration_seconds` - Histogram with label: `operation`
@@ -74,6 +92,7 @@ The backend exposes Prometheus-compatible metrics through the `/metrics` endpoin
 | `cursor_lag_ledgers` | `> 100` | Critical | Event processing lagging significantly |
 | `dlq_size` | `> 50` | Critical | Dead Letter Queue critically large |
 | `failures_total` (rate) | `> 10 per minute` for 5m | Critical | High failure rate |
+| `agent_breaker_state{scope="GLOBAL"}` | `== 2` for 1m | Critical | Global circuit breaker OPEN — all rebalancing halted |
 
 ### Warning Alerts (Investigate Within 1 Hour)
 
@@ -85,6 +104,7 @@ The backend exposes Prometheus-compatible metrics through the `/metrics` endpoin
 | `events_processing_duration_seconds` (p95) | `> 2 seconds` | Warning | Event processing slow |
 | `db_operation_duration_seconds` (p95) | `> 1 second` | Warning | Database operations slow |
 | `http_request_duration_seconds` (p95) | `> 5 seconds` | Warning | HTTP requests slow |
+| `agent_breaker_state{scope!="GLOBAL"}` | `== 2` for 2m | Warning | Protocol or user breaker OPEN — affected rebalancing halted |
 
 ### Info Alerts (Monitor Trend)
 

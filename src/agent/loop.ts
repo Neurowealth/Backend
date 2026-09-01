@@ -17,6 +17,14 @@ import {
 import { publishUserEvent } from '../events/publisher'
 import { EVENT_TYPE_TOPIC } from '../events/types'
 import { captureAllUserBalances, cleanupOldSnapshots } from './snapshotter'
+import {
+  evaluateBreakerTick,
+  emitBreakerEvalFailureAlert,
+  getBreakerStatusSummary,
+  type BreakerBlockContext,
+} from './breakerService'
+import { persistRebalanceDecision } from './rebalanceDecision'
+import type { DecisionTrace } from './types'
 import { resolveEffectiveConfig } from './effectiveStrategy'
 import {
   loadActiveFollowsForUsers,
@@ -62,6 +70,7 @@ export function getAgentStatus() {
     lastError,
     healthStatus: determineHealthStatus(),
     lastTickAt,
+    breakers: getBreakerStatusSummary(),
   }
 }
 
@@ -193,9 +202,113 @@ async function rebalanceCheckJob(): Promise<void> {
       let rebalancesTriggered = 0
       const thresholds = getThresholds()
 
+      // #345 Agent circuit breaker — evaluated BEFORE any batch executes.
+      // Order: GLOBAL -> PROTOCOL(from) -> USER. An OPEN breaker at any scope
+      // skips the affected batches and a BLOCKED decision is recorded. On
+      // failure the tick FAILS CLOSED: nothing rebalances and the operator is
+      // alerted — the agent never trades blind when the breaker cannot decide.
+      let breakerCtx: BreakerBlockContext
+      try {
+        breakerCtx = await evaluateBreakerTick(
+          positions.map((p: PositionWithUser) => ({
+            id: p.id,
+            userId: p.userId,
+            protocolName: p.protocolName,
+          })),
+          Array.from(byProtocolAndStrategy.values()).map((b) => ({
+            batchKey: b.batchKey,
+            protocol: b.protocol,
+          })),
+          new Date()
+        )
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        emitBreakerEvalFailureAlert(message)
+        logger.error(
+          '[Breaker] evaluation failed; halting all rebalancing for the tick',
+          {
+            correlationId,
+            error: message,
+          }
+        )
+        breakerCtx = {
+          globalOpen: true,
+          openProtocols: new Set<string>(),
+          openUsers: new Set<string>(),
+          blockedTargetProtocols: [],
+          trips: [],
+          closes: [],
+          evalFailed: true,
+        }
+      }
+
+      const recordBreakerBlockedDecision = async (
+        batch: {
+          protocol: string
+          batchKey: string
+          positions: PositionWithUser[]
+        },
+        blocking: string[],
+        detail: string
+      ): Promise<void> => {
+        const affectedUserIds = Array.from(
+          new Set(batch.positions.map((p: PositionWithUser) => p.userId))
+        )
+        const trace: DecisionTrace = {
+          currentApy: null,
+          chosenProtocol: null,
+          chosenApy: null,
+          rawImprovement: null,
+          netImprovement: null,
+          estCostPercent: null,
+          costBreakdown: null,
+          thresholds,
+          candidates: [],
+        }
+        await persistRebalanceDecision({
+          batchKey: batch.batchKey,
+          fromProtocol: batch.protocol,
+          outcome: 'BLOCKED',
+          blockedReason: 'circuit_breaker_open',
+          thresholds,
+          trace,
+          rationale: `Skipped by agent circuit breaker (${detail}): ${blocking.join(', ')}`,
+          affectedUserIds,
+          affectedPositions: batch.positions.length,
+        })
+      }
+
       for (const batch of byProtocolAndStrategy.values()) {
         const { protocol, positions: protocolPositions } = batch
         const lead = effectiveByUser.get(protocolPositions[0].userId)!
+
+        // #345 — skip batches affected by an OPEN breaker. Precedence:
+        // GLOBAL beats PROTOCOL beats USER; a user's own breaker never helps
+        // them if the whole market is halted. Recorded as a BLOCKED decision
+        // so the explainable-rebalance ledger shows WHY nothing moved.
+        const blocking = breakerCtx.globalOpen
+          ? ['GLOBAL']
+          : [
+              ...(breakerCtx.openProtocols.has(protocol)
+                ? [`PROTOCOL:${protocol}`]
+                : []),
+              ...protocolPositions
+                .filter((p: PositionWithUser) =>
+                  breakerCtx.openUsers.has(p.userId)
+                )
+                .map((p: PositionWithUser) => `USER:${p.userId}`),
+            ]
+
+        if (blocking.length > 0) {
+          await recordBreakerBlockedDecision(
+            batch,
+            blocking,
+            breakerCtx.evalFailed
+              ? 'breaker evaluation failed'
+              : 'open circuit breaker'
+          )
+          continue
+        }
 
         // HAZARD: this guard used to be `strategyName ? … : undefined`, and
         // executeRebalanceIfNeeded skips the strategy engine entirely when
@@ -243,6 +356,7 @@ async function rebalanceCheckJob(): Promise<void> {
             strategyName: lead.config.strategyName ?? null,
             strategyIsFollowed: Boolean(lead.follow),
             followedStrategyId: lead.follow?.followedStrategyId ?? null,
+            blockedProtocols: breakerCtx.blockedTargetProtocols,
           }
         )
 
@@ -301,6 +415,14 @@ async function rebalanceCheckJob(): Promise<void> {
           positionsChecked: positions.length,
           rebalancesTriggered,
           duration,
+          breakers: {
+            globalOpen: breakerCtx.globalOpen,
+            evalFailed: breakerCtx.evalFailed,
+            trips: breakerCtx.trips.map(
+              (t) => `${t.scope}:${t.scopeKey}:${t.rule}`
+            ),
+            closes: breakerCtx.closes.map((c) => `${c.scope}:${c.scopeKey}`),
+          },
         },
       })
 

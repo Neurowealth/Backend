@@ -18,6 +18,11 @@ import { getAllProviderHealth, adminSetProviderCircuit } from '../fiat/registry'
 import db from '../db'
 import { alertingService } from '../services/alerting'
 import { verifyAuditChain } from '../audit/chain'
+import {
+  listBreakers,
+  manualTripBreaker,
+  manualResetBreaker,
+} from '../agent/breakerService'
 
 const router = Router()
 const prisma = db as any
@@ -1556,6 +1561,152 @@ router.get(
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
       auditLog(req, res, 'LIST_RESERVES', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+// ── Agent circuit breaker (#345) ─────────────────────────────────────────────
+
+/**
+ * GET /api/v1/admin/agent/breakers
+ * List every circuit breaker (GLOBAL / PROTOCOL / USER) with current state.
+ */
+router.get(
+  '/agent/breakers',
+  requireAdminScope('agent'),
+  async (req: Request, res: Response) => {
+    try {
+      const breakers = await listBreakers()
+      auditLog(req, res, 'LIST_AGENT_BREAKERS', 'success', {
+        count: breakers.length,
+      })
+      res.status(200).json({ success: true, data: breakers })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'LIST_AGENT_BREAKERS', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/v1/admin/agent/breakers
+ * Manually trip (open) a breaker: { scope, scopeKey?, reason }.
+ * GLOBAL has no scopeKey; PROTOCOL/USER require one.
+ */
+router.post(
+  '/agent/breakers',
+  requireAdminScope('agent'),
+  async (req: Request, res: Response) => {
+    try {
+      const { scope, scopeKey, reason } = req.body ?? {}
+
+      if (!['GLOBAL', 'PROTOCOL', 'USER'].includes(scope)) {
+        auditLog(req, res, 'TRIP_AGENT_BREAKER', 'failure', {
+          error: 'invalid_scope',
+        })
+        res
+          .status(400)
+          .json({
+            success: false,
+            error: 'scope must be GLOBAL, PROTOCOL or USER',
+          })
+        return
+      }
+
+      if (scope !== 'GLOBAL') {
+        if (typeof scopeKey !== 'string' || scopeKey.trim() === '') {
+          auditLog(req, res, 'TRIP_AGENT_BREAKER', 'failure', {
+            error: 'missing_scope_key',
+          })
+          res
+            .status(400)
+            .json({
+              success: false,
+              error: 'scopeKey is required for PROTOCOL and USER trips',
+            })
+          return
+        }
+      }
+
+      if (typeof reason !== 'string' || reason.trim() === '') {
+        auditLog(req, res, 'TRIP_AGENT_BREAKER', 'failure', {
+          error: 'missing_reason',
+        })
+        res.status(400).json({ success: false, error: 'reason is required' })
+        return
+      }
+
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
+      const scopeKeyValue = scope === 'GLOBAL' ? '' : scopeKey.trim()
+      const result = await manualTripBreaker(
+        scope,
+        scopeKeyValue,
+        reason.trim(),
+        adminIdentity
+      )
+
+      auditLog(req, res, 'TRIP_AGENT_BREAKER', 'success', {
+        scope,
+        scopeKey: scopeKeyValue,
+        breakerId: result.id,
+      })
+      res.status(200).json({ success: true, data: result })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'TRIP_AGENT_BREAKER', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/v1/admin/agent/breakers/:id/reset
+ * Manually close (reset) a breaker: { reason }.
+ */
+router.post(
+  '/agent/breakers/:id/reset',
+  requireAdminScope('agent'),
+  async (req: Request, res: Response) => {
+    try {
+      const { reason } = req.body ?? {}
+
+      if (typeof reason !== 'string' || reason.trim() === '') {
+        auditLog(req, res, 'RESET_AGENT_BREAKER', 'failure', {
+          error: 'missing_reason',
+        })
+        res.status(400).json({ success: false, error: 'reason is required' })
+        return
+      }
+
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
+      const result = await manualResetBreaker(
+        req.params.id,
+        reason.trim(),
+        adminIdentity
+      )
+
+      if (!result) {
+        auditLog(req, res, 'RESET_AGENT_BREAKER', 'failure', {
+          error: 'not_found',
+          id: req.params.id,
+        })
+        res.status(404).json({ success: false, error: 'Breaker not found' })
+        return
+      }
+
+      auditLog(req, res, 'RESET_AGENT_BREAKER', 'success', {
+        breakerId: result.id,
+      })
+      res.status(200).json({ success: true, data: result })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'RESET_AGENT_BREAKER', 'failure', { error: message })
       res.status(500).json({ success: false, error: message })
     }
   }
