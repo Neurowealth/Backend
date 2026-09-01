@@ -1084,6 +1084,155 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /analytics/factor-exposure:
+    get:
+      operationId: getFactorExposure
+      summary: Rolling beta and market-factor exposure report
+      description: |
+        Measures how much of the authenticated user's yield movement is
+        explained by the DeFi-yield "market factor" versus idiosyncratic
+        protocol selection, on a rolling window so exposure can be seen
+        changing over time (#352).
+
+        The market is the canonical equal/TVL-weighted average of tracked
+        `ProtocolRate` APY series (`src/analytics/benchmark.ts`). Each window
+        regresses portfolio daily return on market daily return (OLS): a beta
+        of ~1 means "your yield moves with the tracked-protocol market", ~0
+        means "independent of it".
+
+        This is YIELD co-movement, NOT price beta, and the market is not a
+        traded index — the fixed `caveats[0]` states this on every response.
+        Under-sampled (< 14 aligned days) or zero-market-variance windows
+        report `null` beta/R², never 0 or NaN. Series are intersected on a
+        shared daily grid (never zero-filled); mismatched days are dropped and
+        `sampleCount` reflects the intersection.
+
+        Retention is bounded at 90 days and `rollingWindow` must be shorter
+        than `window`; a rolling window that leaves fewer than 2 windows
+        returns the summary only, with a caveat. `inputHash` (sha256 of the
+        sorted input snapshot) lets the report be reproduced deterministically.
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: window
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [30d, 60d, 90d]
+            default: 90d
+        - name: rollingWindow
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [7d, 14d, 30d]
+            default: 30d
+        - name: weighting
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [equal, tvl]
+            default: equal
+      responses:
+        '200':
+          description: Rolling beta and market-factor exposure report.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                    format: uuid
+                  window:
+                    type: string
+                  rollingWindow:
+                    type: string
+                  weighting:
+                    type: string
+                    enum: [equal, tvl]
+                  actualWindowDays:
+                    type: integer
+                  insufficientHistory:
+                    type: boolean
+                  sampleCount:
+                    type: integer
+                  rolling:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        windowEndMs:
+                          type: integer
+                        sampleCount:
+                          type: integer
+                        beta:
+                          type: number
+                          nullable: true
+                        alpha:
+                          type: number
+                          nullable: true
+                        alphaAnnualized:
+                          type: number
+                          nullable: true
+                        rSquared:
+                          type: number
+                          nullable: true
+                        idiosyncraticVolShare:
+                          type: number
+                          nullable: true
+                  summary:
+                    type: object
+                    nullable: true
+                    properties:
+                      sampleCount:
+                        type: integer
+                      beta:
+                        type: number
+                        nullable: true
+                      alpha:
+                        type: number
+                        nullable: true
+                      alphaAnnualized:
+                        type: number
+                        nullable: true
+                      rSquared:
+                        type: number
+                        nullable: true
+                      idiosyncraticVolShare:
+                        type: number
+                        nullable: true
+                  benchmark:
+                    type: object
+                    properties:
+                      weighting:
+                        type: string
+                        enum: [equal, tvl]
+                      universeSize:
+                        type: integer
+                      tvlFallback:
+                        type: boolean
+                  caveats:
+                    type: array
+                    items:
+                      type: string
+                  inputHash:
+                    type: string
+                  computedAt:
+                    type: string
+                    format: date-time
+        '400':
+          description: Invalid query parameters (e.g. rollingWindow >= window).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /analytics/yield-breakdown:
     get:
       operationId: getYieldBreakdown
