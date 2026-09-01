@@ -24,6 +24,7 @@ function computeNextRunAt(
 router.post(
   '/',
   requireAuth,
+  requireScope('recurring_deposits:write'),
   idempotent({ required: true, failClosed: true, ttlSeconds: 86400 }),
   validate({
     body: createRecurringDepositSchema,
@@ -84,6 +85,7 @@ router.get(
 router.patch(
   '/:id',
   requireAuth,
+  requireScope('recurring_deposits:write'),
   validate({
     body: updateRecurringDepositSchema,
     errorMessage: 'Validation error',
@@ -125,7 +127,7 @@ router.patch(
 )
 
 // ── Cancel a plan ──────────────────────────────────────────────────────────
-router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
+router.delete('/:id', requireAuth, requireScope('recurring_deposits:write'), async (req: Request, res: Response) => {
   const { id } = req.params
 
   const plan = await db.recurringDepositPlan.findUnique({ where: { id } })

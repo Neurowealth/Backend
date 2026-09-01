@@ -103,6 +103,7 @@ router.get(
 router.post(
   '/orders',
   requireAuth,
+  requireScope('fiat:write'),
   idempotent({ required: true, failClosed: true, ttlSeconds: 86400 }),
   validate({ body: createFiatOrderSchema, errorMessage: 'Validation error' }),
   enforceUserAccess,

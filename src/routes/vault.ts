@@ -65,6 +65,7 @@ const buildTransactionSchema = z.object({
 router.post(
   '/build-transaction',
   requireAuth,
+  requireScope('vault:write'),
   async (req: Request, res: Response) => {
     const parsed = buildTransactionSchema.safeParse(req.body)
     if (!parsed.success) {

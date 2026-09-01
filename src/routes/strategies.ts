@@ -45,6 +45,8 @@ router.use(requireAuth)
 // captured as a strategy id by the /:id/* routes below.
 router.post(
   '/publish',
+  requireAuth,
+  requireScope('strategies:write'),
   validate({ body: publishStrategySchema }),
   publishStrategyHandler
 )

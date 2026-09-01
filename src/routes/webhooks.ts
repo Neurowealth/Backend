@@ -44,6 +44,8 @@ router.use(requireAuth)
  */
 router.post(
   '/',
+  requireAuth,
+  requireScope('webhooks:manage'),
   validate({ body: createWebhookSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -118,6 +120,8 @@ router.get(
 
 router.patch(
   '/:id',
+  requireAuth,
+  requireScope('webhooks:manage'),
   validate({ params: webhookIdParamSchema, body: updateWebhookSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -149,6 +153,8 @@ router.patch(
 
 router.delete(
   '/:id',
+  requireAuth,
+  requireScope('webhooks:manage'),
   validate({ params: webhookIdParamSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId

@@ -34,6 +34,7 @@ const router = Router()
 router.post(
   '/',
   requireAuth,
+  requireScope('goals:write'),
   validate({ body: createGoalSchema }),
   createGoalHandler
 )
@@ -49,6 +50,7 @@ router.get(
 router.patch(
   '/:id',
   requireAuth,
+  requireScope('goals:write'),
   validate({ params: goalIdParamSchema, body: updateGoalSchema }),
   updateGoalHandler
 )
@@ -56,6 +58,7 @@ router.patch(
 router.delete(
   '/:id',
   requireAuth,
+  requireScope('goals:write'),
   validate({ params: goalIdParamSchema }),
   cancelGoalHandler
 )

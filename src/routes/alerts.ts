@@ -39,6 +39,8 @@ const alertSelect = {
  */
 router.post(
   '/',
+  requireAuth,
+  requireScope('alerts:manage'),
   validate({ body: createAlertRuleSchema.or(compositeAlertRuleSchema) }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -116,6 +118,8 @@ router.get(
  */
 router.patch(
   '/:id',
+  requireAuth,
+  requireScope('alerts:manage'),
   validate({ params: alertIdParamSchema, body: updateAlertRuleSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -173,6 +177,8 @@ router.patch(
  */
 router.delete(
   '/:id',
+  requireAuth,
+  requireScope('alerts:manage'),
   validate({ params: alertIdParamSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
