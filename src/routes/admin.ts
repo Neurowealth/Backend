@@ -1287,6 +1287,71 @@ router.post(
 )
 
 /**
+ * POST /api/admin/erasure — erase user data per GDPR/CCPA right-to-erasure
+ * Required scope: erasure:write
+ *
+ * Body: { userId: string, dryRun?: boolean }
+ *
+ * Trigger erasure job that walks erasurePolicies and applies DELETE/ANONYMIZE
+ * per model while leaving IMMUTABLE tables (audit chain, outbox) untouched.
+ *
+ * dryRun mode reports what would be deleted/anonymized without writing.
+ */
+router.post(
+  '/erasure',
+  requireAdminScope('erasure:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { userId, dryRun = false } = req.body as {
+        userId: string
+        dryRun?: boolean
+      }
+
+      if (!userId || typeof userId !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: 'userId is required and must be a string',
+        })
+      }
+
+      let results
+      if (dryRun) {
+        results = await import('../jobs/erasureJob').then((m) => m.erasureJob(userId, true))
+      } else {
+        results = await import('../jobs/erasureJob').then((m) => m.erasureJob(userId, false))
+      }
+
+      auditLog(req, res, 'ERASURE_' + (dryRun ? 'DRY_RUN' : 'EXECUTE'), 'success', {
+        userId,
+        dryRun,
+        modelCount: results.length,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: {
+          userId,
+          dryRun,
+          results,
+          timestamp: new Date().toISOString(),
+        },
+        message: dryRun
+          ? 'Dry-run complete — no data was modified'
+          : 'Erasure operation complete — user data has been erased per policies',
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      logger.error('[Admin] Erasure operation failed', { error: message, userId: req.body?.userId })
+      auditLog(req, res, 'ERASURE_' + (req.body?.dryRun ? 'DRY_RUN' : 'EXECUTE'), 'failure', {
+        error: message,
+        userId: req.body?.userId,
+      })
+      res.status(500).json({ success: false, error: 'Erasure operation failed' })
+    }
+  }
+)
+
+/**
  * GET /api/admin/users/:id/sessions — list sessions for a user (#376)
  */
 router.get(
