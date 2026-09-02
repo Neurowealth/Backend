@@ -125,6 +125,41 @@ export const agentRebalancesTriggeredTotal = new client.Counter({
   registers: [register],
 })
 
+// #345 — agent circuit breaker observability.
+
+export const agentBreakerState = new client.Gauge({
+  name: 'agent_breaker_state',
+  help: 'Agent circuit breaker state by scope and key: 0 closed, 1 half-open, 2 open',
+  labelNames: ['scope', 'scopeKey'] as const,
+  registers: [register],
+})
+
+export const agentBreakerTripsTotal = new client.Counter({
+  name: 'agent_breaker_trips_total',
+  help: 'Agent circuit breaker trips by scope and rule',
+  labelNames: ['scope', 'rule'] as const,
+  registers: [register],
+})
+
+/**
+ * Record a breaker's current state for dashboards.
+ */
+export function setAgentBreakerState(
+  scope: string,
+  scopeKey: string,
+  state: 'CLOSED' | 'HALF_OPEN' | 'OPEN'
+): void {
+  const value = state === 'CLOSED' ? 0 : state === 'HALF_OPEN' ? 1 : 2
+  agentBreakerState.set({ scope, scopeKey }, value)
+}
+
+/**
+ * Record a breaker trip (or re-trip).
+ */
+export function recordAgentBreakerTrip(scope: string, rule: string): void {
+  agentBreakerTripsTotal.inc({ scope, rule })
+}
+
 export const agentSnapshotDuration = new client.Histogram({
   name: 'agent_snapshot_duration_seconds',
   help: 'Duration of balance snapshot operations in seconds',

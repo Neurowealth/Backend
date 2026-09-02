@@ -687,6 +687,68 @@ export const config = {
     lowDeferMs: parseInt(process.env.OUTBOX_LOW_DEFER_MS || '15000'),
     lowMaxDeferMs: parseInt(process.env.OUTBOX_LOW_MAX_DEFER_MS || '300000'),
   },
+  /**
+   * Agent circuit breaker (#345) — pre-trade guards that halt agent-initiated
+   * rebalancing at GLOBAL / PROTOCOL / USER scope on abnormal loss, de-peg,
+   * oscillation or stale data. Each rule is independently toggleable and is
+   * evaluated by pure functions in src/agent/breakerRules.ts. The de-peg rule
+   * is disabled by default: it needs a live stablecoin price feed, and the
+   * platform currently has none wired (the fee oracle exposes fees, not
+   * prices), so enabling it without a real feed would never trip — leave off
+   * until an oracle path exists.
+   */
+  breaker: {
+    /** Master switch for the whole circuit breaker. */
+    enabled: (process.env.BREAKER_ENABLED ?? 'true').toLowerCase() === 'true',
+    abnormalLoss: {
+      enabled:
+        (process.env.BREAKER_ABNORMAL_LOSS_ENABLED ?? 'true').toLowerCase() ===
+        'true',
+      /** Portfolio down more than this percentage over the window trips. */
+      lossPct: parseFloat(process.env.BREAKER_LOSS_PCT || '5'),
+      /** Trailing window (hours) over which drawdown is measured. */
+      windowHours: parseInt(process.env.BREAKER_LOSS_WINDOW_HOURS || '24'),
+    },
+    depeg: {
+      enabled:
+        (process.env.BREAKER_DEPEG_ENABLED ?? 'false').toLowerCase() === 'true',
+      /** Stablecoin price deviation from $1 (basis points) that trips. */
+      depegBps: parseInt(process.env.BREAKER_DEPEG_BPS || '150'),
+      /**
+       * Consecutive clean evaluations required before an OPEN de-peg breaker
+       * may transition to HALF_OPEN — a single recovered tick is not enough.
+       */
+      sustainedClearChecks: parseInt(
+        process.env.BREAKER_DEPEG_SUSTAINED_CHECKS || '3'
+      ),
+      /** Where the integration layer looks for the stablecoin spot price. */
+      priceSource: process.env.BREAKER_DEPEG_PRICE_SOURCE || 'fee-oracle',
+    },
+    oscillation: {
+      enabled:
+        (process.env.BREAKER_OSCILLATION_ENABLED ?? 'true').toLowerCase() ===
+        'true',
+      /** Rebalances of the same batch within the window that trip. */
+      maxFlips: parseInt(process.env.BREAKER_MAX_FLIPS || '3'),
+      /** Sliding window (hours) for the flip count. */
+      windowHours: parseInt(process.env.BREAKER_FLIP_WINDOW_HOURS || '24'),
+    },
+    staleData: {
+      enabled:
+        (process.env.BREAKER_STALE_DATA_ENABLED ?? 'true').toLowerCase() ===
+        'true',
+      /** APY table older than this (minutes) must not be traded on. */
+      staleMinutes: parseInt(process.env.BREAKER_STALE_MINUTES || '120'),
+      /** Consecutive scan failures before stale-data trips. */
+      consecutiveFailures: parseInt(
+        process.env.BREAKER_STALE_CONSECUTIVE_FAILURES || '3'
+      ),
+    },
+    /** Base cooldown before an OPEN breaker may auto-transition to HALF_OPEN. */
+    cooldownMs: parseInt(process.env.BREAKER_COOLDOWN_MS || '3600000'),
+    /** Hard cap on cooldown after repeated re-tripping (backoff doubling). */
+    maxCooldownMs: parseInt(process.env.BREAKER_MAX_COOLDOWN_MS || '86400000'),
+  },
   feeOracle: {
     pollMs: parseInt(process.env.FEE_ORACLE_POLL_MS || '10000'),
     ttlMs: parseInt(process.env.FEE_ORACLE_TTL_MS || '30000'),

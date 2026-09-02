@@ -482,3 +482,85 @@ psql "$DATABASE_URL" -c "SELECT \"sponsorAccount\", count(*), sum(\"xlmReserved\
 ```
 
 No auto top-up — operational runbook only. Reconciliation job (`reserveReconciliation` hourly) flags drift where on-chain sponsor ≠ ledger.
+
+## 9. Agent Circuit Breaker (#345)
+
+The agent circuit breaker halts agent-initiated rebalancing when the market,
+a protocol, or a user's account shows risk. It never touches withdrawals.
+Scopes: `GLOBAL` (halt everything), `PROTOCOL` (halt a target protocol +
+batches leaving it), `USER` (halt that user's batches). Breakers are
+`CLOSED → OPEN → HALF_OPEN → CLOSED`; an `OPEN` breaker auto-probes after its
+cooldown and needs `BREAKER_DEPEG_SUSTAINED_CHECKS` clean evaluations before
+recovering to `HALF_OPEN`, then one clean probe to close.
+
+### Rules
+
+| Rule | Env | Default | Trips when |
+|---|---|---|---|
+| abnormal_loss | `BREAKER_LOSS_PCT`, `BREAKER_LOSS_WINDOW_HOURS` | 5% / 24h | mark-to-market drawdown over the window exceeds the pct |
+| depeg | `BREAKER_DEPEG_ENABLED` (=`false`) | off | reported stablecoin price deviates > `BREAKER_DEPEG_BPS` (150) from $1 |
+| oscillation | `BREAKER_MAX_FLIPS`, `BREAKER_FLIP_WINDOW_HOURS` | 3 / 24h | same batch rebalances ≥ N times in the window |
+| stale_data | `BREAKER_STALE_MINUTES`, `BREAKER_STALE_CONSECUTIVE_FAILURES` | 120m / 3 | APY table older than limit, never scanned, or ≥ N consecutive failures |
+
+`BREAKER_COOLDOWN_MS` (1h) is the base cooldown; a repeated HALF_OPEN trip
+doubles it up to `BREAKER_MAX_COOLDOWN_MS` (24h).
+
+### Known limitation — de-peg price feed
+
+The de-peg rule is a pure consumer of a stablecoin spot price. As of this
+change no live price feed exists in this codebase: the fee oracle
+(`src/stellar/feeOracle.ts`) publishes only fees, and `src/stellar/routing.ts`
+is a stub. `getStablecoinPrice()` (`src/agent/breakerService.ts`) is the single
+integration point and currently returns `null` (fails safe — the rule never
+trips); the rule is disabled by default. Wire the oracle there, keep the pure
+rule unchanged, flip `BREAKER_DEPEG_ENABLED=true`, and re-run the de-peg unit
+tests.
+
+### Inspector
+
+```bash
+# All breakers with current state
+curl -H "Authorization: Bearer $ADMIN_API_TOKEN" http://localhost:3001/api/v1/admin/agent/breakers | jq
+
+# Agent status (incl. cached global breaker summary)
+curl -H "X-Internal-Token: $INTERNAL_SERVICE_TOKEN" http://localhost:3001/api/v1/agent/status | jq
+```
+
+### Manual trip
+
+`POST /api/v1/admin/agent/breakers` — body `{"scope":"PROTOCOL","scopeKey":"blend","reason":"..."}`.
+`GLOBAL` needs no `scopeKey`; `USER`/`PROTOCOL` require it. `reason` is always
+required. Written to the admin audit log (`TRIP_AGENT_BREAKER`).
+
+```bash
+curl -X POST http://localhost:3001/api/v1/admin/agent/breakers \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"scope":"PROTOCOL","scopeKey":"blend","reason":"incident-4821 protocol outage"}'
+```
+
+A manual trip can only be cleared manually (`rule=manual` breakers never
+auto-reset). Manual resets are audit-logged too:
+
+```bash
+curl -X POST http://localhost:3001/api/v1/admin/agent/breakers/<id>/reset \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"reason":"incident-4821 resolved, APY table verified fresh"}'
+```
+
+A breaker skips its tick when evaluation itself fails: the agent alerts
+(critical, `agent-breaker:eval-failed`) and halts **all** rebalancing for that
+tick rather than trading blind.
+
+### Response
+
+1. **Global halt**: investigate the trip rule (`agent_breaker_trips_total{scope="GLOBAL"}`), check the `[Breaker]` logs for the `lastEvaluation` detail, fix root cause, then either wait for auto-recovery or reset manually.
+2. **Protocol halt**: verify the protocol's APY/status independently before resetting; `compareProtocols` already refuses it as a target while OPEN.
+3. **User halt**: confirm with the user before resetting.
+4. **Evaluation-failed halt**: the breaker could not decide — check DB connectivity and the logged error before the next tick.
+
+### Verify
+
+```bash
+curl -s http://localhost:3001/metrics | grep -E "agent_breaker_(state|trips_total)"
+psql "$DATABASE_URL" -c "SELECT scope, \"scopeKey\", state, \"trippedRule\" FROM agent_circuit_breakers ORDER BY \"updatedAt\" DESC;"
+```

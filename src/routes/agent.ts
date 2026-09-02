@@ -3,7 +3,9 @@
  */
 import express, { Request, Response } from 'express'
 import { getAgentStatus } from '../agent/loop'
+import { getBreakerStatusForUser } from '../agent/breakerService'
 import { internalAuthGuard } from '../middleware/authGuard'
+import { requireAuth } from '../middleware/authenticate'
 
 const router = express.Router()
 
@@ -31,6 +33,7 @@ router.get('/status', internalAuthGuard, (req: Request, res: Response) => {
         nextScheduledCheck: status.nextScheduledCheck,
         lastError: status.lastError,
         healthStatus: status.healthStatus,
+        breakers: status.breakers,
         timestamp: new Date().toISOString(),
       },
     })
@@ -41,5 +44,34 @@ router.get('/status', internalAuthGuard, (req: Request, res: Response) => {
     })
   }
 })
+
+/**
+ * GET /api/v1/agent/status/breakers
+ * Per-user breaker status: what applies to the calling player. Plain-language
+ * only — never other users' loss figures or thresholds.
+ *
+ * PROTECTED: Requires a user session.
+ */
+router.get(
+  '/status/breakers',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    try {
+      const auth = req as Request & { auth?: { userId?: string } }
+      const userId = auth.auth?.userId
+      if (!userId) {
+        res.status(401).json({ success: false, error: 'Unauthorized' })
+        return
+      }
+      const status = await getBreakerStatusForUser(userId)
+      res.json({ success: true, data: status })
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  }
+)
 
 export default router

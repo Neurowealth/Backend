@@ -74,6 +74,15 @@ groups:
           summary: "Severe network congestion"
           description: "Congestion level severe for 5 minutes — LOW ops deferring"
 
+      - alert: AgentBreakerGlobalOpen
+        expr: agent_breaker_state{scope="GLOBAL"} == 2
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Agent circuit breaker is OPEN globally"
+          description: "All agent rebalancing is halted"
+
   - name: neurowealth_warning
     interval: 30s
     rules:
@@ -139,3 +148,12 @@ groups:
         annotations:
           summary: "HTTP requests slow"
           description: "P95 HTTP request duration is {{ $value }}s (> 5s)"
+
+      - alert: AgentBreakerOpen
+        expr: agent_breaker_state{scope!="GLOBAL"} == 2
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent circuit breaker OPEN for a protocol or user"
+          description: "{{ $labels.scope }} {{ $labels.scopeKey }} is halted (state={{ $value }})"
