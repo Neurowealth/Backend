@@ -27,6 +27,45 @@ import {
   StrategySelfFollowError,
   StrategyValidationError,
 } from '../strategy/service'
+import {
+  simulateStrategy,
+  SimulationValidationError,
+  SimulationNotFoundError,
+} from '../strategy/simulation-service'
+
+/**
+ * POST /api/v1/strategies/simulate
+ *
+ * Dry-run a strategy change on the caller's current positions and public rate
+ * history. Pure read — no side effects (see the service contract). Returns the
+ * immediate agent decision plus a historical replay with caveats.
+ */
+export async function simulateStrategyHandler(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const userId = req.auth?.userId
+  if (!userId) {
+    sendUnauthorized(res)
+    return
+  }
+
+  try {
+    const result = await simulateStrategy(userId, req.body)
+    res.status(200).json(result)
+  } catch (error) {
+    if (error instanceof SimulationValidationError) {
+      sendError(res, 400, error.message)
+      return
+    }
+    if (error instanceof SimulationNotFoundError) {
+      sendNotFound(res, 'Strategy')
+      return
+    }
+    logger.error('[Strategy] Failed to run strategy simulation:', error)
+    sendError(res, 500, 'Failed to run strategy simulation')
+  }
+}
 
 /**
  * POST /api/v1/strategies/publish

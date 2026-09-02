@@ -404,6 +404,16 @@ export const config = {
       windowMs: parseInt(process.env.OPTIMIZER_RATE_LIMIT_WINDOW_MS || '60000'),
       max: parseInt(process.env.OPTIMIZER_RATE_LIMIT_MAX || '5'),
     },
+    /**
+     * Strategy simulate (#344) — a CPU-bound historical replay, like the
+     * optimizer. Tighter than the global limiter so the replay cannot be used
+     * as a CPU-exhaustion vector; pairs with the short-TTL result cache so
+     * identical preview requests are served without recomputing.
+     */
+    simulateRateLimit: {
+      windowMs: parseInt(process.env.SIMULATE_RATE_LIMIT_WINDOW_MS || '60000'),
+      max: parseInt(process.env.SIMULATE_RATE_LIMIT_MAX || '6'),
+    },
     /** Public webhook endpoints — resist spoofed / replay floods (e.g. Twilio) */
     webhookRateLimit: {
       windowMs: parseInt(process.env.WEBHOOK_RATE_LIMIT_WINDOW_MS || '60000'),

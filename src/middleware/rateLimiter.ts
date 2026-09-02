@@ -221,8 +221,23 @@ export const optimizerRateLimiter = buildRateLimiter({
 })
 
 /**
+ * Strategy simulate rate limiter (#344) — for the CPU-bound what-if historical
+ * replay. Defaults: 6 req / 1 min (env: SIMULATE_RATE_LIMIT_MAX /
+ * SIMULATE_RATE_LIMIT_WINDOW_MS). Applied per-endpoint on the simulate route
+ * only, mirroring the optimizer limiter's reasoning — the marketplace reads on
+ * the same router must not inherit a tight budget.
+ */
+export const simulateRateLimiter = buildRateLimiter({
+  windowMs: config.security.simulateRateLimit.windowMs,
+  max: config.security.simulateRateLimit.max,
+  skip: isTrusted,
+  limiterType: 'simulate',
+  message:
+    'Too many simulation requests. Historical replay is compute-intensive; please try again shortly.',
+})
+
+/**
  * Internal / agent rate limiter — higher throughput for service-to-service calls.
- * Defaults: 500 req / 1 min (env: INTERNAL_RATE_LIMIT_MAX / INTERNAL_RATE_LIMIT_WINDOW_MS).
  */
 export const internalRateLimiter = buildRateLimiter({
   windowMs: config.security.internalRateLimit.windowMs,

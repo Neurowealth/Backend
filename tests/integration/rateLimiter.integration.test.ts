@@ -21,6 +21,8 @@ jest.mock('../../src/config/env', () => ({
       // #322 — every limiter in rateLimiter.ts is constructed at module load,
       // so a block missing here fails the whole suite at import, not at use.
       optimizerRateLimit: { windowMs: 60000, max: 5 },
+      // #344 — strategy simulate replay limiter (CPU-bound).
+      simulateRateLimit: { windowMs: 60000, max: 6 },
       trustedIps: [],
       internalServiceToken: '',
     },
