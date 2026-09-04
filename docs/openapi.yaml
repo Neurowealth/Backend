@@ -928,6 +928,212 @@ components:
         - $ref: '#/components/schemas/WebSocketDraining'
         - $ref: '#/components/schemas/WebSocketPong'
 
+    # ── Digest subscriptions (#365) ────────────────────────────────────────────
+
+    DigestFrequency:
+      type: string
+      enum: [DAILY, WEEKLY, MONTHLY]
+
+    DigestChannel:
+      type: string
+      enum: [WHATSAPP, TELEGRAM, EMAIL, WEBHOOK]
+
+    DigestQuietHours:
+      type: object
+      description: Never send inside this UTC window (`startUtc`..`endUtc`, exclusive end).
+      required: [startUtc, endUtc]
+      properties:
+        startUtc:
+          type: integer
+          minimum: 0
+          maximum: 23
+        endUtc:
+          type: integer
+          minimum: 0
+          maximum: 23
+
+    DigestSubscription:
+      type: object
+      required: [id, userId, frequency, channels, sendHourUtc, isActive, nextRunAt, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        frequency:
+          $ref: '#/components/schemas/DigestFrequency'
+        channels:
+          type: array
+          items:
+            $ref: '#/components/schemas/DigestChannel'
+        sendHourUtc:
+          type: integer
+          minimum: 0
+          maximum: 23
+        weeklyDayUtc:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 6
+        quietHours:
+          allOf:
+            - $ref: '#/components/schemas/DigestQuietHours'
+          nullable: true
+        isActive:
+          type: boolean
+        lastSentAt:
+          type: string
+          format: date-time
+          nullable: true
+        nextRunAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateDigestSubscriptionRequest:
+      type: object
+      required: [frequency, channels]
+      properties:
+        frequency:
+          $ref: '#/components/schemas/DigestFrequency'
+        channels:
+          type: array
+          minItems: 1
+          maxItems: 4
+          items:
+            $ref: '#/components/schemas/DigestChannel'
+        sendHourUtc:
+          type: integer
+          minimum: 0
+          maximum: 23
+          default: 9
+        weeklyDayUtc:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 6
+        quietHours:
+          $ref: '#/components/schemas/DigestQuietHours'
+        isActive:
+          type: boolean
+          default: true
+
+    UpdateDigestSubscriptionRequest:
+      type: object
+      description: Any subset of the creatable fields.
+      properties:
+        frequency:
+          $ref: '#/components/schemas/DigestFrequency'
+        channels:
+          type: array
+          minItems: 1
+          maxItems: 4
+          items:
+            $ref: '#/components/schemas/DigestChannel'
+        sendHourUtc:
+          type: integer
+          minimum: 0
+          maximum: 23
+        weeklyDayUtc:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 6
+        quietHours:
+          $ref: '#/components/schemas/DigestQuietHours'
+        isActive:
+          type: boolean
+
+    DigestValueChange:
+      type: object
+      properties:
+        startValue:
+          type: number
+          nullable: true
+        endValue:
+          type: number
+        absoluteChange:
+          type: number
+          nullable: true
+        percentChange:
+          type: number
+          nullable: true
+        insufficientData:
+          type: boolean
+
+    DigestModel:
+      type: object
+      description: Channel-agnostic digest output from the pure assembler.
+      properties:
+        frequency:
+          $ref: '#/components/schemas/DigestFrequency'
+        period:
+          type: object
+          properties:
+            label:
+              type: string
+            startAt:
+              type: string
+              format: date-time
+            endAt:
+              type: string
+              format: date-time
+        valueChange:
+          $ref: '#/components/schemas/DigestValueChange'
+        yield:
+          type: object
+          properties:
+            earned:
+              type: number
+              nullable: true
+            blendedApy:
+              type: number
+              nullable: true
+            best:
+              type: object
+              nullable: true
+            worst:
+              type: object
+              nullable: true
+        rebalances:
+          type: object
+          properties:
+            count:
+              type: integer
+            netImprovementPct:
+              type: number
+              nullable: true
+        goals:
+          type: array
+          items:
+            type: object
+        risk:
+          type: object
+          properties:
+            text:
+              type: string
+        notableTransactions:
+          type: array
+          items:
+            type: object
+        capReached:
+          type: boolean
+        maxEntries:
+          type: integer
+        caveats:
+          type: array
+          items:
+            type: string
+        hasPositions:
+          type: boolean
+
   responses:
     Unauthorized:
       description: Missing or invalid JWT.
@@ -1866,6 +2072,128 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  # ── Digest subscriptions (#365) ─────────────────────────────────────────────
+
+  /notifications/digests:
+    post:
+      operationId: createDigestSubscription
+      summary: Create a scheduled portfolio digest subscription
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDigestSubscriptionRequest'
+      responses:
+        '201':
+          description: Subscription created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DigestSubscription'
+        '400':
+          $ref: '#/components/responses/Unauthorized'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: An active digest subscription already exists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+    get:
+      operationId: listDigestSubscriptions
+      summary: List the caller's digest subscriptions
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of the caller's subscriptions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscriptions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DigestSubscription'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /notifications/digests/preview:
+    get:
+      operationId: previewDigest
+      summary: Render the caller's digest right now without scheduling it
+      description: Rate-limited; owner-scoped to the caller's own data.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: frequency
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/DigestFrequency'
+      responses:
+        '200':
+          description: The rendered digest model
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DigestModel'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /notifications/digests/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      operationId: updateDigestSubscription
+      summary: Update a digest subscription
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDigestSubscriptionRequest'
+      responses:
+        '200':
+          description: Updated subscription
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DigestSubscription'
+        '400':
+          $ref: '#/components/responses/Unauthorized'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Subscription not found
+    delete:
+      operationId: deleteDigestSubscription
+      summary: Delete a digest subscription
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Subscription not found
 
   # ── Real-time WebSocket stream (#316) ─────────────────────────────────────────
 
