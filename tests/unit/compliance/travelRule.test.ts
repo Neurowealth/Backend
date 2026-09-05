@@ -2,11 +2,26 @@ import { detectTravelRule } from '../../../src/compliance/travelRule'
 import { Request, Response, NextFunction } from 'express'
 import db from '../../../src/db'
 
+let memoryRecords: any[] = []
+
 jest.mock('../../../src/db', () => ({
   __esModule: true,
   default: {
     user: { findUnique: jest.fn() },
-    travelRuleRecord: { findFirst: jest.fn(), create: jest.fn() },
+    travelRuleRecord: {
+      create: jest.fn().mockImplementation(async (args) => {
+        const record = { ...args.data }
+        memoryRecords.push(record)
+        return record
+      }),
+      findFirst: jest.fn().mockImplementation(async (args) => {
+        return (
+          memoryRecords.find(
+            (r) => r.transactionId === args.where.transactionId
+          ) || null
+        )
+      }),
+    },
   },
 }))
 
@@ -16,6 +31,8 @@ describe('Travel Rule Records (#391)', () => {
   let next: NextFunction
 
   beforeEach(() => {
+    memoryRecords = []
+    jest.clearAllMocks()
     req = {}
     res = {
       status: jest.fn().mockReturnThis(),
@@ -53,7 +70,7 @@ describe('Travel Rule Records (#391)', () => {
     })
 
     it('sets status to PENDING_DATA when user data is missing', async () => {
-      ;(db.user.findUnique as jest.Mock).mockResolvedValueOnce(null)
+      ;(db.user.findUnique as jest.Mock).mockResolvedValueOnce(null as any)
 
       await detectTravelRule(1500, 'tx-def-456', 'INBOUND', 'user-nonexistent')
 
