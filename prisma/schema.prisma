@@ -210,6 +210,22 @@ enum DeliveryChannel {
   ALL
 }
 
+/// Scheduled digest cadence (#365).
+enum DigestFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+/// Delivery channel for a digest subscription (#365). EMAIL and TELEGRAM are
+/// reserved for sibling channel issues and have no renderer wired yet.
+enum DigestChannel {
+  WHATSAPP
+  TELEGRAM
+  EMAIL
+  WEBHOOK
+}
+
 enum SubAccountPermission {
   VIEW
   DEPOSIT
@@ -280,6 +296,7 @@ model User {
   userApiKeys             UserApiKey[]
   userWebhookEndpoints    UserWebhookEndpoint[]
   emailIdentity           EmailIdentity?
+  digestSubscriptions     DigestSubscription[]
 
   @@map("users")
 }
@@ -1675,6 +1692,39 @@ model EmailIdentity {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("email_identities")
+}
+
+/// Scheduled cross-channel portfolio digest (#365). An opt-in daily/weekly/
+/// monthly summary delivered over the user's chosen channels.
+///
+/// Scheduling + idempotency semantics (see docs/NOTIFICATIONS.md):
+///  • `sendHourUtc` 0..23 and the optional `weeklyDayUtc` 0..6 define the
+///    preferred send slot. `nextRunAt` is advanced with addCadence from that
+///    slot each time a digest is produced.
+///  • `quietHours` (Json `{ startUtc, endUtc }`, both 0..23) is a "never send
+///    inside this window" preference. A send that falls inside the window is
+///    DEFERRED to the next allowed hour, never dropped.
+///  • A digest occurrence is (subscriptionId, periodStart); `lastSentAt` plus a
+///    claim on `nextRunAt` guard against double-sends and catch-up storms.
+model DigestSubscription {
+  id           String           @id @default(uuid())
+  userId       String
+  frequency    DigestFrequency
+  channels     DigestChannel[]
+  sendHourUtc  Int              @default(9)
+  weeklyDayUtc Int?
+  quietHours   Json?
+  isActive     Boolean          @default(true)
+  lastSentAt   DateTime?
+  nextRunAt    DateTime
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([isActive, nextRunAt])
+  @@index([userId])
+  @@map("digest_subscriptions")
 }
 
 // --- Issue #372: Audit Anchoring ---

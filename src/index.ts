@@ -50,6 +50,7 @@ import { scheduleFiatReconciliation } from './jobs/fiatReconciliation'
 import { scheduleReferralPayout } from './jobs/referralPayout'
 import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
 import { scheduleAlertRules } from './jobs/alertRules'
+import { scheduleDigests } from './jobs/digests'
 import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { scheduleAllocationSuggestions } from './jobs/allocationSuggestions'
 import { scheduleAttribution } from './jobs/attribution'
@@ -125,6 +126,7 @@ let fiatReconciliationHandle: NodeJS.Timeout | null = null
 let referralPayoutHandle: NodeJS.Timeout | null = null
 let recurringDepositsHandle: NodeJS.Timeout | null = null
 let alertRulesHandle: NodeJS.Timeout | null = null
+let digestsHandle: NodeJS.Timeout | null = null
 let strategyMetricsHandle: NodeJS.Timeout | null = null
 let allocationSuggestionsHandle: NodeJS.Timeout | null = null
 let protocolRiskScoringHandle: NodeJS.Timeout | null = null
@@ -398,6 +400,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Alert rules timer cleared')
   }
 
+  if (digestsHandle) {
+    clearInterval(digestsHandle)
+    digestsHandle = null
+    logger.info('[Shutdown] Digests timer cleared')
+  }
+
   if (strategyMetricsHandle) {
     clearInterval(strategyMetricsHandle)
     strategyMetricsHandle = null
@@ -649,6 +657,7 @@ async function main(): Promise<void> {
   referralPayoutHandle = scheduleReferralPayout()
   recurringDepositsHandle = scheduleRecurringDeposits()
   alertRulesHandle = scheduleAlertRules()
+  digestsHandle = scheduleDigests()
   strategyMetricsHandle = scheduleStrategyMetrics()
   // Ordered before the suggestion job so the first suggestion run sees freshly
   // scored protocols rather than whatever was last left in the table.

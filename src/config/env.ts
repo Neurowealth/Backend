@@ -568,6 +568,9 @@ export const config = {
   alertRules: {
     intervalMs: parseInt(process.env.ALERT_RULES_INTERVAL_MS || '60000'),
   },
+  digests: {
+    intervalMs: parseInt(process.env.DIGESTS_INTERVAL_MS || '60000'),
+  },
   strategyMarketplace: {
     metricsIntervalMs: parseInt(
       process.env.STRATEGY_METRICS_INTERVAL_MS || '21600000'
