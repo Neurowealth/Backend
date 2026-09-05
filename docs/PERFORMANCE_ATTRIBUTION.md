@@ -26,16 +26,23 @@ and is the correct input for the benchmark side, matching
 
 ### The benchmark, v1
 
-No real market index exists yet. v1 defines "the market" as the
-**equal-weighted average of available `ProtocolRate` APY history** — every
-protocol with a rate quote on a given day counts as one equally-weighted
-sector of the benchmark that day (or a configured subset via
-`ATTRIBUTION_BENCHMARK_PROTOCOLS`). The pure module never reads
-`ProtocolRate` itself: it accepts `RawProtocolRatePoint[]` (the same type
-`src/agent/backtest.ts` defines for the backtest engine), so a real index feed
-can be dropped in later by supplying a differently-sourced series in the same
-shape. `benchmarkVersion` on every persisted row names which definition/subset
-produced it, so a later config change never silently reinterprets an old row.
+No real market index exists yet. v1 defines "the market" as the average of
+available `ProtocolRate` APY history — every protocol with a rate quote on a
+given day counts as a member of the benchmark that day (or a configured subset
+via `ATTRIBUTION_BENCHMARK_PROTOCOLS`).
+
+**One definition, one place.** The market is defined exactly once, in
+`src/analytics/benchmark.ts` (`buildMarketFactorSeries`), defaulting to
+**equal-weighted** with a pluggable **TVL-weighted** alternative that falls
+back to equal when no TVL data is available. `attribution.ts` imports this
+canonical series rather than re-deriving the market (Flaunch #352); a golden
+test pins attribution's output so a benchmark change can never silently alter
+an attribution number. A real index feed can be dropped in later by supplying
+a differently-sourced series in the same shape.
+
+`benchmarkVersion` on every persisted attribution row names which
+definition/subset produced it, so a later config change never silently
+reinterprets an old row.
 
 ### Sectors, v1
 
@@ -174,7 +181,64 @@ means.
 
 ---
 
-## 5. Out of scope (deliberately)
+## 5. Rolling beta & market-factor exposure (#352)
+
+Attribution answers *why* a portfolio out/under-performed. Factor exposure
+answers a different question: **how much of a portfolio's yield movement is
+explained by the DeFi-yield "market factor" versus idiosyncratic protocol
+selection**, and — because it is computed on a rolling window — **how that
+exposure is changing over time** rather than as a single point estimate.
+
+The market factor is the canonical series from `src/analytics/benchmark.ts`.
+A **yield co-movement beta** is computed by OLS of the portfolio's daily value
+return on the market's daily return. A beta of ~1 means "your yield moves with
+the tracked-protocol market"; ~0 means "independent of it".
+
+### The pure core
+
+`src/analytics/factorExposure.ts` — zero I/O, fixture-tested:
+
+- `rollingBeta(portfolioReturns, marketReturns, windowSize, step)` returns one
+  `{ windowEndMs, beta, alpha, rSquared, sampleCount }` per window; windows
+  under `MIN_FACTOR_SAMPLES` (14) or with effectively-zero market variance
+  return **null** statistics — never NaN, never a fabricated 0.
+- `factorDecomposition(...)` runs one OLS over the full window →
+  `{ beta, alpha(annualized), rSquared, idiosyncraticVolShare }`, where
+  `idiosyncraticVolShare = 1 − R²` is "how much of your yield variance is your
+  protocol selection".
+
+### DB glue + alignment
+
+`src/analytics/factorExposureService.ts` reads the user's `YieldSnapshot`
+value buckets (`principal + yield`, never `apy`) and the benchmark universe's
+`ProtocolRate` history, builds both daily series on the **same UTC-day grid**,
+and keeps **only days present on both sides** — mismatched days are dropped,
+never zero-filled; `sampleCount` is the intersection (`MIN_FACTOR_SAMPLES` of
+these are required before beta means anything).
+
+### API
+
+`GET /api/v1/analytics/factor-exposure?window=90d&rollingWindow=30d`
+(both optional; `window ∈ {30d,60d,90d}`, `rollingWindow ∈ {7d,14d,30d}`,
+`weighting ∈ {equal,tvl}`) — authenticated, owner-scoped via
+`req.auth.userId`. Returns `{ rolling, summary, benchmark, insufficientHistory,
+sampleCount, caveats, inputHash, computedAt }`.
+
+- Retention is bounded at 90 days; `rollingWindow` must be **shorter than**
+  `window` (400 otherwise), because YieldSnapshots are hard-deleted past 90
+  days.
+- A `rollingWindow` that leaves fewer than 2 windows returns the **summary
+  only**, with a caveat.
+- Every response ships `FACTOR_CAVEAT`: *"The 'market' is the equal-weighted
+  average of tracked protocol APY series, not a traded index. Beta here
+  measures yield co-movement, not price beta."*
+- Deterministic: protocols sorted, `asOf` explicit, and an `inputHash`
+  (sha256 over the sorted portfolio-value + benchmark-rate snapshot) returned
+  so the report can be reproduced.
+
+---
+
+## 6. Out of scope (deliberately)
 
 1. A live external benchmark index feed — the module accepts an exogenous
    `RawProtocolRatePoint[]` series; sourcing a real index is deferred.

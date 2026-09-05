@@ -10,6 +10,10 @@ import {
   getPersistedUserRisk,
 } from '../analytics/riskService'
 import { getPortfolioCorrelation } from '../analytics/correlationService'
+import {
+  getFactorExposure,
+  FactorExposureWeighting,
+} from '../analytics/factorExposureService'
 import { getYieldBreakdown } from '../analytics/yieldCompositionService'
 import { RiskWindow } from '../analytics/metrics'
 import {
@@ -650,6 +654,81 @@ router.get('/correlation', requireAuth, async (req: Request, res: Response) => {
     caveat: result.caveat,
   })
 })
+
+/**
+ * GET /analytics/factor-exposure
+ * Rolling beta & market-factor exposure report (#352).
+ */
+router.get(
+  '/factor-exposure',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+
+    const factorExposureQuerySchema = z
+      .object({
+        window: z.enum(['30d', '60d', '90d']).default('90d'),
+        rollingWindow: z.enum(['7d', '14d', '30d']).default('30d'),
+        weighting: z.enum(['equal', 'tvl']).default('equal'),
+      })
+      .superRefine((data, ctx) => {
+        const windowDays =
+          data.window === '30d' ? 30 : data.window === '60d' ? 60 : 90
+        const rollingDays =
+          data.rollingWindow === '7d'
+            ? 7
+            : data.rollingWindow === '14d'
+              ? 14
+              : 30
+        if (rollingDays >= windowDays) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['rollingWindow'],
+            message:
+              'rollingWindow must be shorter than window (yield snapshots are retained for 90 days).',
+          })
+        }
+      })
+
+    const parsed = factorExposureQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'Validation error', details: parsed.error.flatten() })
+    }
+
+    const windowDays =
+      parsed.data.window === '30d' ? 30 : parsed.data.window === '60d' ? 60 : 90
+    const rollingDays =
+      parsed.data.rollingWindow === '7d'
+        ? 7
+        : parsed.data.rollingWindow === '14d'
+          ? 14
+          : 30
+
+    const result = await getFactorExposure(userId, {
+      windowDays,
+      rollingWindowDays: rollingDays,
+      weighting: parsed.data.weighting as FactorExposureWeighting,
+    })
+
+    return res.status(200).json({
+      userId,
+      window: parsed.data.window,
+      rollingWindow: parsed.data.rollingWindow,
+      weighting: result.benchmark.weighting,
+      actualWindowDays: result.actualWindowDays,
+      insufficientHistory: result.insufficientHistory,
+      sampleCount: result.sampleCount,
+      rolling: result.rolling,
+      summary: result.summary,
+      benchmark: result.benchmark,
+      caveats: result.caveats,
+      inputHash: result.inputHash,
+      computedAt: result.computedAt,
+    })
+  }
+)
 
 /**
  * GET /analytics/yield-breakdown

@@ -90,13 +90,10 @@
  *   never a divide-by-zero.
  */
 
-import { RawProtocolRatePoint, buildDailyRateSeries } from '../agent/backtest'
+import { RawProtocolRatePoint } from '../agent/backtest'
+import { buildMarketFactorSeries, BenchmarkRatePoint } from './benchmark'
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
-const MS_PER_YEAR = 365.25 * MS_PER_DAY
-
-/** One day's worth of a single period, as a fraction of a year (see backtest.ts's identical convention). */
-const YEAR_FRACTION_PER_DAY = MS_PER_DAY / MS_PER_YEAR
 
 /**
  * How far a linked reconciliation may drift from zero before being flagged
@@ -456,10 +453,12 @@ export interface AttributionInput {
   /**
    * Raw, possibly gappy protocol rate observations forming the benchmark
    * universe — already filtered to the configured protocol subset, or every
-   * protocol if unrestricted. Reused verbatim by `buildDailyRateSeries`, so
-   * the benchmark inherits its documented hold-last-known forward-fill.
+   * protocol if unrestricted. Reused verbatim by `buildMarketFactorSeries`
+   * (src/analytics/benchmark.ts), so the benchmark inherits its documented
+   * hold-last-known forward-fill. This module never defines the market itself;
+   * it imports the canonical series from benchmark.ts (Flaunch/#352).
    */
-  benchmarkRates: RawProtocolRatePoint[]
+  benchmarkRates: BenchmarkRatePoint[]
   /** 30 or 90 — see docs/STRATEGY_MARKETPLACE.md's retention-honesty rule; this module does not enforce the enum itself. */
   windowDays: number
   /** Reference "now", injected for deterministic tests. */
@@ -484,11 +483,12 @@ export function computeAttribution(input: AttributionInput): AttributionResult {
     startDate,
     endDate
   )
-  const { series: benchmarkSeries } = buildDailyRateSeries(
-    input.benchmarkRates,
+  const { series: benchmarkSeries } = buildMarketFactorSeries({
+    rates: input.benchmarkRates,
     startDate,
-    endDate
-  )
+    endDate,
+    weighting: 'equal',
+  })
 
   if (portfolioSeries.length < 2 || benchmarkSeries.length < 2) {
     return emptyResult(input.windowDays, input.benchmarkVersion)
@@ -510,21 +510,21 @@ export function computeAttribution(input: AttributionInput): AttributionResult {
   for (let t = 1; t < portfolioSeries.length; t++) {
     const prevValues = portfolioSeries[t - 1].values
     const currValues = portfolioSeries[t].values
-    const benchmarkDay = benchmarkSeries[t - 1] // rate quoted at the START of the period
+    // Market factor quoted at the START of the period, from the canonical
+    // benchmark series (buildMarketFactorSeries, equal-weighted).
+    const benchmarkDay = benchmarkSeries[t - 1]
 
     const totalPortfolioStart = Object.values(prevValues).reduce(
       (s, v) => s + v,
       0
     )
-    const benchmarkSectorCount = benchmarkDay.protocols.length
     // No benchmark data at all this day: nothing to compare against. Skip the
     // whole period rather than fabricating a 0% market return.
-    if (benchmarkSectorCount === 0) continue
+    if (benchmarkDay.sectors.length === 0) continue
 
-    const benchmarkWeight = 1 / benchmarkSectorCount
     const sectorNames = new Set<string>([
       ...Object.keys(prevValues),
-      ...benchmarkDay.protocols.map((p) => p.name),
+      ...benchmarkDay.sectors.map((s) => s.name),
     ])
 
     const sectorStates: SectorState[] = []
@@ -536,25 +536,23 @@ export function computeAttribution(input: AttributionInput): AttributionResult {
       const portfolioReturn =
         startValue > 0 ? (endValue - startValue) / startValue : null
 
-      const benchmarkProtocol = benchmarkDay.protocols.find(
-        (p) => p.name === sector
+      const benchmarkSector = benchmarkDay.sectors.find(
+        (s) => s.name === sector
       )
-      const hasBenchmark = benchmarkProtocol !== undefined
-      const benchmarkReturn = hasBenchmark
-        ? (benchmarkProtocol.apy / 100) * YEAR_FRACTION_PER_DAY
-        : null
-
+      const hasBenchmark = benchmarkSector !== undefined
+      // The benchmark's weight AND its daily return fraction come straight
+      // from the shared market factor definition — one source of truth.
       sectorStates.push({
         sector,
         portfolioWeight,
         portfolioReturn,
-        benchmarkWeight: hasBenchmark ? benchmarkWeight : 0,
-        benchmarkReturn,
+        benchmarkWeight: hasBenchmark ? benchmarkSector.weight : 0,
+        benchmarkReturn: hasBenchmark ? benchmarkSector.returnFraction : null,
       })
 
       const w = weightSum.get(sector) ?? { p: 0, b: 0 }
       w.p += portfolioWeight
-      w.b += hasBenchmark ? benchmarkWeight : 0
+      w.b += hasBenchmark ? benchmarkSector.weight : 0
       weightSum.set(sector, w)
 
       if (portfolioWeight > 0 && portfolioReturn !== null) {
@@ -566,12 +564,12 @@ export function computeAttribution(input: AttributionInput): AttributionResult {
         c.everHeld = true
         compoundedPortfolio.set(sector, c)
       }
-      if (hasBenchmark && benchmarkReturn !== null) {
+      if (hasBenchmark && benchmarkSector.returnFraction !== null) {
         const c = compoundedBenchmark.get(sector) ?? {
           product: 1,
           everSeen: false,
         }
-        c.product *= 1 + benchmarkReturn
+        c.product *= 1 + benchmarkSector.returnFraction
         c.everSeen = true
         compoundedBenchmark.set(sector, c)
       }
