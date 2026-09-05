@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import db from '../db'
 import { requireAuth } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import { sendNotFound } from '../utils/errors'
 import { generateWebhookSecret } from '../utils/webhookSignature'

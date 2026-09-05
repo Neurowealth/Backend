@@ -46,7 +46,6 @@ export async function detectTravelRule(
         baseCurrency: 'USD',
         originator,
         beneficiary,
-        counterpartyVasp: null,
         dataSource: user ? 'USER_ATTESTED' : 'SYSTEM',
         status,
       },

@@ -15,6 +15,7 @@
 import { Router, Request, Response } from 'express'
 import express from 'express'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
 import { idempotent } from '../middleware/idempotency'
 import { validate } from '../middleware/validate'
 import { logger } from '../utils/logger'

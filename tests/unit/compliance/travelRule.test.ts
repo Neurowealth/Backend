@@ -1,6 +1,14 @@
 import { detectTravelRule } from '../../../src/compliance/travelRule'
-import { PrismaClientKnownRequestError } from '@prisma/client'
 import { Request, Response, NextFunction } from 'express'
+import db from '../../../src/db'
+
+jest.mock('../../../src/db', () => ({
+  __esModule: true,
+  default: {
+    user: { findUnique: jest.fn() },
+    travelRuleRecord: { findFirst: jest.fn(), create: jest.fn() },
+  },
+}))
 
 describe('Travel Rule Records (#391)', () => {
   let req: Partial<Request>
@@ -26,7 +34,9 @@ describe('Travel Rule Records (#391)', () => {
     }
 
     it('populates originator and beneficiary when user data is available', async () => {
-      ;(db.user.findUnique as jest.Mock).mockResolvedValueOnce(mockDbUser as any)
+      ;(db.user.findUnique as jest.Mock).mockResolvedValueOnce(
+        mockDbUser as any
+      )
 
       await detectTravelRule(1500, 'tx-abc-123', 'OUTBOUND', 'user-123')
 
@@ -37,8 +47,8 @@ describe('Travel Rule Records (#391)', () => {
       expect(record).toBeDefined()
       expect(record?.originator).toBeDefined()
       expect(record?.beneficiary).toBeDefined()
-      expect(record?.originator?.name).toBe('Test User')
-      expect(record?.beneficiary?.name).toBe('Test User')
+      expect((record?.originator as any)?.name).toBe('Test User')
+      expect((record?.beneficiary as any)?.name).toBe('Test User')
       expect(record?.status).toBe('READY')
     })
 
@@ -58,7 +68,9 @@ describe('Travel Rule Records (#391)', () => {
     })
 
     it('creates record when amount is above threshold', async () => {
-      ;(db.user.findUnique as jest.Mock).mockResolvedValueOnce(mockDbUser as any)
+      ;(db.user.findUnique as jest.Mock).mockResolvedValueOnce(
+        mockDbUser as any
+      )
 
       await detectTravelRule(2000, 'tx-ghi-789', 'OUTBOUND', 'user-123')
 
@@ -73,7 +85,9 @@ describe('Travel Rule Records (#391)', () => {
     })
 
     it('does not create record when amount is below threshold', async () => {
-      ;(db.user.findUnique as jest.Mock).mockResolvedValueOnce(mockDbUser as any)
+      ;(db.user.findUnique as jest.Mock).mockResolvedValueOnce(
+        mockDbUser as any
+      )
 
       await detectTravelRule(500, 'tx-jkl-012', 'INBOUND', 'user-123')
 

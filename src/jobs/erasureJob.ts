@@ -18,7 +18,7 @@ export type ErasurePolicyKey = keyof typeof erasurePolicies
 
 export interface ErasureResult {
   model: string
-  action: 'delete' | 'anonymize' | 'immutable'
+  action: 'delete' | 'anonymize' | 'immutable' | 'unknown'
   count: number
 }
 
@@ -30,8 +30,8 @@ export async function erasureJob(
 
   for (const [modelName, action] of Object.entries(erasurePolicies) as [
     keyof typeof erasurePolicies,
-    string
-][]) {
+    string,
+  ][]) {
     let count = 0
 
     switch (modelName) {
@@ -66,7 +66,9 @@ export async function erasureJob(
             count,
           })
         } else {
-          const result = await db.webhookSubscription.deleteMany({ where: query })
+          const result = await db.webhookSubscription.deleteMany({
+            where: query,
+          })
           count = result.count
           results.push({
             model: 'WebhookSubscription',
@@ -112,7 +114,6 @@ export async function erasureJob(
           await db.transaction.updateMany({
             where: { userId },
             data: {
-              userId: null,
               actingAsUserId: null,
               selectedLotIds: [],
             },
@@ -183,7 +184,7 @@ export async function erasureJob(
       }
 
       case 'ReferralConversion': {
-        const query = { userId }
+        const query = { referredUserId: userId }
         if (dryRun) {
           count = await db.referralConversion.count({ where: query })
           results.push({
@@ -193,7 +194,7 @@ export async function erasureJob(
           })
         } else {
           await db.referralConversion.updateMany({
-            where: { userId },
+            where: { referredUserId: userId },
             data: {
               fraudReasons: [],
               flaggedAt: null,
@@ -251,9 +252,7 @@ export async function eraseUserData(
     (sum, r) => sum + (r.action === 'immutable' ? 0 : r.count),
     0
   )
-  const immutableCount = results.filter(
-    (r) => r.action === 'immutable'
-  ).length
+  const immutableCount = results.filter((r) => r.action === 'immutable').length
 
   return {
     summary: results,

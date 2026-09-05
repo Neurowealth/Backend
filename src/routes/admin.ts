@@ -1316,16 +1316,26 @@ router.post(
 
       let results
       if (dryRun) {
-        results = await import('../jobs/erasureJob').then((m) => m.erasureJob(userId, true))
+        results = await import('../jobs/erasureJob').then((m) =>
+          m.erasureJob(userId, true)
+        )
       } else {
-        results = await import('../jobs/erasureJob').then((m) => m.erasureJob(userId, false))
+        results = await import('../jobs/erasureJob').then((m) =>
+          m.erasureJob(userId, false)
+        )
       }
 
-      auditLog(req, res, 'ERASURE_' + (dryRun ? 'DRY_RUN' : 'EXECUTE'), 'success', {
-        userId,
-        dryRun,
-        modelCount: results.length,
-      })
+      auditLog(
+        req,
+        res,
+        'ERASURE_' + (dryRun ? 'DRY_RUN' : 'EXECUTE'),
+        'success',
+        {
+          userId,
+          dryRun,
+          modelCount: results.length,
+        }
+      )
 
       res.status(200).json({
         success: true,
@@ -1341,12 +1351,23 @@ router.post(
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
-      logger.error('[Admin] Erasure operation failed', { error: message, userId: req.body?.userId })
-      auditLog(req, res, 'ERASURE_' + (req.body?.dryRun ? 'DRY_RUN' : 'EXECUTE'), 'failure', {
+      logger.error('[Admin] Erasure operation failed', {
         error: message,
         userId: req.body?.userId,
       })
-      res.status(500).json({ success: false, error: 'Erasure operation failed' })
+      auditLog(
+        req,
+        res,
+        'ERASURE_' + (req.body?.dryRun ? 'DRY_RUN' : 'EXECUTE'),
+        'failure',
+        {
+          error: message,
+          userId: req.body?.userId,
+        }
+      )
+      res
+        .status(500)
+        .json({ success: false, error: 'Erasure operation failed' })
     }
   }
 )

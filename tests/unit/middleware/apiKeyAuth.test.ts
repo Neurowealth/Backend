@@ -1,4 +1,8 @@
-import { validateUserScopes, USER_SCOPES, type UserScope } from '../../../src/auth/scopes'
+import {
+  validateUserScopes,
+  USER_SCOPES,
+  type UserScope,
+} from '../../../src/auth/scopes'
 import {
   parseUserApiKeyToken,
   isUserApiKeyToken,
@@ -107,13 +111,21 @@ describe('User API Key auth (#374)', () => {
     describe('recurring_deposits:write', () => {
       it('allows API keys with recurring_deposits:write scope', () => {
         req.authScopes = ['recurring_deposits:write'] as UserScope[]
-        requireScope('recurring_deposits:write')(req as Request, res as Response, next)
+        requireScope('recurring_deposits:write')(
+          req as Request,
+          res as Response,
+          next
+        )
         expect(next).toHaveBeenCalled()
       })
 
       it('denies API keys without recurring_deposits:write scope', () => {
         req.authScopes = ['portfolio:read'] as UserScope[]
-        requireScope('recurring_deposits:write')(req as Request, res as Response, next)
+        requireScope('recurring_deposits:write')(
+          req as Request,
+          res as Response,
+          next
+        )
         expect(res.status).toHaveBeenCalledWith(403)
         expect(res.json).toHaveBeenCalledWith(
           expect.objectContaining({ error: 'insufficient_scope' })

@@ -21,6 +21,7 @@
  */
 import { Router } from 'express'
 import { requireAuth } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import {
   publishStrategySchema,
