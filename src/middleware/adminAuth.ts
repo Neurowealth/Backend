@@ -39,6 +39,9 @@ export const ADMIN_SCOPES = [
   // fraud-heuristic hold) without granting broader write access.
   'referrals:read',
   'referrals:write',
+  // #394 — GDPR/CCPA right-to-erasure
+  'erasure:write',
+  'erasure:read',
   'super',
 ] as const
 export type AdminScope = (typeof ADMIN_SCOPES)[number]

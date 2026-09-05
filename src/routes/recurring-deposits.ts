@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
 import { idempotent } from '../middleware/idempotency'
 import { validate } from '../middleware/validate'
 import { logger } from '../utils/logger'
@@ -24,6 +25,7 @@ function computeNextRunAt(
 router.post(
   '/',
   requireAuth,
+  requireScope('recurring_deposits:write'),
   idempotent({ required: true, failClosed: true, ttlSeconds: 86400 }),
   validate({
     body: createRecurringDepositSchema,
@@ -84,6 +86,7 @@ router.get(
 router.patch(
   '/:id',
   requireAuth,
+  requireScope('recurring_deposits:write'),
   validate({
     body: updateRecurringDepositSchema,
     errorMessage: 'Validation error',
@@ -125,26 +128,31 @@ router.patch(
 )
 
 // ── Cancel a plan ──────────────────────────────────────────────────────────
-router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
-  const { id } = req.params
+router.delete(
+  '/:id',
+  requireAuth,
+  requireScope('recurring_deposits:write'),
+  async (req: Request, res: Response) => {
+    const { id } = req.params
 
-  const plan = await db.recurringDepositPlan.findUnique({ where: { id } })
-  if (!plan) {
-    return sendNotFound(res, 'Recurring deposit plan')
+    const plan = await db.recurringDepositPlan.findUnique({ where: { id } })
+    if (!plan) {
+      return sendNotFound(res, 'Recurring deposit plan')
+    }
+
+    if (!req.auth || plan.userId !== req.auth.userId) {
+      return sendError(res, 401, 'Unauthorized')
+    }
+
+    const updated = await db.recurringDepositPlan.update({
+      where: { id },
+      data: { status: 'CANCELLED' },
+    })
+
+    logger.info('[RecurringDeposit] Plan cancelled', { planId: id })
+
+    return res.json({ plan: updated })
   }
-
-  if (!req.auth || plan.userId !== req.auth.userId) {
-    return sendError(res, 401, 'Unauthorized')
-  }
-
-  const updated = await db.recurringDepositPlan.update({
-    where: { id },
-    data: { status: 'CANCELLED' },
-  })
-
-  logger.info('[RecurringDeposit] Plan cancelled', { planId: id })
-
-  return res.json({ plan: updated })
-})
+)
 
 export default router

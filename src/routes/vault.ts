@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import db from '../db'
 import { requireAuth } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
 import {
   getActiveProtocol,
   getOnChainAPY,
@@ -65,6 +66,7 @@ const buildTransactionSchema = z.object({
 router.post(
   '/build-transaction',
   requireAuth,
+  requireScope('vault:write'),
   async (req: Request, res: Response) => {
     const parsed = buildTransactionSchema.safeParse(req.body)
     if (!parsed.success) {

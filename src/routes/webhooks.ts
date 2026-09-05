@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import db from '../db'
 import { requireAuth } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import { sendNotFound } from '../utils/errors'
 import { generateWebhookSecret } from '../utils/webhookSignature'
@@ -44,6 +45,8 @@ router.use(requireAuth)
  */
 router.post(
   '/',
+  requireAuth,
+  requireScope('webhooks:manage'),
   validate({ body: createWebhookSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -118,6 +121,8 @@ router.get(
 
 router.patch(
   '/:id',
+  requireAuth,
+  requireScope('webhooks:manage'),
   validate({ params: webhookIdParamSchema, body: updateWebhookSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -149,6 +154,8 @@ router.patch(
 
 router.delete(
   '/:id',
+  requireAuth,
+  requireScope('webhooks:manage'),
   validate({ params: webhookIdParamSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId

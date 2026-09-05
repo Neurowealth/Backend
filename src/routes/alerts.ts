@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import db from '../db'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import { sendNotFound } from '../utils/errors'
 import {
@@ -39,6 +40,8 @@ const alertSelect = {
  */
 router.post(
   '/',
+  requireAuth,
+  requireScope('alerts:manage'),
   validate({ body: createAlertRuleSchema.or(compositeAlertRuleSchema) }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -116,6 +119,8 @@ router.get(
  */
 router.patch(
   '/:id',
+  requireAuth,
+  requireScope('alerts:manage'),
   validate({ params: alertIdParamSchema, body: updateAlertRuleSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -173,6 +178,8 @@ router.patch(
  */
 router.delete(
   '/:id',
+  requireAuth,
+  requireScope('alerts:manage'),
   validate({ params: alertIdParamSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
