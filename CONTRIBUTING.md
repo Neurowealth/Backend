@@ -1,62 +1,168 @@
-# Contributing to Neurowealth Backend
+# Contributing to NeuroWealth Backend
 
-Thank you for contributing! Please follow these guidelines to help us maintain quality and consistency.
+Thank you for your interest in contributing! This guide will help you get started.
 
-## Local Setup
+## Table of Contents
 
-1. Fork the repository and create a branch from `main`
-2. Run `npm install` to install dependencies
-3. Copy `.env.example` to `.env` and configure your local environment
-4. Start the database: `docker-compose up -d`
-5. Run migrations: `npx prisma migrate deploy`
-6. Start development server: `npm run dev`
+- [Getting Started](#getting-started)
+- [Development Setup](#development-setup)
+- [Development Workflow](#development-workflow)
+- [Code Standards](#code-standards)
+- [Pull Request Process](#pull-request-process)
+- [Issue Guidelines](#issue-guidelines)
 
-## Development Commands
+## Getting Started
 
-| Command | Description |
-|---------|-------------|
-| `npm test` | Run all tests |
-| `npm run test:unit` | Run unit tests only |
-| `npm run lint` | Run ESLint |
-| `npm run typecheck` | Run TypeScript type check |
-| `npm run format` | Format code with Prettier |
-| `npm run format:check` | Check formatting |
+1. **Fork** the repository
+2. **Clone** your fork: `git clone https://github.com/YOUR_USERNAME/Backend.git`
+3. **Add upstream**: `git remote add upstream https://github.com/Neurowealth/Backend.git`
+4. **Create a branch**: `git checkout -b feat/your-feature-name`
 
-## PR Conventions
+## Development Setup
+
+### Prerequisites
+
+- Node.js 22+ 
+- PostgreSQL 14+
+- Docker & Docker Compose
+- npm 9+
+
+### Installation
+
+```bash
+# Install dependencies
+npm install
+
+# Set up environment
+cp .env.example .env
+# Edit .env with your configuration
+
+# Start database
+docker-compose up -d
+
+# Run migrations
+npx prisma migrate deploy
+
+# Generate Prisma client
+npx prisma generate
+
+# Start development server
+npm run dev
+```
+
+## Development Workflow
 
 ### Branch Naming
-- Use descriptive branch names: `fix/scopes-erasure-travelrule`
-- Prefix with the issue type: `fix/`, `feat/`, `docs/`
+
+Use descriptive branch names with a prefix:
+
+| Prefix | Use Case |
+|--------|----------|
+| `feat/` | New features |
+| `fix/` | Bug fixes |
+| `docs/` | Documentation updates |
+| `refactor/` | Code refactoring |
+| `test/` | Adding/updating tests |
+| `chore/` | Maintenance tasks |
+
+Examples:
+- `feat/add-dca-endpoint`
+- `fix/api-key-scope-enforcement`
+- `docs/update-deployment-guide`
 
 ### Commit Messages
-- Use clear, descriptive commit messages
-- Reference issues: `closes #390`
-- Keep messages concise but informative
 
-### Pull Request Description
-- Include a summary of changes
-- Reference closed issues using `closes #ISSUE_NUMBER`
-- Include steps to verify the changes
+Use clear, descriptive commit messages:
 
-### Git Hooks
-- Husky hooks are configured for lint and commit message validation
-- See `.husky/` directory for hook details
-- Pre-commit: runs lint-staged
-- Commit-msg: validates commit message format
+```
+feat: add DCA endpoint for recurring investments
 
-## How Issues Map to PRs
+- Add POST /api/goals/dca endpoint
+- Add Zod validation for DCA parameters
+- Add unit tests for DCA logic
 
-1. Issue is created in the tracker
-2. Developer creates a branch from `main`
-3. Developer implements the fix/feature
-4. Developer writes or updates tests
-5. Developer ensures lint and typecheck pass
-6. PR is submitted with issue reference
-7. Maintainers review and merge
+Closes #123
+```
 
-## Code Style
+### Running Tests
 
-- Follow the existing code patterns in the repository
-- Run `npm run lint` before submitting PR
-- Run `npm run typecheck` to ensure type safety
-- Format code with `npm run format`
+```bash
+npm test                    # Run all tests
+npm run test:unit           # Unit tests only
+npm run test:integration    # Integration tests only
+npm run test:coverage       # With coverage report
+```
+
+### Code Quality
+
+```bash
+npm run lint                # Check for lint errors
+npm run lint -- --fix       # Auto-fix lint errors
+npm run typecheck           # Type check
+npm run format              # Format code
+npm run format:check        # Check formatting
+```
+
+**All checks must pass before submitting a PR:**
+```bash
+npm run lint && npm run typecheck && npm test
+```
+
+## Code Standards
+
+- **TypeScript**: Strict mode enabled, no `any` types
+- **Formatting**: Prettier with default settings
+- **Linting**: ESLint with TypeScript plugin
+- **Imports**: Use absolute imports from `src/`
+- **Error Handling**: Use proper error types, not raw strings
+- **Validation**: Use Zod schemas for all request validation
+- **Testing**: Write unit tests for new functions, integration tests for new endpoints
+
+## Pull Request Process
+
+1. **Ensure quality**: Run `npm run lint && npm run typecheck && npm test`
+2. **Update documentation**: If adding/changing features, update relevant docs
+3. **Write a clear PR description**: Explain what changed and why
+4. **Reference issues**: Use `Closes #ISSUE_NUMBER` to link issues
+5. **Request review**: Tag maintainers for review
+6. **Respond to feedback**: Address review comments promptly
+
+### PR Checklist
+
+- [ ] Code follows existing style
+- [ ] `npm run lint` passes
+- [ ] `npm run typecheck` passes
+- [ ] All tests pass
+- [ ] New tests added (if applicable)
+- [ ] Documentation updated (if applicable)
+- [ ] No console.log or debug code left
+- [ ] No secrets or credentials committed
+
+## Issue Guidelines
+
+### Reporting Bugs
+
+Use the **Bug Report** template. Include:
+- Steps to reproduce
+- Expected vs actual behavior
+- Environment details
+- Error messages/logs
+
+### Requesting Features
+
+Use the **Feature Request** template. Include:
+- Problem statement
+- Proposed solution
+- Alternatives considered
+
+### Good First Issues
+
+Look for issues labeled `good first issue` - these are beginner-friendly tasks perfect for first-time contributors.
+
+## Need Help?
+
+- Check existing [documentation](docs/)
+- Open a [discussion](https://github.com/Neurowealth/Backend/discussions)
+- Comment on the issue you're interested in
+
+Thank you for contributing to NeuroWealth! 🚀
