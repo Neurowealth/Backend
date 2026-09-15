@@ -95,7 +95,7 @@ action — and sockets held on other pods.
 | `transactions` | deposit/withdraw/settlement confirmations, fiat orders, recurring deposits, terminal outbox failures | `src/stellar/events.ts`, `src/fiat/service.ts`, `src/controllers/transaction-controller.ts` |
 | `portfolio`    | value/position changes                                             | `src/agent/loop.ts` |
 | `agent`        | rebalance decisions                                                | `src/agent/loop.ts` |
-| `alerts`       | `alert_rule.triggered`                                             | `src/jobs/alertRules.ts` |
+| `alerts`       | `alert_rule.triggered`, `digest.generated` (socket-only)           | `src/jobs/alertRules.ts`, `src/jobs/digests.ts` |
 | `strategies`   | publish / unpublish / material config change                       | `src/strategy/service.ts` |
 
 ### Ordering contract

@@ -47,6 +47,9 @@ export const SOCKET_ONLY_EVENT_TYPES = [
   'security.api_key_changed',
   /** #376 — new session sign-in alert. */
   'security.new_session',
+  /** #365 — a scheduled portfolio digest was generated. Stream + user's own
+   *  webhook endpoint only; never an operator webhook (see docs/NOTIFICATIONS.md). */
+  'digest.generated',
 ] as const
 
 export type SocketOnlyEventType = (typeof SOCKET_ONLY_EVENT_TYPES)[number]
@@ -89,6 +92,7 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'portfolio.updated': 'portfolio',
   'security.api_key_changed': 'alerts',
   'security.new_session': 'alerts',
+  'digest.generated': 'alerts',
 }
 
 const SOCKET_ONLY = new Set<string>(SOCKET_ONLY_EVENT_TYPES)

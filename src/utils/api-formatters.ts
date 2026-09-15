@@ -272,6 +272,23 @@ const USER_EVENT_PAYLOAD_ALLOWLIST: Record<string, readonly string[]> = {
   // `error` is the user's own op failure text, already sent to their webhooks.
   'outbox.op_failed': ['opId', 'kind', 'attempts', 'error'],
   'portfolio.updated': ['protocolName', 'positionsAffected', 'reason'],
+  // The digest payload IS the channel-agnostic DigestModel already assembled by
+  // src/notifications/digest.ts (no userId, no secrets). Keep the allowlist on
+  // its top-level shape so a future extra field is still redacted by default.
+  'digest.generated': [
+    'frequency',
+    'period',
+    'valueChange',
+    'yield',
+    'rebalances',
+    'goals',
+    'risk',
+    'notableTransactions',
+    'capReached',
+    'maxEntries',
+    'caveats',
+    'hasPositions',
+  ],
 }
 
 /**
