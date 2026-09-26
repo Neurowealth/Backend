@@ -17,6 +17,7 @@
  */
 import { PriceSource } from '@prisma/client'
 import { Decimal } from '@prisma/client/runtime/library'
+import { getCachedStablecoinPrice } from '../stellar/priceFeed'
 
 export interface AssetPrice {
   price: Decimal | null
@@ -28,13 +29,14 @@ export interface PriceForAssetOptions {
 }
 
 /**
- * Integration point for a future market-data source (the same "fetched and
- * stored" shape as ProtocolRate — see prisma/schema.prisma). Always returns
- * null today: no feed/credentials exist yet, and priceForAsset's contract
- * requires unpriced assets to stay honestly null, never a fabricated value.
+ * Market-data source lookup wired to the shared priceFeed module.
+ * Returns the cached spot price if available, or null when no fresh feed is available.
  */
-function lookupFeedPrice(_assetSymbol: string): Decimal | null {
-  return null
+function lookupFeedPrice(assetSymbol: string): Decimal | null {
+  const cached = getCachedStablecoinPrice(assetSymbol)
+  return cached !== null && Number.isFinite(cached) && cached > 0
+    ? new Decimal(cached)
+    : null
 }
 
 export function priceForAsset(
