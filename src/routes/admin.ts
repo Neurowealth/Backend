@@ -23,6 +23,7 @@ import {
   manualTripBreaker,
   manualResetBreaker,
 } from '../agent/breakerService'
+import { messageDeliveryService } from '../messaging'
 
 const router = Router()
 const prisma = db
@@ -1794,4 +1795,227 @@ router.post(
   }
 )
 
+// ── Telegram & WhatsApp Message Delivery Management & Recovery (#493) ─────
+
+/**
+ * GET /api/admin/messages
+ * List tracked message deliveries with optional filtering. Required scope: messages:read
+ */
+router.get(
+  '/messages',
+  requireAdminScope('messages:read'),
+  async (req: Request, res: Response) => {
+    try {
+      const { channel, status, recipient, userId, category, limit, offset } =
+        req.query
+
+      const result = await messageDeliveryService.listMessages({
+        channel: channel as any,
+        status: status as any,
+        recipient: recipient as string | undefined,
+        userId: userId as string | undefined,
+        category: category as string | undefined,
+        limit: limit ? parseInt(limit as string, 10) : undefined,
+        offset: offset ? parseInt(offset as string, 10) : undefined,
+      })
+
+      auditLog(req, res, 'MESSAGES_LIST', 'success', {
+        channel,
+        status,
+        recipient,
+        returned: result.messages.length,
+        total: result.total,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: result,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'MESSAGES_LIST', 'failure', { error: message })
+      res
+        .status(500)
+        .json({ success: false, error: 'Failed to list messages' })
+    }
+  }
+)
+
+/**
+ * GET /api/admin/messages/stats
+ * Overview queue depth and delivery statistics by channel. Required scope: messages:read
+ */
+router.get(
+  '/messages/stats',
+  requireAdminScope('messages:read'),
+  async (req: Request, res: Response) => {
+    try {
+      const stats = await messageDeliveryService.getMessageStats()
+      auditLog(req, res, 'MESSAGES_STATS', 'success')
+      res.status(200).json({
+        success: true,
+        data: stats,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'MESSAGES_STATS', 'failure', { error: message })
+      res
+        .status(500)
+        .json({ success: false, error: 'Failed to retrieve message stats' })
+    }
+  }
+)
+
+/**
+ * GET /api/admin/messages/:id
+ * Inspect a single message delivery record. Required scope: messages:read
+ */
+router.get(
+  '/messages/:id',
+  requireAdminScope('messages:read'),
+  async (req: Request, res: Response) => {
+    try {
+      const msg = await messageDeliveryService.getMessage(req.params.id)
+      if (!msg) {
+        auditLog(req, res, 'MESSAGE_GET', 'failure', {
+          id: req.params.id,
+          error: 'not_found',
+        })
+        res.status(404).json({ success: false, error: 'Message not found' })
+        return
+      }
+
+      auditLog(req, res, 'MESSAGE_GET', 'success', { id: msg.id })
+      res.status(200).json({ success: true, data: msg })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'MESSAGE_GET', 'failure', { error: message })
+      res
+        .status(500)
+        .json({ success: false, error: 'Failed to retrieve message' })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/messages/:id/retry
+ * Safe manual recovery: force-retry a failed or dead-lettered message. Required scope: messages:write
+ */
+router.post(
+  '/messages/:id/retry',
+  requireAdminScope('messages:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const msg = await messageDeliveryService.getMessage(req.params.id)
+      if (!msg) {
+        auditLog(req, res, 'MESSAGE_RETRY', 'failure', {
+          id: req.params.id,
+          error: 'not_found',
+        })
+        res.status(404).json({ success: false, error: 'Message not found' })
+        return
+      }
+
+      const retried = await messageDeliveryService.retryMessage(req.params.id)
+      auditLog(req, res, 'MESSAGE_RETRY', 'success', {
+        id: retried.id,
+        channel: retried.channel,
+        status: retried.status,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: retried,
+        message: `Message ${retried.id} retry initiated; current status: ${retried.status}`,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'MESSAGE_RETRY', 'failure', { error: message })
+      res
+        .status(500)
+        .json({ success: false, error: `Failed to retry message: ${message}` })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/messages/retry-dead-letters
+ * Safe manual recovery: bulk retry all dead-lettered messages. Required scope: messages:write
+ */
+router.post(
+  '/messages/retry-dead-letters',
+  requireAdminScope('messages:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { channel } = req.body ?? {}
+      const result = await messageDeliveryService.retryAllDeadLetters(channel)
+
+      auditLog(req, res, 'MESSAGE_RETRY_DEAD_LETTERS', 'success', {
+        channel,
+        retriedCount: result.count,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: result,
+        message: `Successfully re-enqueued ${result.count} dead-lettered messages for delivery`,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'MESSAGE_RETRY_DEAD_LETTERS', 'failure', {
+        error: message,
+      })
+      res.status(500).json({
+        success: false,
+        error: `Failed to retry dead-lettered messages: ${message}`,
+      })
+    }
+  }
+)
+
+/**
+ * DELETE /api/admin/messages/:id
+ * Safe manual recovery: cancel an unsent or dead-lettered message. Required scope: messages:write
+ */
+router.delete(
+  '/messages/:id',
+  requireAdminScope('messages:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const msg = await messageDeliveryService.getMessage(req.params.id)
+      if (!msg) {
+        auditLog(req, res, 'MESSAGE_CANCEL', 'failure', {
+          id: req.params.id,
+          error: 'not_found',
+        })
+        res.status(404).json({ success: false, error: 'Message not found' })
+        return
+      }
+
+      const cancelled = await messageDeliveryService.cancelMessage(
+        req.params.id
+      )
+      auditLog(req, res, 'MESSAGE_CANCEL', 'success', {
+        id: cancelled.id,
+        status: cancelled.status,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: cancelled,
+        message: `Message ${cancelled.id} cancelled successfully`,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'MESSAGE_CANCEL', 'failure', { error: message })
+      res
+        .status(500)
+        .json({ success: false, error: `Failed to cancel message: ${message}` })
+    }
+  }
+)
+
 export default router
+

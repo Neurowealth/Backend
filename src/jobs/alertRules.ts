@@ -10,6 +10,7 @@ import { config } from '../config/env'
 import { publishUserEvent } from '../events/publisher'
 import { EVENT_TYPE_TOPIC } from '../events/types'
 import { sendWhatsAppMessage } from '../utils/twilio-client'
+import { messageDeliveryService } from '../messaging'
 import { formatAlertTriggeredReply } from '../whatsapp/formatters'
 import {
   compare,
@@ -233,7 +234,13 @@ async function deliverAlert(
         threshold,
         observedValue,
       })
-      await sendWhatsAppMessage({ to: `whatsapp:${user.phone}`, body })
+      await messageDeliveryService.send({
+        channel: 'WHATSAPP',
+        recipient: user.phone,
+        userId: rule.userId,
+        category: 'ALERT',
+        body,
+      })
     }
   }
 }

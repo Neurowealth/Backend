@@ -17,6 +17,7 @@
 - **[REBALANCE_EXPOSURE_COST.md](REBALANCE_EXPOSURE_COST.md)** - Rebalance exposure caps (#346) and grounded cost model + payback gate (#347): resolution, tighten-only merge, residual routing, conservative-by-default decisions
 - **[CORRELATION_DIVERSIFICATION.md](CORRELATION_DIVERSIFICATION.md)** - Portfolio APY correlation matrix + diversification score (#348): alignment, null-on-degenerate semantics, weighted score, caveat
 - **[YIELD_COMPOSITION.md](YIELD_COMPOSITION.md)** - Yield base/incentive decomposition + effective APY (#349): haircut model, schema columns, flag-gated consumption, emissions risk modifier, yield-breakdown endpoint
+- **[MESSAGING_DELIVERY.md](MESSAGING_DELIVERY.md)** - Telegram & WhatsApp message delivery reliability, retry/fallback policy, metrics, and recovery admin API (#493)
 
 ### For DevOps/Deployment
 

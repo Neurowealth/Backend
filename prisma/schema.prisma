@@ -1937,3 +1937,55 @@ model AgentCircuitBreaker {
   @@index([state])
   @@map("agent_circuit_breakers")
 }
+
+// ── Telegram & WhatsApp Message Delivery (#493) ──────────────────────────
+
+enum MessageChannel {
+  TELEGRAM
+  WHATSAPP
+}
+
+enum MessageDeliveryStatus {
+  PENDING
+  SENDING
+  DELIVERED
+  FAILED
+  DEAD_LETTER
+}
+
+enum MessagePriority {
+  HIGH
+  NORMAL
+  LOW
+}
+
+model MessageDelivery {
+  id                String                @id @default(uuid())
+  channel           MessageChannel
+  recipient         String
+  userId            String?
+  category          String                @default("NOTIFICATION")
+  body              String
+  status            MessageDeliveryStatus @default(PENDING)
+  priority          MessagePriority       @default(NORMAL)
+  attempts          Int                   @default(0)
+  maxAttempts       Int                   @default(5)
+  nextAttemptAt     DateTime?
+  lastError         String?
+  providerMessageId String?
+  metadata          Json?
+  fallbackChannel   MessageChannel?
+  fallbackRecipient String?
+  fallbackTriggered Boolean               @default(false)
+  deliveredAt       DateTime?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  @@index([channel, status])
+  @@index([status, nextAttemptAt])
+  @@index([recipient])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("message_deliveries")
+}
+

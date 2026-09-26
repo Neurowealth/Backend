@@ -80,7 +80,7 @@ export const createUserWebhookEndpointSchema = z.object({
   topicScope: z
     .array(z.string())
     .optional(),
-  filterJson: z.record(z.any()).nullable().optional(),
+  filterJson: z.record(z.string(), z.any()).nullable().optional(),
 })
 
 export const updateUserWebhookEndpointSchema = z.object({
@@ -92,7 +92,7 @@ export const updateUserWebhookEndpointSchema = z.object({
   topicScope: z
     .array(z.string())
     .optional(),
-  filterJson: z.record(z.any()).nullable().optional(),
+  filterJson: z.record(z.string(), z.any()).nullable().optional(),
   status: z
     .enum(['ACTIVE', 'PAUSED', 'DISABLED'])
     .optional(),

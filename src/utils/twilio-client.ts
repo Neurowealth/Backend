@@ -57,3 +57,34 @@ export function resetTwilioClient(): void {
 export function getTwilioHttpClient(): HttpClientAdapter {
   return httpClient
 }
+
+/**
+ * Classify whether an error from Twilio WhatsApp is transient.
+ */
+export function isWhatsAppTransientError(error: unknown): boolean {
+  if (!error) return false
+  const err = error as any
+  const code = err.code || err.status
+  if (code === 20429 || code === 429 || (typeof code === 'number' && code >= 500 && code < 600)) {
+    return true
+  }
+  const msg = (err.message || '').toLowerCase()
+  if (
+    msg.includes('timeout') ||
+    msg.includes('econnreset') ||
+    msg.includes('network') ||
+    msg.includes('rate limit') ||
+    msg.includes('circuit breaker is open')
+  ) {
+    return true
+  }
+  return false
+}
+
+export function extractWhatsAppRetryAfter(error: unknown): number | undefined {
+  if (!error) return undefined
+  const err = error as any
+  if (err.retryAfter) return Number(err.retryAfter)
+  return undefined
+}
+
