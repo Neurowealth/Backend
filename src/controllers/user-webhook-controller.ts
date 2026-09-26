@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import { Request, Response } from 'express'
+import { Prisma } from '@prisma/client'
 import db from '../db'
 import { logger } from '../utils/logger'
 import {
@@ -195,7 +196,9 @@ export async function updateEndpoint(
         ...(url && { url }),
         ...(events && Array.isArray(events) && { events }),
         ...(topicScope && Array.isArray(topicScope) && { topicScope }),
-        ...(filterJson !== undefined && { filterJson }),
+        ...(filterJson !== undefined && {
+          filterJson: filterJson === null ? Prisma.DbNull : filterJson,
+        }),
         ...(status && { status }),
       },
       select: {

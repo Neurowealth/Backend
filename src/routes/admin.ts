@@ -23,6 +23,10 @@ import {
   manualTripBreaker,
   manualResetBreaker,
 } from '../agent/breakerService'
+import {
+  featureFlagManager,
+  getCurrentEnvironment,
+} from '../config/featureFlags'
 
 const router = Router()
 const prisma = db
@@ -1789,6 +1793,406 @@ router.post(
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
       auditLog(req, res, 'RESET_AGENT_BREAKER', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+// ── Feature Flag Operational & Rollback Routes (#494) ────────────────────────
+
+/**
+ * GET /api/v1/admin/feature-flags
+ * List all feature flags and their evaluation status for the current environment.
+ */
+router.get(
+  '/feature-flags',
+  requireAdminScope('flags:read'),
+  async (req: Request, res: Response) => {
+    try {
+      const env = getCurrentEnvironment()
+      const entityId =
+        typeof req.query.entityId === 'string' ? req.query.entityId : undefined
+      const flags = featureFlagManager.getAllFlags(
+        entityId ? { entityId } : undefined
+      )
+      res.status(200).json({
+        success: true,
+        data: {
+          environment: env,
+          flags,
+        },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * GET /api/v1/admin/feature-flags/history
+ * List emergency rollback and configuration change history.
+ */
+router.get(
+  '/feature-flags/history',
+  requireAdminScope('flags:read'),
+  async (req: Request, res: Response) => {
+    try {
+      const history = featureFlagManager.getRollbackHistory()
+      res.status(200).json({
+        success: true,
+        data: history,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/v1/admin/feature-flags/emergency-disable-all
+ * Platform-wide emergency kill switch to activate maintenance mode and disable flags.
+ */
+router.post(
+  '/feature-flags/emergency-disable-all',
+  requireAdminScope('flags:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { reason } = req.body ?? {}
+      if (typeof reason !== 'string' || reason.trim() === '') {
+        auditLog(req, res, 'EMERGENCY_DISABLE_ALL_FEATURE_FLAGS', 'failure', {
+          error: 'missing_reason',
+        })
+        res.status(400).json({ success: false, error: 'reason is required' })
+        return
+      }
+
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
+
+      featureFlagManager.emergencyDisableAll(reason.trim(), adminIdentity)
+      auditLog(req, res, 'EMERGENCY_DISABLE_ALL_FEATURE_FLAGS', 'success', {
+        reason: reason.trim(),
+      })
+
+      res.status(200).json({
+        success: true,
+        message:
+          'Platform-wide emergency kill switch activated; all flags disabled',
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'EMERGENCY_DISABLE_ALL_FEATURE_FLAGS', 'failure', {
+        error: message,
+      })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * GET /api/v1/admin/feature-flags/:key
+ * Retrieve specific feature flag details and evaluation.
+ */
+router.get(
+  '/feature-flags/:key',
+  requireAdminScope('flags:read'),
+  async (req: Request, res: Response) => {
+    try {
+      const { key } = req.params
+      const flag = featureFlagManager.getFlag(key)
+      if (!flag) {
+        res
+          .status(404)
+          .json({ success: false, error: `Feature flag "${key}" not found` })
+        return
+      }
+
+      const entityId =
+        typeof req.query.entityId === 'string' ? req.query.entityId : undefined
+      const currentEvaluation = featureFlagManager.evaluate(
+        key,
+        entityId ? { entityId } : undefined
+      )
+
+      res.status(200).json({
+        success: true,
+        data: {
+          ...flag,
+          currentEvaluation,
+        },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * PUT /api/v1/admin/feature-flags/:key
+ * Update runtime override for a feature flag.
+ */
+router.put(
+  '/feature-flags/:key',
+  requireAdminScope('flags:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { key } = req.params
+      const flag = featureFlagManager.getFlag(key)
+      if (!flag) {
+        auditLog(req, res, 'UPDATE_FEATURE_FLAG', 'failure', {
+          error: 'not_found',
+          key,
+        })
+        res
+          .status(404)
+          .json({ success: false, error: `Feature flag "${key}" not found` })
+        return
+      }
+
+      const {
+        enabled,
+        rolloutPercentage,
+        allowlist,
+        blocklist,
+        killSwitch,
+      } = req.body ?? {}
+
+      if (enabled !== undefined && typeof enabled !== 'boolean') {
+        res
+          .status(400)
+          .json({ success: false, error: 'enabled must be a boolean' })
+        return
+      }
+
+      if (
+        rolloutPercentage !== undefined &&
+        (typeof rolloutPercentage !== 'number' ||
+          rolloutPercentage < 0 ||
+          rolloutPercentage > 100)
+      ) {
+        res.status(400).json({
+          success: false,
+          error: 'rolloutPercentage must be a number between 0 and 100',
+        })
+        return
+      }
+
+      if (allowlist !== undefined && !Array.isArray(allowlist)) {
+        res
+          .status(400)
+          .json({ success: false, error: 'allowlist must be an array of strings' })
+        return
+      }
+
+      if (blocklist !== undefined && !Array.isArray(blocklist)) {
+        res
+          .status(400)
+          .json({ success: false, error: 'blocklist must be an array of strings' })
+        return
+      }
+
+      if (killSwitch !== undefined && typeof killSwitch !== 'boolean') {
+        res
+          .status(400)
+          .json({ success: false, error: 'killSwitch must be a boolean' })
+        return
+      }
+
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
+
+      featureFlagManager.setOverride(
+        key,
+        {
+          ...(enabled !== undefined ? { enabled } : {}),
+          ...(rolloutPercentage !== undefined ? { rolloutPercentage } : {}),
+          ...(allowlist !== undefined ? { allowlist } : {}),
+          ...(blocklist !== undefined ? { blocklist } : {}),
+          ...(killSwitch !== undefined ? { killSwitch } : {}),
+        },
+        adminIdentity
+      )
+
+      auditLog(req, res, 'UPDATE_FEATURE_FLAG', 'success', {
+        key,
+        override: req.body,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: featureFlagManager.evaluate(key),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'UPDATE_FEATURE_FLAG', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/v1/admin/feature-flags/:key/staged-rollout
+ * Advance or adjust staged rollout percentage (0-100).
+ */
+router.post(
+  '/feature-flags/:key/staged-rollout',
+  requireAdminScope('flags:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { key } = req.params
+      const flag = featureFlagManager.getFlag(key)
+      if (!flag) {
+        auditLog(req, res, 'STAGED_ROLLOUT_FEATURE_FLAG', 'failure', {
+          error: 'not_found',
+          key,
+        })
+        res
+          .status(404)
+          .json({ success: false, error: `Feature flag "${key}" not found` })
+        return
+      }
+
+      const { percentage } = req.body ?? {}
+      if (
+        typeof percentage !== 'number' ||
+        percentage < 0 ||
+        percentage > 100
+      ) {
+        auditLog(req, res, 'STAGED_ROLLOUT_FEATURE_FLAG', 'failure', {
+          error: 'invalid_percentage',
+          percentage,
+        })
+        res.status(400).json({
+          success: false,
+          error: 'percentage must be a number between 0 and 100',
+        })
+        return
+      }
+
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
+
+      featureFlagManager.stagedRollout(key, percentage, adminIdentity)
+      auditLog(req, res, 'STAGED_ROLLOUT_FEATURE_FLAG', 'success', {
+        key,
+        percentage,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: featureFlagManager.evaluate(key),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'STAGED_ROLLOUT_FEATURE_FLAG', 'failure', {
+        error: message,
+      })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/v1/admin/feature-flags/:key/rollback
+ * Fast emergency rollback for a specific feature flag.
+ */
+router.post(
+  '/feature-flags/:key/rollback',
+  requireAdminScope('flags:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { key } = req.params
+      const flag = featureFlagManager.getFlag(key)
+      if (!flag) {
+        auditLog(req, res, 'ROLLBACK_FEATURE_FLAG', 'failure', {
+          error: 'not_found',
+          key,
+        })
+        res
+          .status(404)
+          .json({ success: false, error: `Feature flag "${key}" not found` })
+        return
+      }
+
+      const { reason } = req.body ?? {}
+      if (typeof reason !== 'string' || reason.trim() === '') {
+        auditLog(req, res, 'ROLLBACK_FEATURE_FLAG', 'failure', {
+          error: 'missing_reason',
+        })
+        res.status(400).json({ success: false, error: 'reason is required' })
+        return
+      }
+
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
+
+      const rollbackEvent = featureFlagManager.rollback(
+        key,
+        reason.trim(),
+        adminIdentity
+      )
+
+      auditLog(req, res, 'ROLLBACK_FEATURE_FLAG', 'success', {
+        key,
+        reason: reason.trim(),
+        rollbackEvent,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: rollbackEvent,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'ROLLBACK_FEATURE_FLAG', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/v1/admin/feature-flags/:key/reset
+ * Reset a feature flag back to its default environment configuration.
+ */
+router.post(
+  '/feature-flags/:key/reset',
+  requireAdminScope('flags:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { key } = req.params
+      const flag = featureFlagManager.getFlag(key)
+      if (!flag) {
+        auditLog(req, res, 'RESET_FEATURE_FLAG', 'failure', {
+          error: 'not_found',
+          key,
+        })
+        res
+          .status(404)
+          .json({ success: false, error: `Feature flag "${key}" not found` })
+        return
+      }
+
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
+
+      featureFlagManager.reset(key, adminIdentity)
+      auditLog(req, res, 'RESET_FEATURE_FLAG', 'success', { key })
+
+      res.status(200).json({
+        success: true,
+        data: featureFlagManager.evaluate(key),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'RESET_FEATURE_FLAG', 'failure', { error: message })
       res.status(500).json({ success: false, error: message })
     }
   }

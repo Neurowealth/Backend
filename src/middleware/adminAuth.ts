@@ -42,6 +42,9 @@ export const ADMIN_SCOPES = [
   // #394 — GDPR/CCPA right-to-erasure
   'erasure:write',
   'erasure:read',
+  // #494 — feature flags management and staged rollout/rollback
+  'flags:read',
+  'flags:write',
   'super',
 ] as const
 export type AdminScope = (typeof ADMIN_SCOPES)[number]

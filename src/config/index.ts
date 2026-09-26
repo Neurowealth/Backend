@@ -6,3 +6,5 @@ export {
   createSecretsProvider,
 } from './secrets'
 export type { SecretsProvider, SecretKey } from './secrets'
+export * from './featureFlags'
+
