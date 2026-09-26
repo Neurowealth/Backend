@@ -561,3 +561,74 @@ tick rather than trading blind.
 curl -s http://localhost:3001/metrics | grep -E "agent_breaker_(state|trips_total)"
 psql "$DATABASE_URL" -c "SELECT scope, \"scopeKey\", state, \"trippedRule\" FROM agent_circuit_breakers ORDER BY \"updatedAt\" DESC;"
 ```
+
+---
+
+## 8. Feature Flags & Emergency Rollback Runbook (#494)
+
+Detailed reference and architectural specifications are documented in [docs/FEATURE_FLAGS.md](FEATURE_FLAGS.md).
+
+### Inspect Active Feature Flags
+
+```bash
+# List all feature flags and runtime evaluation for the current environment
+curl -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  http://localhost:3001/api/v1/admin/feature-flags | jq
+
+# Inspect single flag
+curl -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  http://localhost:3001/api/v1/admin/feature-flags/smart_dca_engine | jq
+```
+
+### Staged Rollout Adjustment
+
+```bash
+# Advance rollout percentage (0 to 100)
+curl -X POST http://localhost:3001/api/v1/admin/feature-flags/smart_dca_engine/staged-rollout \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"percentage": 25}'
+```
+
+### Fast Emergency Rollback (< 1s)
+
+When an anomaly or regression is detected, trigger an immediate rollback. This clamps the rollout to 0%, engages the rollback lock, increments the Prometheus rollback metric, logs structured SRE audit events, and broadcasts the event across Redis:
+
+```bash
+# Fast rollback with mandatory reason
+curl -X POST http://localhost:3001/api/v1/admin/feature-flags/smart_dca_engine/rollback \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "High slippage observed in Horizon liquidity pools"}'
+```
+
+### Platform-Wide Emergency Maintenance Mode
+
+To halt all state-mutating requests platform-wide during an active exploit or catastrophic dependency failure:
+
+```bash
+curl -X POST http://localhost:3001/api/v1/admin/feature-flags/emergency-disable-all \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "Halting mutating requests due to protocol exploit"}'
+```
+
+### Environment Variable Emergency Disable
+
+If the admin endpoint is unreachable, override in the environment without deploying new code:
+
+```bash
+# Disable specific flags via rollback
+FEATURE_FLAGS_ROLLBACK=smart_dca_engine,fast_fiat_onramp
+
+# Or engage individual kill switch
+FEATURE_FLAG_SMART_DCA_ENGINE_KILL_SWITCH=true
+```
+
+### Reset to Default Environment Configuration
+
+```bash
+curl -X POST http://localhost:3001/api/v1/admin/feature-flags/smart_dca_engine/reset \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN"
+```
+

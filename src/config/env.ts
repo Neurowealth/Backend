@@ -783,4 +783,14 @@ export const config = {
       process.env.NLP_CONFIDENCE_THRESHOLD || '0.6'
     ),
   },
+  featureFlags: {
+    redisSyncIntervalMs: parseInt(
+      process.env.FEATURE_FLAGS_REDIS_SYNC_INTERVAL_MS || '10000'
+    ),
+    emergencyMaintenance:
+      (
+        process.env.FEATURE_FLAG_EMERGENCY_MAINTENANCE_MODE ?? 'false'
+      ).toLowerCase() === 'true',
+  },
 }
+
