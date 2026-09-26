@@ -76,20 +76,20 @@ report year, so a year that mixes two methods is flagged, never silently
 presented as one. Only the most recent method change is tracked — a second
 change does not retroactively re-attribute the window before the first one.
 
-### Pricing source hierarchy (#317)
+### Pricing source hierarchy (#317, #444)
 
 `src/tax/pricing.ts`'s `priceForAsset` now checks, in order:
 
 1. An explicit `userDeclaredPrice` passed by the caller → `USER_DECLARED`.
-2. `lookupFeedPrice` — a real, callable integration point for a future
-   volatile-asset market-data feed (`MARKET_FEED` source) — **stubbed to
-   always return `null` in this release**; no feed/credentials exist yet.
+2. `lookupFeedPrice` — a market-data feed lookup for volatile assets
+   (`MARKET_FEED` source) backed by Horizon orderbook, Stellar Expert, or a
+   configurable HTTP oracle with TTL caching and metadata persistence.
 3. The USDC 1:1 USD assumption → `STABLECOIN_ASSUMPTION` (unchanged).
 4. `null` — genuinely unpriced (unchanged contract, never a silent zero).
 
-So volatile, non-stablecoin assets remain honestly unpriced today, exactly as
-before #317, just reached through a documented hierarchy instead of a
-two-branch `if`.
+When market feeds provide a valid quote, volatile Stellar assets receive USD
+proceeds and cost basis under `MARKET_FEED`. On feed outage or missing quote,
+assets remain honestly unpriced rather than fabricating a zero value.
 
 ## Write path (who creates lots)
 
@@ -213,10 +213,10 @@ indicate an insufficient-lots condition (see the paired critical alert).
 1. **Rebalances are not disposals.** Rebalance events carry no per-user
    amounts (protocol/APY only) and are same-asset protocol moves; some tax
    regimes may treat them differently — not modeled.
-2. **Volatile (non-stablecoin) assets are unpriced** and excluded from
-   totals (flagged in caveats). The market-feed pricing hierarchy level is a
-   real, tested integration point but has no feed wired up yet (see
-   "Pricing source hierarchy").
+2. **Volatile (non-stablecoin) assets without feed quotes are unpriced**
+   and excluded from totals (flagged in caveats). When market feeds provide
+   quotes, they are priced as `MARKET_FEED`. On feed outage or missing quote,
+   they remain honestly unpriced rather than producing a fabricated zero.
 3. **USDC 1:1 USD assumption** — actual market price may deviate slightly.
 4. **HTTP-controller-only transactions** never re-seen by the event listener
    get no lots/disposals (consistent with Position behavior).
