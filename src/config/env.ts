@@ -442,6 +442,23 @@ export const config = {
     twilioToken: process.env.TWILIO_AUTH_TOKEN || '',
     fromNumber: process.env.WHATSAPP_FROM || '',
   },
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+    webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
+    apiUrl: process.env.TELEGRAM_API_URL || 'https://api.telegram.org',
+  },
+  messaging: {
+    maxRetries: parseInt(process.env.MESSAGING_MAX_RETRIES || '3'),
+    baseDelayMs: parseInt(process.env.MESSAGING_BASE_DELAY_MS || '1000'),
+    maxDelayMs: parseInt(process.env.MESSAGING_MAX_DELAY_MS || '30000'),
+    retryIntervalMs: parseInt(
+      process.env.MESSAGING_RETRY_INTERVAL_MS || '60000'
+    ),
+    fallbackEnabled: process.env.MESSAGING_FALLBACK_ENABLED !== 'false',
+    dlqAlertThreshold: parseInt(
+      process.env.MESSAGING_DLQ_ALERT_THRESHOLD || '5'
+    ),
+  },
   transcription: {
     provider: process.env.TRANSCRIPTION_PROVIDER || 'openai',
     /**

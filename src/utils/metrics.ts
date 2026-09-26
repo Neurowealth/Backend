@@ -946,6 +946,88 @@ export function recordAssistantFallback(
   assistantFallbackTotal.inc({ reason })
 }
 
+// ── Message Delivery Metrics (#493) ──────────────────────────────────────────────
+export const messageDeliveriesTotal = new client.Counter({
+  name: 'message_deliveries_total',
+  help: 'Total number of Telegram and WhatsApp message deliveries by status',
+  labelNames: ['channel', 'status', 'category'] as const,
+  registers: [register],
+})
+
+export const messageRetriesTotal = new client.Counter({
+  name: 'message_retries_total',
+  help: 'Total number of message retry attempts',
+  labelNames: ['channel'] as const,
+  registers: [register],
+})
+
+export const messageFallbacksTotal = new client.Counter({
+  name: 'message_fallbacks_total',
+  help: 'Total number of message channel fallbacks triggered',
+  labelNames: ['from_channel', 'to_channel'] as const,
+  registers: [register],
+})
+
+export const messageDeadLettersTotal = new client.Counter({
+  name: 'message_dead_letters_total',
+  help: 'Total number of messages moved to dead-letter state',
+  labelNames: ['channel'] as const,
+  registers: [register],
+})
+
+export const messageQueueDepth = new client.Gauge({
+  name: 'message_queue_depth',
+  help: 'Current number of messages in delivery queue by channel and status',
+  labelNames: ['channel', 'status'] as const,
+  registers: [register],
+})
+
+export const messageDeliveryDuration = new client.Histogram({
+  name: 'message_delivery_duration_seconds',
+  help: 'Latency of message delivery attempts by channel',
+  labelNames: ['channel'] as const,
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+  registers: [register],
+})
+
+export function recordMessageDelivery(
+  channel: string,
+  status: string,
+  category: string = 'NOTIFICATION',
+  durationSeconds?: number
+): void {
+  messageDeliveriesTotal.inc({ channel, status, category })
+  if (durationSeconds !== undefined && durationSeconds >= 0) {
+    messageDeliveryDuration.observe({ channel }, durationSeconds)
+  }
+}
+
+export function recordMessageRetry(channel: string): void {
+  messageRetriesTotal.inc({ channel })
+}
+
+export function recordMessageFallback(
+  fromChannel: string,
+  toChannel: string
+): void {
+  messageFallbacksTotal.inc({
+    from_channel: fromChannel,
+    to_channel: toChannel,
+  })
+}
+
+export function recordMessageDeadLetter(channel: string): void {
+  messageDeadLettersTotal.inc({ channel })
+}
+
+export function updateMessageQueueDepth(
+  channel: string,
+  status: string,
+  depth: number
+): void {
+  messageQueueDepth.set({ channel, status }, depth)
+}
+
 /**
  * Get metrics for Prometheus scraping
  */

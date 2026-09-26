@@ -27,6 +27,7 @@ import { logger } from '../utils/logger'
 import { publishUserEvent } from '../events/publisher'
 import { EVENT_TYPE_TOPIC } from '../events/types'
 import { sendWhatsAppMessage } from '../utils/twilio-client'
+import { messageDeliveryService } from '../messaging'
 import {
   formatStrategyUpdatedReply,
   formatStrategyUnpublishedReply,
@@ -590,8 +591,11 @@ async function notifyFollowers(
               })
             : formatStrategyUnpublishedReply({ label: details.label })
 
-        await sendWhatsAppMessage({
-          to: `whatsapp:${follower.follower.phone}`,
+        await messageDeliveryService.send({
+          channel: 'WHATSAPP',
+          recipient: follower.follower.phone,
+          userId: follower.followerUserId,
+          category: 'STRATEGY_UPDATE',
           body,
         })
       })
