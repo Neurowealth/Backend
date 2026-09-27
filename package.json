@@ -2,9 +2,9 @@
   "name": "neuro-backend",
   "version": "1.0.0",
   "description": "Neuro-Backend API with hardened CORS configuration",
-  "main": "src/app.ts",
+  "main": "dist/index.js",
   "scripts": {
-    "start": "node dist/src/app.js",
+    "start": "node dist/index.js",
     "dev": "nodemon --exec ts-node src/app.ts",
     "build": "tsc -p tsconfig.build.json",
     "test": "jest",
