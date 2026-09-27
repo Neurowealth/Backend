@@ -47,6 +47,7 @@ npm run dev
 
 | Script | Description |
 |--------|-------------|
+| `npm start` | Start the production server (`node dist/index.js`) |
 | `npm run dev` | Start development server with hot-reload |
 | `npm test` | Run all tests |
 | `npm run test:unit` | Run unit tests only |
