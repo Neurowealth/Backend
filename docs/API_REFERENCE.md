@@ -15,6 +15,35 @@ Comprehensive reference for all backend endpoints defined in src/routes.
 - Every response includes an `X-API-Version: 1` header.
 - Breaking changes introduce a new major version (`/api/v2`); deprecated versions are supported for a minimum of 6 months before the announced `Sunset` date. The full policy lives in [`docs/api-versioning.md`](api-versioning.md).
 
+## List Queries
+
+Collection endpoints use bounded page-based pagination. `page` is 1-based and
+defaults to `1`; `limit` defaults to `20` and is capped at `50`. The equivalent
+SQL offset is `(page - 1) * limit`. List responses include `page`, `limit`,
+`total`, `totalPages`, `hasNext`, and `hasPrevious`; an empty result has
+`totalPages: 0` and both navigation flags set to `false`.
+
+Where supported, `sortBy` is restricted to the fields documented for that
+resource and `sortOrder` is `asc` or `desc` (default `desc`). The server applies
+a stable ID tie-breaker. Filters are resource-specific and are applied before
+both counting and fetching. Invalid page, limit, sort, or filter values return
+`400` rather than being silently ignored.
+
+This contract is used by transactions, portfolio positions, recurring deposit
+plans, alert rules, webhooks, API keys, sessions, approvals, and agent decisions.
+
+Supported list controls:
+
+- Transactions: filter by `type`, `status`, `protocolName`, and inclusive `from`/`to` creation dates; sort by `createdAt`, `updatedAt`, or `amount`.
+- Portfolio positions: filter by `status`, `protocolName`, and `assetSymbol`; sort by `openedAt`, `updatedAt`, `currentValue`, or `yieldEarned`. Portfolio summary totals remain account-wide.
+- Recurring deposits: filter by `status`, `cadence`, and `assetSymbol`; sort by `createdAt`, `nextRunAt`, or `amount`.
+- Alert rules: filter by `isActive`, `metric`, and `protocolName`; sort by `createdAt`, `updatedAt`, or `threshold`.
+- Webhooks: filter by `isActive` and `event`; sort by `createdAt` or `updatedAt`.
+- API keys: filter by `revoked`; sort by `createdAt`, `lastUsedAt`, or `expiresAt`.
+- Sessions: sort by `lastSeenAt`, `createdAt`, or `expiresAt`.
+- Approvals: filter by `status`; sort by `requestedAt` or `executedAt`.
+- Agent decisions: filter by `outcome`, `fromProtocol`, and inclusive `from`/`to` creation dates; sort by `createdAt`, `outcome`, or `fromProtocol`.
+
 ## Authentication and Authorization
 
 - Public endpoints: GET /health, POST /api/auth/challenge, POST /api/auth/verify, GET /api/whatsapp/webhook, POST /api/whatsapp/webhook, GET /api/vault/state, GET /api/protocols/rates, GET /api/protocols/agent/status, GET /api/agent/status
@@ -508,17 +537,26 @@ Response 404:
   - userId: uuid string
 - Query params:
   - page: int >= 1, default 1
-  - limit: int between 1 and 50, default 5
+  - limit: int between 1 and 50, default 20
+  - type: optional transaction type
+  - status: optional transaction status
+  - protocolName: optional exact protocol match
+  - from, to: optional inclusive ISO-8601 bounds on createdAt
+  - sortBy: createdAt, updatedAt, or amount (default createdAt)
+  - sortOrder: asc or desc (default desc)
 - Request body: none
 
 Example request:
-GET /api/transactions/550e8400-e29b-41d4-a716-446655440002?page=2&limit=10
+GET /api/transactions/550e8400-e29b-41d4-a716-446655440002?page=2&limit=10&status=CONFIRMED&sortBy=amount&sortOrder=desc
 
 Response 200:
 {
 "page": 2,
 "limit": 10,
 "total": 20,
+"totalPages": 2,
+"hasNext": false,
+"hasPrevious": true,
 "transactions": [
 {
 "id": "tx-id-1",

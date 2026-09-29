@@ -3,7 +3,11 @@ import { z } from 'zod'
 import db from '../db'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
 import { validate } from '../middleware/validate'
-import { paginationSchema, getPaginationParams } from '../utils/pagination'
+import {
+  buildPaginationMeta,
+  getPaginationParams,
+  paginationSchema,
+} from '../utils/pagination'
 import { mapTransactionToResponse } from '../utils/api-formatters'
 import { sendNotFound } from '../utils/errors'
 import {
@@ -22,7 +26,26 @@ const listSchema = z.object({
   params: z.object({
     userId: z.string().uuid(),
   }),
-  query: paginationSchema,
+  query: paginationSchema.extend({
+    type: z
+      .enum([
+        'DEPOSIT',
+        'WITHDRAWAL',
+        'YIELD_CLAIM',
+        'REBALANCE',
+        'SWAP',
+        'REFERRAL_REWARD',
+        'INBOUND_TRANSFER',
+        'CLAIMABLE_BALANCE_CLAIM',
+      ])
+      .optional(),
+    status: z.enum(['PENDING', 'CONFIRMED', 'FAILED', 'CANCELLED']).optional(),
+    protocolName: z.string().trim().min(1).max(100).optional(),
+    from: z.string().datetime({ offset: true }).optional(),
+    to: z.string().datetime({ offset: true }).optional(),
+    sortBy: z.enum(['createdAt', 'updatedAt', 'amount']).default('createdAt'),
+    sortOrder: z.enum(['asc', 'desc']).default('desc'),
+  }),
 })
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -68,6 +91,15 @@ router.get(
   async (req: Request, res: Response) => {
     const userId = String(req.params.userId)
     const { page, limit, skip } = getPaginationParams(req.query)
+    const query = req.query as {
+      type?: string
+      status?: string
+      protocolName?: string
+      from?: string
+      to?: string
+      sortBy: 'createdAt' | 'updatedAt' | 'amount'
+      sortOrder: 'asc' | 'desc'
+    }
 
     const user = await db.user.findUnique({
       where: { id: userId },
@@ -75,11 +107,21 @@ router.get(
     })
     if (!user) return sendNotFound(res, 'User')
 
+    const where: any = { userId }
+    if (query.type) where.type = query.type
+    if (query.status) where.status = query.status
+    if (query.protocolName) where.protocolName = query.protocolName
+    if (query.from || query.to) {
+      where.createdAt = {}
+      if (query.from) where.createdAt.gte = new Date(query.from)
+      if (query.to) where.createdAt.lte = new Date(query.to)
+    }
+
     const [total, transactions] = await Promise.all([
-      db.transaction.count({ where: { userId } }),
+      db.transaction.count({ where }),
       db.transaction.findMany({
-        where: { userId },
-        orderBy: { createdAt: 'desc' },
+        where,
+        orderBy: [{ [query.sortBy]: query.sortOrder }, { id: 'desc' }],
         skip,
         take: limit,
       }),
@@ -88,9 +130,7 @@ router.get(
     const items = transactions.map(mapTransactionToResponse)
 
     return res.status(200).json({
-      page,
-      limit,
-      total,
+      ...buildPaginationMeta(page, limit, total),
       transactions: items,
       whatsappReply: formatTransactionsReply({
         page,

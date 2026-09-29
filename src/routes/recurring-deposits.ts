@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express'
+import { z } from 'zod'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
 import { requireScope } from '../middleware/apiKeyAuth'
 import { idempotent } from '../middleware/idempotency'
@@ -11,6 +12,11 @@ import {
 } from '../validators/recurring-deposit-validators'
 import db from '../db'
 import { addCadence } from '../utils/cadence'
+import {
+  buildPaginationMeta,
+  getPaginationParams,
+  paginationSchema,
+} from '../utils/pagination'
 
 const router = Router()
 
@@ -70,15 +76,43 @@ router.get(
   '/by-user/:userId',
   requireAuth,
   enforceUserAccess,
+  validate({
+    params: z.object({ userId: z.string().uuid() }),
+    query: paginationSchema.extend({
+      status: z.enum(['ACTIVE', 'PAUSED', 'CANCELLED']).optional(),
+      cadence: z.enum(['WEEKLY', 'BIWEEKLY', 'MONTHLY']).optional(),
+      assetSymbol: z.string().trim().min(1).max(20).optional(),
+      sortBy: z.enum(['createdAt', 'nextRunAt', 'amount']).default('createdAt'),
+      sortOrder: z.enum(['asc', 'desc']).default('desc'),
+    }),
+  }),
   async (req: Request, res: Response) => {
     const { userId } = req.params
+    const { page, limit, skip } = getPaginationParams(req.query)
+    const query = req.query as {
+      status?: string
+      cadence?: string
+      assetSymbol?: string
+      sortBy: 'createdAt' | 'nextRunAt' | 'amount'
+      sortOrder: 'asc' | 'desc'
+    }
 
-    const plans = await db.recurringDepositPlan.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-    })
+    const where: any = { userId }
+    if (query.status) where.status = query.status
+    if (query.cadence) where.cadence = query.cadence
+    if (query.assetSymbol) where.assetSymbol = query.assetSymbol
 
-    return res.json({ plans })
+    const [total, plans] = await Promise.all([
+      db.recurringDepositPlan.count({ where }),
+      db.recurringDepositPlan.findMany({
+        where,
+        orderBy: [{ [query.sortBy]: query.sortOrder }, { id: 'desc' }],
+        skip,
+        take: limit,
+      }),
+    ])
+
+    return res.json({ ...buildPaginationMeta(page, limit, total), plans })
   }
 )
 

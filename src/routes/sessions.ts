@@ -5,6 +5,11 @@ import { requireAuth } from '../middleware/authenticate'
 import { requireSessionAuth } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import { sendNotFound } from '../utils/errors'
+import {
+  buildPaginationMeta,
+  getPaginationParams,
+  paginationSchema,
+} from '../utils/pagination'
 import { maskIpAddress } from '../utils/geoip'
 import { revokeSession } from '../services/refresh-token.service'
 import { stellarVerification } from '../utils/stellar/stellar-verification'
@@ -44,22 +49,47 @@ function formatSession(
 }
 
 /** GET /api/v1/sessions */
-router.get('/', async (req: Request, res: Response) => {
-  const userId = req.auth!.userId
-  const currentSessionId = req.auth!.sessionId
-  const showFullIp = req.query.fullIp === 'true'
+router.get(
+  '/',
+  validate({
+    query: paginationSchema.extend({
+      fullIp: z.enum(['true', 'false']).default('false'),
+      sortBy: z
+        .enum(['lastSeenAt', 'createdAt', 'expiresAt'])
+        .default('lastSeenAt'),
+      sortOrder: z.enum(['asc', 'desc']).default('desc'),
+    }),
+  }),
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+    const currentSessionId = req.auth!.sessionId
+    const { page, limit, skip } = getPaginationParams(req.query)
+    const query = req.query as {
+      fullIp: 'true' | 'false'
+      sortBy: 'lastSeenAt' | 'createdAt' | 'expiresAt'
+      sortOrder: 'asc' | 'desc'
+    }
+    const showFullIp = query.fullIp === 'true'
+    const where = { userId, revokedAt: null, expiresAt: { gt: new Date() } }
 
-  const sessions = await prisma.session.findMany({
-    where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
-    orderBy: { lastSeenAt: 'desc' },
-  })
+    const [total, sessions] = await Promise.all([
+      prisma.session.count({ where }),
+      prisma.session.findMany({
+        where,
+        orderBy: [{ [query.sortBy]: query.sortOrder }, { id: 'desc' }],
+        skip,
+        take: limit,
+      }),
+    ])
 
-  return res.status(200).json({
-    sessions: sessions.map((s: Record<string, unknown>) =>
-      formatSession(s, currentSessionId, showFullIp)
-    ),
-  })
-})
+    return res.status(200).json({
+      ...buildPaginationMeta(page, limit, total),
+      sessions: sessions.map((s: Record<string, unknown>) =>
+        formatSession(s, currentSessionId, showFullIp)
+      ),
+    })
+  }
+)
 
 /** PATCH /api/v1/sessions/:id — set label */
 router.patch(
