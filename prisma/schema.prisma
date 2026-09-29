@@ -145,6 +145,18 @@ enum RecurringDepositPlanStatus {
   CANCELLED
 }
 
+enum WithdrawalAmountMode {
+  FIXED
+  YIELD_ONLY
+  PERCENT_OF_BALANCE
+}
+
+enum RecurringWithdrawalPlanStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
 // Where an acquisition/disposal USD price came from (#284). Only stablecoins
 // are priced in v1; anything else is stored with a null price and surfaced as
 // unpriced in the tax report — never silently zeroed.
@@ -264,6 +276,7 @@ model User {
   referralCode            ReferralCode?
   referralConversion      ReferralConversion?
   recurringDepositPlans   RecurringDepositPlan[]
+  recurringWithdrawalPlans RecurringWithdrawalPlan[]
   alertRules              AlertRule[]
   costBasisLots           CostBasisLot[]
   lotDisposals            LotDisposal[]
@@ -1284,6 +1297,30 @@ model RecurringDepositPlan {
   @@index([userId])
   @@index([status, nextRunAt])
   @@map("recurring_deposit_plans")
+}
+
+model RecurringWithdrawalPlan {
+  id                 String                        @id @default(uuid())
+  userId             String
+  destinationAddress String
+  assetSymbol        String
+  amountMode         WithdrawalAmountMode          @default(FIXED)
+  amount             Decimal?                      @db.Decimal(36, 18)
+  amountValue        Decimal?                      @db.Decimal(36, 18)
+  minAmount          Decimal?                      @db.Decimal(36, 18)
+  cadence            DepositCadence
+  nextRunAt          DateTime
+  status             RecurringWithdrawalPlanStatus @default(ACTIVE)
+  lastRunAt          DateTime?
+  lastRunStatus      String?
+  createdAt          DateTime                      @default(now())
+  updatedAt          DateTime                      @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status, nextRunAt])
+  @@map("recurring_withdrawal_plans")
 }
 
 /// Cost-basis lot for tax reporting (#284). Exactly one lot per confirmed

@@ -795,6 +795,7 @@ Response 404:
 - protocols.ts: GET /api/protocols/rates, GET /api/protocols/agent/status
 - deposit.ts: POST /api/deposit
 - withdraw.ts: POST /api/withdraw
+- recurring-withdrawals.ts: POST /api/v1/recurring-withdrawals, GET /api/v1/recurring-withdrawals/by-user/:userId, GET /api/v1/recurring-withdrawals/:id, PATCH /api/v1/recurring-withdrawals/:id, DELETE /api/v1/recurring-withdrawals/:id, GET /api/v1/recurring-withdrawals/:id/preview
 - vault.ts: GET /api/vault/state, GET /api/vault/balance
 - network.ts: GET /api/v1/network/conditions
 
@@ -823,3 +824,47 @@ Response 200:
   "CRITICAL": { "minSeconds": 2, "maxSeconds": 8 }
 }
 }
+
+---
+
+## Recurring Withdrawals
+
+### POST /api/v1/recurring-withdrawals
+
+- Auth: required (`requireAuth`, `enforceUserAccess`, scope: `recurring_withdrawals:write`)
+- Description: Sets up an automated recurring withdrawal plan.
+- Request body schema:
+  - `userId`: uuid (required)
+  - `destinationAddress`: string (required)
+  - `assetSymbol`: string (required)
+  - `amountMode`: 'FIXED' | 'PERCENT_OF_BALANCE' | 'YIELD_ONLY' (default: 'FIXED')
+  - `amount`: number (required for FIXED and PERCENT_OF_BALANCE)
+  - `minAmount`: number (optional)
+  - `cadence`: 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY' (required)
+  - `confirmed`: boolean (required: true)
+
+### GET /api/v1/recurring-withdrawals/by-user/:userId
+
+- Auth: required (`requireAuth`, `enforceUserAccess`)
+- Description: Lists all active and configured recurring withdrawal plans for a user.
+
+### GET /api/v1/recurring-withdrawals/:id
+
+- Auth: required (`requireAuth`)
+- Description: Fetches details for a specific recurring withdrawal plan.
+
+### PATCH /api/v1/recurring-withdrawals/:id
+
+- Auth: required (`requireAuth`, scope: `recurring_withdrawals:write`)
+- Description: Updates a plan's cadence, amount, status (`ACTIVE` / `PAUSED`), or destination address.
+
+### DELETE /api/v1/recurring-withdrawals/:id
+
+- Auth: required (`requireAuth`, scope: `recurring_withdrawals:write`)
+- Description: Cancels a plan (`status: CANCELLED`).
+
+### GET /api/v1/recurring-withdrawals/:id/preview
+
+- Auth: required (`requireAuth`)
+- Description: Previews the next execution calculation, evaluating current balance, yield, savings goal impact, and destination verification.
+

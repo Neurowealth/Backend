@@ -52,6 +52,10 @@ export const SOCKET_ONLY_EVENT_TYPES = [
   'security.session_revoked',
   /** #548 — admin impersonation session started. */
   'account.impersonation_started',
+  /** #551 — recurring withdrawal held for review (destination risk or goal guardrail). */
+  'recurring_withdrawal.held',
+  /** #551 — recurring withdrawal skipped (insufficient balance or below minimum threshold). */
+  'recurring_withdrawal.skipped',
 ] as const
 
 export type SocketOnlyEventType = (typeof SOCKET_ONLY_EVENT_TYPES)[number]
@@ -74,6 +78,10 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'fiat.order.rate_mismatch': 'transactions',
   'recurring_deposit.executed': 'transactions',
   'recurring_deposit.failed': 'transactions',
+  'recurring_withdrawal.executed': 'transactions',
+  'recurring_withdrawal.failed': 'transactions',
+  'recurring_withdrawal.held': 'alerts',
+  'recurring_withdrawal.skipped': 'transactions',
   'outbox.op_failed': 'transactions',
   // #314 — a PENDING_APPROVAL operation's lifecycle is itself a transaction
   // state (gating a withdraw/deposit before it submits), so it shares the

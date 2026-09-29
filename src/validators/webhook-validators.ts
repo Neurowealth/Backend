@@ -36,6 +36,8 @@ const WEBHOOK_EVENTS = [
   'fiat.order.rate_mismatch',
   'recurring_deposit.executed',
   'recurring_deposit.failed',
+  'recurring_withdrawal.executed',
+  'recurring_withdrawal.failed',
   'alert_rule.triggered',
   // Strategy marketplace (#285). Dispatched once per active follower, so the
   // payload carries `followerUserId` — a subscriber needs to know whose agent
