@@ -35,11 +35,13 @@ import {
 import { AccountingMethod } from '@prisma/client'
 import { toCsv } from '../utils/csv'
 import goalsRouter from './goals'
+import liquidityFloorRouter from './liquidity-floor'
 
 const router = Router()
 
 // Mounted before the /:userId route below so a literal "goals" first segment
 // is never captured as a userId.
+router.use('/liquidity-floor', liquidityFloorRouter)
 router.use('/goals', goalsRouter)
 
 const portfolioSchema = z.object({

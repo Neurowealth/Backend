@@ -156,6 +156,25 @@ export class MaxYieldStrategy implements RebalanceStrategy {
       }
     }
 
+    if (params.liquidityFloor !== undefined && params.liquidityFloor !== null) {
+      const floorNum = Number(params.liquidityFloor)
+      const totalNum = Number(totalAmount)
+      if (floorNum > 0 && totalNum <= floorNum) {
+        return {
+          shouldRebalance: false,
+          targetProtocol: currentProtocol,
+          reasoning:
+            'your floor exceeds your balance; nothing is currently earning yield',
+          details: {
+            liquidityFloor: floorNum,
+            totalAmount: totalNum,
+            availableForYield: 0,
+            isDegraded: true,
+          },
+        }
+      }
+    }
+
     // Enforce the risk ceiling BEFORE optimizing for yield. When no ceiling is
     // set this is a no-op that preserves the original candidate set exactly.
     const eligibleProtocols = applyRiskCeiling(
@@ -317,6 +336,25 @@ export class TargetAllocationStrategy implements RebalanceStrategy {
       riskCeiling,
       protocolRiskScores,
     } = params
+
+    if (params.liquidityFloor !== undefined && params.liquidityFloor !== null) {
+      const floorNum = Number(params.liquidityFloor)
+      const totalNum = Number(totalAmount)
+      if (floorNum > 0 && totalNum <= floorNum) {
+        return {
+          shouldRebalance: false,
+          targetProtocol: currentProtocol,
+          reasoning:
+            'your floor exceeds your balance; nothing is currently earning yield',
+          details: {
+            liquidityFloor: floorNum,
+            totalAmount: totalNum,
+            availableForYield: 0,
+            isDegraded: true,
+          },
+        }
+      }
+    }
 
     const relevantPrefs = userStrategyPreferences.filter(
       (p) => p.targetAllocations && Object.keys(p.targetAllocations!).length > 0
@@ -579,7 +617,27 @@ export class GoalTrackingStrategy implements RebalanceStrategy {
       goal,
       riskCeiling,
       protocolRiskScores,
+      totalAmount,
     } = params
+
+    if (params.liquidityFloor !== undefined && params.liquidityFloor !== null) {
+      const floorNum = Number(params.liquidityFloor)
+      const totalNum = Number(totalAmount)
+      if (floorNum > 0 && totalNum <= floorNum) {
+        return {
+          shouldRebalance: false,
+          targetProtocol: currentProtocol,
+          reasoning:
+            'your floor exceeds your balance; nothing is currently earning yield',
+          details: {
+            liquidityFloor: floorNum,
+            totalAmount: totalNum,
+            availableForYield: 0,
+            isDegraded: true,
+          },
+        }
+      }
+    }
 
     if (!goal) {
       return {

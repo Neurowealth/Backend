@@ -48,6 +48,10 @@ export interface StrategyConfigShape {
    */
   exposureCaps?: Record<string, { maxFraction?: number; maxAbsolute?: string }>
   defaultMaxFraction?: number
+  /**
+   * Standing liquidity floor in USD equivalent (#541).
+   */
+  liquidityFloor?: string | number | null
 }
 
 export interface EffectiveStrategyConfig {
@@ -56,6 +60,7 @@ export interface EffectiveStrategyConfig {
   riskCeiling?: number
   exposureCaps?: Record<string, { maxFraction?: number; maxAbsolute?: string }>
   defaultMaxFraction?: number
+  liquidityFloor?: string
 }
 
 const KNOWN_STRATEGY_NAMES: readonly StrategyName[] = [
@@ -149,6 +154,18 @@ export function parseStrategyConfig(value: unknown): StrategyConfigShape {
     }
   }
 
+  if (
+    raw.liquidityFloor !== undefined &&
+    raw.liquidityFloor !== null &&
+    (typeof raw.liquidityFloor === 'string' ||
+      typeof raw.liquidityFloor === 'number')
+  ) {
+    const num = Number(raw.liquidityFloor)
+    if (Number.isFinite(num) && num >= 0) {
+      config.liquidityFloor = String(raw.liquidityFloor)
+    }
+  }
+
   return config
 }
 
@@ -224,6 +241,28 @@ function stricterDefaultMaxFraction(
 }
 
 /**
+ * The stricter of two optional liquidity floors (#541). A higher floor reserves
+ * more liquid balance and caps yield exposure tighter, so the higher number is
+ * stricter. Absent means no floor (0), losing to any present floor.
+ */
+export function stricterLiquidityFloor(
+  a: string | number | null | undefined,
+  b: string | number | null | undefined
+): string | undefined {
+  if (a === undefined || a === null) {
+    return b !== undefined && b !== null ? String(b) : undefined
+  }
+  if (b === undefined || b === null) {
+    return String(a)
+  }
+  const numA = Number(a)
+  const numB = Number(b)
+  if (isNaN(numA)) return b !== undefined && b !== null ? String(b) : undefined
+  if (isNaN(numB)) return String(a)
+  return String(Math.max(numA, numB))
+}
+
+/**
  * Merge a follower's own config with the config they follow.
  *
  * With no follow this is the identity on `own` (see the no-follow contract in
@@ -245,6 +284,10 @@ export function resolveEffectiveConfig(
       riskCeiling: own.riskCeiling,
       exposureCaps: own.exposureCaps,
       defaultMaxFraction: own.defaultMaxFraction,
+      liquidityFloor:
+        own.liquidityFloor !== undefined && own.liquidityFloor !== null
+          ? String(own.liquidityFloor)
+          : undefined,
     }
   }
 
@@ -260,6 +303,10 @@ export function resolveEffectiveConfig(
     defaultMaxFraction: stricterDefaultMaxFraction(
       own.defaultMaxFraction,
       followed.defaultMaxFraction
+    ),
+    liquidityFloor: stricterLiquidityFloor(
+      own.liquidityFloor,
+      followed.liquidityFloor
     ),
   }
 }
@@ -297,6 +344,7 @@ export function normalizeStrategyConfig(config: StrategyConfigShape): string {
     riskCeiling: config.riskCeiling ?? null,
     defaultMaxFraction: config.defaultMaxFraction ?? null,
     exposureCaps: caps,
+    liquidityFloor: config.liquidityFloor ?? null,
   })
 }
 

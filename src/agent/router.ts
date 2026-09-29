@@ -35,6 +35,7 @@ import { enqueueOutboxOp } from '../outbox/service'
 import { dispatchInBackground } from '../outbox/dispatcher'
 import { deriveIdempotencyKey } from '../outbox/idempotency'
 import { persistRebalanceDecision } from './rebalanceDecision'
+import { computeLiquidityFloorStatus } from './liquidityFloor'
 
 const DEFAULT_THRESHOLDS: RebalanceThresholds = {
   minimumImprovement: 0.5, // Must improve by at least 0.5%
@@ -729,6 +730,109 @@ export async function executeRebalanceIfNeeded(
         userStrategyPreferences
       )
 
+      const configuredFloor = userStrategyPreferences[0]?.liquidityFloor
+      let floorStatus: ReturnType<typeof computeLiquidityFloorStatus> | null =
+        null
+      if (configuredFloor !== undefined && configuredFloor !== null) {
+        const allPositions = await db.position.findMany({
+          where: {
+            userId: { in: userIds },
+            status: 'ACTIVE',
+          },
+          select: {
+            id: true,
+            protocolName: true,
+            assetSymbol: true,
+            currentValue: true,
+            status: true,
+          },
+        })
+        floorStatus = computeLiquidityFloorStatus({
+          floor: configuredFloor,
+          positions: allPositions.map((p) => ({
+            id: p.id,
+            protocolName: p.protocolName,
+            assetSymbol: p.assetSymbol,
+            currentValue: p.currentValue.toString(),
+            amount: p.currentValue.toString(),
+            status: p.status,
+          })),
+        })
+
+        if (floorStatus.isDegraded) {
+          logger.info(
+            'Liquidity floor exceeds or equals total balance; zero allocated to yield',
+            {
+              userId: userIds[0],
+              floor: floorStatus.floor,
+              totalBalance: floorStatus.totalBalance,
+            }
+          )
+          const trace = buildStrategyTrace(
+            { shouldRebalance: false, targetProtocol: currentProtocol },
+            currentApy,
+            allProtocols
+          )
+          await recordDecision({
+            outcome: 'HELD',
+            rationale:
+              'your floor exceeds your balance; nothing is currently earning yield',
+            trace,
+          })
+          return null
+        }
+
+        if (
+          Number(floorStatus.shortfall) > 0 &&
+          floorStatus.unwindPlan?.exits.length
+        ) {
+          const matchingExit = floorStatus.unwindPlan.exits.find(
+            (e) => e.protocolName === currentProtocol
+          )
+          if (matchingExit && matchingExit.amountToUnwind > 0) {
+            logger.info(
+              'Restoring liquidity floor shortfall by unwinding shortest time-to-exit position',
+              {
+                from: currentProtocol,
+                to: 'Cash',
+                amount: matchingExit.amountToUnwind,
+                timeToExitHours: matchingExit.timeToExitHours,
+                remainingShortfall: floorStatus.unwindPlan.remainingShortfall,
+              }
+            )
+            const unwindAmount = BigInt(Math.floor(matchingExit.amountToUnwind))
+            if (unwindAmount > BigInt(0)) {
+              const rebalanceResult = await triggerRebalance(
+                currentProtocol,
+                'Cash',
+                unwindAmount.toString(),
+                userPositions.map((pos) => pos.id),
+                {
+                  name: strategy.name,
+                  reasoning: `Liquidity floor shortfall of $${Number(floorStatus.shortfall).toFixed(2)}; restoring liquid reserve`,
+                }
+              )
+              if (rebalanceResult) {
+                const traceReb = buildStrategyTrace(
+                  { shouldRebalance: true, targetProtocol: 'Cash' },
+                  currentApy,
+                  allProtocols
+                )
+                const decisionId = await recordDecision({
+                  outcome: 'REBALANCED',
+                  toProtocol: 'Cash',
+                  rationale: `Liquidity floor shortfall of $${Number(floorStatus.shortfall).toFixed(2)}; restoring liquid reserve`,
+                  trace: traceReb,
+                  outboxOpId: rebalanceResult.outboxOpId ?? null,
+                })
+                if (decisionId) rebalanceResult.decisionId = decisionId
+              }
+              return rebalanceResult
+            }
+          }
+        }
+      }
+
       const decision = await strategy.analyze({
         currentProtocol,
         totalAmount,
@@ -738,6 +842,7 @@ export async function executeRebalanceIfNeeded(
         userStrategyPreferences,
         riskCeiling,
         protocolRiskScores,
+        liquidityFloor: configuredFloor,
         goal: activeGoal
           ? {
               targetAmount: activeGoal.targetAmount,
@@ -750,7 +855,8 @@ export async function executeRebalanceIfNeeded(
 
       // #550 - Wash-sale-aware rebalancing check (informational + opt-in soft deprioritization)
       let washSaleRisk = false
-      const taxAwareRebalancing = userStrategyPreferences[0]?.taxAwareRebalancing ?? false
+      const taxAwareRebalancing =
+        userStrategyPreferences[0]?.taxAwareRebalancing ?? false
       if (decision.shouldRebalance) {
         const likelyRebuy = isSameAssetRebuyLikely(
           userStrategyPreferences[0]?.strategyName ?? null,
@@ -781,13 +887,17 @@ export async function executeRebalanceIfNeeded(
               })
 
               if (taxAwareRebalancing) {
-                const higherThreshold = effectiveThresholds.minimumImprovement * 2
-                const targetProtocolData = allProtocols.find(p => p.name === decision.targetProtocol)
+                const higherThreshold =
+                  effectiveThresholds.minimumImprovement * 2
+                const targetProtocolData = allProtocols.find(
+                  (p) => p.name === decision.targetProtocol
+                )
                 if (targetProtocolData) {
                   const netImprovement = targetProtocolData.apy - currentApy
                   if (netImprovement < higherThreshold) {
                     decision.shouldRebalance = false
-                    decision.reasoning = 'Wash-sale risk: improvement below elevated threshold'
+                    decision.reasoning =
+                      'Wash-sale risk: improvement below elevated threshold'
                   }
                 }
               }
@@ -868,9 +978,27 @@ export async function executeRebalanceIfNeeded(
         // which is the preferred target unless it was full). Residual that could
         // not be placed stays in place per the unplaceable contract.
         const first = moves[0]
-        const amountToMove = BigInt(
+        let amountToMove = BigInt(
           Math.floor(Number(totalAmount) * first.fraction)
         )
+        if (floorStatus && Number(floorStatus.availableForYield) > 0) {
+          const maxYieldBig = BigInt(
+            Math.floor(Number(floorStatus.availableForYield))
+          )
+          if (amountToMove > maxYieldBig) {
+            amountToMove = maxYieldBig
+          }
+        }
+        if (amountToMove <= BigInt(0)) {
+          const trace0 = buildStrategyTrace(decision, currentApy, allProtocols)
+          await recordDecision({
+            outcome: 'HELD',
+            rationale:
+              'Liquidity floor limit reached: no remaining balance available for yield allocation',
+            trace: trace0,
+          })
+          return null
+        }
         logger.info('Capped rebalance move', {
           from: currentProtocol,
           to: first.toProtocol,

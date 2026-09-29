@@ -208,6 +208,11 @@ export interface StrategyParams {
    * Per-protocol entry+exit cost in bps (#347), used by the cost model.
    */
   protocolEntryExitBps?: Record<string, number>
+  /**
+   * Standing liquidity floor in USD equivalent (#541). When configured, the agent
+   * keeps at least this amount in instantly-liquid reserve; only remainder is eligible for yield.
+   */
+  liquidityFloor?: string | number | null
 }
 
 export interface RebalanceStrategy {
@@ -246,6 +251,14 @@ export interface UserStrategyPreferences {
    * table but yields to a per-protocol override.
    */
   defaultMaxFraction?: number
+  /**
+   * Minimum USD-equivalent amount that must remain instantly liquid (#541).
+   */
+  liquidityFloor?: string | number | null
+  /**
+   * Tax-aware rebalancing toggle (#550).
+   */
+  taxAwareRebalancing?: boolean
 }
 
 /**
