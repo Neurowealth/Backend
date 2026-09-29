@@ -257,6 +257,22 @@ const USER_EVENT_PAYLOAD_ALLOWLIST: Record<string, readonly string[]> = {
     'cadence',
     'reason',
   ],
+  'recurring_withdrawal.executed': [
+    'planId',
+    'amount',
+    'assetSymbol',
+    'cadence',
+    'destinationAddress',
+    'txHash',
+  ],
+  'recurring_withdrawal.failed': [
+    'planId',
+    'amount',
+    'assetSymbol',
+    'cadence',
+    'destinationAddress',
+    'reason',
+  ],
   'alert_rule.triggered': [
     'ruleId',
     'metric',

@@ -13,6 +13,7 @@ export const USER_SCOPES = [
   'alerts:manage',
   'fiat:write',
   'recurring_deposits:write',
+  'recurring_withdrawals:write',
   'goals:write',
   'strategies:write',
   'webhooks:manage',

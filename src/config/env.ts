@@ -662,6 +662,11 @@ export const config = {
       process.env.RECURRING_DEPOSITS_INTERVAL_MS || '300000'
     ),
   },
+  recurringWithdrawals: {
+    intervalMs: parseInt(
+      process.env.RECURRING_WITHDRAWALS_INTERVAL_MS || '300000'
+    ),
+  },
   /**
    * Tool-calling assistant (#318) — replaces the rule-based parser
    * (src/nlp/parser.ts) as the recognition layer for open-ended requests, with
