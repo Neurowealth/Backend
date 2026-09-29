@@ -76,20 +76,19 @@ report year, so a year that mixes two methods is flagged, never silently
 presented as one. Only the most recent method change is tracked — a second
 change does not retroactively re-attribute the window before the first one.
 
-### Pricing source hierarchy (#317)
+### Pricing source hierarchy (#317, extended by #525)
 
-`src/tax/pricing.ts`'s `priceForAsset` now checks, in order:
+`src/tax/pricing.ts`'s `priceForAsset` checks, in order:
 
 1. An explicit `userDeclaredPrice` passed by the caller → `USER_DECLARED`.
-2. `lookupFeedPrice` — a real, callable integration point for a future
-   volatile-asset market-data feed (`MARKET_FEED` source) — **stubbed to
-   always return `null` in this release**; no feed/credentials exist yet.
-3. The USDC 1:1 USD assumption → `STABLECOIN_ASSUMPTION` (unchanged).
-4. `null` — genuinely unpriced (unchanged contract, never a silent zero).
-
-So volatile, non-stablecoin assets remain honestly unpriced today, exactly as
-before #317, just reached through a documented hierarchy instead of a
-two-branch `if`.
+2. `lookupFeedPrice` — market-data feed lookup for volatile assets (`MARKET_FEED` source).
+   - Backed by pluggable `PriceFeedProvider` implementations (`getPriceFeedProvider()`, configured via `PRICE_FEED_PROVIDER`, defaulting to `StellarDexPriceFeedProvider` in production and `MockPriceFeedProvider` in test).
+   - **Resolution & Granularity**: Historical queries resolve against daily close (`DAILY_CLOSE`, 86,400,000 ms candle) trade aggregations on Horizon (`/trade_aggregations`) against USDC. Spot queries resolve via Horizon strict-send path finding (`SPOT`).
+   - **Confidence & Liquidity Flagging**: Low trade counts (< 5 trades/day) or thin counter volume (< 50 USDC) are flagged with `confidence: 'LOW'` and accompanied by caveat metadata; high-volume candles receive `confidence: 'HIGH'`.
+   - **Historical Fallbacks**: When exact historical day data is unavailable on the DEX, the feed falls back to the nearest trade aggregation within a 7-day lookback window (`FALLBACK_NEAREST`, `confidence: 'LOW'`). For recent transactions (< 24 hours), it falls back to spot DEX path quotes. If no historical trades exist, it falls through to `null` with a descriptive caveat.
+   - **Caching & Resilience**: Price results are cached in an in-memory bounded-TTL cache (`PriceFeedCache`, 1,000 entries max; 1-hour TTL for historical, 60s for spot). Feed outages or network timeouts degrade gracefully to `null` without throwing or blocking report generation.
+3. The USDC 1:1 USD assumption → `STABLECOIN_ASSUMPTION`.
+4. `null` — genuinely unpriced (surfaced with a caveat; never a silent zero).
 
 ## Write path (who creates lots)
 
@@ -123,10 +122,11 @@ fallback path: lot creation relies on the `transactionId` unique constraint
 
 ## Pricing
 
-| Asset         | Price               | Source                                               |
-| ------------- | ------------------- | ---------------------------------------------------- |
-| USDC          | `1.0` USD per token | `STABLECOIN_ASSUMPTION` (surfaced in report caveats) |
-| anything else | `null`              | —                                                    |
+| Asset         | Price                                    | Source                                                                | Granularity            |
+| ------------- | ---------------------------------------- | --------------------------------------------------------------------- | ---------------------- |
+| USDC          | `1.0` USD per token                      | `STABLECOIN_ASSUMPTION` (surfaced in report caveats)                  | `DAILY_CLOSE` / `SPOT` |
+| XLM & Stellar | Historical daily close or spot DEX quote | `MARKET_FEED` (Stellar DEX Horizon trade aggregations / path finding) | `DAILY_CLOSE` / `SPOT` |
+| anything else | `null` (if unresolvable or feed outage)  | — (surfaced in report caveats, never silently zeroed)                 | —                      |
 
 Unpriced lots/disposals keep null money fields, are flagged `priced: false`,
 and are **excluded from report totals** with a visible caveat
@@ -213,10 +213,11 @@ indicate an insufficient-lots condition (see the paired critical alert).
 1. **Rebalances are not disposals.** Rebalance events carry no per-user
    amounts (protocol/APY only) and are same-asset protocol moves; some tax
    regimes may treat them differently — not modeled.
-2. **Volatile (non-stablecoin) assets are unpriced** and excluded from
-   totals (flagged in caveats). The market-feed pricing hierarchy level is a
-   real, tested integration point but has no feed wired up yet (see
-   "Pricing source hierarchy").
+2. **Volatile (non-stablecoin) assets without trading history remain unpriced**
+   and excluded from totals (flagged in caveats). When historical DEX trade
+   aggregations or spot routes exist, they are priced at daily close or spot resolution.
+   If feed data is unavailable or an outage occurs, lots remain honestly unpriced
+   without silent substitution.
 3. **USDC 1:1 USD assumption** — actual market price may deviate slightly.
 4. **HTTP-controller-only transactions** never re-seen by the event listener
    get no lots/disposals (consistent with Position behavior).

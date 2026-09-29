@@ -105,6 +105,8 @@ export interface TaxReport {
     // #356 — always present: this report is bookkeeping output, not filed
     // tax advice, and jurisdiction rules simplify real-world edge cases.
     jurisdictionDisclaimer: string
+    priceFeedNote?: string
+    priceGranularityNote?: string
   }
 }
 
@@ -260,6 +262,10 @@ export async function buildTaxReport(
       methodChangeNote: methodChangedDuringYear
         ? `The accounting method changed to ${user.accountingMethod} on ${user.methodEffectiveAt!.toISOString()}. Disposals before that date were recorded under the previously configured method; this report does not retroactively recompute them.`
         : null,
+      priceFeedNote:
+        'Non-stablecoin assets are priced via market-data feed (MARKET_FEED) when available; missing historical prices fall back to nearest trade aggregations with a caveat flag or remain unpriced.',
+      priceGranularityNote:
+        'Transaction pricing utilizes daily close aggregations (00:00:00 - 23:59:59 UTC). Sub-day execution spot rates may differ from daily close.',
     },
   }
 }
