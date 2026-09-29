@@ -46,6 +46,8 @@ tags:
     description: Alert rules and monitoring triggers (#366)
   - name: Webhooks
     description: User-scoped outbound webhook endpoints (#368)
+  - name: RoundUp
+    description: Spare change round-up savings rules, accruals, and sweeps (#537)
 
 # ─── Reusable components ──────────────────────────────────────────────────────
 components:
@@ -1085,6 +1087,132 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+    # ── Round-up savings schemas (#537) ───────────────────────────────────────
+    RoundUpSettings:
+      type: object
+      required: [userId, enabled, roundToNearest, multiplier]
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        enabled:
+          type: boolean
+        roundToNearest:
+          type: number
+        multiplier:
+          type: number
+        targetGoalId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    UpdateRoundUpSettingsRequest:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        roundToNearest:
+          type: number
+          minimum: 0.01
+          maximum: 100
+        multiplier:
+          type: number
+          minimum: 1
+          maximum: 10
+        targetGoalId:
+          type: string
+          format: uuid
+          nullable: true
+
+    RoundUpAccrual:
+      type: object
+      required: [id, userId, fiatOrderId, purchaseAmount, roundUpAmount, multiplier, totalRoundUp, status, createdAt]
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        fiatOrderId:
+          type: string
+        purchaseAmount:
+          type: number
+        roundUpAmount:
+          type: number
+        multiplier:
+          type: number
+        totalRoundUp:
+          type: number
+        status:
+          type: string
+          enum: [ACCRUED, EXECUTING, SWEPT]
+        sweepTransactionId:
+          type: string
+          nullable: true
+        sweptAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    RoundUpAccrualsResponse:
+      type: object
+      required: [unsweptBalance, currency, unsweptCount, accruals]
+      properties:
+        unsweptBalance:
+          type: number
+        currency:
+          type: string
+        unsweptCount:
+          type: integer
+        accruals:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoundUpAccrual'
+
+    TriggerSweepRequest:
+      type: object
+      properties:
+        force:
+          type: boolean
+
+    SweepResponse:
+      type: object
+      required: [sweep]
+      properties:
+        sweep:
+          type: object
+          required: [userId, totalSwept, accrualCount, status]
+          properties:
+            userId:
+              type: string
+            totalSwept:
+              type: number
+            accrualCount:
+              type: integer
+            status:
+              type: string
+              enum: [SWEPT, SKIPPED_THRESHOLD, FAILED, PENDING_APPROVAL, NO_WALLET]
+            transactionId:
+              type: string
+              nullable: true
+            targetGoalId:
+              type: string
+              nullable: true
+            error:
+              type: string
+              nullable: true
 
   responses:
     Unauthorized:
@@ -2761,6 +2889,103 @@ paths:
           description: Missing/invalid bearer token.
         '404':
           description: Webhook endpoint not found.
+
+  # ── Round-up savings endpoints (#537) ──────────────────────────────────────
+
+  /round-up/settings:
+    get:
+      operationId: getRoundUpSettings
+      summary: Get round-up savings settings
+      description: Returns the user's round-up configuration, including multiplier and target savings goal.
+      tags: [RoundUp]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Round-up settings returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [settings]
+                properties:
+                  settings:
+                    $ref: '#/components/schemas/RoundUpSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    patch:
+      operationId: updateRoundUpSettings
+      summary: Update round-up savings settings
+      description: Configures round-up savings toggle, increment rounding, multiplier boost, or target savings goal.
+      tags: [RoundUp]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoundUpSettingsRequest'
+      responses:
+        '200':
+          description: Round-up settings updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [settings]
+                properties:
+                  settings:
+                    $ref: '#/components/schemas/RoundUpSettings'
+        '400':
+          description: Validation error.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Target savings goal not found.
+
+  /round-up/accrual:
+    get:
+      operationId: getRoundUpAccruals
+      summary: Get accumulated round-up balance and history
+      description: Returns the unswept spare change balance and past accrual history.
+      tags: [RoundUp]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Accrual balance and history returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoundUpAccrualsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /round-up/sweep:
+    post:
+      operationId: triggerRoundUpSweep
+      summary: Trigger an on-demand round-up sweep
+      description: Manually triggers an on-chain deposit sweep of accumulated spare change.
+      tags: [RoundUp]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriggerSweepRequest'
+      responses:
+        '200':
+          description: Sweep execution result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SweepResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   # ── Health ────────────────────────────────────────────────────────────────────
 

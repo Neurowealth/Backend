@@ -52,6 +52,10 @@ export const SOCKET_ONLY_EVENT_TYPES = [
   'security.session_revoked',
   /** #548 — admin impersonation session started. */
   'account.impersonation_started',
+  /** #537 — round-up accrual recorded on settled on-ramp. */
+  'round_up.accrued',
+  /** #537 — round-up accruals swept into on-chain deposit. */
+  'round_up.swept',
 ] as const
 
 export type SocketOnlyEventType = (typeof SOCKET_ONLY_EVENT_TYPES)[number]
@@ -96,6 +100,8 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'security.new_session': 'alerts',
   'security.session_revoked': 'alerts',
   'account.impersonation_started': 'account',
+  'round_up.accrued': 'transactions',
+  'round_up.swept': 'transactions',
 }
 
 const SOCKET_ONLY = new Set<string>(SOCKET_ONLY_EVENT_TYPES)

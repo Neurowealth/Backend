@@ -42,6 +42,7 @@ import { logger } from '../utils/logger'
 import { publishUserEvent } from '../events/publisher'
 import { EVENT_TYPE_TOPIC } from '../events/types'
 import { alertingService } from '../services/alerting'
+import { accrueRoundUpForOrder } from '../roundup/service'
 import {
   getDefaultProvider,
   getProvider,
@@ -671,6 +672,15 @@ export async function reconcileSingleOrder(
       userId: settled.userId,
     }
   ).catch(() => {})
+
+  if (settled.direction === 'ON_RAMP') {
+    accrueRoundUpForOrder(settled, database).catch((err) => {
+      logger.error('[Fiat] Failed to accrue round-up for settled order', {
+        orderId: settled.id,
+        error: err?.message,
+      })
+    })
+  }
 
   if (driftPct !== null) {
     recordFiatRateDrift(order.provider, order.direction, Math.abs(driftPct))

@@ -223,6 +223,12 @@ enum SubAccountStatus {
   REVOKED
 }
 
+enum RoundUpAccrualStatus {
+  ACCRUED
+  EXECUTING
+  SWEPT
+}
+
 model User {
   id                String           @id @default(uuid())
   walletAddress     String           @unique
@@ -283,6 +289,8 @@ model User {
   userWebhookEndpoints    UserWebhookEndpoint[]
   emailIdentity           EmailIdentity?
   pushDeviceTokens        PushDeviceToken[]
+  roundUpSettings         RoundUpSettings?
+  roundUpAccruals         RoundUpAccrual[]
 
   @@map("users")
 }
@@ -534,8 +542,9 @@ model Transaction {
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   position     Position?     @relation(fields: [positionId], references: [id])
   fiatOrders   FiatOrder[]
-  costBasisLot CostBasisLot?
-  lotDisposals LotDisposal[]
+  costBasisLot    CostBasisLot?
+  lotDisposals    LotDisposal[]
+  roundUpAccruals RoundUpAccrual[]
 
   @@index([userId])
   @@index([positionId])
@@ -1172,8 +1181,9 @@ model FiatOrder {
   createdAt           DateTime        @default(now())
   updatedAt           DateTime        @updatedAt
 
-  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  transaction Transaction? @relation(fields: [transactionId], references: [id])
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction     Transaction?     @relation(fields: [transactionId], references: [id])
+  roundUpAccruals RoundUpAccrual[]
 
   @@unique([provider, providerOrderId])
   @@index([userId])
@@ -1286,6 +1296,50 @@ model RecurringDepositPlan {
   @@map("recurring_deposit_plans")
 }
 
+/// Round-up savings settings per user (#537). Configures automatic spare change
+/// rounding on on-ramp purchases with configurable nearest interval and multiplier.
+model RoundUpSettings {
+  id             String       @id @default(uuid())
+  userId         String       @unique
+  enabled        Boolean      @default(false)
+  roundToNearest Decimal      @default(1.0) @db.Decimal(10, 2)
+  multiplier     Decimal      @default(1.0) @db.Decimal(10, 2)
+  targetGoalId   String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetGoal     SavingsGoal? @relation(fields: [targetGoalId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@map("round_up_settings")
+}
+
+/// Ledger tracking individual round-up accruals (#537). Accumulates post-settlement
+/// spare change until sweeping threshold is satisfied.
+model RoundUpAccrual {
+  id                 String               @id @default(uuid())
+  userId             String
+  fiatOrderId        String?
+  purchaseAmount     Decimal              @db.Decimal(36, 18)
+  roundUpAmount      Decimal              @db.Decimal(36, 18)
+  multiplier         Decimal              @default(1.0) @db.Decimal(10, 2)
+  totalRoundUp       Decimal              @db.Decimal(36, 18)
+  status             RoundUpAccrualStatus @default(ACCRUED)
+  sweptAt            DateTime?
+  sweepTransactionId String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fiatOrder          FiatOrder?           @relation(fields: [fiatOrderId], references: [id], onDelete: SetNull)
+  sweepTransaction   Transaction?         @relation(fields: [sweepTransactionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@map("round_up_accruals")
+}
+
 /// Cost-basis lot for tax reporting (#284). Exactly one lot per confirmed
 /// on-chain DEPOSIT Transaction (`transactionId` unique — the idempotency
 /// anchor under event replay). `remainingAmount` is decremented by FIFO
@@ -1363,8 +1417,9 @@ model SavingsGoal {
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  position Position? @relation(fields: [positionId], references: [id])
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  position        Position?         @relation(fields: [positionId], references: [id])
+  roundUpSettings RoundUpSettings[]
 
   @@index([userId])
   @@index([status])

@@ -18,6 +18,8 @@ export const USER_SCOPES = [
   'webhooks:manage',
   'vault:read',
   'vault:write',
+  'round_up:read',
+  'round_up:write',
 ] as const
 
 export type UserScope = (typeof USER_SCOPES)[number]
@@ -32,4 +34,5 @@ export const DEFAULT_READ_SCOPES: UserScope[] = [
   'portfolio:read',
   'transactions:read',
   'vault:read',
+  'round_up:read',
 ]

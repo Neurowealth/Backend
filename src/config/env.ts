@@ -662,6 +662,21 @@ export const config = {
       process.env.RECURRING_DEPOSITS_INTERVAL_MS || '300000'
     ),
   },
+  roundUp: {
+    minSweepAmount: parseFloat(
+      process.env.ROUND_UP_SWEEP_MIN_AMOUNT || '5.0'
+    ),
+    maxMultiplier: parseFloat(
+      process.env.ROUND_UP_MAX_MULTIPLIER || '10.0'
+    ),
+    sweepIntervalMs: parseInt(
+      process.env.ROUND_UP_SWEEP_INTERVAL_MS || '300000'
+    ),
+    defaultRoundToNearest: parseFloat(
+      process.env.ROUND_UP_DEFAULT_NEAREST || '1.0'
+    ),
+    assetSymbol: process.env.ROUND_UP_ASSET_SYMBOL || 'USDC',
+  },
   /**
    * Tool-calling assistant (#318) — replaces the rule-based parser
    * (src/nlp/parser.ts) as the recognition layer for open-ended requests, with
