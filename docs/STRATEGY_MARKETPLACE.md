@@ -233,6 +233,16 @@ byte-for-byte unchanged):
 Both are documented together in
 [`REBALANCE_EXPOSURE_COST.md`](REBALANCE_EXPOSURE_COST.md).
 
+### Standing Liquidity Floor (`liquidityFloor`, #541)
+
+An absolute standing buffer that must remain in unlocked, instant-liquidity positions (e.g. wallet cash, instant-redemption reserves) before any funds can be deployed to yield protocols or goal allocations:
+
+- **Precedence**: Evaluated before any allocation strategy (`MaxYieldStrategy`, `TargetAllocationStrategy`, `GoalTrackingStrategy`).
+- **Follower Tightening**: When following a strategy, `stricterLiquidityFloor` applies: the higher floor between the follower's own and the followed configuration is enforced (`Math.max(own, followed)`). A follow may only tighten liquidity protection, never loosen it.
+- **Shortfall & Unwinding**: If instant liquidity falls below the floor, positions are prioritized for unwinding by shortest `timeToFullExit` first. Locked and collateralized positions are strictly excluded from counting toward the floor.
+- **Degraded Status**: If `liquidityFloor >= totalBalance`, `availableForYield` is clamped to 0 and the status reports `"your floor exceeds your balance; nothing is currently earning yield"`.
+
+
 ---
 
 ## 5. Data model

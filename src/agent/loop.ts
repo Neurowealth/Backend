@@ -181,6 +181,10 @@ async function rebalanceCheckJob(): Promise<void> {
           riskCeiling: user.strategyConfig?.riskCeiling,
           exposureCaps: user.strategyConfig?.exposureCaps,
           defaultMaxFraction: user.strategyConfig?.defaultMaxFraction,
+          liquidityFloor:
+            user.liquidityFloor !== null && user.liquidityFloor !== undefined
+              ? user.liquidityFloor.toString()
+              : user.strategyConfig?.liquidityFloor,
         }
         const follow = followsByUser.get(pos.userId)
         effectiveByUser.set(pos.userId, {
@@ -189,10 +193,10 @@ async function rebalanceCheckJob(): Promise<void> {
         })
       }
 
-      // Group by (protocol, strategy, riskCeiling, followId, hasActiveGoal) so
-      // users with different risk ceilings, follows, or active goals are
+      // Group by (protocol, strategy, riskCeiling, liquidityFloor, followId, hasActiveGoal) so
+      // users with different risk ceilings, liquidity floors, follows, or active goals are
       // evaluated independently. Prevents router.ts from applying user[0]'s
-      // settings to the entire batch (#446).
+      // settings to the entire batch (#446, #541).
       //
       // Keying on the per-user follow id (not the followed strategy id) is
       // deliberate: two followers of the SAME strategy can still have different
@@ -211,7 +215,7 @@ async function rebalanceCheckJob(): Promise<void> {
         const hasGoal = goalsByUser.has(pos.userId)
         const key = `${pos.protocolName}:${config.strategyName || 'DEFAULT'}:${
           config.riskCeiling ?? 'none'
-        }:${follow?.followId ?? 'none'}:${hasGoal ? 'goal' : 'nogoal'}`
+        }:${config.liquidityFloor ?? 'none'}:${follow?.followId ?? 'none'}:${hasGoal ? 'goal' : 'nogoal'}`
         if (!byProtocolAndStrategy.has(key)) {
           byProtocolAndStrategy.set(key, {
             protocol: pos.protocolName,
@@ -343,7 +347,9 @@ async function rebalanceCheckJob(): Promise<void> {
         // null — the common case for a new user, and exactly who this feature
         // targets — would have had their followed config silently ignored.
         const hasStrategyContext =
-          Boolean(lead.config.strategyName) || Boolean(lead.follow)
+          Boolean(lead.config.strategyName) ||
+          Boolean(lead.follow) ||
+          Boolean(lead.config.liquidityFloor)
 
         const userStrategyPreferences = hasStrategyContext
           ? protocolPositions.map((p: PositionWithUser) => {
@@ -365,6 +371,7 @@ async function rebalanceCheckJob(): Promise<void> {
                 exposureCaps: config.exposureCaps,
                 defaultMaxFraction: config.defaultMaxFraction,
                 followedStrategyId: follow?.followedStrategyId ?? undefined,
+                liquidityFloor: config.liquidityFloor,
               }
             })
           : undefined

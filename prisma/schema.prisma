@@ -239,6 +239,7 @@ model User {
   rebalanceStrategy String? // 'MAX_YIELD' | 'TARGET_ALLOCATION' | null (defaults to MAX_YIELD)
   strategyConfig    Json? // e.g. { "targetAllocations": { "Blend": 50, "Stellar DEX": 30, "Luma": 20 } }
   taxAwareRebalancing Boolean         @default(false) // #550 - opt-in wash-sale-aware rebalancing
+  liquidityFloor    Decimal?         @db.Decimal(36, 18) // #541 - minimum USD-equivalent standing instant-liquidity buffer
   isActive          Boolean          @default(true)
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt

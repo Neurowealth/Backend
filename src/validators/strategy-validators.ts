@@ -106,6 +106,17 @@ export const publishableConfigSchema = z
     exposureCaps: z
       .record(z.string().min(1).max(100), exposureCapOverrideSchema)
       .optional(),
+    liquidityFloor: z
+      .union([
+        z.number().finite().nonnegative(),
+        z
+          .string()
+          .regex(
+            /^\d+(\.\d+)?$/,
+            'liquidityFloor must be a non-negative decimal string'
+          ),
+      ])
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if (data.strategyName === 'TARGET_ALLOCATION') {
@@ -264,6 +275,22 @@ export const strategySimulateSchema = z
       })
     }
   })
+
+export const updateLiquidityFloorSchema = z.object({
+  liquidityFloor: z
+    .union([
+      z.number().nonnegative('liquidityFloor must be non-negative'),
+      z
+        .string()
+        .regex(/^\d+(\.\d+)?$/, 'liquidityFloor must be a non-negative number'),
+      z.null(),
+    ])
+    .optional(),
+})
+
+export type UpdateLiquidityFloorInput = z.infer<
+  typeof updateLiquidityFloorSchema
+>
 
 export type StrategySimulateInput = z.infer<typeof strategySimulateSchema>
 
