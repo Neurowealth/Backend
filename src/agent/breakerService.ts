@@ -45,6 +45,10 @@ import {
   BreakerTransitionConfig,
   describeBreaker,
 } from './breakerState'
+import {
+  fetchStablecoinPrice,
+  getCachedStablecoinPrice,
+} from '../stellar/priceFeed'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -136,20 +140,25 @@ export function breakerTransitionConfig(): BreakerTransitionConfig {
 // ── Stablecoin price provider ──────────────────────────────────────────────────
 
 /**
- * Current USD spot price of the stablecoin the platform prices at $1, or null
- * when no feed is available.
- *
- * #345 explicitly names the fee-oracle/routing path as the de-peg price
- * source. As of this change the fee oracle publishes base-fee/congestion data
- * only — it carries no stablecoin price — and the routing module's path
- * finding is a stub, so there is no real spot price to read. The provider
- * therefore returns null (the rule fails safe: null never trips), and the
- * de-peg rule stays OFF by default (BREAKER_DEPEG_ENABLED=false) until an
- * oracle feed exists. This function is the single integration point for that
- * feed.
+ * Return the current stablecoin spot price for the de-peg breaker rule.
+ * Resolves the spot price from the Stellar Horizon DEX orderbook via the
+ * shared priceFeed module. Fails safe: returns null if the feed is unconfigured,
+ * unreachable, or invalid, which ensures an absent or broken feed never trips
+ * the de-peg breaker.
  */
-export function getStablecoinPrice(): number | null {
-  return null
+export async function getStablecoinPrice(): Promise<number | null> {
+  const cached = getCachedStablecoinPrice()
+  if (cached !== null) {
+    return cached
+  }
+  return fetchStablecoinPrice()
+}
+
+/**
+ * Return the latest cached stablecoin spot price synchronously.
+ */
+export function getStablecoinPriceSync(): number | null {
+  return getCachedStablecoinPrice()
 }
 
 // ── Row <-> record adapters ────────────────────────────────────────────────────
@@ -725,7 +734,9 @@ export async function evaluateBreakerTick(
   const { latestFetchedAt, fresh } = await loadLatestProtocolRate()
   trackScanHealth(fresh)
 
-  const depegPrice = config.breaker.depeg.enabled ? getStablecoinPrice() : null
+  const depegPrice = config.breaker.depeg.enabled
+    ? await getStablecoinPrice()
+    : null
 
   const byKey = await loadWorkingBreakers(now)
   const trips: TripRecord[] = []

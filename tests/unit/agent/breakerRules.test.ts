@@ -113,6 +113,12 @@ describe('breakerRules', () => {
       expect(r.detail.deviationBps).toBeCloseTo(200)
     })
 
+    it('trips when price drops below the band by more than depegBps', () => {
+      const r = evaluateDepegRule({ price: 0.98, depegBps: 150 })
+      expect(r.tripped).toBe(true)
+      expect(r.detail.deviationBps).toBeCloseTo(200)
+    })
+
     it('does not trip within the band', () => {
       expect(evaluateDepegRule({ price: 1.01, depegBps: 150 }).tripped).toBe(
         false
@@ -303,6 +309,22 @@ describe('breakerRules', () => {
         consecutiveFailures: 0,
         now,
       })
+      expect(r.rule).toBe('depeg')
+    })
+
+    it('de-peg trips when stablecoin drops below threshold', () => {
+      const r = evaluateBreakerRules(cfg, {
+        abnormalLossSeries: pts([
+          [0, 100],
+          [2, 100],
+        ]),
+        depegPrice: 0.98,
+        oscillationFlips: 0,
+        latestFetchedAt: now,
+        consecutiveFailures: 0,
+        now,
+      })
+      expect(r.tripped).toBe(true)
       expect(r.rule).toBe('depeg')
     })
   })
