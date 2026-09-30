@@ -1,6 +1,4 @@
 /**
- * src/stellar/routing.ts
- *
  * Path-payment routing primitives for DEX auto-routing.
  * Provides strict-send and strict-receive path finding with slippage protection.
  */
@@ -9,18 +7,17 @@ import { Asset, Operation } from '@stellar/stellar-sdk'
 import { logger } from '../utils/logger'
 import { fetchWithRetry } from '../utils/fetchWithRetry'
 
-// ── Configuration ───────────────────────────────────────────────────────────────
-
-const ROUTING_QUOTE_TTL_MS = 30_000 // 30 seconds
-const ROUTING_SLIPPAGE_MIN_BPS = 10 // 0.1%
-const ROUTING_SLIPPAGE_MAX_BPS = 300 // 3%
-const ROUTING_SLIPPAGE_DEFAULT_BPS = 50 // 0.5%
-const ROUTING_PRICE_IMPACT_WARN_BPS = 100 // 1%
+const ROUTING_QUOTE_TTL_MS = 30_000
+const ROUTING_SLIPPAGE_MIN_BPS = 10
+const ROUTING_SLIPPAGE_MAX_BPS = 300
+const ROUTING_SLIPPAGE_DEFAULT_BPS = 50
+const ROUTING_PRICE_IMPACT_WARN_BPS = 100
 const ROUTING_HORIZON_TIMEOUT_MS = 5_000
 const ROUTING_HORIZON_RETRIES = 3
 
-// ── Types ───────────────────────────────────────────────────────────────────────
-
+/**
+ * Routed quote containing route path, amounts, slippage bounds, and validity.
+ */
 export interface RoutedQuote {
   sourceAsset: string
   sourceAmount: string
@@ -33,6 +30,9 @@ export interface RoutedQuote {
   highImpact: boolean
 }
 
+/**
+ * Parameters for finding path payments.
+ */
 export interface PathPaymentParams {
   sourceAsset: string
   sourceAmount: string
@@ -41,32 +41,6 @@ export interface PathPaymentParams {
   slippageBps?: number
 }
 
-// ── Asset Parsing ───────────────────────────────────────────────────────────────
-
-function parseAsset(assetStr: string): Asset {
-  if (assetStr === 'XLM') {
-    return Asset.native()
-  }
-  const [code, issuer] = assetStr.split(':')
-  if (!code || !issuer) {
-    throw new Error(`Invalid asset format: ${assetStr}`)
-  }
-  return new Asset(code, issuer)
-}
-
-function assetToString(asset: Asset): string {
-  if (asset.isNative()) {
-    return 'XLM'
-  }
-  return `${asset.code}:${asset.issuer}`
-}
-
-// ── Horizon path finding ─────────────────────────────────────────────────────────
-
-/**
- * Minimal shape of the Horizon path-finding record. Only the fields routing
- * needs are typed; the endpoint returns more.
- */
 interface HorizonPathRecord {
   source_amount?: string
   dest_amount?: string
@@ -104,11 +78,17 @@ async function fetchPathRecords(url: string): Promise<HorizonPathRecord[]> {
   return records as HorizonPathRecord[]
 }
 
-/**
- * Horizon returns every acceptable path ordered by rate. We quote the first
- * (best) one, but a multi-record response is itself a signal that liquidity is
- * thin, so `computePriceImpactBps` accounts for the extra hops.
- */
+function parseAsset(assetStr: string): Asset {
+  if (assetStr === 'XLM') {
+    return Asset.native()
+  }
+  const [code, issuer] = assetStr.split(':')
+  if (!code || !issuer) {
+    throw new Error(`Invalid asset format: ${assetStr}`)
+  }
+  return new Asset(code, issuer)
+}
+
 function requireSingleRecord(
   records: HorizonPathRecord[],
   mode: string
@@ -120,11 +100,6 @@ function requireSingleRecord(
   return record
 }
 
-/**
- * Horizon's `path` array holds the intermediate assets. The returned
- * `RoutedQuote.path` follows the same convention as `buildPathPaymentOp`,
- * which slices off the first and last entries as the source and destination.
- */
 function extractPath(
   records: HorizonPathRecord[],
   sourceAsset: string,
@@ -142,18 +117,10 @@ function extractPath(
     })
     .filter((hop): hop is string => hop !== null)
 
-  // A path of [source, ...intermediates, dest] means zero or more conversions.
-  // When there are no hops the caller gets [source, dest] so the existing
-  // `slice(1, -1)` in buildPathPaymentOp still yields an empty path array.
   if (hops.length === 0) return [sourceAsset, destAsset]
   return [sourceAsset, ...hops, destAsset]
 }
 
-/**
- * Price impact relative to a 1:1 nominal, expressed in basis points. A
- * multi-path response means the best single rate was marginal, so each extra
- * available record adds a small penalty to reflect the thin liquidity.
- */
 function computePriceImpactBps(
   sourceAmount: number,
   destAmount: number,
@@ -166,7 +133,6 @@ function computePriceImpactBps(
   return Math.round(impact + extraHops)
 }
 
-/** Apply slippage tolerance, never returning a negative minimum. */
 function applySlippage(destAmount: string, slippageBps: number): string {
   const amount = Number(destAmount)
   if (!Number.isFinite(amount)) {
@@ -178,16 +144,18 @@ function applySlippage(destAmount: string, slippageBps: number): string {
   return Math.max(0, min).toFixed(7)
 }
 
-// ── Path Finding ───────────────────────────────────────────────────────────────
-
+/**
+ * Finds optimal strict-send path through Horizon DEX orderbooks with slippage protection.
+ *
+ * @param params Source asset, amount, destination asset, and optional slippage
+ * @returns RoutedQuote with path, estimated destination amount, minimum guaranteed amount, and TTL
+ */
 export async function findStrictSendPath(
   params: Omit<PathPaymentParams, 'slippageBps'> & { slippageBps?: number }
 ): Promise<RoutedQuote> {
   const { sourceAsset, sourceAmount, destAsset } = params
   const slippageBps = clampSlippage(params.slippageBps)
 
-  // Validate both assets up front so a malformed asset string fails before any
-  // network call is made.
   parseAsset(sourceAsset)
   parseAsset(destAsset)
 
@@ -206,8 +174,6 @@ export async function findStrictSendPath(
       throw new Error('Horizon strict-send response is missing dest_amount')
     }
 
-    // Horizon returns a 1:1 nominal for a direct path; the real rate is the
-    // ratio between what we send and what we receive.
     const sourceAmountNum = Number(sourceAmount)
     const destAmountNum = Number(destAmount)
     if (!Number.isFinite(sourceAmountNum) || !Number.isFinite(destAmountNum)) {
@@ -241,6 +207,12 @@ export async function findStrictSendPath(
   }
 }
 
+/**
+ * Finds optimal strict-receive path through Horizon DEX orderbooks for a fixed destination amount.
+ *
+ * @param params Destination asset, destination amount, source asset, and optional slippage
+ * @returns RoutedQuote with path, estimated source amount required, and TTL
+ */
 export async function findStrictReceivePath(
   params: Omit<PathPaymentParams, 'sourceAmount'> & { slippageBps?: number }
 ): Promise<RoutedQuote> {
@@ -285,9 +257,6 @@ export async function findStrictReceivePath(
       destAmountNum,
       records.length
     )
-
-    // For strict-receive the destination amount is fixed by the caller, so the
-    // send amount is what varies: a bigger source_amount means worse impact.
     const destAmountMin = applySlippage(destAmount, slippageBps)
 
     return {
@@ -307,14 +276,24 @@ export async function findStrictReceivePath(
   }
 }
 
-// ── Quote Validation ────────────────────────────────────────────────────────────
-
+/**
+ * Validates that a routed quote has not passed its expiration timestamp.
+ *
+ * @param quote Routed quote to check
+ * @throws Error if current time exceeds quote.expiresAt
+ */
 export function validateQuoteExpiry(quote: RoutedQuote): void {
   if (new Date() > quote.expiresAt) {
     throw new Error('routing_quote_expired')
   }
 }
 
+/**
+ * Clamps user-supplied slippage tolerance in basis points to permissible protocol bounds.
+ *
+ * @param slippageBps Requested slippage in basis points
+ * @returns Clamped slippage in basis points
+ */
 export function clampSlippage(slippageBps?: number): number {
   if (slippageBps === undefined) {
     return ROUTING_SLIPPAGE_DEFAULT_BPS
@@ -325,8 +304,14 @@ export function clampSlippage(slippageBps?: number): number {
   )
 }
 
-// ── Operation Building ───────────────────────────────────────────────────────────
-
+/**
+ * Builds a pathPaymentStrictSend operation from a quote, destination, and slippage tolerance.
+ *
+ * @param quote Routed quote containing conversion path and amounts
+ * @param destination Recipient public key
+ * @param slippageBps Slippage tolerance in basis points
+ * @returns Configured pathPaymentStrictSend Operation
+ */
 export function buildPathPaymentOp(
   quote: RoutedQuote,
   destination: string,
@@ -334,13 +319,10 @@ export function buildPathPaymentOp(
 ): ReturnType<typeof Operation.pathPaymentStrictSend> {
   const source = parseAsset(quote.sourceAsset)
   const dest = parseAsset(quote.destAsset)
-
-  // Calculate destMin with slippage protection
   const estDest = parseFloat(quote.estDestAmount)
-  const slippageFactor = 1 - slippageBps / 10_000
+  const slippageFactor = 1 - clampSlippage(slippageBps) / 10_000
   const destMin = (estDest * slippageFactor).toFixed(7)
-
-  const pathAssets = quote.path.slice(1, -1).map(parseAsset) // Exclude source and dest
+  const pathAssets = quote.path.slice(1, -1).map(parseAsset)
 
   return Operation.pathPaymentStrictSend({
     sendAsset: source,
@@ -352,8 +334,44 @@ export function buildPathPaymentOp(
   })
 }
 
-// ── Exported Configuration ─────────────────────────────────────────────────────
+/**
+ * Explicit alias for buildPathPaymentOp matching strict-send semantics.
+ */
+export const buildPathPaymentStrictSendOp = buildPathPaymentOp
 
+/**
+ * Builds a pathPaymentStrictReceive operation from a quote, destination, and slippage tolerance.
+ *
+ * @param quote Routed quote containing conversion path, source amount, and destination amount
+ * @param destination Recipient public key
+ * @param slippageBps Slippage tolerance in basis points for sendMax calculation
+ * @returns Configured pathPaymentStrictReceive Operation
+ */
+export function buildPathPaymentStrictReceiveOp(
+  quote: RoutedQuote,
+  destination: string,
+  slippageBps: number = ROUTING_SLIPPAGE_DEFAULT_BPS
+): ReturnType<typeof Operation.pathPaymentStrictReceive> {
+  const source = parseAsset(quote.sourceAsset)
+  const dest = parseAsset(quote.destAsset)
+  const estSource = parseFloat(quote.sourceAmount)
+  const slippageFactor = 1 + clampSlippage(slippageBps) / 10_000
+  const sendMax = (estSource * slippageFactor).toFixed(7)
+  const pathAssets = quote.path.slice(1, -1).map(parseAsset)
+
+  return Operation.pathPaymentStrictReceive({
+    sendAsset: source,
+    sendMax,
+    destination,
+    destAsset: dest,
+    destAmount: quote.estDestAmount,
+    path: pathAssets,
+  })
+}
+
+/**
+ * Exported routing configuration parameters and defaults.
+ */
 export const ROUTING_CONFIG = {
   QUOTE_TTL_MS: ROUTING_QUOTE_TTL_MS,
   SLIPPAGE_MIN_BPS: ROUTING_SLIPPAGE_MIN_BPS,
