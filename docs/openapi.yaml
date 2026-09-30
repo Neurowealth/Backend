@@ -48,6 +48,8 @@ tags:
     description: User-scoped outbound webhook endpoints (#368)
   - name: Net Worth
     description: Owner-private net worth and read-only external Stellar wallet links (#540)
+  - name: Notifications
+    description: Email verification and notifications management (#367, #449)
 
 # ─── Reusable components ──────────────────────────────────────────────────────
 components:
@@ -1375,6 +1377,93 @@ components:
           type: string
           format: date-time
 
+    # ── Email notification identity (#367, #449) ────────────────────────────
+
+    EmailIdentityStatus:
+      type: string
+      enum: [PENDING, VERIFIED, BOUNCED, COMPLAINED, SUPPRESSED]
+      description: Email verification and delivery status.
+
+    RequestEmailVerificationRequest:
+      type: object
+      description: Request payload to initiate email address verification.
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+          description: Email address to verify. Normalized to lowercase and trimmed.
+          example: user@example.com
+
+    GenericEmailVerificationResponse:
+      type: object
+      description: Generic confirmation message (used for anti-enumeration and idempotent responses).
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+          description: Whether the request completed successfully.
+          example: true
+        message:
+          type: string
+          description: Human-readable status message.
+          example: Verification email sent if address is valid
+
+    EmailIdentity:
+      type: object
+      description: User email notification identity details.
+      required: [email, status]
+      properties:
+        email:
+          type: string
+          format: email
+          description: Normalized email address.
+          example: user@example.com
+        status:
+          $ref: '#/components/schemas/EmailIdentityStatus'
+
+    PendingEmailIdentity:
+      description: Email identity in pending verification state.
+      allOf:
+        - $ref: '#/components/schemas/EmailIdentity'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [PENDING]
+              example: PENDING
+
+    VerifiedEmailIdentity:
+      description: Email identity in verified state.
+      allOf:
+        - $ref: '#/components/schemas/EmailIdentity'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [VERIFIED]
+              example: VERIFIED
+
+    PendingEmailVerificationResponse:
+      description: Response when a verification email is dispatched for a pending email identity.
+      allOf:
+        - $ref: '#/components/schemas/GenericEmailVerificationResponse'
+        - $ref: '#/components/schemas/PendingEmailIdentity'
+
+    VerifiedEmailVerificationResponse:
+      description: Response when an email address is successfully verified.
+      allOf:
+        - $ref: '#/components/schemas/GenericEmailVerificationResponse'
+        - $ref: '#/components/schemas/VerifiedEmailIdentity'
+
+    EmailVerificationResponse:
+      description: Result of an email verification request or token confirmation.
+      oneOf:
+        - $ref: '#/components/schemas/PendingEmailVerificationResponse'
+        - $ref: '#/components/schemas/VerifiedEmailVerificationResponse'
+        - $ref: '#/components/schemas/GenericEmailVerificationResponse'
+
+
   responses:
     Unauthorized:
       description: Missing or invalid JWT.
@@ -2641,17 +2730,17 @@ paths:
         '401':
           description: Missing/invalid bearer token or insufficient scope.
 
-  /alerts/{userId}:
+  /alerts/{id}:
     get:
       operationId: listAlertRules
       summary: List alert rules for a user
-      description: Owner-scoped — caller may only list their own rules.
+      description: Owner-scoped — caller may only list their own rules. The path parameter is the user ID.
       tags: [Alerts]
       security:
         - bearerAuth: []
       parameters:
         - in: path
-          name: userId
+          name: id
           required: true
           schema:
             type: string
@@ -2673,7 +2762,6 @@ paths:
         '403':
           description: Not the owner of the requested user ID.
 
-  /alerts/{id}:
     patch:
       operationId: updateAlertRule
       summary: Update an alert rule
@@ -3239,6 +3327,131 @@ paths:
           description: Missing/invalid bearer token or goal belongs to another user.
         '404':
           description: Goal not found.
+
+  # ── Notification & email verification endpoints (#367, #449) ─────────────────
+
+  /notifications/email:
+    post:
+      operationId: requestEmailVerification
+      summary: Request email verification
+      description: |
+        Request email verification for the authenticated user. Sends a verification
+        link with a single-use token valid for 24 hours. Anti-enumeration: returns
+        a generic success message if the email is already verified by another user.
+      tags: [Notifications]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestEmailVerificationRequest'
+      responses:
+        '200':
+          description: Verification email sent or generic anti-enumeration response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailVerificationResponse'
+              examples:
+                dispatched:
+                  summary: Verification email dispatched
+                  value:
+                    success: true
+                    message: Verification email sent
+                    email: user@example.com
+                    status: PENDING
+                antiEnumeration:
+                  summary: Generic anti-enumeration response
+                  value:
+                    success: true
+                    message: Verification email sent if address is valid
+        '400':
+          description: Validation failed (missing or invalid email address).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Valid email address is required
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedError'
+        '500':
+          description: Internal server error processing verification request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Failed to process email verification request
+
+  /notifications/email/verify:
+    get:
+      operationId: verifyEmail
+      summary: Verify email address
+      description: |
+        Consume a single-use verification token to verify an email address.
+        Public endpoint accessed via link dispatched in the verification email.
+        Emits an `email.verified` user event on initial success.
+        Idempotent if the email address is already verified.
+      tags: [Notifications]
+      security: []
+      parameters:
+        - in: query
+          name: token
+          required: true
+          schema:
+            type: string
+          description: Hex-encoded verification token received via email.
+      responses:
+        '200':
+          description: Email address verified or already verified.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailVerificationResponse'
+              examples:
+                verified:
+                  summary: Successfully verified
+                  value:
+                    success: true
+                    message: Email address verified successfully
+                    email: user@example.com
+                    status: VERIFIED
+                alreadyVerified:
+                  summary: Already verified
+                  value:
+                    success: true
+                    message: Email address is already verified
+        '400':
+          description: Missing, invalid, or expired verification token.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Invalid or expired verification token
+        '500':
+          description: Internal server error verifying email token.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Failed to verify email
 
   # ── Health ────────────────────────────────────────────────────────────────────
 
