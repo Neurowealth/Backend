@@ -238,6 +238,7 @@ model User {
   riskTolerance     Int              @default(5)
   rebalanceStrategy String? // 'MAX_YIELD' | 'TARGET_ALLOCATION' | null (defaults to MAX_YIELD)
   strategyConfig    Json? // e.g. { "targetAllocations": { "Blend": 50, "Stellar DEX": 30, "Luma": 20 } }
+  liquidityFloor    Decimal?         @db.Decimal(36, 18)
   taxAwareRebalancing Boolean         @default(false) // #550 - opt-in wash-sale-aware rebalancing
   isActive          Boolean          @default(true)
   createdAt         DateTime         @default(now())
@@ -489,6 +490,7 @@ model Position {
   depositedAmount Decimal        @db.Decimal(36, 18)
   currentValue    Decimal        @db.Decimal(36, 18)
   yieldEarned     Decimal        @default(0) @db.Decimal(36, 18)
+  liquidityLocked Boolean        @default(false)
   status          PositionStatus @default(ACTIVE)
   openedAt        DateTime       @default(now())
   closedAt        DateTime?
@@ -2054,6 +2056,7 @@ model ProtocolLiquiditySnapshot {
   availableLiquidity   Decimal  @db.Decimal(36, 18)
   dailyVolume          Decimal  @db.Decimal(36, 18)
   withdrawalQueueDepth Int?
+  withdrawalDelayHours Int?
   depthCurve           Json // [{ sizeUsd, priceImpactBps }]
   fetchedAt            DateTime @default(now())
 

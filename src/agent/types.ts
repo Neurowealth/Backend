@@ -246,6 +246,8 @@ export interface UserStrategyPreferences {
    * table but yields to a per-protocol override.
    */
   defaultMaxFraction?: number
+  liquidityFloorUsd?: number
+  taxAwareRebalancing?: boolean
 }
 
 /**

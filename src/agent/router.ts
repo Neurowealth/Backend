@@ -35,6 +35,8 @@ import { enqueueOutboxOp } from '../outbox/service'
 import { dispatchInBackground } from '../outbox/dispatcher'
 import { deriveIdempotencyKey } from '../outbox/idempotency'
 import { persistRebalanceDecision } from './rebalanceDecision'
+import { getLiquidityFloorStatus } from '../analytics/liquidityFloor'
+import { STROOPS_PER_TOKEN } from '../config/financial-limits'
 
 const DEFAULT_THRESHOLDS: RebalanceThresholds = {
   minimumImprovement: 0.5, // Must improve by at least 0.5%
@@ -525,9 +527,11 @@ export async function executeRebalanceIfNeeded(
   batchContext?: RebalanceBatchContext
 ): Promise<RebalanceDetails | null> {
   try {
-    const totalAmount = userPositions
+    let totalAmount = userPositions
       .reduce((sum, pos) => sum + BigInt(pos.amount), BigInt(0))
       .toString()
+    let positionsToMove = userPositions
+    let liquidityRestoreTargets: Set<string> | null = null
 
     const effectiveThresholds = thresholds ?? getThresholds()
     const affectedUserIds = Array.from(
@@ -681,6 +685,140 @@ export async function executeRebalanceIfNeeded(
         return null
       }
 
+      const floorUsd = userStrategyPreferences[0]?.liquidityFloorUsd
+      if (floorUsd !== undefined && floorUsd > 0) {
+        const floorUserId = userStrategyPreferences[0].userId
+        const floorStatus = await getLiquidityFloorStatus(floorUserId)
+        if (!floorStatus.dataAvailable) {
+          await recordDecision({
+            outcome: 'BLOCKED',
+            blockedReason: 'liquidity_data_unavailable',
+            rationale:
+              'Liquidity floor is configured, but fresh exit and lock data is unavailable; no rebalance was made.',
+            trace: {
+              currentApy,
+              chosenProtocol: null,
+              chosenApy: null,
+              rawImprovement: null,
+              netImprovement: null,
+              estCostPercent: null,
+              costBreakdown: null,
+              thresholds: effectiveThresholds,
+              candidates: [],
+            },
+          })
+          return null
+        }
+
+        if (floorStatus.shortfallUsd > 0) {
+          const targetCapacities = Object.entries(
+            floorStatus.instantProtocolCapacityUsd
+          ).filter(([protocol]) => protocol !== currentProtocol)
+          const restoreLimit = Math.min(
+            floorStatus.shortfallUsd,
+            Math.max(0, ...targetCapacities.map(([, capacity]) => capacity))
+          )
+          const plannedByPosition = new Map<string, number>()
+          let remainingRestore = restoreLimit
+          for (const item of floorStatus.restorationPlan) {
+            if (remainingRestore <= 0) break
+            const amount = Math.min(item.amountUsd, remainingRestore)
+            plannedByPosition.set(item.positionId, amount)
+            remainingRestore -= amount
+          }
+          positionsToMove = userPositions.filter((position) =>
+            plannedByPosition.has(position.id)
+          )
+          const restoreUsd = Array.from(plannedByPosition.values()).reduce(
+            (sum, amount) => sum + amount,
+            0
+          )
+          liquidityRestoreTargets = new Set(
+            targetCapacities
+              .filter(([, capacity]) => capacity >= restoreUsd)
+              .map(([protocol]) => protocol)
+          )
+
+          if (positionsToMove.length === 0 || liquidityRestoreTargets.size === 0) {
+            await recordDecision({
+              outcome: 'BLOCKED',
+              blockedReason: 'liquidity_floor_shortfall',
+              rationale:
+                'The liquidity floor is below target, but no unlocked exit source and verified liquid target are available.',
+              trace: {
+                currentApy,
+                chosenProtocol: null,
+                chosenApy: null,
+                rawImprovement: null,
+                netImprovement: null,
+                estCostPercent: null,
+                costBreakdown: null,
+                thresholds: effectiveThresholds,
+                candidates: [],
+              },
+            })
+            return null
+          }
+
+          const restoreAmount = BigInt(
+            Math.floor(restoreUsd * STROOPS_PER_TOKEN)
+          )
+          const positionAmount = positionsToMove.reduce(
+            (sum, position) => sum + BigInt(position.amount),
+            BigInt(0)
+          )
+          totalAmount = (restoreAmount < positionAmount
+            ? restoreAmount
+            : positionAmount
+          ).toString()
+          allProtocols = allProtocols.filter((protocol) =>
+            liquidityRestoreTargets!.has(protocol.name)
+          )
+        } else {
+          const instantLiquidIds = new Set(
+            floorStatus.instantLiquidPositionIds
+          )
+          const lockedIds = new Set(floorStatus.lockedPositionIds)
+          positionsToMove = userPositions.filter(
+            (position) =>
+              !instantLiquidIds.has(position.id) && !lockedIds.has(position.id)
+          )
+          const yieldAmount = BigInt(
+            Math.floor(floorStatus.availableForYieldUsd * STROOPS_PER_TOKEN)
+          )
+          const portfolioAmount = BigInt(totalAmount)
+          const movableAmount = positionsToMove.reduce(
+            (sum, position) => sum + BigInt(position.amount),
+            BigInt(0)
+          )
+          const yieldLimit =
+            yieldAmount < portfolioAmount ? yieldAmount : portfolioAmount
+          totalAmount = (yieldLimit < movableAmount
+            ? yieldLimit
+            : movableAmount
+          ).toString()
+          if (totalAmount === '0' || positionsToMove.length === 0) {
+            await recordDecision({
+              outcome: 'HELD',
+              rationale:
+                'The configured liquidity floor leaves no balance available for yield allocation.',
+              trace: {
+                currentApy,
+                chosenProtocol: null,
+                chosenApy: null,
+                rawImprovement: null,
+                netImprovement: null,
+                estCostPercent: null,
+                costBreakdown: null,
+                thresholds: effectiveThresholds,
+                candidates: [],
+              },
+            })
+            return null
+          }
+        }
+      }
+
       // An ACTIVE savings goal (#281) takes priority over the stored strategy
       // preference — a user working toward a stated target/date should have
       // the agent chase whatever rate that goal actually needs, not a static
@@ -697,7 +835,9 @@ export async function executeRebalanceIfNeeded(
       }
 
       const preferredStrategy = userStrategyPreferences[0]?.strategyName
-      const strategy: RebalanceStrategy = activeGoal
+      const strategy: RebalanceStrategy = liquidityRestoreTargets
+        ? new MaxYieldStrategy()
+        : activeGoal
         ? new GoalTrackingStrategy()
         : preferredStrategy === 'TARGET_ALLOCATION'
           ? new TargetAllocationStrategy()
@@ -827,7 +967,13 @@ export async function executeRebalanceIfNeeded(
         // If the preferred target itself had zero headroom, still try a real
         // move into the next allocation; otherwise nothing can move.
         const moves = plan.allocations
-          .filter((a) => a.fraction > 0 && a.protocol !== currentProtocol)
+          .filter(
+            (a) =>
+              a.fraction > 0 &&
+              a.protocol !== currentProtocol &&
+              (!liquidityRestoreTargets ||
+                liquidityRestoreTargets.has(a.protocol))
+          )
           .map((a) => ({
             toProtocol: a.protocol,
             fraction: a.fraction,
@@ -884,7 +1030,7 @@ export async function executeRebalanceIfNeeded(
           currentProtocol,
           first.toProtocol,
           amountToMove.toString(),
-          userPositions.map((pos) => pos.id),
+          positionsToMove.map((pos) => pos.id),
           {
             name: strategy.name,
             reasoning: decision.reasoning,

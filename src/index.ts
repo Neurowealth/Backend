@@ -98,6 +98,7 @@ import keysRouter from './routes/keys'
 import sessionsRouter from './routes/sessions'
 import streamRouter from './routes/stream'
 import notificationsRouter from './routes/notifications'
+import liquidityFloorRouter from './routes/liquidity-floor'
 import networkRouter from './routes/network'
 import {
   corsMiddleware,
@@ -355,6 +356,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'sessions', handlers: [sessionsRouter] },
   { path: 'stream', handlers: [streamRouter] },
   { path: 'notifications', handlers: [notificationsRouter] },
+  { path: 'liquidity-floor', handlers: [liquidityFloorRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
 

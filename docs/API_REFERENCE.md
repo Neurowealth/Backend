@@ -327,6 +327,31 @@ Notes:
 
 ## Portfolio
 
+### GET /api/v1/liquidity-floor
+
+- Auth: required; returns only the authenticated caller's status.
+- Returns the configured USD floor, active USDC balance, amount exitable within
+  the 0.5% slippage target, yield-eligible amount, shortfall, estimated
+  restoration time, and liquidity-data availability.
+- Only fresh (24-hour) snapshots with explicit zero withdrawal delay and queue
+  depth count as instantly liquid. Locked positions, pending transactions,
+  unsupported assets, and missing or stale data do not count.
+- `dataAvailable: false` means the agent blocks rebalancing until liquidity data
+  is available. A floor above total balance is reported as a shortfall.
+
+### PATCH /api/v1/liquidity-floor
+
+- Auth: required; updates only the authenticated caller's floor.
+- Request body: `{ "floorUsd": 500 }` sets a $500 minimum; `null` clears it;
+  zero disables reserve sizing.
+- The floor takes precedence over goals and strategy allocation. Restoration
+  uses shortest known exits first and retains existing cost/payback gates; it is
+  a target, not an instantaneous guarantee.
+
+The Stellar DEX collector derives conservative depth from Horizon reserves.
+Blend and Luma are counted only when their API responses explicitly include
+valid depth, queue, and withdrawal-delay metadata.
+
 ### GET /api/portfolio/:userId
 
 - Auth: required (requireAuth + enforceUserAccess)

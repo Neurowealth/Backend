@@ -10,6 +10,11 @@ import {
   effectiveApy,
   shouldUseEffectiveApy,
 } from '../analytics/yieldComposition'
+import {
+  buildExplicitProtocolLiquiditySnapshot,
+  buildStellarDexLiquiditySnapshot,
+  recordLiquiditySnapshotSafely,
+} from '../analytics/liquiditySnapshot'
 
 const ASSET_SYMBOL = 'USDC'
 const MINIMUM_TVL = 10000
@@ -69,6 +74,15 @@ async function fetchBlendApy(): Promise<YieldProtocol | null> {
     if (apyRate === null)
       throw new Error('Could not parse Blend APY from response')
 
+    const liquiditySnapshot = buildExplicitProtocolLiquiditySnapshot(
+      'Blend',
+      ASSET_SYMBOL,
+      reserve
+    )
+    if (liquiditySnapshot) {
+      await recordLiquiditySnapshotSafely(liquiditySnapshot)
+    }
+
     recordMetric('Blend', Date.now() - start, false)
 
     return {
@@ -106,6 +120,13 @@ async function fetchStellarDexApy(): Promise<YieldProtocol | null> {
 
     const pools = data?._embedded?.records || []
     if (pools.length === 0) throw new Error('No Stellar DEX pools found')
+    const liquiditySnapshot = buildStellarDexLiquiditySnapshot(
+      pools,
+      `${ASSET_SYMBOL}:${usdcIssuer}`
+    )
+    if (liquiditySnapshot) {
+      await recordLiquiditySnapshotSafely(liquiditySnapshot)
+    }
 
     // Aggregate: weighted average fee APY by TVL
     let totalTvl = 0
@@ -160,6 +181,15 @@ async function fetchLumaApy(): Promise<YieldProtocol | null> {
 
     const apyRate = parseFloat(rate.apy) * 100
     const tvl = rate.tvl ? parseFloat(rate.tvl) : undefined
+
+    const liquiditySnapshot = buildExplicitProtocolLiquiditySnapshot(
+      'Luma',
+      ASSET_SYMBOL,
+      rate
+    )
+    if (liquiditySnapshot) {
+      await recordLiquiditySnapshotSafely(liquiditySnapshot)
+    }
 
     recordMetric('Luma', Date.now() - start, false)
 
