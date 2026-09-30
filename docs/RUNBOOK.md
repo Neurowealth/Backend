@@ -106,71 +106,140 @@ Losing `WALLET_ENCRYPTION_KEY` **permanently** destroys all custodial wallet key
 
 ## 3. RPC Failover
 
-### Current architecture
+### Architecture overview
 
-`src/stellar/client.ts` creates a single `rpc.Server(STELLAR_RPC_URL)` singleton. There is **no built-in automatic failover**. A mainnet RPC outage halts event ingestion and agent operations.
+`src/stellar/client.ts` implements a multi-endpoint resilient RPC client (`ResilientRpcClient`) featuring:
+- Automatic ordered failover across multiple RPC endpoints
+- Isolated, per-endpoint circuit breaking via `HttpClientAdapter`
+- Exponential backoff with jitter on transient failures
+- Full Prometheus observability for attempt rates, failover events, circuit breaker transitions, and request latencies
+- Backward-compatible single-URL fallback
 
-### Failover strategy
+All transaction submissions, transaction preparations, simulations, account lookups, transaction confirmations, and fee evaluations run through `getResilientClient().execute(fn, context)`.
 
-#### Option A: Load-balanced endpoint (recommended)
+The legacy `getRpcServer()` function is deprecated and routes to the primary configured endpoint (`getResilientClient().getPrimaryServer()`).
 
-Configure a single URL that routes across multiple RPC providers:
+### Endpoint configuration and resolution order
+
+Endpoints are resolved at initialization in `src/stellar/client.ts` using the following priority order:
+
+1. `STELLAR_RPC_URLS`: Comma-separated list of HTTPS endpoints (e.g., `https://soroban-mainnet.stellar.org,https://mainnet.sorobanrpc.com,https://rpc.stellar.org/mainnet`). The first endpoint acts as primary; subsequent endpoints serve as failover targets in exact listed order.
+2. `STELLAR_RPC_URL`: Single legacy HTTPS endpoint. Used if `STELLAR_RPC_URLS` is not set.
+3. Network default: Derived automatically from `STELLAR_NETWORK` (`testnet`, `mainnet`, or `futurenet`) via `src/config/env.ts` if neither environment variable is provided.
+
+See [.env.example](../.env.example) for configuration examples.
+
+#### Environment variables
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `STELLAR_RPC_URLS` | String (comma-separated) | Unset | Ordered list of RPC endpoints for automatic failover. Takes precedence over `STELLAR_RPC_URL`. |
+| `STELLAR_RPC_URL` | String (URL) | Unset | Single fallback RPC endpoint (legacy compatibility). |
+| `HTTP_CLIENT_TIMEOUT_MS` | Number (ms) | `10000` | Outgoing HTTP request timeout per call. |
+| `HTTP_CLIENT_MAX_RETRIES` | Number | `3` | Maximum retry attempts per endpoint before initiating failover. |
+| `HTTP_CLIENT_BASE_DELAY_MS` | Number (ms) | `200` | Base delay for exponential backoff between retries. |
+| `HTTP_CLIENT_MAX_DELAY_MS` | Number (ms) | `10000` | Maximum delay cap for exponential backoff. |
+| `HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD` | Number | `5` | Consecutive failures before an endpoint's circuit breaker trips to `open`. |
+| `HTTP_CLIENT_CIRCUIT_BREAKER_RESET_MS` | Number (ms) | `30000` | Duration an open circuit breaker remains `open` before entering `half-open` probe state. |
+
+### Failover execution and circuit breaker lifecycle
+
+Each configured endpoint receives its own `EndpointSlot` containing a dedicated `rpc.Server` and `HttpClientAdapter`. Circuit breaker state is tracked independently per endpoint:
 
 ```
-STELLAR_RPC_URL=https://soroban-mainnet.stellar.org
+[Request] ──> Try Primary Endpoint (Index 0)
+                   │
+                   ├──> Success ──> Return Result (Reset failure counter)
+                   │
+                   └──> Failure (Max retries exceeded or Circuit OPEN)
+                             │
+                             ├──> Increment stellar_rpc_failovers_total
+                             ├──> Check Circuit Breaker Threshold
+                             │       └──> If consecutive failures >= threshold: Trip to OPEN
+                             │
+                             └──> Failover to Secondary Endpoint (Index 1..N)
+                                       │
+                                       ├──> Success ──> Return Result
+                                       └──> All endpoints failed ──> Throw Error
 ```
 
-Replace this with a load balancer or provider that pools:
-- `https://soroban-mainnet.stellar.org` (SDF)
-- `https://mainnet.sorobanrpc.com` (public)
-- `https://rpc.stellar.org/mainnet` (alternative)
+#### Circuit breaker states
 
-#### Option B: Multi-provider fallback (not yet implemented)
+1. **Closed**: Normal operations. Requests pass through to the endpoint.
+2. **Open**: Triggered after `HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD` consecutive failed calls. Calls immediately skip this endpoint without waiting for network timeouts, increment `stellar_rpc_circuit_open_total`, and advance to the next configured endpoint.
+3. **Half-Open**: After `HTTP_CLIENT_CIRCUIT_BREAKER_RESET_MS` elapsed in the `open` state, a single probe call is permitted. If successful, the circuit resets to `closed`. If the probe fails, the circuit re-opens for another reset duration.
 
-If you need resilience without a LB, wrap `getRpcServer()` to fall back:
+### Operator controls and emergency recovery
 
-```typescript
-const RPC_URLS = [
-  'https://soroban-mainnet.stellar.org',
-  'https://mainnet.sorobanrpc.com',
-]
-let currentIndex = 0
+The client provides operational recovery helpers in `src/stellar/client.ts`:
 
-export function getRpcServer(): rpc.Server {
-  // Returns current server; call rotateRpc() on failure
-  if (!rpcServer) rpcServer = new rpc.Server(RPC_URLS[currentIndex])
-  return rpcServer
-}
+- `getRpcHealthSnapshot()`: Inspect current circuit breaker states (`closed`, `open`, `half-open`) and failure counts for all configured endpoints.
+- `resetRpcCircuitBreakers()`: Immediately force-resets all circuit breakers back to `closed` without requiring an application restart.
 
-export function rotateRpc(): void {
-  currentIndex = (currentIndex + 1) % RPC_URLS.length
-  rpcServer = new rpc.Server(RPC_URLS[currentIndex])
-  logger.warn(`[RPC] Failed over to ${RPC_URLS[currentIndex]}`)
-}
+### Prometheus metrics and observability
+
+Stellar RPC metrics are registered in `src/utils/rpc-metrics.ts` and scraped via the application's `/metrics` endpoint:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `stellar_rpc_attempts_total` | Counter | `endpoint`, `context`, `primary` | Total number of RPC call attempts. |
+| `stellar_rpc_failovers_total` | Counter | `endpoint`, `context` | Invocations that fell back to a secondary endpoint due to primary failure or open circuit breaker. |
+| `stellar_rpc_circuit_open_total` | Counter | `endpoint`, `context` | Requests blocked and skipped because an endpoint's circuit breaker was `open`. |
+| `stellar_rpc_request_duration_seconds` | Histogram | `endpoint`, `context`, `success` | Call latency distribution across buckets `[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10]`. |
+
+#### Querying metrics
+
+Inspect metrics directly via curl:
+
+```bash
+# View all Stellar RPC metrics
+curl -s http://localhost:3000/metrics | grep stellar_rpc_
+
+# Check failovers across contexts
+curl -s http://localhost:3000/metrics | grep stellar_rpc_failovers_total
+
+# Check tripped circuit breakers
+curl -s http://localhost:3000/metrics | grep stellar_rpc_circuit_open_total
 ```
 
-Wire `rotateRpc()` into error handlers in `fetchEvents` and `submitTransaction`.
+#### Key PromQL alerts and dashboards
+
+```promql
+# Rate of RPC failovers over 5 minutes (alert if > 0)
+sum(rate(stellar_rpc_failovers_total[5m])) by (endpoint, context)
+
+# Active circuit breaker trip rate (alert if > 0)
+sum(rate(stellar_rpc_circuit_open_total[5m])) by (endpoint)
+
+# RPC error rate per endpoint
+sum(rate(stellar_rpc_request_duration_seconds_count{success="false"}[5m])) by (endpoint)
+  /
+sum(rate(stellar_rpc_request_duration_seconds_count[5m])) by (endpoint)
+
+# 95th percentile RPC latency per endpoint
+histogram_quantile(0.95, sum(rate(stellar_rpc_request_duration_seconds_bucket[5m])) by (le, endpoint))
+```
 
 ### RPC outage playbook
 
-| Symptom | Action |
-|---|---|
-| `fetchEvents` fails with connection error | Rotate RPC URL (manual or automated) |
-| `sendTransaction` hangs or times out | Rotate RPC; retry tx via `getTransaction` |
-| Persistent RPC failures | Switch to backup RPC provider entirely |
-| All known RPCs down | Pause event listener; set `agentLoop` to degraded; page on-call |
+| Symptom | Cause | Action |
+|---|---|---|
+| Spike in `stellar_rpc_failovers_total` | Primary RPC experiencing packet loss or high error rate | None required immediately; `ResilientRpcClient` auto-routes traffic to secondary endpoints. Verify secondary capacity. |
+| `stellar_rpc_circuit_open_total` > 0 | Endpoint hit failure threshold and was marked unhealthy | Inspect endpoint provider status. When provider resolves, wait for auto-reset (`HTTP_CLIENT_CIRCUIT_BREAKER_RESET_MS`) or invoke `resetRpcCircuitBreakers()`. |
+| RPC calls failing across all endpoints | All providers in `STELLAR_RPC_URLS` unreachable | Update `STELLAR_RPC_URLS` with healthy alternative endpoints and restart pods; alert on-call. |
+| Elevated latency in `stellar_rpc_request_duration_seconds` | Provider throttling or degraded network performance | Adjust `HTTP_CLIENT_TIMEOUT_MS` if requests hit timeout, or promote a faster secondary provider to first position in `STELLAR_RPC_URLS`. |
 
-### Verify RPC health
+### Verifying endpoint health
 
 ```bash
-# Check latest ledger via RPC
-curl -s -X POST "$STELLAR_RPC_URL" \
+# Check ledger sequence directly against a specific RPC URL
+curl -s -X POST "https://soroban-mainnet.stellar.org" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getLatestLedger"}' | \
   jq '.result.sequence'
 
-# Monitor via /metrics
-curl -s http://localhost:3001/metrics | grep cursor_lag
+# Check health endpoint reporting Stellar RPC status
+curl -s http://localhost:3000/health | jq '.subsystems.stellarRpc'
 ```
 
 ---
