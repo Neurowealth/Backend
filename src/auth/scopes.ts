@@ -19,6 +19,13 @@ export const USER_SCOPES = [
   'webhooks:manage',
   'vault:read',
   'vault:write',
+  // #532 — collateral loans. Borrowing and repaying are money movement, so
+  // they are deliberately NOT folded into `withdraw:write`: a key trusted to
+  // read a portfolio or to pull funds out should not thereby gain the power to
+  // pledge the user's collateral. `loans:read` is a read scope, and
+  // `loans:write` covers both origination and repayment.
+  'loans:read',
+  'loans:write',
 ] as const
 
 export type UserScope = (typeof USER_SCOPES)[number]
