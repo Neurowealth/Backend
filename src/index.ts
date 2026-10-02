@@ -64,6 +64,8 @@ import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
 import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { scheduleApprovalExpiry } from './jobs/approvalExpiry'
 import { scheduleReserveReconciliation } from './jobs/reserveReconciliation'
+import { scheduleLoanAccrual } from './jobs/loanAccrual'
+import { scheduleLoanLiquidationMonitor } from './jobs/loanLiquidationMonitor'
 import { scheduleLinkedExternalWalletSync } from './jobs/linkedExternalWalletSync'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { startEventBridge, stopEventBridge } from './events/bridge'
@@ -80,6 +82,7 @@ import transactionsRouter from './routes/transactions'
 import protocolsRouter from './routes/protocols'
 import depositRouter from './routes/deposit'
 import withdrawRouter from './routes/withdraw'
+import loansRouter from './routes/loans'
 import vaultRouter from './routes/vault'
 import analyticsRouter from './routes/analytics'
 import adminRouter from './routes/admin'
@@ -145,6 +148,8 @@ let approvalExpiryHandle: NodeJS.Timeout | null = null
 let reserveReconciliationHandle: NodeJS.Timeout | null = null
 let outboundNotificationsHandle: NodeJS.Timeout | null = null
 let linkedExternalWalletSyncHandle: NodeJS.Timeout | null = null
+let loanAccrualHandle: NodeJS.Timeout | null = null
+let loanLiquidationHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -346,6 +351,10 @@ const apiRoutes: ApiRoute[] = [
   { path: 'protocols', handlers: [protocolsRouter] },
   { path: 'deposit', handlers: [depositRouter] },
   { path: 'withdraw', handlers: [withdrawRouter] },
+  // #532 — collateral loans. Mounted beside withdraw rather than inside
+  // portfolio: a loan is its own lifecycle with its own approval and rate
+  // limits, and it must not inherit portfolio's read-only scope set.
+  { path: 'loans', handlers: [loansRouter] },
   { path: 'vault', handlers: [vaultRouter] },
   { path: 'analytics', handlers: [analyticsRouter] },
   { path: 'stellar', handlers: [stellarRouter] },
@@ -498,6 +507,18 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(linkedExternalWalletSyncHandle)
     linkedExternalWalletSyncHandle = null
     logger.info('[Shutdown] External wallet sync timer cleared')
+  }
+
+  if (loanAccrualHandle) {
+    clearInterval(loanAccrualHandle)
+    loanAccrualHandle = null
+    logger.info('[Shutdown] Loan accrual timer cleared')
+  }
+
+  if (loanLiquidationHandle) {
+    clearInterval(loanLiquidationHandle)
+    loanLiquidationHandle = null
+    logger.info('[Shutdown] Loan liquidation monitor cleared')
   }
 
   try {
@@ -719,6 +740,10 @@ async function main(): Promise<void> {
   reserveReconciliationHandle = scheduleReserveReconciliation()
   outboundNotificationsHandle = scheduleOutboundNotifications()
   linkedExternalWalletSyncHandle = scheduleLinkedExternalWalletSync()
+  // #532 — accrual first, then the monitor: the monitor values loans, and it
+  // must not value them on interest the accrual job has not yet recorded.
+  loanAccrualHandle = scheduleLoanAccrual()
+  loanLiquidationHandle = scheduleLoanLiquidationMonitor()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────
