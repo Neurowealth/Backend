@@ -18,6 +18,8 @@ import {
   clampSlippage,
   validateQuoteExpiry,
   buildPathPaymentOp,
+  buildPathPaymentStrictSendOp,
+  buildPathPaymentStrictReceiveOp,
   ROUTING_CONFIG,
 } from '../../../src/stellar/routing'
 import { fetchWithRetry } from '../../../src/utils/fetchWithRetry'
@@ -41,6 +43,12 @@ const ISSUER_B = 'GCHN4QBST35DEEHRPSGR5H5QESZDWQY7VJM5LSGLVLX3TKYWHTBHJTZK'
 type DecodedStrictSend = {
   sendAmount: string
   destMin: string
+  destination: string
+}
+
+type DecodedStrictReceive = {
+  sendMax: string
+  destAmount: string
   destination: string
 }
 
@@ -461,6 +469,41 @@ describe('findStrictReceivePath', () => {
       })
     ).rejects.toThrow(/503/)
   })
+
+  it('throws when Horizon returns no path for strict-receive', async () => {
+    mockFetch.mockResolvedValue(horizonResponse([]))
+
+    await expect(
+      findStrictReceivePath({
+        sourceAsset: 'XLM',
+        destAsset: USDC,
+        destAmount: '100.0',
+      })
+    ).rejects.toThrow(/Horizon strict-receive returned no path/)
+    expect(logger.error).toHaveBeenCalled()
+  })
+
+  it('rejects a malformed source asset before calling Horizon for strict-receive', async () => {
+    await expect(
+      findStrictReceivePath({
+        sourceAsset: 'NOT_VALID_ASSET',
+        destAsset: USDC,
+        destAmount: '100.0',
+      })
+    ).rejects.toThrow(/Invalid asset format/)
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  it('rejects a malformed destination asset before calling Horizon for strict-receive', async () => {
+    await expect(
+      findStrictReceivePath({
+        sourceAsset: 'XLM',
+        destAsset: 'NOT_VALID_DEST',
+        destAmount: '100.0',
+      })
+    ).rejects.toThrow(/Invalid asset format/)
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
 })
 
 describe('quote lifetime', () => {
@@ -520,5 +563,42 @@ describe('clampSlippage', () => {
 
   it('passes an in-band value through', () => {
     expect(clampSlippage(120)).toBe(120)
+  })
+})
+
+describe('buildPathPaymentStrictReceiveOp', () => {
+  it('builds a strict-receive operation with slippage-adjusted sendMax', async () => {
+    mockFetch.mockResolvedValue(
+      horizonResponse([
+        strictSendRecord({
+          source_amount: '100.0000000',
+          dest_amount: '95.0000000',
+          path: [{ asset_code: 'USDC', asset_issuer: ISSUER_A }],
+        }),
+      ])
+    )
+
+    const quote = await findStrictReceivePath({
+      sourceAsset: 'XLM',
+      destAsset: EUR,
+      destAmount: '95.0000000',
+    })
+    const op = buildPathPaymentStrictReceiveOp(quote, DESTINATION)
+
+    const attrs = Operation.fromXDRObject<
+      DecodedStrictReceive & OperationRecord
+    >(xdr.Operation.fromXDR(op.toXDR('base64'), 'base64'))
+
+    const expectedSendMax = (
+      100 *
+      (1 + ROUTING_CONFIG.SLIPPAGE_DEFAULT_BPS / 10_000)
+    ).toFixed(7)
+    expect(Number(attrs.sendMax)).toBe(Number(expectedSendMax))
+    expect(Number(attrs.destAmount)).toBe(95)
+    expect(attrs.destination).toBe(DESTINATION)
+  })
+
+  it('buildPathPaymentStrictSendOp is an alias to buildPathPaymentOp', () => {
+    expect(buildPathPaymentStrictSendOp).toBe(buildPathPaymentOp)
   })
 })
