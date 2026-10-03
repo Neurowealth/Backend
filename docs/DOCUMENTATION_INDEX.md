@@ -21,6 +21,7 @@
 - **[PRISMA_QUERY_PERFORMANCE.md](PRISMA_QUERY_PERFORMANCE.md)** - Hot webhook query plans, supporting indexes, and the query-index regression check
 - **[NET_WORTH.md](NET_WORTH.md)** - Read-only external Stellar links, valuation/staleness semantics, and private scope
 - **[CONSENT_AND_PRIVACY_POLICY.md](CONSENT_AND_PRIVACY_POLICY.md)** - User consent boundaries, high-risk workflow checks & auditable bypass policy (#510)
+- **[ACCOUNT_RECOVERY.md](ACCOUNT_RECOVERY.md)** - Guardian-based social recovery (#535): quorum & delay bounds, one-live-request partial unique index, anti-enumeration on the public initiate endpoint, token digests, alerting, job-only execution, scope limits
 
 ### For DevOps/Deployment
 

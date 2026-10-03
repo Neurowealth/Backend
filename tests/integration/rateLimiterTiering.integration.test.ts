@@ -52,6 +52,7 @@ jest.mock('../../src/config/env', () => ({
       anonymousRateLimit: { windowMs: 900000, max: 3 },
       authenticatedRateLimit: { windowMs: 900000, max: 5 },
       sensitiveRateLimit: { windowMs: 900000, max: 2 },
+      recoveryRateLimit: { windowMs: 900000, max: 10 },
       trustedIps: [],
       internalServiceToken: '',
     },

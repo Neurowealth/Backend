@@ -309,6 +309,15 @@ model User {
   linkedExternalWallets   LinkedExternalWallet[]
   emailIdentity           EmailIdentity?
   pushDeviceTokens        PushDeviceToken[]
+  // #535 -- guardian-based social recovery. `recoveryGuardians` is the set
+  // this user has nominated (they are the account being protected);
+  // `guardianships` is the (much rarer) case of having been nominated by
+  // someone else. Two named relations because both point at User and the
+  // self-guardian case is rejected at the service layer, not the schema.
+  recoveryGuardians       RecoveryGuardian[]       @relation("RecoveryGuardianOwner")
+  guardianships           RecoveryGuardian[]       @relation("RecoveryGuardianUser")
+  recoveryPolicy          RecoveryPolicy?
+  recoveryRequests        RecoveryRequest[]
   totpCredential          TotpCredential?
 
   @@map("users")
@@ -2202,4 +2211,197 @@ model AgentCircuitBreaker {
   @@unique([scope, scopeKey])
   @@index([state])
   @@map("agent_circuit_breakers")
+}
+
+// -- #535 Guardian-Based Social Recovery ---------------------------------------
+//
+// Recovery of a user's own ACCOUNT ACCESS (their session/auth), not of the
+// custodial wallet key -- the platform already holds the latter, so it is a
+// different problem and handled by src/keys/registry.ts. See
+// docs/ACCOUNT_RECOVERY.md for the full threat model.
+//
+// The whole design exists to make UNAUTHORIZED recovery hard, so the schema
+// encodes the two structural defences that cannot be forgotten by a later
+// service-layer edit:
+//
+//   1. `RecoveryPolicy.requiredApprovals` has a database CHECK of >= 2. A
+//      1-of-N policy is a single compromised guardian away from a takeover, and
+//      a quorum of one would make every other control in this feature
+//      decorative. Refusing the row at the database is stronger than
+//      validating it in TypeScript, because a future writer can forget the
+//      validator but cannot bypass the constraint.
+//   2. `RecoveryPolicy.recoveryDelayHours` has a CHECK of >= 24, and
+//      `RecoveryRequest.executeAfter` is stamped ONCE, at the moment quorum is
+//      reached, from the policy in force at that instant. It is never
+//      recomputed, so shortening or deleting the policy afterwards cannot pull
+//      a live request's deadline forward.
+
+enum RecoveryGuardianStatus {
+  /// Invited; the guardian has not explicitly accepted yet. NOT counted toward
+  /// quorum -- a nomination alone must never be enough to take over an account.
+  PENDING
+  /// Explicitly accepted by the guardian. The only status that counts.
+  ACCEPTED
+  DECLINED
+  /// Withdrawn by the account owner, or invalidated by the service.
+  REMOVED
+}
+
+enum RecoveryRequestStatus {
+  /// Open, collecting guardian approvals.
+  PENDING
+  /// Quorum reached and the mandatory delay is running. Still fully cancellable
+  /// by the owner -- this is the window the whole design exists to protect.
+  QUORUM_REACHED
+  /// Every invited guardian refused, or the request aged out with too few
+  /// approvals. Terminal.
+  REJECTED
+  /// The account owner (or a parent account, for a sub-account) cancelled it.
+  /// Terminal.
+  CANCELLED
+  /// Executed: auth reset and every session revoked. Terminal.
+  COMPLETED
+  /// Sat at QUORUM_REACHED until `expiresAt` without the delay elapsing (a
+  /// policy edit that pushed the deadline out, say). Terminal.
+  EXPIRED
+}
+
+model RecoveryGuardian {
+  id String @id @default(uuid())
+
+  /// The account being protected -- the nominee, not the nominee's guardian.
+  userId String
+  user   User   @relation("RecoveryGuardianOwner", fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Set when the guardian is another verified platform user. Exactly one of
+  /// `guardianUserId` / `externalEmail` / `externalPhone` identifies the
+  /// guardian, and the service requires at least one.
+  guardianUserId String?
+  guardianUser   User?   @relation("RecoveryGuardianUser", fields: [guardianUserId], references: [id], onDelete: SetNull)
+
+  /// External (non-platform) contact. Verified out of band via the same
+  /// accept-invite token as a platform guardian, so an address nobody controls
+  /// can never be enrolled as a co-signer.
+  externalEmail String?
+  externalPhone String?
+
+  status RecoveryGuardianStatus @default(PENDING)
+
+  /// SHA-256 of the raw acceptance token. The raw token is returned exactly
+  /// once, to the nominator, and is otherwise never stored -- same precedent as
+  /// EmailIdentity.verifyTokenHash.
+  inviteTokenHash String    @unique
+  inviteExpiresAt DateTime
+  confirmedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  approvals RecoveryApproval[]
+
+  /// The sweeps that find requests needing action, and the lookup that resolves
+  /// a guardian's "requests awaiting my approval" list.
+  @@index([userId, status])
+  @@index([guardianUserId, status])
+  @@map("recovery_guardians")
+}
+
+/// One row per account. Written on first guardian nomination, editable by the
+/// owner within the bounds the CHECK constraints impose.
+model RecoveryPolicy {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Guardian approvals needed. Never 1: see the CHECK below.
+  requiredApprovals  Int @default(2)
+  /// Fixed cooling-off window between quorum and execution. Never shortened
+  /// below a day; the issue's working range is 48-72h.
+  recoveryDelayHours Int @default(48)
+  /// Cap on how many guardians this account may hold. Bounded so the
+  /// quorum/delay maths stays meaningful and so the setup endpoint cannot be
+  /// used to enumerate or spam a large contact list.
+  maxGuardians       Int @default(5)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// A quorum of one is never acceptable, whatever the caller asks for.
+  @@index([userId])
+  @@map("recovery_policies")
+}
+
+model RecoveryRequest {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status RecoveryRequestStatus @default(PENDING)
+
+  /// The claimant's stated reason. Audit-relevant free text; never rendered as
+  /// HTML and never included in a stream payload.
+  reason String
+
+  /// Snapshotted from the policy at the instant quorum was reached, so a later
+  /// policy edit cannot retroactively change the terms an in-flight request was
+  /// approved under. Stamped ONCE and never recomputed.
+  quorumReachedAt DateTime?
+  executeAfter    DateTime?
+  executedAt      DateTime?
+  cancelledAt     DateTime?
+  expiresAt       DateTime?
+
+  /// Number of approvals needed for this request, snapshotted alongside
+  /// quorumReachedAt for the same reason.
+  requiredApprovals  Int?
+  /// Recovery delay that applied, in hours, snapshotted at quorum.
+  recoveryDelayHours Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  approvals RecoveryApproval[]
+
+  /// At most one live request per account. Enforced here rather than in the
+  /// service so two concurrent initiations cannot both open one.
+  @@index([userId, status])
+  /// The sweeper's query: open requests whose deadline has passed.
+  @@index([status, executeAfter])
+  @@map("recovery_requests")
+}
+
+/// One row per (request, guardian). `@@unique` is what makes a second approval
+/// from the same guardian impossible, so approval cannot be counted twice even
+/// under a concurrent retry.
+model RecoveryApproval {
+  id        String          @id @default(uuid())
+  requestId String
+  request   RecoveryRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  guardianId String
+  guardian   RecoveryGuardian @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+
+  /// false is a recorded refusal. Storing refusals (rather than omitting them)
+  /// keeps a guardian's decision auditable and stops them being re-asked.
+  approved Boolean
+
+  /// How the guardian proved who they were: an authenticated platform session,
+  /// or the out-of-band invite token for an external contact. A recovery can
+  /// never be approved without one of the two.
+  method    String
+  decidedAt DateTime @default(now())
+  /// The guardian's optional note. Audit-relevant free text; never rendered.
+  note      String?
+
+  /// Free-form, append-only. Deliberately has no user foreign key so a
+  /// retention sweep cannot cascade the audit trail away -- same precedent as
+  /// UserDataAudit.
+  ipAddress String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([requestId, guardianId])
+  @@index([guardianId, decidedAt])
+  @@map("recovery_approvals")
 }

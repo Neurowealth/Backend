@@ -50,6 +50,7 @@ export type RevocationReason =
   | 'logout_others'
   | 'admin'
   | 'refresh_token_reuse'
+  | 'account_recovery'
   | `session_anomaly:${SessionAnomalyHeuristic}`
 
 export type RefreshFailureReason =

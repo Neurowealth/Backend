@@ -28,6 +28,8 @@ jest.mock('../../src/config/env', () => ({
       anonymousRateLimit: { windowMs: 900000, max: 60 },
       authenticatedRateLimit: { windowMs: 900000, max: 600 },
       sensitiveRateLimit: { windowMs: 900000, max: 10 },
+      // #535 — guardian recovery limiter, also constructed at module load.
+      recoveryRateLimit: { windowMs: 900000, max: 10 },
       trustedIps: [],
       internalServiceToken: '',
     },
