@@ -5,7 +5,7 @@ import { pushRegistry } from '../push/pushProvider'
 
 const registerPushSchema = z.object({
   token: z.string().min(1),
-  platform: z.enum(['ios', 'android', 'web']),
+  platform: z.enum(['IOS', 'ANDROID', 'WEB']),
 })
 
 export async function registerPushDevice(

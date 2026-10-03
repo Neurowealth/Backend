@@ -23,7 +23,7 @@ import {
   rotateRefreshToken,
   type RefreshFailureReason,
 } from '../services/refresh-token.service'
-import { getActiveTotpCredential, issueTotpChallenge } from '../services/totp.service'
+import { getActiveTotpCredential, issueTotpChallenge, completeTotpChallenge } from '../services/totp.service'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -45,6 +45,10 @@ const REFRESH_ERRORS: Record<
   rotation_conflict: {
     status: 409,
     error: 'Concurrent refresh detected, retry',
+  },
+  session_anomaly_detected: {
+    status: 401,
+    error: 'Session anomaly detected; please sign in again',
   },
 }
 

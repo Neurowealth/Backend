@@ -40,16 +40,9 @@ export const OPTIONAL_SECRET_KEYS = [
 ] as const
 
 export type SecretKey = (typeof SECRET_KEYS)[number]
+export type OptionalSecretKey = (typeof OPTIONAL_SECRET_KEYS)[number]
 
 const secretValidators: Partial<Record<SecretKey, (value: string) => boolean>> = {
-
-  const optionalSecretValidators: Partial<
-    Record<(typeof OPTIONAL_SECRET_KEYS)[number], (value: string) => boolean>
-  > = {
-    TWILIO_ACCOUNT_SID: (value) => /^AC[0-9a-f]{32}$/i.test(value),
-    TELEGRAM_BOT_TOKEN: (value) => /^\d+:[A-Za-z0-9_-]+$/.test(value),
-    WALLET_ENCRYPTION_KEY_OLD: (value) => /^[0-9a-f]{64}$/i.test(value),
-  }
   JWT_SEED: (value) => value.length >= 32,
   WALLET_ENCRYPTION_KEY: (value) => /^[0-9a-f]{64}$/i.test(value),
   STELLAR_AGENT_SECRET_KEY: (value) => value.startsWith('S') && value.length === 56,
@@ -58,22 +51,17 @@ const secretValidators: Partial<Record<SecretKey, (value: string) => boolean>> =
   DATABASE_URL: (value) => /^postgres(?:ql)?:\/\//.test(value),
 }
 
+const optionalSecretValidators: Partial<
+  Record<OptionalSecretKey, (value: string) => boolean>
+> = {
+  TWILIO_ACCOUNT_SID: (value) => /^AC[0-9a-f]{32}$/i.test(value),
+  TELEGRAM_BOT_TOKEN: (value) => /^\d+:[A-Za-z0-9_-]+$/.test(value),
+  WALLET_ENCRYPTION_KEY_OLD: (value) => /^[0-9a-f]{64}$/i.test(value),
+}
+
 export function validateSecretCredentials(now = new Date()): string[] {
   const errors: string[] = []
   for (const key of SECRET_KEYS) {
-      for (const key of OPTIONAL_SECRET_KEYS) {
-        const value = process.env[key]
-        if (value && optionalSecretValidators[key] && !optionalSecretValidators[key]!(value)) {
-          errors.push(`${key} has an invalid format`)
-        }
-        const expiresAt = process.env[`SECRET_EXPIRY_${key}`]
-        if (expiresAt) {
-          const expiry = Date.parse(expiresAt)
-          if (!Number.isFinite(expiry) || expiry <= now.getTime()) {
-            errors.push(`${key} is expired or has an invalid expiry date`)
-          }
-        }
-      }
     const value = process.env[key]
     if (!value) {
       errors.push(`${key} is missing`)
@@ -89,6 +77,21 @@ export function validateSecretCredentials(now = new Date()): string[] {
       }
     }
   }
+
+  for (const key of OPTIONAL_SECRET_KEYS) {
+    const value = process.env[key]
+    if (value && optionalSecretValidators[key] && !optionalSecretValidators[key]!(value)) {
+      errors.push(`${key} has an invalid format`)
+    }
+    const expiresAt = process.env[`SECRET_EXPIRY_${key}`]
+    if (expiresAt) {
+      const expiry = Date.parse(expiresAt)
+      if (!Number.isFinite(expiry) || expiry <= now.getTime()) {
+        errors.push(`${key} is expired or has an invalid expiry date`)
+      }
+    }
+  }
+
   secretCredentialValidationFailures.set(errors.length)
   return errors
 }
@@ -158,19 +161,20 @@ class AwsSsmSecretsProvider implements SecretsProvider {
           logger.warn(
             `[SecretsProvider] Failed to refresh SSM key "${k}": ${err.message}`
           )
-
-          if (process.env.SECRET_BACKEND === 'aws-ssm') {
-            await Promise.all(
-              OPTIONAL_SECRET_KEYS.map((key) =>
-                _provider!.get(key).catch(() => {
-                  // Optional integrations may not be configured in every environment.
-                })
-              )
-            )
-          }
         })
       )
     )
+
+    if (process.env.SECRET_BACKEND === 'aws-ssm') {
+      await Promise.all(
+        OPTIONAL_SECRET_KEYS.map((key) =>
+          this.get(key).catch(() => {
+            // Optional integrations may not be configured in every environment.
+          })
+        )
+      )
+    }
+
     await refreshRuntimeConfiguration()
     const validationErrors = validateSecretCredentials()
     if (validationErrors.length) {

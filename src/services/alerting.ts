@@ -18,6 +18,8 @@ export interface AlertPayload {
   severity: 'info' | 'warning' | 'critical'
   component: string
   metadata?: Record<string, any>
+  /** Optional deduplication key to avoid repeat alerts for the same event. */
+  dedupKey?: string
 }
 
 export interface DLQAlertPayload extends AlertPayload {

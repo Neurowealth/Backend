@@ -270,6 +270,14 @@ enum SubAccountStatus {
   REVOKED
 }
 
+enum ErasureRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  COMPLETED
+  FAILED
+}
+
 model User {
   id                  String           @id @default(uuid())
   walletAddress       String           @unique
@@ -300,7 +308,6 @@ model User {
   // reports, never rewrites past disposal rows (which carry no jurisdiction
   // of their own — see src/tax/jurisdictions/).
   taxJurisdiction     TaxJurisdiction  @default(US)
-  displayCurrency     String           @default("USD")
 
   sessions                Session[]
   positions               Position[]
@@ -323,17 +330,18 @@ model User {
   allocationSuggestions   AllocationSuggestion[]
   portfolioAttributions   PortfolioAttribution[]
   portfolioRiskAggregates PortfolioRiskAggregate[]
-  approvalPolicies        ApprovalPolicy[]         @relation("ApprovalPolicyPrincipal")
-  approvalRequests        ApprovalRequest[]        @relation("ApprovalRequestPrincipal")
-  userEvents              UserEvent[]
-  userEventSequence       UserEventSequence?
+  erasureRequests         ErasureRequest[]
   userApiKeys             UserApiKey[]
-  userWebhookEndpoints    UserWebhookEndpoint[]
-  linkedExternalWallets   LinkedExternalWallet[]
-  emailIdentity           EmailIdentity?
   pushDeviceTokens        PushDeviceToken[]
   CollateralLoan          CollateralLoan[]
   totpCredential          TotpCredential?
+  linkedExternalWallets   LinkedExternalWallet[]
+  approvalPolicies        ApprovalPolicy[]         @relation("ApprovalPolicyPrincipal")
+  approvalRequests        ApprovalRequest[]        @relation("ApprovalRequestPrincipal")
+  complianceCases         ComplianceCase[]
+  emailIdentity           EmailIdentity?
+  webhookEndpoints        UserWebhookEndpoint[]
+  notificationPreferences NotificationPreference[]
 
   @@map("users")
 }
@@ -394,18 +402,18 @@ model PushDeviceToken {
 /// treated as active or enforced. `lastAcceptedStep` tracks the last accepted
 /// TOTP time-step so a code cannot be replayed within its window.
 model TotpCredential {
-  id               String    @id @default(uuid())
-  userId           String    @unique
-  secretEncrypted  String
-  iv               String
-  authTag          String
-  keyVersion       Int       @default(1)
-  encryptionKeyId  String?
-  verifiedAt       DateTime?
-  lastAcceptedStep BigInt?
+  id                  String    @id @default(uuid())
+  userId              String    @unique
+  secretEncrypted     String
+  iv                  String
+  authTag             String
+  keyVersion          Int       @default(1)
+  encryptionKeyId     String?
+  verifiedAt          DateTime?
+  lastAcceptedStep    BigInt?
   recoveryCodesHashed String[]
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -1387,27 +1395,29 @@ model ReferralCode {
 /// owed and retriable; it is never un-activated once ACTIVATED (on-chain
 /// finality). `referredUserId` is unique — one referral credit per user, ever.
 model ReferralConversion {
-  id                 String         @id @default(uuid())
-  referralCodeId     String
-  referredUserId     String         @unique
-  activatedAt        DateTime?
-  activationTxId     String? // the confirmed deposit Transaction that satisfied (or would have satisfied) activation
-  status             ReferralStatus @default(PENDING)
-  ownerRewardTxId    String? // REFERRAL_REWARD Transaction paid to the referrer
-  referredRewardTxId String? // REFERRAL_REWARD Transaction paid to the referred user
-  tier2RewardTxId    String?
-  payoutError        String? // last payout failure reason — kept for retriable visibility
-  // #397 — fraud/abuse review trail. fraudReasons/flaggedAt are set when the
-  // heuristic in evaluateReferralFraudRisk() flags a conversion instead of
-  // activating it; reviewedAt/reviewedBy/reviewDecision are set once an admin
-  // resolves it via resolveFlaggedConversion().
-  fraudReasons       String[]       @default([])
-  flaggedAt          DateTime?
-  reviewedAt         DateTime?
-  reviewedBy         String?
-  reviewDecision     String? // 'approved' | 'rejected'
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  id                   String         @id @default(uuid())
+  referralCodeId       String
+  referredUserId       String         @unique
+  activatedAt          DateTime?
+  activationTxId       String? // the confirmed deposit Transaction that satisfied activation
+  status               ReferralStatus @default(PENDING)
+  ownerRewardTxId      String? // REFERRAL_REWARD Transaction paid to the referrer
+  referredRewardTxId   String? // REFERRAL_REWARD Transaction paid to the referred user
+  payoutError          String? // last payout failure reason — kept for retriable visibility
+  // Fraud detection fields (#490)
+  fraudCheckScore      Int?
+  fraudCheckFlags      String[]       @default([])
+  fraudCheckDetails    Json?
+  manualReviewRequired Boolean        @default(false)
+  manualReviewRejected Boolean        @default(false)
+  reviewedBy           String?
+  reviewedAt           DateTime?
+  rejectionReason      String?
+  fraudReasons         String[]       @default([])
+  reviewDecision       String?
+  tier2RewardTxId      String?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
 
   referralCode ReferralCode @relation(fields: [referralCodeId], references: [id], onDelete: Cascade)
   referredUser User         @relation(fields: [referredUserId], references: [id], onDelete: Cascade)
@@ -1415,6 +1425,7 @@ model ReferralConversion {
   @@index([referralCodeId])
   @@index([status])
   @@index([createdAt])
+  @@index([manualReviewRequired])
   @@map("referral_conversions")
 }
 
@@ -1784,468 +1795,30 @@ model PortfolioRiskAggregate {
   @@map("portfolio_risk_aggregates")
 }
 
-/// One durable, sequence-numbered event on a user's real-time stream (#316).
-///
-/// DESIGN NOTE — why Postgres and not a Redis Stream.
-/// Redis is *optional* in this deployment: src/config/redis.ts degrades to a
-/// no-op when REDIS_URL is unset, which is the configuration most environments
-/// (and the whole test suite) actually run. A Redis-backed stream would
-/// therefore make `resume afterSeq` silently unavailable exactly where it is
-/// hardest to notice, and would put durability on a store we already treat as
-/// a cache. Postgres is the source of truth for every other domain event, is
-/// already covered by the retention job, and gives us the gapless per-user
-/// counter below for free. Redis stays in the design as the *transport* for the
-/// cross-pod fan-out (src/events/bridge.ts) — never as the store. Losing Redis
-/// costs live cross-pod delivery for the duration of the outage; it never costs
-/// replay, because replay reads this table.
-///
-/// Bounded two ways by src/jobs/dataRetention.ts: by age
-/// (RETENTION_USER_EVENTS_DAYS) and by per-user row count
-/// (USER_EVENT_STREAM_MAX_PER_USER). A resume older than what survives is
-/// answered with a `gap` frame carrying the newest available seq, never an
-/// unbounded replay.
-model UserEvent {
-  id        String   @id @default(uuid())
-  /// Stream owner. Delivery to a parent sub-account is authorised at publish
-  /// time (see src/events/publisher.ts) — never by rewriting this column.
-  userId    String
-  /// Monotonic, gapless, per-user. Allocated by the atomic upsert-increment on
-  /// UserEventSequence inside the same transaction as this row's INSERT.
-  seq       BigInt
-  /// One of src/events/types.ts USER_EVENT_TOPICS.
-  topic     String
-  /// Domain event type, e.g. 'deposit.received'. Mirrors the webhook event
-  /// name when one exists so both channels speak the same vocabulary.
-  type      String
-  /// Already redacted through the per-type allowlist in
-  /// src/utils/api-formatters.ts before it is stored — the socket must never
-  /// be the reason a field reaches a client, so the store holds only what a
-  /// client is allowed to see.
-  payload   Json
-  createdAt DateTime @default(now())
+/// Privacy erasure request model (#489). Tracks user data deletion requests
+/// through approval workflow. Preserved even after user deletion via cascade.
+model ErasureRequest {
+  id              String               @id @default(uuid())
+  userId          String
+  requestedAt     DateTime             @default(now())
+  requestedBy     String
+  reason          String
+  status          ErasureRequestStatus @default(PENDING)
+  approvedBy      String?
+  approvedAt      DateTime?
+  rejectedBy      String?
+  rejectedAt      DateTime?
+  rejectionReason String?
+  completedAt     DateTime?
+  errorMessage    String?
+  updatedAt       DateTime             @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, seq])
-  @@index([userId, seq])
-  @@index([createdAt])
-  @@map("user_events")
-}
-
-/// Per-user monotonic counter backing UserEvent.seq (#316).
-/// Incremented with a single `INSERT … ON CONFLICT DO UPDATE … RETURNING`, so
-/// concurrent publishers for the same user serialise on the row lock and can
-/// never mint a duplicate or leave a hole.
-model UserEventSequence {
-  userId    String   @id
-  lastSeq   BigInt   @default(0)
-  updatedAt DateTime @updatedAt
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("user_event_sequences")
-}
-
-model UserWebhookEndpoint {
-  id                  String    @id @default(uuid())
-  userId              String
-  url                 String
-  secretHash          String
-  events              String[]
-  topicScope          String[]
-  filterJson          Json?
-  status              String    @default("ACTIVE") // ACTIVE | PAUSED | DISABLED_BAD_ENDPOINT
-  consecutiveFailures Int       @default(0)
-  lastDeliveryAt      DateTime?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
-
-  user       User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  deliveries UserWebhookDelivery[]
-
-  @@index([userId, status])
-  @@map("user_webhook_endpoints")
-}
-
-model UserWebhookDelivery {
-  id            String    @id @default(uuid())
-  endpointId    String
-  userEventSeq  Int
-  eventType     String
-  status        String    @default("PENDING") // PENDING | DELIVERED | FAILED | DEAD
-  attempts      Int       @default(0)
-  nextAttemptAt DateTime?
-  responseCode  Int?
-  error         String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-
-  endpoint UserWebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
-
-  @@unique([endpointId, userEventSeq])
-  @@index([endpointId])
-  @@index([endpointId, createdAt])
-  @@index([status])
-  @@map("user_webhook_deliveries")
-}
-
-model AlertFire {
-  id                 String   @id @default(uuid())
-  ruleId             String
-  userId             String
-  firedAt            DateTime @default(now())
-  leafTrace          Json
-  deliveredVia       String[]
-  ackId              String?
-  escalated          Boolean  @default(false)
-  suppressedBySnooze Boolean  @default(false)
-
-  @@index([ruleId, firedAt])
-  @@index([userId, firedAt])
-  @@map("alert_fires")
-}
-
-model AlertAck {
-  id        String   @id @default(uuid())
-  ruleId    String
-  userId    String
-  fireId    String?
-  source    String // API | WHATSAPP | TELEGRAM | EMAIL
-  note      String?
-  createdAt DateTime @default(now())
-
-  @@index([ruleId])
-  @@index([userId])
-  @@map("alert_acks")
-}
-
-model EmailIdentity {
-  id              String    @id @default(uuid())
-  userId          String    @unique
-  email           String    @unique
-  verifiedAt      DateTime?
-  verifyTokenHash String?
-  verifyExpiresAt DateTime?
-  status          String    @default("PENDING") // PENDING | VERIFIED | BOUNCED | COMPLAINED | SUPPRESSED
-  lastBounceAt    DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("email_identities")
-}
-
-// --- Issue #372: Audit Anchoring ---
-model AuditAnchor {
-  id            String    @id @default(uuid())
-  blockHeight   Int
-  blockHash     String
-  stellarTxHash String    @unique
-  ledger        Int?
-  submittedAt   DateTime  @default(now())
-  confirmedAt   DateTime?
-
-  @@index([blockHeight])
-  @@map("audit_anchors")
-}
-
-// --- Issue #371: GDPR/CCPA Data Export & Right-to-Erasure ---
-model DataSubjectRequest {
-  id          String    @id @default(uuid())
-  userId      String
-  type        String // EXPORT | ERASURE
-  status      String // PENDING | PROCESSING | COMPLETED | PARTIAL | FAILED | REJECTED
-  createdAt   DateTime  @default(now())
-  completedAt DateTime?
-
-  @@index([userId])
-  @@map("data_subject_requests")
-}
-
-model RedactionManifest {
-  id        String   @id @default(uuid())
-  requestId String
-  modelName String
-  recordId  String
-  action    String // DELETED | ANONYMIZED
-  createdAt DateTime @default(now())
-
-  @@index([requestId])
-  @@map("redaction_manifests")
-}
-
-// --- Issue #373: Sanctions Screening Case Management & SAR Workflow ---
-enum CaseStatus {
-  OPEN
-  TRIAGE
-  INVESTIGATING
-  ESCALATED
-  PENDING_SAR
-  SAR_FILED
-  CLEARED
-  CLOSED_NO_ACTION
-}
-
-enum CasePriority {
-  LOW
-  MEDIUM
-  HIGH
-  CRITICAL
-}
-
-model ComplianceCase {
-  id                String       @id @default(uuid())
-  userId            String
-  status            CaseStatus   @default(OPEN)
-  priority          CasePriority
-  openedReason      String // "score_threshold" | "manual" | "sanctions_hit" | "law_enforcement_request"
-  triggerScore      Int?
-  scoreModelVersion String?
-  assignedTo        String? // AdminApiKey.id / reviewer identity
-  slaDueAt          DateTime?
-  relatedTxnIds     String[]
-  relatedCaseIds    String[]
-  createdAt         DateTime     @default(now())
-  closedAt          DateTime?
-  outcome           String? // mirrors terminal status + a reason
-
   @@index([userId])
   @@index([status])
-  @@map("compliance_cases")
-}
-
-model CaseEvent {
-  id        String   @id @default(uuid())
-  caseId    String
-  type      String // NOTE | STATUS_CHANGE | ASSIGNMENT | EVIDENCE | DECISION | FREEZE | UNFREEZE | SAR_DRAFTED | SAR_FILED
-  actor     String // reviewer identity
-  body      Json // structured per type
-  createdAt DateTime @default(now())
-
-  @@index([caseId, createdAt])
-  @@map("case_events")
-}
-
-// --- Issue #370: FATF Travel Rule Data Collection ---
-model TravelRuleRecord {
-  id               String    @id @default(uuid())
-  transactionId    String? // or outboxOpId / fiatOrderId
-  direction        String // OUTBOUND | INBOUND
-  amountBaseCcy    Decimal   @db.Decimal(36, 18)
-  baseCurrency     String
-  originator       Json // { name, accountOrWallet, address?, idNumber?, idType? }
-  beneficiary      Json // { name, accountOrWallet }
-  counterpartyVasp Json? // { name, did?, classification: 'VASP'|'UNHOSTED'|'UNKNOWN' }
-  dataSource       String // KYC_PROFILE | USER_ATTESTED | PROVIDER
-  status           String // PENDING_DATA | READY | TRANSMITTED | EXEMPT
-  transmittedAt    DateTime?
-  createdAt        DateTime  @default(now())
-
-  @@index([transactionId])
-  @@index([status])
-  @@map("travel_rule_records")
-}
-
-// --- Issue #338: Path-Payment DEX Auto-Routing ---
-model AssetConversion {
-  id                  String   @id @default(uuid())
-  transactionId       String?  @unique
-  sourceAsset         String
-  sourceAmount        Decimal  @db.Decimal(36, 18)
-  destAsset           String
-  destAmount          Decimal  @db.Decimal(36, 18)
-  quotedDestAmount    Decimal  @db.Decimal(36, 18)
-  realizedSlippageBps Int
-  path                Json // asset ids, for audit
-  rpcSource           String
-  createdAt           DateTime @default(now())
-
-  @@index([transactionId])
-  @@map("asset_conversions")
-}
-
-// --- Issue #340: Claimable-Balance & Unmatched-Inbound Ingestion ---
-model InboundOperation {
-  id             String    @id @default(uuid())
-  account        String
-  txHash         String
-  operationIndex Int
-  amount         Decimal   @db.Decimal(36, 18)
-  asset          String
-  isProcessed    Boolean   @default(false)
-  processedAt    DateTime?
-  createdAt      DateTime  @default(now())
-
-  @@unique([txHash, operationIndex])
-  @@index([account])
-  @@index([isProcessed])
-  @@map("inbound_operations")
-}
-
-model InboundCursor {
-  id         String   @id @default(uuid())
-  account    String   @unique
-  lastLedger Int
-  updatedAt  DateTime @updatedAt
-
-  @@map("inbound_cursors")
-}
-
-// --- Issue #341: Split-Custody Treasury ---
-enum TreasuryTier {
-  HOT
-  WARM
-  COLD
-}
-
-model TreasuryAccount {
-  id            String       @id @default(uuid())
-  tier          TreasuryTier
-  publicKey     String       @unique
-  signerScheme  String // "1-of-1" | "2-of-3" | "3-of-5"
-  targetLowXlm  Decimal      @db.Decimal(36, 18)
-  targetHighXlm Decimal      @db.Decimal(36, 18)
-  assetPolicy   Json // per-asset low/high bands
-  isActive      Boolean      @default(true)
-  createdAt     DateTime     @default(now())
-
-  @@index([tier])
-  @@index([isActive])
-  @@map("treasury_accounts")
-}
-
-model TreasurySweep {
-  id          String       @id @default(uuid())
-  fromTier    TreasuryTier
-  toTier      TreasuryTier
-  asset       String
-  amount      Decimal      @db.Decimal(36, 18)
-  outboxOpId  String?
-  status      String // PLANNED | SUBMITTED | CONFIRMED | FAILED
-  reason      String // "hot_over_high_band" | "warm_under_low_band" | "manual"
-  createdAt   DateTime     @default(now())
-  confirmedAt DateTime?
-
-  @@index([status])
-  @@index([fromTier])
-  @@index([toTier])
-  @@map("treasury_sweeps")
-}
-
-model MultisigEnvelope {
-  id               String   @id @default(uuid())
-  sweepId          String?
-  publicKey        String
-  threshold        Int
-  signatures       Json // collected signatures
-  status           String // PENDING | COLLECTING | READY | EXPIRED
-  expiresAt        DateTime
-  createdAt        DateTime @default(now())
-  /// The signer set version active when this envelope was opened (#528). A
-  /// rotation finalizing mid-collection never invalidates an in-flight
-  /// envelope — it keeps validating against the set it was opened under.
-  signerSetVersion Int      @default(1)
-
-  @@index([status])
-  @@index([expiresAt])
-  @@map("multisig_envelopes")
-}
-
-enum SignerRotationStatus {
-  PENDING
-  DUAL_ACTIVE
-  FINALIZED
-  CANCELLED
-}
-
-/// Signer rotation with a dual-active window (#528): both the old and new
-/// key are valid signers from the moment a rotation is recorded, so signing
-/// capacity never drops below threshold mid-rotation. Only a DUAL_ACTIVE
-/// rotation may be finalized.
-model SignerRotation {
-  id                String               @id @default(uuid())
-  treasuryAccountId String
-  oldSignerKey      String
-  newSignerKey      String
-  status            SignerRotationStatus @default(PENDING)
-  dualActiveSince   DateTime?
-  finalizedAt       DateTime?
-  initiatedBy       String
-  createdAt         DateTime             @default(now())
-
-  @@index([treasuryAccountId, status])
-  @@map("signer_rotations")
-}
-
-/// Versioned, validated sweep policy for one tier pair (#528). A change never
-/// mutates an existing row — createPolicyVersion deactivates the current
-/// active policy and inserts a new one, so every policy change is an
-/// auditable new version.
-model TreasurySweepPolicy {
-  id                    String       @id @default(uuid())
-  fromTier              TreasuryTier
-  toTier                TreasuryTier
-  maxHotBalance         Decimal      @db.Decimal(36, 18)
-  sweepIntervalMinutes  Int
-  minSweepAmount        Decimal      @db.Decimal(36, 18)
-  requiresApprovalAbove Decimal?     @db.Decimal(36, 18)
-  version               Int
-  isActive              Boolean      @default(true)
-  createdBy             String
-  createdAt             DateTime     @default(now())
-
-  @@index([fromTier, toTier, isActive])
-  @@map("treasury_sweep_policies")
-}
-
-// --- Issue #350: Liquidity Risk & Time-to-Exit Estimation ---
-model ProtocolLiquiditySnapshot {
-  id                   String   @id @default(uuid())
-  protocolName         String
-  assetSymbol          String
-  poolTvl              Decimal  @db.Decimal(36, 18)
-  availableLiquidity   Decimal  @db.Decimal(36, 18)
-  dailyVolume          Decimal  @db.Decimal(36, 18)
-  withdrawalQueueDepth Int?
-  depthCurve           Json // [{ sizeUsd, priceImpactBps }]
-  fetchedAt            DateTime @default(now())
-
-  @@unique([protocolName, assetSymbol, fetchedAt])
-  @@index([protocolName, assetSymbol])
-  @@index([fetchedAt])
-  @@map("protocol_liquidity_snapshots")
-}
-
-// --- Issue #345: Agent Circuit Breaker ---
-enum BreakerScope {
-  GLOBAL
-  PROTOCOL
-  USER
-}
-
-enum BreakerState {
-  CLOSED
-  OPEN
-  HALF_OPEN
-}
-
-model AgentCircuitBreaker {
-  id          String       @id @default(uuid())
-  scope       BreakerScope
-  scopeKey    String // "" for GLOBAL, protocolName, or userId
-  state       BreakerState @default(CLOSED)
-  trippedRule String? // "abnormal_loss" | "depeg" | "oscillation" | "stale_data" | "manual"
-  trippedAt   DateTime?
-  detail      Json? // the measurements that tripped it
-  resetBy     String? // admin identity on manual reset
-  resetAt     DateTime?
-  autoResetAt DateTime? // earliest time HALF_OPEN is allowed
-  updatedAt   DateTime     @updatedAt
-
-  @@unique([scope, scopeKey])
-  @@index([state])
-  @@map("agent_circuit_breakers")
+  @@index([requestedAt])
+  @@map("erasure_requests")
 }
 
 // --- Issue #532: Borrow Against Deposited Collateral (non-liquidating credit line)
@@ -2421,22 +1994,22 @@ model ProtectionFundContribution {
 }
 
 model CoverageEvent {
-  id          String   @id @default(uuid())
-  protocolName String
+  id                    String   @id @default(uuid())
+  protocolName          String
   // EXPLOIT | INSOLVENCY | GOVERNANCE_FAILURE (narrow, published definition)
-  cause       String
+  cause                 String
   // ISO-8601 date-time strings, UTC
-  lossWindowStart String
-  lossWindowEnd   String
-  totalPlatformExposure Decimal @db.Decimal(36, 18)
-  declaredBy  String
+  lossWindowStart       String
+  lossWindowEnd         String
+  totalPlatformExposure Decimal  @db.Decimal(36, 18)
+  declaredBy            String
   // PENDING_REVIEW | APPROVED | REJECTED
-  status      String   @default("PENDING_REVIEW")
-  reviewedBy  String?
-  coverageTerms Json? // snapshot of coverage rules at declaration time
-  description String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  status                String   @default("PENDING_REVIEW")
+  reviewedBy            String?
+  coverageTerms         Json? // snapshot of coverage rules at declaration time
+  description           String
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   claims CoverageClaim[]
 
@@ -2446,29 +2019,418 @@ model CoverageEvent {
 }
 
 model CoverageClaim {
-  id          String   @id @default(uuid())
-  eventId     String
-  userId      String
-  positionId  String
+  id           String   @id @default(uuid())
+  eventId      String
+  userId       String
+  positionId   String
   // The user's loss in this position during the loss window
-  actualLoss  Decimal  @db.Decimal(36, 18)
+  actualLoss   Decimal  @db.Decimal(36, 18)
   // Net of any protocol-level recovery already received
-  netLoss     Decimal  @db.Decimal(36, 18)
+  netLoss      Decimal  @db.Decimal(36, 18)
   // The amount the fund will actually pay (capped + pro-rated)
-  payoutAmount Decimal @db.Decimal(36, 18)
+  payoutAmount Decimal  @db.Decimal(36, 18)
   // FULL | PRORATED | ZERO
   coverageType String
   // PENDING | PAID | REJECTED
-  status      String   @default("PENDING")
-  outboxOpId  String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  status       String   @default("PENDING")
+  outboxOpId   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  event CoverageEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  position Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  event    CoverageEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  position Position      @relation(fields: [positionId], references: [id], onDelete: Cascade)
 
   @@unique([eventId, positionId])
   @@index([userId, status])
   @@index([eventId, status])
   @@map("coverage_claims")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// New enums added to support missing models
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum TreasuryTier {
+  HOT
+  WARM
+  COLD
+}
+
+enum CaseStatus {
+  OPEN
+  TRIAGE
+  INVESTIGATING
+  ESCALATED
+  PENDING_SAR
+  SAR_FILED
+  CLEARED
+  CLOSED_NO_ACTION
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AgentCircuitBreaker — tracks per-workflow circuit-breaker state (#breakerService)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AgentCircuitBreaker {
+  id                  String    @id @default(uuid())
+  workflowKind        String    @unique
+  status              String    @default("CLOSED") // CLOSED | OPEN | HALF_OPEN
+  trippedAt           DateTime?
+  trippedReason       String?
+  resetAt             DateTime?
+  halfOpenSince       DateTime?
+  successesInHalfOpen Int       @default(0)
+  failuresInHalfOpen  Int       @default(0)
+  failedAt            DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([status])
+  @@index([workflowKind])
+  @@map("agent_circuit_breakers")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compliance cases (#cases.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ComplianceCase {
+  id            String     @id @default(uuid())
+  userId        String
+  status        CaseStatus @default(OPEN)
+  priority      String     @default("HIGH")
+  openedReason  String
+  triggerScore  Float?
+  relatedTxnIds String[]   @default([])
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events CaseEvent[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("compliance_cases")
+}
+
+model CaseEvent {
+  id        String   @id @default(uuid())
+  caseId    String
+  type      String   @default("EVIDENCE")
+  actor     String   @default("SYSTEM")
+  body      Json
+  createdAt DateTime @default(now())
+
+  case ComplianceCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@index([createdAt])
+  @@map("case_events")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Travel Rule (#travelRule.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model TravelRuleRecord {
+  id            String   @id @default(uuid())
+  transactionId String
+  direction     String // INBOUND | OUTBOUND
+  amountBaseCcy Decimal  @db.Decimal(36, 18)
+  baseCurrency  String
+  originator    Json
+  beneficiary   Json
+  dataSource    String
+  status        String   @default("PENDING")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([transactionId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("travel_rule_records")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Email identity verification (#email-identity-controller)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model EmailIdentity {
+  id             String    @id @default(uuid())
+  userId         String    @unique
+  email          String
+  verified       Boolean   @default(false)
+  verifiedAt     DateTime?
+  token          String?
+  tokenExpiresAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([email])
+  @@index([token])
+  @@map("email_identities")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Alert acknowledgements and fires (#alert-ack-controller)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AlertAck {
+  id        String   @id @default(uuid())
+  ruleId    String
+  userId    String
+  fireId    String?
+  source    String
+  note      String?
+  createdAt DateTime @default(now())
+
+  fires AlertFire[]
+
+  @@index([ruleId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("alert_acks")
+}
+
+model AlertFire {
+  id        String   @id @default(uuid())
+  ruleId    String
+  firedAt   DateTime
+  ackId     String?
+  createdAt DateTime @default(now())
+
+  ack AlertAck? @relation(fields: [ackId], references: [id], onDelete: SetNull)
+
+  @@index([ruleId])
+  @@index([firedAt])
+  @@map("alert_fires")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// User-facing webhook endpoints and delivery log (#user-webhook-controller)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model UserWebhookEndpoint {
+  id        String   @id @default(uuid())
+  userId    String
+  url       String
+  secret    String
+  events    String[]
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries UserWebhookDelivery[]
+
+  @@index([userId])
+  @@index([isActive])
+  @@map("user_webhook_endpoints")
+}
+
+model UserWebhookDelivery {
+  id           String   @id @default(uuid())
+  endpointId   String
+  eventId      String
+  payload      Json
+  status       String   @default("PENDING")
+  responseCode Int?
+  error        String?
+  createdAt    DateTime @default(now())
+
+  endpoint UserWebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@index([endpointId])
+  @@index([eventId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("user_webhook_deliveries")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// User event store for SSE / event sourcing (#events/store.ts, #sse/handler.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model UserEvent {
+  id        String   @id @default(uuid())
+  userId    String
+  seq       BigInt
+  topic     String
+  type      String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@index([userId, seq])
+  @@index([userId, topic])
+  @@index([createdAt])
+  @@map("user_events")
+}
+
+model UserEventSequence {
+  userId    String   @id
+  lastSeq   BigInt   @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@map("user_event_sequences")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Treasury sweep policy (#treasury/policy.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model TreasurySweepPolicy {
+  id                    String       @id @default(uuid())
+  fromTier              TreasuryTier
+  toTier                TreasuryTier
+  maxHotBalance         Decimal      @db.Decimal(36, 18)
+  sweepIntervalMinutes  Int
+  minSweepAmount        Decimal      @db.Decimal(36, 18)
+  requiresApprovalAbove Decimal?     @db.Decimal(36, 18)
+  version               Int          @default(1)
+  isActive              Boolean      @default(true)
+  createdBy             String
+  createdAt             DateTime     @default(now())
+
+  @@index([fromTier, toTier])
+  @@index([isActive])
+  @@map("treasury_sweep_policies")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Treasury accounts (#jobs/treasurySweep.ts, #outbox/executors.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model TreasuryAccount {
+  id          String       @id @default(uuid())
+  publicKey   String
+  tier        TreasuryTier
+  isActive    Boolean      @default(true)
+  description String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  sweeps          TreasurySweep[]
+  signerRotations SignerRotation[]
+
+  @@index([tier])
+  @@index([isActive])
+  @@map("treasury_accounts")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Treasury sweeps (#jobs/treasurySweep.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model TreasurySweep {
+  id         String       @id @default(uuid())
+  fromTier   TreasuryTier
+  toTier     TreasuryTier
+  asset      String
+  amount     Decimal      @db.Decimal(36, 18)
+  status     String       @default("PENDING")
+  reason     String
+  outboxOpId String?
+  accountId  String?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  account   TreasuryAccount?   @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  envelopes MultisigEnvelope[]
+
+  @@index([status])
+  @@index([fromTier, toTier])
+  @@index([createdAt])
+  @@map("treasury_sweeps")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multisig envelopes for sweep authorisation (#jobs/treasurySweep.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model MultisigEnvelope {
+  id         String    @id @default(uuid())
+  sweepId    String
+  publicKey  String
+  threshold  Int
+  signatures Json[]
+  status     String    @default("PENDING")
+  expiresAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  sweep TreasurySweep @relation(fields: [sweepId], references: [id], onDelete: Cascade)
+
+  @@index([sweepId])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("multisig_envelopes")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Signer rotation with dual-active window (#treasury/signerRotation.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model SignerRotation {
+  id                String    @id @default(uuid())
+  treasuryAccountId String
+  oldSignerKey      String
+  newSignerKey      String
+  status            String    @default("DUAL_ACTIVE") // DUAL_ACTIVE | FINALIZED
+  dualActiveSince   DateTime?
+  finalizedAt       DateTime?
+  initiatedBy       String
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  treasuryAccount TreasuryAccount @relation(fields: [treasuryAccountId], references: [id], onDelete: Cascade)
+
+  @@index([treasuryAccountId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("signer_rotations")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Notification preferences (#notifications/service.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model NotificationPreference {
+  id         String   @id @default(uuid())
+  userId     String
+  channel    String
+  category   String
+  enabled    Boolean  @default(true)
+  quietHours Json?
+  frequency  String?
+  updatedBy  String
+  updatedAt  DateTime @updatedAt
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channel, category])
+  @@index([userId])
+  @@index([channel])
+  @@index([category])
+  @@map("notification_preferences")
+}
+
+model NotificationPreferenceAuditLog {
+  id            String   @id @default(uuid())
+  userId        String
+  action        String
+  channel       String
+  category      String
+  previousValue Boolean
+  newValue      Boolean
+  changedBy     String
+  changedAt     DateTime @default(now())
+  metadata      Json?
+
+  @@index([userId])
+  @@index([changedAt])
+  @@map("notification_preference_audit_logs")
 }

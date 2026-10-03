@@ -973,6 +973,113 @@ router.delete(
 )
 
 /**
+ * POST /api/admin/keys/:id/rotate
+ * Rotate an admin API key - revokes old key and creates new one with same scopes.
+ * Required scope: keys:write (#491)
+ */
+router.post(
+  '/keys/:id/rotate',
+  requireAdminScope('keys:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params
+
+      const existing = await prisma.adminApiKey.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          name: true,
+          role: true,
+          scopes: true,
+          revokedAt: true,
+          expiresAt: true,
+        },
+      })
+
+      if (!existing) {
+        return res
+          .status(404)
+          .json({ success: false, error: 'Admin key not found' })
+      }
+
+      if (existing.revokedAt) {
+        return res
+          .status(409)
+          .json({ success: false, error: 'Cannot rotate a revoked key' })
+      }
+
+      const crypto = await import('node:crypto')
+      const bcrypt = await import('bcryptjs')
+
+      // Generate new token
+      const rawToken = crypto.randomBytes(32).toString('hex')
+      const hash = await bcrypt.hash(rawToken, 12)
+      const tokenPrefix =
+        'sha256:' + crypto.createHash('sha256').update(rawToken).digest('hex')
+
+      // Create new key with same properties
+      const newKey = await prisma.adminApiKey.create({
+        data: {
+          name: `${existing.name} (rotated)`,
+          role: existing.role,
+          scopes: existing.scopes,
+          hash,
+          tokenPrefix,
+          expiresAt: existing.expiresAt,
+        },
+        select: {
+          id: true,
+          name: true,
+          role: true,
+          scopes: true,
+          expiresAt: true,
+          createdAt: true,
+        },
+      })
+
+      // Revoke old key
+      await prisma.adminApiKey.update({
+        where: { id },
+        data: { revokedAt: new Date() },
+      })
+
+      logger.info('[Admin] Admin key rotated', {
+        oldKeyId: id,
+        newKeyId: newKey.id,
+      })
+
+      auditLog(req, res, 'ROTATE_ADMIN_KEY', 'success', {
+        oldKeyId: id,
+        newKeyId: newKey.id,
+      })
+
+      res.status(201).json({
+        success: true,
+        data: {
+          ...newKey,
+          token: rawToken,
+          warning: 'Store this token securely. It will not be shown again.',
+          oldKeyId: id,
+          oldKeyStatus: 'revoked',
+        },
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error: any) {
+      logger.error('[Admin] Failed to rotate admin key', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'ROTATE_ADMIN_KEY', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error: 'Failed to rotate admin key',
+      })
+    }
+  }
+)
+
+/**
  * GET /api/admin/keys
  * List all admin API keys (metadata only — no hashes).
  * Required scope: keys:read
@@ -2218,3 +2325,389 @@ router.post(
 )
 
 export default router
+
+// ── Privacy Erasure Routes (#489) ───────────────────────────────────────────
+
+import {
+  createErasureRequest,
+  approveErasureRequest,
+  rejectErasureRequest,
+  executeErasure,
+  listErasureRequests,
+  previewErasure,
+} from '../compliance/privacyErasure'
+
+/**
+ * GET /api/admin/erasure/requests
+ * List all erasure requests with optional status filter.
+ * Required scope: read
+ */
+router.get(
+  '/erasure/requests',
+  requireAdminScope('read'),
+  async (req: Request, res: Response) => {
+    try {
+      const { status, limit, offset } = req.query
+      const result = await listErasureRequests({
+        status: status as any,
+        limit: limit ? parseInt(limit as string) : undefined,
+        offset: offset ? parseInt(offset as string) : undefined,
+      })
+
+      res.json({
+        success: true,
+        data: result,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error: any) {
+      logger.error('[Admin] Failed to list erasure requests', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error: 'Failed to list erasure requests',
+      })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/erasure/requests
+ * Create a new erasure request for a user.
+ * Required scope: write
+ *
+ * Body: { userId: string, reason: string }
+ */
+router.post(
+  '/erasure/requests',
+  requireAdminScope('write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { userId, reason } = req.body
+      const adminAuth = res.locals.adminAuth
+
+      if (!userId || !reason) {
+        return res.status(400).json({
+          success: false,
+          error: 'userId and reason are required',
+        })
+      }
+
+      const request = await createErasureRequest(userId, adminAuth.name, reason)
+
+      auditLog(req, res, 'CREATE_ERASURE_REQUEST', 'success', {
+        requestId: request.id,
+        userId,
+      })
+
+      res.status(201).json({
+        success: true,
+        data: request,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error: any) {
+      logger.error('[Admin] Failed to create erasure request', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'CREATE_ERASURE_REQUEST', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error:
+          error instanceof Error ? error.message : 'Failed to create request',
+      })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/erasure/requests/:id/approve
+ * Approve an erasure request.
+ * Required scope: super
+ */
+router.post(
+  '/erasure/requests/:id/approve',
+  requireAdminScope('super'),
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params
+      const adminAuth = res.locals.adminAuth
+
+      const request = await approveErasureRequest(id, adminAuth.name)
+
+      auditLog(req, res, 'APPROVE_ERASURE_REQUEST', 'success', {
+        requestId: id,
+      })
+
+      res.json({
+        success: true,
+        data: request,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error: any) {
+      logger.error('[Admin] Failed to approve erasure request', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'APPROVE_ERASURE_REQUEST', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error:
+          error instanceof Error ? error.message : 'Failed to approve request',
+      })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/erasure/requests/:id/reject
+ * Reject an erasure request.
+ * Required scope: super
+ *
+ * Body: { rejectionReason: string }
+ */
+router.post(
+  '/erasure/requests/:id/reject',
+  requireAdminScope('super'),
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params
+      const { rejectionReason } = req.body
+      const adminAuth = res.locals.adminAuth
+
+      if (!rejectionReason) {
+        return res.status(400).json({
+          success: false,
+          error: 'rejectionReason is required',
+        })
+      }
+
+      const request = await rejectErasureRequest(
+        id,
+        adminAuth.name,
+        rejectionReason
+      )
+
+      auditLog(req, res, 'REJECT_ERASURE_REQUEST', 'success', {
+        requestId: id,
+      })
+
+      res.json({
+        success: true,
+        data: request,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error: any) {
+      logger.error('[Admin] Failed to reject erasure request', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'REJECT_ERASURE_REQUEST', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error:
+          error instanceof Error ? error.message : 'Failed to reject request',
+      })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/erasure/requests/:id/execute
+ * Execute an approved erasure request. THIS IS IRREVERSIBLE.
+ * Required scope: super
+ */
+router.post(
+  '/erasure/requests/:id/execute',
+  requireAdminScope('super'),
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params
+
+      const summary = await executeErasure(id)
+
+      auditLog(req, res, 'EXECUTE_ERASURE', 'success', {
+        requestId: id,
+        summary,
+      })
+
+      res.json({
+        success: true,
+        data: summary,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error: any) {
+      logger.error('[Admin] Failed to execute erasure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'EXECUTE_ERASURE', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error:
+          error instanceof Error ? error.message : 'Failed to execute erasure',
+      })
+    }
+  }
+)
+
+/**
+ * GET /api/admin/erasure/preview/:userId
+ * Preview what would be deleted for a user.
+ * Required scope: read
+ */
+router.get(
+  '/erasure/preview/:userId',
+  requireAdminScope('read'),
+  async (req: Request, res: Response) => {
+    try {
+      const { userId } = req.params
+
+      const preview = await previewErasure(userId)
+
+      res.json({
+        success: true,
+        data: preview,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error: any) {
+      logger.error('[Admin] Failed to preview erasure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error: 'Failed to preview erasure',
+      })
+    }
+  }
+)
+
+// ── Referral Fraud Review Routes (#490) ─────────────────────────────────────
+
+import {
+  listConversionsForReview,
+  approveReferralConversion,
+  rejectReferralConversion,
+} from '../referral/service'
+
+/**
+ * GET /api/admin/referrals/review
+ * List referral conversions flagged for manual review.
+ * Required scope: read
+ */
+router.get(
+  '/referrals/review',
+  requireAdminScope('read'),
+  async (req: Request, res: Response) => {
+    try {
+      const conversions = await listConversionsForReview()
+
+      res.json({
+        success: true,
+        data: conversions,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error: any) {
+      logger.error('[Admin] Failed to list referral reviews', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error: 'Failed to list referral reviews',
+      })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/referrals/review/:id/approve
+ * Approve a referral conversion after manual review.
+ * Required scope: write
+ */
+router.post(
+  '/referrals/review/:id/approve',
+  requireAdminScope('write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params
+      const adminAuth = res.locals.adminAuth
+
+      await approveReferralConversion(id, adminAuth.name)
+
+      auditLog(req, res, 'APPROVE_REFERRAL', 'success', { conversionId: id })
+
+      res.json({
+        success: true,
+        message: 'Referral conversion approved',
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error: any) {
+      logger.error('[Admin] Failed to approve referral conversion', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'APPROVE_REFERRAL', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error:
+          error instanceof Error ? error.message : 'Failed to approve referral',
+      })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/referrals/review/:id/reject
+ * Reject a referral conversion after manual review.
+ * Required scope: write
+ *
+ * Body: { rejectionReason: string }
+ */
+router.post(
+  '/referrals/review/:id/reject',
+  requireAdminScope('write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params
+      const { rejectionReason } = req.body
+      const adminAuth = res.locals.adminAuth
+
+      if (!rejectionReason) {
+        return res.status(400).json({
+          success: false,
+          error: 'rejectionReason is required',
+        })
+      }
+
+      await rejectReferralConversion(id, adminAuth.name, rejectionReason)
+
+      auditLog(req, res, 'REJECT_REFERRAL', 'success', {
+        conversionId: id,
+        reason: rejectionReason,
+      })
+
+      res.json({
+        success: true,
+        message: 'Referral conversion rejected',
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error: any) {
+      logger.error('[Admin] Failed to reject referral conversion', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'REJECT_REFERRAL', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error:
+          error instanceof Error ? error.message : 'Failed to reject referral',
+      })
+    }
+  }
+)

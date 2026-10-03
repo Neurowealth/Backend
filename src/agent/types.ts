@@ -246,6 +246,12 @@ export interface UserStrategyPreferences {
    * table but yields to a per-protocol override.
    */
   defaultMaxFraction?: number
+  /**
+   * Opt-in wash-sale-aware rebalancing (#550). When true, the strategy engine
+   * avoids realising losses within 30 days of a prior sale of the same asset.
+   * Defaults to false — backward compatible, affects new rebalance decisions only.
+   */
+  taxAwareRebalancing?: boolean
 }
 
 /**

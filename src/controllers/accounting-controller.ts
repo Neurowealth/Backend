@@ -40,6 +40,12 @@ export async function exportAccountingData(
       },
     })
 
+    const mappedTransactions = transactions.map((tx) => ({
+      ...tx,
+      amount: tx.amount.toString(),
+      fee: tx.fee != null ? tx.fee.toString() : null,
+    }))
+
     if (transactions.length === 0) {
       logger.info(`No transactions found for user ${userId} in the specified date range`)
     }
@@ -49,11 +55,11 @@ export async function exportAccountingData(
     let filename: string
 
     if (parsed.format === 'qbo') {
-      data = toQbo(transactions)
+      data = toQbo(mappedTransactions)
       contentType = 'text/csv'
       filename = `neurowealth-export-${userId}-${fromDate.toISOString().split('T')[0]}-${toDate.toISOString().split('T')[0]}.qbo.csv`
     } else {
-      data = toXeroCsv(transactions)
+      data = toXeroCsv(mappedTransactions)
       contentType = 'text/csv'
       filename = `neurowealth-export-${userId}-${fromDate.toISOString().split('T')[0]}-${toDate.toISOString().split('T')[0]}.xero.csv`
     }

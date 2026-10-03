@@ -2842,7 +2842,7 @@ paths:
         '401':
           description: Missing/invalid bearer token or insufficient scope.
 
-  /alerts/{userId}:
+  /alerts/{id}:
     get:
       operationId: listAlertRules
       summary: List alert rules for a user
@@ -2852,7 +2852,7 @@ paths:
         - bearerAuth: []
       parameters:
         - in: path
-          name: userId
+          name: id
           required: true
           schema:
             type: string
@@ -2874,7 +2874,6 @@ paths:
         '403':
           description: Not the owner of the requested user ID.
 
-  /alerts/{id}:
     patch:
       operationId: updateAlertRule
       summary: Update an alert rule
