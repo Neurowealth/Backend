@@ -16,6 +16,11 @@ import { config } from '../config'
 import { logger } from '../utils/logger'
 import { validateUserScopes, USER_SCOPES, type UserScope } from '../auth/scopes'
 import { publishUserEvent } from '../events/publisher'
+import {
+  buildPaginationMeta,
+  getPaginationParams,
+  paginationSchema,
+} from '../utils/pagination'
 
 const router = Router()
 const prisma = db as any
@@ -133,27 +138,56 @@ router.post(
 )
 
 /** GET /api/v1/keys — list metadata (no secrets). */
-router.get('/', async (req: Request, res: Response) => {
-  const userId = req.auth!.userId
-  const keys = await prisma.userApiKey.findMany({
-    where: { userId },
-    select: {
-      id: true,
-      name: true,
-      scopes: true,
-      ipAllowlist: true,
-      rateLimitPerMin: true,
-      allowWithdrawals: true,
-      lastUsedAt: true,
-      lastUsedIp: true,
-      expiresAt: true,
-      revokedAt: true,
-      createdAt: true,
-    },
-    orderBy: { createdAt: 'desc' },
-  })
-  return res.status(200).json({ keys })
-})
+router.get(
+  '/',
+  validate({
+    query: paginationSchema.extend({
+      revoked: z.enum(['true', 'false']).optional(),
+      sortBy: z
+        .enum(['createdAt', 'lastUsedAt', 'expiresAt'])
+        .default('createdAt'),
+      sortOrder: z.enum(['asc', 'desc']).default('desc'),
+    }),
+  }),
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+    const { page, limit, skip } = getPaginationParams(req.query)
+    const query = req.query as {
+      revoked?: 'true' | 'false'
+      sortBy: 'createdAt' | 'lastUsedAt' | 'expiresAt'
+      sortOrder: 'asc' | 'desc'
+    }
+    const where: any = { userId }
+    if (query.revoked !== undefined) {
+      where.revokedAt = query.revoked === 'true' ? { not: null } : null
+    }
+    const [total, keys] = await Promise.all([
+      prisma.userApiKey.count({ where }),
+      prisma.userApiKey.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          scopes: true,
+          ipAllowlist: true,
+          rateLimitPerMin: true,
+          allowWithdrawals: true,
+          lastUsedAt: true,
+          lastUsedIp: true,
+          expiresAt: true,
+          revokedAt: true,
+          createdAt: true,
+        },
+        orderBy: [{ [query.sortBy]: query.sortOrder }, { id: 'desc' }],
+        skip,
+        take: limit,
+      }),
+    ])
+    return res
+      .status(200)
+      .json({ ...buildPaginationMeta(page, limit, total), keys })
+  }
+)
 
 /** DELETE /api/v1/keys/:id — revoke a key. */
 router.delete(

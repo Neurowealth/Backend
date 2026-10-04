@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express'
+import { z } from 'zod'
 import db from '../db'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
 import { requireScope } from '../middleware/apiKeyAuth'
@@ -15,6 +16,11 @@ import {
   alertUserParamSchema,
   compositeAlertRuleSchema,
 } from '../validators/alert-validators'
+import {
+  buildPaginationMeta,
+  getPaginationParams,
+  paginationSchema,
+} from '../utils/pagination'
 
 const router = Router()
 
@@ -102,17 +108,62 @@ router.post(
 router.get(
   '/:userId',
   validate({ params: alertUserParamSchema }),
+  validate({
+    query: paginationSchema.extend({
+      isActive: z.enum(['true', 'false']).optional(),
+      metric: z
+        .enum([
+          'PROTOCOL_APY',
+          'PORTFOLIO_VALUE',
+          'POSITION_DRAWDOWN',
+          'DRIFT',
+          'VOLATILITY_REGIME',
+          'ANOMALY',
+        ])
+        .optional(),
+      protocolName: z.string().trim().min(1).max(100).optional(),
+      sortBy: z
+        .enum(['createdAt', 'updatedAt', 'threshold'])
+        .default('createdAt'),
+      sortOrder: z.enum(['asc', 'desc']).default('desc'),
+    }),
+  }),
   enforceUserAccess,
   async (req: Request, res: Response) => {
     const userId = req.params.userId as string
+    const { page, limit, skip } = getPaginationParams(req.query)
+    const query = req.query as {
+      isActive?: 'true' | 'false'
+      metric?: string
+      protocolName?: string
+      sortBy: 'createdAt' | 'updatedAt' | 'threshold'
+      sortOrder: 'asc' | 'desc'
+    }
 
+    const where: any = { userId }
+    if (query.isActive !== undefined) where.isActive = query.isActive === 'true'
+    if (query.metric) where.metric = query.metric
+    if (query.protocolName) where.protocolName = query.protocolName
+
+    const [total, rules] = await Promise.all([
+      (db as any).alertRule.count({ where }),
+      (db as any).alertRule.findMany({
+        where,
+        select: alertSelect,
+        orderBy: [{ [query.sortBy]: query.sortOrder }, { id: 'desc' }],
+        skip,
+        take: limit,
+      }),
+    ])
     const rules = await (db as any).alertRule.findMany({
       where: { userId, deletedAt: null },
       select: alertSelect,
       orderBy: { createdAt: 'desc' },
     })
 
-    return res.status(200).json({ rules })
+    return res
+      .status(200)
+      .json({ ...buildPaginationMeta(page, limit, total), rules })
   }
 )
 

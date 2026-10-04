@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express'
+import { z } from 'zod'
 import db from '../db'
 import { requireAuth } from '../middleware/authenticate'
 import { requireScope } from '../middleware/apiKeyAuth'
@@ -16,6 +17,11 @@ import {
 import { getSubscriptionHealth } from '../services/webhookCircuitBreaker'
 import { replayDeadLetter } from '../services/webhookDispatcher'
 import { logger } from '../utils/logger'
+import {
+  buildPaginationMeta,
+  getPaginationParams,
+  paginationSchema,
+} from '../utils/pagination'
 
 const router = Router()
 const prisma = db as any
@@ -80,24 +86,53 @@ router.post(
 )
 
 /** GET /api/webhooks */
-router.get('/', async (req: Request, res: Response) => {
-  const userId = req.auth!.userId
-  const subscriptions = await prisma.webhookSubscription.findMany({
-    where: { userId },
-    select: {
-      id: true,
-      url: true,
-      events: true,
-      isActive: true,
-      autoReplay: true,
-      secretNextActiveAt: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-    orderBy: { createdAt: 'desc' },
-  })
-  return res.status(200).json({ subscriptions })
-})
+router.get(
+  '/',
+  validate({
+    query: paginationSchema.extend({
+      isActive: z.enum(['true', 'false']).optional(),
+      event: z.string().trim().min(1).max(100).optional(),
+      sortBy: z.enum(['createdAt', 'updatedAt']).default('createdAt'),
+      sortOrder: z.enum(['asc', 'desc']).default('desc'),
+    }),
+  }),
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+    const { page, limit, skip } = getPaginationParams(req.query)
+    const query = req.query as {
+      isActive?: 'true' | 'false'
+      event?: string
+      sortBy: 'createdAt' | 'updatedAt'
+      sortOrder: 'asc' | 'desc'
+    }
+    const where: any = { userId }
+    if (query.isActive !== undefined) where.isActive = query.isActive === 'true'
+    if (query.event) where.events = { has: query.event }
+
+    const [total, subscriptions] = await Promise.all([
+      prisma.webhookSubscription.count({ where }),
+      prisma.webhookSubscription.findMany({
+        where,
+        select: {
+          id: true,
+          url: true,
+          events: true,
+          isActive: true,
+          autoReplay: true,
+          secretNextActiveAt: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+        orderBy: [{ [query.sortBy]: query.sortOrder }, { id: 'desc' }],
+        skip,
+        take: limit,
+      }),
+    ])
+    return res
+      .status(200)
+      .json({ ...buildPaginationMeta(page, limit, total), subscriptions })
+  }
+)
 
 router.get(
   '/:id',

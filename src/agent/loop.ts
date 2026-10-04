@@ -210,9 +210,13 @@ async function rebalanceCheckJob(): Promise<void> {
       for (const pos of positions) {
         const { config, follow } = effectiveByUser.get(pos.userId)!
         const hasGoal = goalsByUser.has(pos.userId)
+        const liquidityFloorConfigured =
+          (pos.user as any).liquidityFloor !== null &&
+          (pos.user as any).liquidityFloor !== undefined
+        const floorUserKey = liquidityFloorConfigured ? pos.userId : 'shared'
         const key = `${pos.protocolName}:${config.strategyName || 'DEFAULT'}:${
           config.riskCeiling ?? 'none'
-        }:${follow?.followId ?? 'none'}:${hasGoal ? 'goal' : 'nogoal'}`
+        }:${follow?.followId ?? 'none'}:${hasGoal ? 'goal' : 'nogoal'}:${floorUserKey}`
         if (!byProtocolAndStrategy.has(key)) {
           byProtocolAndStrategy.set(key, {
             protocol: pos.protocolName,
@@ -344,7 +348,10 @@ async function rebalanceCheckJob(): Promise<void> {
         // null — the common case for a new user, and exactly who this feature
         // targets — would have had their followed config silently ignored.
         const hasStrategyContext =
-          Boolean(lead.config.strategyName) || Boolean(lead.follow)
+          Boolean(lead.config.strategyName) ||
+          Boolean(lead.follow) ||
+          (protocolPositions[0].user as any).liquidityFloor !== null &&
+          (protocolPositions[0].user as any).liquidityFloor !== undefined
 
         const userStrategyPreferences = hasStrategyContext
           ? protocolPositions.map((p: PositionWithUser) => {
@@ -365,6 +372,14 @@ async function rebalanceCheckJob(): Promise<void> {
                 // them.
                 exposureCaps: config.exposureCaps,
                 defaultMaxFraction: config.defaultMaxFraction,
+                ...((p.user as any).liquidityFloor === null ||
+                (p.user as any).liquidityFloor === undefined
+                  ? {}
+                  : {
+                      liquidityFloorUsd: Number(
+                        (p.user as any).liquidityFloor
+                      ),
+                    }),
                 followedStrategyId: follow?.followedStrategyId ?? undefined,
               }
             })

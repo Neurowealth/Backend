@@ -74,6 +74,28 @@ components:
         window. Rows/responses with this flag set are excluded from leaderboard
         rankings. Never silently serves a truncated window under the requested label.
 
+    PaginationMeta:
+      type: object
+      required: [page, limit, total, totalPages, hasNext, hasPrevious]
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+        total:
+          type: integer
+          minimum: 0
+        totalPages:
+          type: integer
+          minimum: 0
+        hasNext:
+          type: boolean
+        hasPrevious:
+          type: boolean
+
     NullableDecimal:
       type: number
       format: double
@@ -2377,25 +2399,35 @@ paths:
             type: integer
             minimum: 1
             maximum: 50
-            default: 10
+            default: 20
+        - name: sortBy
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [createdAt, outcome, fromProtocol]
+            default: createdAt
+        - name: sortOrder
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
       responses:
         '200':
           description: Paginated decision listing (user-projected).
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  page:
-                    type: integer
-                  limit:
-                    type: integer
-                  total:
-                    type: integer
-                  decisions:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/RebalanceDecision'
+                allOf:
+                  - $ref: '#/components/schemas/PaginationMeta'
+                  - type: object
+                    properties:
+                      decisions:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/RebalanceDecision'
         '401':
           $ref: '#/components/responses/Unauthorized'
 

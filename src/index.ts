@@ -104,6 +104,7 @@ import keysRouter from './routes/keys'
 import sessionsRouter from './routes/sessions'
 import streamRouter from './routes/stream'
 import notificationsRouter from './routes/notifications'
+import liquidityFloorRouter from './routes/liquidity-floor'
 import notificationDlqRouter from './routes/notification-dlq'
 import networkRouter from './routes/network'
 import netWorthRouter from './routes/net-worth'
@@ -377,6 +378,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'sessions', handlers: [sessionsRouter] },
   { path: 'stream', handlers: [streamRouter] },
   { path: 'notifications', handlers: [notificationsRouter] },
+  { path: 'liquidity-floor', handlers: [liquidityFloorRouter] },
   { path: 'admin/notifications/dlq', handlers: [adminRateLimiter, notificationDlqRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]

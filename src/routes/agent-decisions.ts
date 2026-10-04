@@ -17,6 +17,7 @@ import db from '../db'
 import { requireAuth } from '../middleware/authenticate'
 import { logger } from '../utils/logger'
 import { sendNotFound } from '../utils/errors'
+import { buildPaginationMeta } from '../utils/pagination'
 
 const router = Router()
 
@@ -87,7 +88,9 @@ const listQuerySchema = z.object({
   from: z.string().datetime({ offset: true }).optional(),
   to: z.string().datetime({ offset: true }).optional(),
   page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(50).default(10),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  sortBy: z.enum(['createdAt', 'outcome', 'fromProtocol']).default('createdAt'),
+  sortOrder: z.enum(['asc', 'desc']).default('desc'),
 })
 
 const idParamSchema = z.object({
@@ -107,7 +110,8 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
       .json({ error: 'Validation failed', details: parsed.error.flatten() })
   }
 
-  const { outcome, fromProtocol, from, to, page, limit } = parsed.data
+  const { outcome, fromProtocol, from, to, page, limit, sortBy, sortOrder } =
+    parsed.data
   const skip = (page - 1) * limit
 
   const where: any = {
@@ -126,7 +130,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
       (db as any).rebalanceDecision.count({ where }),
       (db as any).rebalanceDecision.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ [sortBy]: sortOrder }, { id: 'desc' }],
         skip,
         take: limit,
       }),
@@ -153,9 +157,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
     )
 
     return res.status(200).json({
-      page,
-      limit,
-      total,
+      ...buildPaginationMeta(page, limit, total),
       decisions: data,
     })
   } catch (error) {

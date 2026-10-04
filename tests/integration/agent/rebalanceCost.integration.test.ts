@@ -37,11 +37,26 @@ const mockTransactionCreate = jest
   .mockImplementation(({ data }: any) => ({ id: 'txn-1', ...data }))
 const mockPositionFindFirst = jest.fn().mockResolvedValue(null)
 const mockPositionFindMany = jest.fn().mockResolvedValue([])
+const mockUserFindUnique = jest.fn()
+const mockSnapshotFindMany = jest.fn()
+const mockSavingsGoalFindFirst = jest.fn()
 const mockOutboxOpCreate = jest.fn().mockResolvedValue({ id: 'op-1' })
 const mockOutboxOpFindUnique = jest.fn().mockResolvedValue(null)
+const mockPersistDecision = jest.fn().mockResolvedValue('decision-1')
+
+jest.mock('../../../src/agent/rebalanceDecision', () => ({
+  persistRebalanceDecision: (...args: unknown[]) => mockPersistDecision(...args),
+}))
 
 jest.mock('../../../src/db', () => {
   const client: any = {
+    user: { findUnique: (...a: unknown[]) => mockUserFindUnique(...a) },
+    savingsGoal: {
+      findFirst: (...a: unknown[]) => mockSavingsGoalFindFirst(...a),
+    },
+    protocolLiquiditySnapshot: {
+      findMany: (...a: unknown[]) => mockSnapshotFindMany(...a),
+    },
     agentLog: { create: (...a: unknown[]) => mockAgentLogCreate(...a) },
     transaction: { create: (...a: unknown[]) => mockTransactionCreate(...a) },
     position: {
@@ -84,6 +99,10 @@ describe('#347 rebalance cost payback gate (integration)', () => {
       assetSymbol: 'USDC',
       user: { network: 'MAINNET' },
     })
+    mockUserFindUnique.mockResolvedValue({ liquidityFloor: '100' })
+    mockSnapshotFindMany.mockResolvedValue([])
+    mockSavingsGoalFindFirst.mockResolvedValue(null)
+    mockPersistDecision.mockResolvedValue('decision-1')
   })
 
   it('blocks an unprofitable move: tiny position whose cost never recoups', async () => {
@@ -110,5 +129,34 @@ describe('#347 rebalance cost payback gate (integration)', () => {
     expect(result).not.toBeNull()
     expect(mockTransactionCreate).toHaveBeenCalledTimes(1)
     expect(mockOutboxOpCreate).toHaveBeenCalledTimes(1)
+  })
+
+  it('blocks a configured floor when fresh liquidity data is unavailable', async () => {
+    mockPositionFindMany.mockResolvedValue([
+      {
+        id: 'pos-big',
+        protocolName: 'Blend',
+        assetSymbol: 'USDC',
+        currentValue: '10000000000000000000000',
+        liquidityLocked: false,
+        transactions: [],
+      },
+    ])
+
+    const result = await executeRebalanceIfNeeded(
+      'Blend',
+      [{ id: 'pos-big', amount: '10000000000000000000000', userId: 'user-1' }],
+      undefined,
+      [{ userId: 'user-1', liquidityFloorUsd: 100 }]
+    )
+
+    expect(result).toBeNull()
+    expect(mockSubmitRebalance).not.toHaveBeenCalled()
+    expect(mockPersistDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: 'BLOCKED',
+        blockedReason: 'liquidity_data_unavailable',
+      })
+    )
   })
 })

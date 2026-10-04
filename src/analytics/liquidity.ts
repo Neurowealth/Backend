@@ -27,6 +27,83 @@ export interface LiquidityMetrics {
   bindingConstraint?: 'depth' | 'cooldown' | 'none'
 }
 
+export interface LiquidityFloorPosition {
+  positionId: string
+  valueUsd: number
+  timeToExitHours: number | null
+  locked: boolean
+}
+
+export interface LiquidityFloorRestoration {
+  positionId: string
+  amountUsd: number
+  timeToExitHours: number
+}
+
+export function calculateLiquidityFloor(params: {
+  totalBalanceUsd: number
+  liquidBalanceUsd: number
+  floorUsd: number
+}): {
+  availableForYieldUsd: number
+  shortfallUsd: number
+} {
+  const { totalBalanceUsd, liquidBalanceUsd, floorUsd } = params
+  if (
+    !Number.isFinite(totalBalanceUsd) ||
+    !Number.isFinite(liquidBalanceUsd) ||
+    !Number.isFinite(floorUsd) ||
+    totalBalanceUsd < 0 ||
+    liquidBalanceUsd < 0 ||
+    floorUsd < 0
+  ) {
+    return { availableForYieldUsd: 0, shortfallUsd: 0 }
+  }
+
+  return {
+    availableForYieldUsd: Math.max(0, totalBalanceUsd - floorUsd),
+    shortfallUsd: Math.max(0, floorUsd - liquidBalanceUsd),
+  }
+}
+
+export function planLiquidityFloorRestoration(
+  positions: LiquidityFloorPosition[],
+  shortfallUsd: number
+): LiquidityFloorRestoration[] {
+  if (!Number.isFinite(shortfallUsd) || shortfallUsd <= 0) return []
+
+  const candidates = positions
+    .filter(
+      (position) =>
+        !position.locked &&
+        Number.isFinite(position.valueUsd) &&
+        position.valueUsd > 0 &&
+        position.timeToExitHours !== null &&
+        Number.isFinite(position.timeToExitHours) &&
+        position.timeToExitHours >= 0
+    )
+    .sort(
+      (a, b) =>
+        a.timeToExitHours! - b.timeToExitHours! ||
+        a.positionId.localeCompare(b.positionId)
+    )
+
+  let remaining = shortfallUsd
+  const restoration: LiquidityFloorRestoration[] = []
+  for (const position of candidates) {
+    if (remaining <= 0) break
+    const amountUsd = Math.min(position.valueUsd, remaining)
+    restoration.push({
+      positionId: position.positionId,
+      amountUsd,
+      timeToExitHours: position.timeToExitHours!,
+    })
+    remaining -= amountUsd
+  }
+
+  return restoration
+}
+
 // ── Pure Core Functions ────────────────────────────────────────────────────────
 
 export function maxExitWithinSlippage(
