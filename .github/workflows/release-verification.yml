@@ -1,0 +1,37 @@
+name: Release verification
+
+on:
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to verify
+        type: choice
+        options: [staging, production]
+        required: true
+        default: staging
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.deployment_status.state == 'success' &&
+       contains(fromJSON('["staging","production"]'), github.event.deployment.environment))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment || github.event.deployment.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify deployed environment
+        env:
+          TARGET_URL: ${{ vars.RELEASE_TARGET_URL }}
+          INTERNAL_SERVICE_TOKEN: ${{ secrets.INTERNAL_SERVICE_TOKEN }}
+        run: |
+          test -n "$TARGET_URL" || { echo 'Configure RELEASE_TARGET_URL for this environment'; exit 1; }
+          npm run release:verify

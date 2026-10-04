@@ -4,6 +4,9 @@ dotenv.config()
 
 function requireEnv(key: string): string {
   const value = process.env[key]
+  if (!value && process.env.SECRET_BACKEND === 'aws-ssm') {
+    return `__SSM_PENDING_${key}__`
+  }
   if (!value) throw new Error(`Missing required environment variable: ${key}`)
   return value
 }
@@ -65,10 +68,35 @@ function validateAllRequiredEnvVars(): void {
   ]
 
   const errors: string[] = []
+  const ssmManagedSecrets = new Set([
+    'STELLAR_AGENT_SECRET_KEY',
+    'ANTHROPIC_API_KEY',
+    'DATABASE_URL',
+    'JWT_SEED',
+    'WALLET_ENCRYPTION_KEY',
+    'TWILIO_AUTH_TOKEN',
+  ])
+
+  for (const key of [
+    'JWT_SEED',
+    'WALLET_ENCRYPTION_KEY',
+    'STELLAR_AGENT_SECRET_KEY',
+    'ANTHROPIC_API_KEY',
+    'TWILIO_AUTH_TOKEN',
+    'DATABASE_URL',
+  ]) {
+    const expiresAt = process.env[`SECRET_EXPIRY_${key}`]
+    if (expiresAt) {
+      const expiry = Date.parse(expiresAt)
+      if (!Number.isFinite(expiry) || expiry <= Date.now()) {
+        errors.push(`${key} is expired or has an invalid SECRET_EXPIRY_${key}`)
+      }
+    }
+  }
 
   // ── 1. Missing vars ──────────────────────────────────────────────────────
   for (const key of requiredVars) {
-    if (!process.env[key]) {
+    if (!process.env[key] && !(process.env.SECRET_BACKEND === 'aws-ssm' && ssmManagedSecrets.has(key))) {
       errors.push(`Missing required environment variable: ${key}`)
     }
   }
@@ -353,6 +381,10 @@ export const config = {
      * or GitHub Actions secrets — never commit the raw value.
      */
     seed: requireEnv('JWT_SEED'),
+    previousSeeds: (process.env.JWT_PREVIOUS_SEEDS || '')
+      .split(',')
+      .map((seed) => seed.trim())
+      .filter(Boolean),
     session_ttl_hours: parseInt(process.env.JWT_SESSION_TTL_HOURS || '24'),
     nonce_ttl_ms: parseInt(process.env.JWT_NONCE_TTL_MS || '300000'),
     interval_ms: parseInt(process.env.JWT_CLEANUP_INTERVAL_MS || '86400000'),
@@ -710,6 +742,113 @@ export const config = {
     expirySweepIntervalMs: parseInt(
       process.env.APPROVAL_EXPIRY_SWEEP_INTERVAL_MS || '60000'
     ),
+  },
+  /**
+   * Borrow-against-collateral credit line (#532) — the platform's lending book.
+   *
+   * The controlling relationship is:
+   *
+   *     maxLtv  <  liquidationLtvThreshold  <  underlyingProtocolLtv
+   *
+   * `maxLtv` is the hard ceiling at origination. `liquidationLtvThreshold` is
+   * the line at which the protective sale fires, and it must sit BELOW the
+   * underlying protocol's own liquidation threshold so a forced sale happens
+   * while the platform still holds unimpaired collateral. The gap between the
+   * two is the platform's own risk buffer — if the underlying market seizes
+   * collateral first, the loan is already underwater and the shortfall becomes
+   * platform bad debt. That buffer is why `maxLtv` is deliberately well under
+   * the threshold rather than just under it.
+   *
+   * Defaults are the *conservative* end of every range. Raising any of them is
+   * a risk decision that has to be re-derived against the underlying protocol's
+   * live parameters, not a config tweak; see docs/LENDING.md.
+   */
+  lending: {
+    /** Fraction of collateral value a user may borrow at origination, in (0,1). */
+    maxLtv: parseFloat(process.env.LENDING_MAX_LTV || '0.5'),
+    /** Live LTV at/above which the protective sale fires, in (0,1]. */
+    liquidationLtvThreshold: parseFloat(
+      process.env.LENDING_LIQUIDATION_LTV || '0.75'
+    ),
+    /**
+     * LTV the partial liquidation restores. Below the threshold with room for
+     * the next accrual cycle, so a healthy-but-close loan is corrected once
+     * rather than every tick.
+     */
+    liquidationTargetLtv: parseFloat(
+      process.env.LENDING_LIQUIDATION_TARGET_LTV || '0.6'
+    ),
+    /**
+     * Hard ceiling on the liquidation threshold, expressed as a fraction of
+     * the underlying protocol's own liquidation threshold. Enforced at load:
+     * no configuration can talk the platform past the point where the
+     * underlying market liquidates before we do.
+     */
+    maxUnderlyingThresholdFraction: parseFloat(
+      process.env.LENDING_MAX_UNDERLYING_THRESHOLD_FRACTION || '0.8'
+    ),
+    /**
+     * Fallback when the underlying protocol publishes no borrowApy. Fail-safe
+     * in the conservative direction: a higher fallback rate means the borrower
+     * is charged more, never that the platform lends more.
+     */
+    fallbackBorrowApy: parseFloat(
+      process.env.LENDING_FALLBACK_BORROW_APY || '8'
+    ),
+    /** Platform margin added on top of the underlying borrowApy, in percent. */
+    platformSpreadApy: parseFloat(
+      process.env.LENDING_PLATFORM_SPREAD_APY || '3'
+    ),
+    /** Smallest collateral value worth lending against, in stablecoin units. */
+    minCollateralValue: parseFloat(
+      process.env.LENDING_MIN_COLLATERAL_VALUE || '100'
+    ),
+    /** Smallest principal that may be originated, in stablecoin units. */
+    minPrincipal: parseFloat(process.env.LENDING_MIN_PRINCIPAL || '10'),
+    /** Ceiling on a single loan, in stablecoin units. */
+    maxPrincipal: parseFloat(process.env.LENDING_MAX_PRINCIPAL || '50000'),
+    /**
+     * Origination above this principal is routed through the approval-workflow
+     * co-signer gate (a BORROW-policy approval request) before any collateral
+     * is locked or any stablecoin moves. Independent of the per-user
+     * ApprovalPolicy threshold, which is a user-configured control.
+     */
+    approvalThreshold: parseFloat(
+      process.env.LENDING_APPROVAL_THRESHOLD || '10000'
+    ),
+    /** How often interest is accrued onto outstanding loans. */
+    accrualIntervalMs: parseInt(
+      process.env.LENDING_ACCRUAL_INTERVAL_MS || '3600000'
+    ),
+    /** How often the scheduled liquidation monitor runs. */
+    liquidationCheckIntervalMs: parseInt(
+      process.env.LENDING_LIQUIDATION_CHECK_INTERVAL_MS || '3600000'
+    ),
+    /**
+     * Ceiling on the share of a position's collateral a single liquidation
+     * may sell. Below 1 the sale is necessarily partial; at 1 a sale that
+     * cannot restore a safe LTV is free to exhaust the position and record the
+     * remainder as bad debt rather than nibbling at it forever.
+     */
+    maxCollateralFractionSold: parseFloat(
+      process.env.LENDING_MAX_COLLATERAL_FRACTION_SOLD || '1'
+    ),
+  },
+  protectionFund: {
+    /** Fraction of platform revenue skimmed into the fund, in [0,1]. Off by default. */
+    revenueSkimFraction: parseFloat(
+      process.env.PROTECTION_FUND_REVENUE_SKIM_FRACTION || '0'
+    ),
+    /** Per-user coverage cap in stablecoin units. */
+    perUserCoverageCap: parseFloat(
+      process.env.PROTECTION_FUND_PER_USER_CAP || '10000'
+    ),
+    /** Minimum hold duration (ms) before a position is eligible for coverage. */
+    minHoldDurationMs: parseInt(
+      process.env.PROTECTION_FUND_MIN_HOLD_DURATION_MS || String(7 * 24 * 60 * 60 * 1000)
+    ),
+    /** Default asset symbol for the fund. */
+    defaultAssetSymbol: process.env.PROTECTION_FUND_DEFAULT_ASSET || 'USDC',
   },
   outbox: {
     dispatchIntervalMs: parseInt(

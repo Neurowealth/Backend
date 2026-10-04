@@ -64,6 +64,9 @@ import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
 import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { scheduleApprovalExpiry } from './jobs/approvalExpiry'
 import { scheduleReserveReconciliation } from './jobs/reserveReconciliation'
+import { scheduleLoanAccrual } from './jobs/loanAccrual'
+import { scheduleLoanLiquidationMonitor } from './jobs/loanLiquidationMonitor'
+import { scheduleLinkedExternalWalletSync } from './jobs/linkedExternalWalletSync'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { startEventBridge, stopEventBridge } from './events/bridge'
 import { attachWebSocketServer, closeWebSocketServer } from './ws/server'
@@ -79,6 +82,9 @@ import transactionsRouter from './routes/transactions'
 import protocolsRouter from './routes/protocols'
 import depositRouter from './routes/deposit'
 import withdrawRouter from './routes/withdraw'
+import loansRouter from './routes/loans'
+import protectionFundRouter from './routes/protection-fund'
+import settingsRouter from './routes/settings'
 import vaultRouter from './routes/vault'
 import analyticsRouter from './routes/analytics'
 import adminRouter from './routes/admin'
@@ -99,7 +105,9 @@ import sessionsRouter from './routes/sessions'
 import streamRouter from './routes/stream'
 import notificationsRouter from './routes/notifications'
 import liquidityFloorRouter from './routes/liquidity-floor'
+import notificationDlqRouter from './routes/notification-dlq'
 import networkRouter from './routes/network'
+import netWorthRouter from './routes/net-worth'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -109,6 +117,7 @@ import {
   validateCorsConfig,
 } from './middleware/corsandbody'
 import { setSpanUser } from './telemetry/spans'
+import { scheduleOutboundNotifications } from './services/outboundNotifications'
 
 // ── Readiness state ───────────────────────────────────────────────────────────
 
@@ -140,6 +149,10 @@ let outboxDispatcherHandle: NodeJS.Timeout | null = null
 let portfolioRiskJobHandle: NodeJS.Timeout | null = null
 let approvalExpiryHandle: NodeJS.Timeout | null = null
 let reserveReconciliationHandle: NodeJS.Timeout | null = null
+let outboundNotificationsHandle: NodeJS.Timeout | null = null
+let linkedExternalWalletSyncHandle: NodeJS.Timeout | null = null
+let loanAccrualHandle: NodeJS.Timeout | null = null
+let loanLiquidationHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -330,6 +343,7 @@ interface ApiRoute {
 
 const apiRoutes: ApiRoute[] = [
   { path: 'network', handlers: [networkRouter] },
+  { path: 'net-worth', handlers: [netWorthRouter] },
   { path: 'agent/decisions', handlers: [agentDecisionsRouter] },
   { path: 'agent', handlers: [internalRateLimiter, agentRouter] },
   { path: 'auth', handlers: [authRateLimiter, authRouter] },
@@ -340,6 +354,14 @@ const apiRoutes: ApiRoute[] = [
   { path: 'protocols', handlers: [protocolsRouter] },
   { path: 'deposit', handlers: [depositRouter] },
   { path: 'withdraw', handlers: [withdrawRouter] },
+  // #532 — collateral loans. Mounted beside withdraw rather than inside
+  // portfolio: a loan is its own lifecycle with its own approval and rate
+  // limits, and it must not inherit portfolio's read-only scope set.
+  { path: 'loans', handlers: [loansRouter] },
+  // #533 — protocol-risk protection fund
+  { path: 'protection-fund', handlers: [protectionFundRouter] },
+  // #534 — user settings (display currency)
+  { path: 'settings', handlers: [settingsRouter] },
   { path: 'vault', handlers: [vaultRouter] },
   { path: 'analytics', handlers: [analyticsRouter] },
   { path: 'stellar', handlers: [stellarRouter] },
@@ -357,6 +379,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'stream', handlers: [streamRouter] },
   { path: 'notifications', handlers: [notificationsRouter] },
   { path: 'liquidity-floor', handlers: [liquidityFloorRouter] },
+  { path: 'admin/notifications/dlq', handlers: [adminRateLimiter, notificationDlqRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
 
@@ -397,6 +420,11 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(sessionCleanupHandle)
     sessionCleanupHandle = null
     logger.info('[Shutdown] Session cleanup timer cleared')
+  }
+
+  if (outboundNotificationsHandle) {
+    clearInterval(outboundNotificationsHandle)
+    outboundNotificationsHandle = null
   }
 
   if (dataRetentionHandle) {
@@ -483,6 +511,24 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Reserve reconciliation timer cleared')
   }
 
+  if (linkedExternalWalletSyncHandle) {
+    clearInterval(linkedExternalWalletSyncHandle)
+    linkedExternalWalletSyncHandle = null
+    logger.info('[Shutdown] External wallet sync timer cleared')
+  }
+
+  if (loanAccrualHandle) {
+    clearInterval(loanAccrualHandle)
+    loanAccrualHandle = null
+    logger.info('[Shutdown] Loan accrual timer cleared')
+  }
+
+  if (loanLiquidationHandle) {
+    clearInterval(loanLiquidationHandle)
+    loanLiquidationHandle = null
+    logger.info('[Shutdown] Loan liquidation monitor cleared')
+  }
+
   try {
     stopFeeOracle()
     logger.info('[Shutdown] Fee oracle stopped')
@@ -544,6 +590,11 @@ async function initServices(): Promise<void> {
   // 0. Bootstrap secrets (no-op when SECRET_BACKEND=env, fetches from SSM otherwise)
   const { bootstrapSecrets } = await import('./config/secrets')
   await bootstrapSecrets()
+  const { validateSecretCredentials } = await import('./config/secrets')
+  const secretErrors = validateSecretCredentials()
+  if (secretErrors.length) {
+    throw new Error(`[Startup] Secret validation failed: ${secretErrors.join('; ')}`)
+  }
 
   if (config.nodeEnv === 'production') {
     logger.info(
@@ -695,6 +746,12 @@ async function main(): Promise<void> {
   portfolioRiskJobHandle = schedulePortfolioRiskJob()
   approvalExpiryHandle = scheduleApprovalExpiry()
   reserveReconciliationHandle = scheduleReserveReconciliation()
+  outboundNotificationsHandle = scheduleOutboundNotifications()
+  linkedExternalWalletSyncHandle = scheduleLinkedExternalWalletSync()
+  // #532 — accrual first, then the monitor: the monitor values loans, and it
+  // must not value them on interest the accrual job has not yet recorded.
+  loanAccrualHandle = scheduleLoanAccrual()
+  loanLiquidationHandle = scheduleLoanLiquidationMonitor()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

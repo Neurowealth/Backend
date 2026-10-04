@@ -68,25 +68,11 @@ jobs:
       - name: Prisma migrate deploy
         run: npx prisma migrate deploy
 
-      # Run TypeScript lint check
-      - name: Run lint
-        run: npm run lint
+      - name: Release tooling regression tests
+        run: node --test scripts/tests/release.test.cjs
 
-      - name: Run format check
-        run: npm run format:check
-
-      # #497 — catch environment drift between local, staging, and production
-      # before it can reach a deploy (fails when a core startup key is absent).
-      - name: Environment parity check
-        run: npm run env:parity
-
-      # Build the project
-      - name: Build project
-        run: npm run build
-
-      # Run tests
-      - name: Run tests
-        run: npm test
+      - name: Release preflight gate
+        run: npm run release:preflight
 
   # ── Security scanning ─────────────────────────────────────────────────────
   # Issue #114: npm audit for known vulnerabilities

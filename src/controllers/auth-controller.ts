@@ -2,6 +2,8 @@
 // #214 – adds refresh token rotation; updates verify() and logout()
 // #472 – refresh rotation, replay detection and durable revocation live in
 //        services/refresh-token.service.ts; this controller is HTTP glue only.
+// #2FA – adds TOTP second-factor challenge step after wallet-signature
+//        verification; enrollment/disable live in services/totp.service.ts.
 import { Request, Response } from 'express'
 import { randomBytes } from 'crypto'
 import { Keypair } from '@stellar/stellar-sdk'
@@ -21,6 +23,7 @@ import {
   rotateRefreshToken,
   type RefreshFailureReason,
 } from '../services/refresh-token.service'
+import { getActiveTotpCredential, issueTotpChallenge } from '../services/totp.service'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -152,6 +155,27 @@ export async function verify(req: Request, res: Response): Promise<void> {
       }
     }
 
+    // #2FA – additive second factor. If the user has an active, verified
+    // TotpCredential, do NOT issue a session yet: hand back a short-lived
+    // challenge that must be completed at POST /api/auth/2fa/verify. Wallet
+    // signature remains factor one; TOTP is factor two.
+    const totp = await getActiveTotpCredential(user.id)
+    if (totp) {
+      const challenge = await issueTotpChallenge(user.id, {
+        stellarPubKey,
+        referralCode,
+        userAgent: req.headers['user-agent'] ?? null,
+        ipAddress: req.ip ?? null,
+      })
+      logger.info(`[Auth] TOTP challenge issued for user ${user.id}`)
+      res.status(200).json({
+        requiresTotp: true,
+        totpChallengeToken: challenge.token,
+        totpExpiresAt: challenge.expiresAt.toISOString(),
+      })
+      return
+    }
+
     // #472 – short-lived access token + long-lived opaque refresh token, both
     // issued through the service so the stored shape cannot drift from what
     // rotation expects to find.
@@ -202,6 +226,105 @@ export async function verify(req: Request, res: Response): Promise<void> {
     })
   } catch (error) {
     logger.error('[Auth] Verify error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+/**
+ * POST /api/auth/2fa/verify
+ *
+ * Body: { totpChallengeToken: string, code: string }
+ *
+ * Completes a login that was paused at the TOTP step. The wallet signature has
+ * already been verified when the challenge was issued; this endpoint only
+ * proves possession of the second factor. On success the session is created
+ * exactly as in verify(), so downstream behaviour (session list, notifications)
+ * is identical.
+ */
+export async function verifyTotp(req: Request, res: Response): Promise<void> {
+  const { totpChallengeToken, code } = req.body as {
+    totpChallengeToken?: unknown
+    code?: unknown
+  }
+
+  if (typeof totpChallengeToken !== 'string' || totpChallengeToken.length === 0) {
+    res.status(400).json({ error: 'totpChallengeToken is required' })
+    return
+  }
+  if (typeof code !== 'string' || code.length === 0) {
+    res.status(400).json({ error: 'code is required' })
+    return
+  }
+
+  try {
+    const result = await completeTotpChallenge(totpChallengeToken, code)
+    if (!result.ok) {
+      // Generic message: distinguishing "wrong code" from "expired challenge"
+      // gives an attacker a free oracle on challenge validity.
+      res.status(401).json({ error: 'Invalid or expired 2FA challenge' })
+      return
+    }
+
+    const { user, stellarPubKey, network, referralCode } = result
+
+    if (referralCode) {
+      try {
+        await attributeSignup(user.id, referralCode)
+      } catch (err) {
+        logger.error(
+          '[Auth] Referral attribution failed (2FA login unaffected):',
+          err
+        )
+      }
+    }
+
+    const pair = await issueTokenPair(user.id)
+
+    const userAgent = req.headers['user-agent'] ?? null
+    const ipAddress = req.ip ?? null
+    const deviceType = parseDeviceType(userAgent)
+    const approxLocation = resolveApproxLocation(ipAddress)
+
+    const session = await db.session.create({
+      data: {
+        userId: user.id,
+        token: pair.accessToken,
+        walletAddress: stellarPubKey,
+        network,
+        expiresAt: pair.expiresAt,
+        ipAddress,
+        userAgent,
+        deviceType,
+        approxLocation,
+        lastSeenAt: new Date(),
+        lastSeenIp: ipAddress,
+        ...newRefreshTokenFields(pair),
+      },
+    })
+
+    logger.info(`[Auth] Session created for user ${user.id} (post-2FA)`)
+
+    const deepLinkToken = createSessionDeepLinkToken(user.id, session.id)
+    publishUserEvent(user.id, 'alerts', 'security.new_session', {
+      sessionId: session.id,
+      deviceType,
+      approxLocation,
+      ipAddress: ipAddress ? `${ipAddress.slice(0, -3)}xxx` : null,
+      createdAt: session.createdAt.toISOString(),
+      revokeLink: `/sessions?highlight=${session.id}&token=${deepLinkToken}`,
+    }).catch((err) =>
+      logger.warn('[Auth] Failed to emit security.new_session', { err })
+    )
+
+    res.status(200).json({
+      accessToken: pair.accessToken,
+      refreshToken: pair.refreshToken,
+      userId: user.id,
+      expiresAt: pair.expiresAt.toISOString(),
+      refreshExpiresAt: pair.refreshExpiresAt.toISOString(),
+    })
+  } catch (error) {
+    logger.error('[Auth] TOTP verify error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 }

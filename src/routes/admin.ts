@@ -13,7 +13,13 @@ import { Router, Request, Response } from 'express'
 import { getEventMetrics } from '../stellar/events'
 import { DeadLetterQueue } from '../stellar/dlq'
 import { logger } from '../utils/logger'
-import { requireAdminAuth, requireAdminScope } from '../middleware/adminAuth'
+import {
+  requireAdminAuth,
+  requireAdminScope,
+  getAdminAuth,
+  hasAdminScope,
+  validateScopesInput,
+} from '../middleware/adminAuth'
 import { getAllProviderHealth, adminSetProviderCircuit } from '../fiat/registry'
 import db from '../db'
 import { revokeSession } from '../services/refresh-token.service'
@@ -36,12 +42,14 @@ function auditLog(
   result: string,
   details?: Record<string, any>
 ): void {
-  const adminAuth = res.locals.adminAuth
+  const adminAuth = getAdminAuth(res)
+  if (!adminAuth) {
+    logger.error('[Admin Audit] Missing valid admin identity', { action })
+    return
+  }
   const auditPayload = {
-    adminIdentity: adminAuth
-      ? `${adminAuth.name} (${adminAuth.role})`
-      : 'unknown',
-    adminId: adminAuth?.id ?? null,
+    adminIdentity: `${adminAuth.name} (${adminAuth.role})`,
+    adminId: adminAuth.id,
     action,
     target: req.originalUrl || req.path,
     result,
@@ -87,6 +95,12 @@ router.get(
   '/audit/verify',
   requireAdminScope('super'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const blocks = await prisma.auditBlock.findMany({
         orderBy: { height: 'asc' },
@@ -177,6 +191,12 @@ router.get(
   '/audit/prove',
   requireAdminScope('super'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const from = Number(req.query.from ?? 0)
       const to = Number(req.query.to ?? Number.MAX_SAFE_INTEGER)
@@ -229,6 +249,12 @@ router.get(
   '/stellar/metrics',
   requireAdminScope('metrics:read'),
   (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const metrics = getEventMetrics()
       auditLog(req, res, 'GET_STELLAR_METRICS', 'success')
@@ -280,6 +306,12 @@ router.get(
   '/dlq/inspect',
   requireAdminScope('dlq:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const {
         status,
@@ -403,6 +435,12 @@ router.post(
   '/dlq/retry',
   requireAdminScope('dlq:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { dryRun = false } = req.body
 
@@ -480,6 +518,12 @@ router.post(
   '/dlq/resolve',
   requireAdminScope('dlq:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { eventId } = req.body
 
@@ -541,6 +585,12 @@ router.post(
   '/dlq/replay',
   requireAdminScope('dlq:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { eventIds, dryRun = false } = req.body
 
@@ -671,6 +721,12 @@ router.post(
   '/stellar/backfill',
   requireAdminScope('backfill:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { startLedger, endLedger } = req.body
 
@@ -746,6 +802,12 @@ router.post(
   '/keys',
   requireAdminScope('keys:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { name, role, scopes, expiresAt } = req.body
 
@@ -759,10 +821,21 @@ router.post(
           .status(400)
           .json({ success: false, error: 'role is required' })
       }
-      if (!Array.isArray(scopes) || scopes.length === 0) {
-        return res
-          .status(400)
-          .json({ success: false, error: 'scopes must be a non-empty array' })
+      if (!validateScopesInput(scopes)) {
+        return res.status(400).json({
+          success: false,
+          error: 'scopes must be a non-empty array of valid admin scopes',
+        })
+      }
+
+      if (!scopes.every((scope) => hasAdminScope(adminAuth, scope))) {
+        auditLog(req, res, 'CREATE_ADMIN_KEY', 'denied', {
+          requestedScopes: scopes,
+        })
+        return res.status(403).json({
+          success: false,
+          error: 'Cannot grant admin scopes beyond your own privileges',
+        })
       }
 
       const crypto = await import('node:crypto')
@@ -840,6 +913,12 @@ router.delete(
   '/keys/:id',
   requireAdminScope('keys:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { id } = req.params
 
@@ -902,6 +981,12 @@ router.get(
   '/keys',
   requireAdminScope('keys:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const keys = await prisma.adminApiKey.findMany({
         select: {
@@ -944,6 +1029,12 @@ router.get(
   '/wallets/rotation-status',
   requireAdminScope('keys:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const totalWallets = await prisma.custodialWallet.count()
       const v1Wallets = await prisma.custodialWallet.count({
@@ -997,6 +1088,12 @@ router.get(
   '/fiat/providers',
   requireAdminScope('fiat:read'),
   (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const providers = getAllProviderHealth()
       auditLog(req, res, 'GET_FIAT_PROVIDER_HEALTH', 'success')
@@ -1027,6 +1124,12 @@ router.post(
   '/fiat/providers/:name/failover',
   requireAdminScope('fiat:write'),
   (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     const { name } = req.params
     const { state } = req.body ?? {}
 
@@ -1068,6 +1171,12 @@ router.get(
   '/outbox',
   requireAdminScope('outbox:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { status, kind, priority, userId, limit, offset } = req.query
       const { listOps } = await import('../outbox/service')
@@ -1112,6 +1221,12 @@ router.get(
   '/outbox/stats',
   requireAdminScope('outbox:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { getQueueStats } = await import('../outbox/service')
       const stats = await getQueueStats()
@@ -1139,6 +1254,12 @@ router.get(
   '/outbox/:id',
   requireAdminScope('outbox:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { getOp } = await import('../outbox/service')
       const op = await getOp(req.params.id)
@@ -1170,6 +1291,12 @@ router.post(
   '/outbox/:id/retry',
   requireAdminScope('outbox:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { forceRetry } = await import('../outbox/service')
       const op = await forceRetry(req.params.id)
@@ -1194,6 +1321,12 @@ router.post(
   '/outbox/:id/cancel',
   requireAdminScope('outbox:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { cancelOp } = await import('../outbox/service')
       const op = await cancelOp(req.params.id)
@@ -1220,10 +1353,15 @@ router.post(
   '/approvals/:id/cancel',
   requireAdminScope('approvals:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { cancel } = await import('../approvals/service')
-      const adminAuth = res.locals.adminAuth
-      const result = await cancel(req.params.id, adminAuth?.id ?? 'admin', {
+      const result = await cancel(req.params.id, adminAuth.id, {
         isAdmin: true,
       })
       auditLog(req, res, 'APPROVAL_ADMIN_CANCEL', 'success', {
@@ -1254,6 +1392,12 @@ router.get(
   '/referrals/flagged',
   requireAdminScope('referrals:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { listFlaggedConversions } = await import('../referral/service')
       const flagged = await listFlaggedConversions()
@@ -1282,6 +1426,12 @@ router.post(
   '/referrals/:id/review',
   requireAdminScope('referrals:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     const { decision } = req.body ?? {}
     if (decision !== 'approve' && decision !== 'reject') {
       return res.status(400).json({
@@ -1292,12 +1442,7 @@ router.post(
 
     try {
       const { resolveFlaggedConversion } = await import('../referral/service')
-      const adminAuth = res.locals.adminAuth
-      await resolveFlaggedConversion(
-        req.params.id,
-        decision,
-        adminAuth?.id ?? 'admin'
-      )
+      await resolveFlaggedConversion(req.params.id, decision, adminAuth.id)
       auditLog(req, res, 'REFERRAL_REVIEW', 'success', {
         conversionId: req.params.id,
         decision,
@@ -1334,6 +1479,12 @@ router.post(
   '/erasure',
   requireAdminScope('erasure:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { userId, dryRun = false } = req.body as {
         userId: string
@@ -1410,8 +1561,14 @@ router.post(
  */
 router.get(
   '/users/:id/sessions',
-  requireAdminScope('read'),
+  requireAdminScope('sessions:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const sessions = await prisma.session.findMany({
         where: { userId: req.params.id },
@@ -1449,8 +1606,14 @@ router.get(
  */
 router.post(
   '/users/:id/sessions/revoke-all',
-  requireAdminScope('write'),
+  requireAdminScope('sessions:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       // #472: an admin kill-switch that only sets revokedAt leaves every
       // outstanding refresh token live, so the user (or whoever captured one)
@@ -1499,8 +1662,14 @@ router.post(
  */
 router.get(
   '/agent/decisions',
-  requireAdminScope('read'),
+  requireAdminScope('agent:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const outcome = req.query.outcome as string | undefined
       const fromProtocol = req.query.fromProtocol as string | undefined
@@ -1619,8 +1788,14 @@ router.get(
  */
 router.get(
   '/reserves',
-  requireAdminScope('read'),
+  requireAdminScope('reserves:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const rows: any[] = await prisma.reserveSponsorship.findMany({
         where: { status: 'ACTIVE' },
@@ -1702,8 +1877,14 @@ router.get(
  */
 router.get(
   '/agent/breakers',
-  requireAdminScope('agent'),
+  requireAdminScope('agent:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const breakers = await listBreakers()
       auditLog(req, res, 'LIST_AGENT_BREAKERS', 'success', {
@@ -1725,8 +1906,14 @@ router.get(
  */
 router.post(
   '/agent/breakers',
-  requireAdminScope('agent'),
+  requireAdminScope('agent:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { scope, scopeKey, reason } = req.body ?? {}
 
@@ -1762,9 +1949,7 @@ router.post(
         return
       }
 
-      const adminIdentity = res.locals.adminAuth
-        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
-        : 'unknown'
+      const adminIdentity = `${adminAuth.name} (${adminAuth.role})`
       const scopeKeyValue = scope === 'GLOBAL' ? '' : scopeKey.trim()
       const result = await manualTripBreaker(
         scope,
@@ -1793,8 +1978,14 @@ router.post(
  */
 router.post(
   '/agent/breakers/:id/reset',
-  requireAdminScope('agent'),
+  requireAdminScope('agent:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { reason } = req.body ?? {}
 
@@ -1806,9 +1997,7 @@ router.post(
         return
       }
 
-      const adminIdentity = res.locals.adminAuth
-        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
-        : 'unknown'
+      const adminIdentity = `${adminAuth.name} (${adminAuth.role})`
       const result = await manualResetBreaker(
         req.params.id,
         reason.trim(),
@@ -1845,16 +2034,21 @@ router.post(
   '/treasury/emergency-sweep',
   requireAdminScope('treasury:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { fromTier, toTier, asset, amount, reason } = req.body
       const { executeEmergencySweep } = await import('../jobs/treasurySweep')
-      const adminAuth = res.locals.adminAuth
       await executeEmergencySweep(
         fromTier,
         toTier,
         asset,
         amount,
-        adminAuth?.name ?? 'admin',
+        adminAuth.name,
         reason ?? 'manual_admin_action'
       )
       auditLog(req, res, 'TREASURY_EMERGENCY_SWEEP', 'success', {
@@ -1886,13 +2080,15 @@ router.post(
   '/treasury/policies',
   requireAdminScope('treasury:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { createPolicyVersion } = await import('../treasury/policy')
-      const adminAuth = res.locals.adminAuth
-      const policy = await createPolicyVersion(
-        req.body,
-        adminAuth?.name ?? 'admin'
-      )
+      const policy = await createPolicyVersion(req.body, adminAuth.name)
       auditLog(req, res, 'TREASURY_POLICY_CREATE', 'success', {
         fromTier: req.body.fromTier,
         toTier: req.body.toTier,
@@ -1921,6 +2117,12 @@ router.get(
   '/treasury/policies',
   requireAdminScope('treasury:read'),
   async (_req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const policies = await db.treasurySweepPolicy.findMany({
         where: { isActive: true },
@@ -1945,15 +2147,20 @@ router.post(
   '/treasury/signer-rotations',
   requireAdminScope('treasury:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { treasuryAccountId, oldSignerKey, newSignerKey } = req.body
       const { initiateRotation } = await import('../treasury/signerRotation')
-      const adminAuth = res.locals.adminAuth
       const rotation = await initiateRotation(
         treasuryAccountId,
         oldSignerKey,
         newSignerKey,
-        adminAuth?.name ?? 'admin'
+        adminAuth.name
       )
       auditLog(req, res, 'TREASURY_SIGNER_ROTATION_INITIATE', 'success', {
         rotationId: rotation.id,
@@ -1982,13 +2189,15 @@ router.post(
   '/treasury/signer-rotations/:id/finalize',
   requireAdminScope('treasury:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { finalizeRotation } = await import('../treasury/signerRotation')
-      const adminAuth = res.locals.adminAuth
-      const rotation = await finalizeRotation(
-        req.params.id,
-        adminAuth?.name ?? 'admin'
-      )
+      const rotation = await finalizeRotation(req.params.id, adminAuth.name)
       auditLog(req, res, 'TREASURY_SIGNER_ROTATION_FINALIZE', 'success', {
         rotationId: req.params.id,
       })

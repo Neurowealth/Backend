@@ -42,11 +42,17 @@ const mockGetFiatQuote = jest.fn()
 const mockGetBestExecutionQuote = jest.fn()
 const mockCreateFiatOrder = jest.fn()
 const mockProcessProviderWebhook = jest.fn()
+const mockHasProviderWebhookReplay = jest.fn()
+const mockRecordProviderWebhookDelivery = jest.fn()
 jest.mock('../../src/fiat/service', () => ({
   getFiatQuote: (...a: unknown[]) => mockGetFiatQuote(...a),
   getBestExecutionQuote: (...a: unknown[]) => mockGetBestExecutionQuote(...a),
   createFiatOrder: (...a: unknown[]) => mockCreateFiatOrder(...a),
+  hasProviderWebhookReplay: (...a: unknown[]) =>
+    mockHasProviderWebhookReplay(...a),
   processProviderWebhook: (...a: unknown[]) => mockProcessProviderWebhook(...a),
+  recordProviderWebhookDelivery: (...a: unknown[]) =>
+    mockRecordProviderWebhookDelivery(...a),
 }))
 
 // --- Provider registry: a stub provider with controllable verification --------
@@ -88,6 +94,8 @@ function buildApp() {
 const app = buildApp()
 
 beforeEach(() => {
+  mockHasProviderWebhookReplay.mockResolvedValue(false)
+  mockRecordProviderWebhookDelivery.mockResolvedValue(undefined)
   jest.clearAllMocks()
 })
 
@@ -355,6 +363,38 @@ describe('POST /api/fiat/webhook/:provider', () => {
       providerOrderId: 'mp_1',
       status: 'PROCESSING',
     })
+    expect(mockRecordProviderWebhookDelivery).toHaveBeenCalledWith(
+      'moonpay',
+      expect.any(String)
+    )
+  })
+
+  it('ACKs an exact replay without processing it again', async () => {
+    mockVerify.mockReturnValue(true)
+    mockParse.mockReturnValue({ providerOrderId: 'mp_1', status: 'PROCESSING' })
+    mockHasProviderWebhookReplay.mockResolvedValue(true)
+    const res = await request(app)
+      .post('/api/fiat/webhook/moonpay')
+      .set('Content-Type', 'application/json')
+      .send({ data: { id: 'mp_1', status: 'pending' } })
+
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ received: true, replay: true })
+    expect(mockProcessProviderWebhook).not.toHaveBeenCalled()
+    expect(mockRecordProviderWebhookDelivery).not.toHaveBeenCalled()
+  })
+
+  it('returns 500 and skips processing when replay storage is unavailable', async () => {
+    mockVerify.mockReturnValue(true)
+    mockParse.mockReturnValue({ providerOrderId: 'mp_1', status: 'PROCESSING' })
+    mockHasProviderWebhookReplay.mockRejectedValue(new Error('db down'))
+    const res = await request(app)
+      .post('/api/fiat/webhook/moonpay')
+      .set('Content-Type', 'application/json')
+      .send({ data: { id: 'mp_1', status: 'pending' } })
+
+    expect(res.status).toBe(500)
+    expect(mockProcessProviderWebhook).not.toHaveBeenCalled()
   })
 
   it('returns 400 on a malformed (unparseable) payload', async () => {
@@ -378,5 +418,6 @@ describe('POST /api/fiat/webhook/:provider', () => {
       .set('Content-Type', 'application/json')
       .send({ data: { id: 'mp_1' } })
     expect(res.status).toBe(500)
+    expect(mockRecordProviderWebhookDelivery).not.toHaveBeenCalled()
   })
 })

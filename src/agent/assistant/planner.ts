@@ -21,9 +21,17 @@ import { getModelToolSpecs, getTool } from '../tools/registry'
 import type { ConversationTurn } from './memory'
 import { logger } from '../../utils/logger'
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY || 'dummy_key',
-})
+let anthropicClient: Anthropic | null = null
+let anthropicCredential = ''
+
+function getAnthropicClient(): Anthropic {
+  const credential = process.env.ANTHROPIC_API_KEY || config.ai.anthropicApiKey
+  if (!anthropicClient || credential !== anthropicCredential) {
+    anthropicClient = new Anthropic({ apiKey: credential || 'dummy_key' })
+    anthropicCredential = credential
+  }
+  return anthropicClient
+}
 
 export interface ProposedToolCall {
   id: string
@@ -100,7 +108,7 @@ export async function callModel(
   messages: Anthropic.MessageParam[]
 ): Promise<PlannerResult & { rawContent: Anthropic.ContentBlock[] }> {
   try {
-    const response = await anthropic.messages.create({
+    const response = await getAnthropicClient().messages.create({
       model: config.assistant.model,
       max_tokens: config.assistant.maxTokens,
       system: SYSTEM_PROMPT,

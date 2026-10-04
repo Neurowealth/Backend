@@ -74,7 +74,7 @@ async function loadActiveGoal(userId: string): Promise<{
   riskCeiling: number | null
 } | null> {
   const goal = await db.savingsGoal.findFirst({
-    where: { userId, status: 'ACTIVE' },
+    where: { userId, status: 'ACTIVE', includeExternalHoldings: false },
   })
   if (!goal) return null
   return {

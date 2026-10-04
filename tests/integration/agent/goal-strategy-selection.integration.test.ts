@@ -103,7 +103,11 @@ describe('Goal-driven strategy selection integration', () => {
     )
 
     expect(mockSavingsGoalFindFirst).toHaveBeenCalledWith({
-      where: { userId: 'user-no-goal', status: 'ACTIVE' },
+      where: {
+        userId: 'user-no-goal',
+        status: 'ACTIVE',
+        includeExternalHoldings: false,
+      },
     })
     expect(result).not.toBeNull()
     expect(result?.toProtocol).toBe('Luma')
@@ -153,9 +157,56 @@ describe('Goal-driven strategy selection integration', () => {
     )
 
     expect(mockSavingsGoalFindFirst).toHaveBeenCalledWith({
-      where: { userId: 'user-with-goal', status: 'ACTIVE' },
+      where: {
+        userId: 'user-with-goal',
+        status: 'ACTIVE',
+        includeExternalHoldings: false,
+      },
     })
     expect(result).not.toBeNull()
+    expect(result?.toProtocol).toBe('Luma')
+  })
+
+  it('does not load an external-inclusive goal into an agent decision', async () => {
+    mockSavingsGoalFindFirst.mockResolvedValue(null)
+    mockGetCurrentOnChainApy.mockResolvedValue(3.0)
+    mockScanAllProtocols.mockResolvedValue([
+      {
+        name: 'Luma',
+        apy: 8.0,
+        assetSymbol: 'USDC',
+        lastUpdated: new Date(),
+        isAvailable: true,
+      },
+      {
+        name: 'Blend',
+        apy: 3.0,
+        assetSymbol: 'USDC',
+        lastUpdated: new Date(),
+        isAvailable: true,
+      },
+    ])
+
+    const result = await executeRebalanceIfNeeded(
+      'Blend',
+      [
+        {
+          id: 'pos-private-goal',
+          amount: '10000000000000000000000',
+          userId: 'user-private-goal',
+        },
+      ],
+      undefined,
+      [{ userId: 'user-private-goal', strategyName: 'MAX_YIELD' }]
+    )
+
+    expect(mockSavingsGoalFindFirst).toHaveBeenCalledWith({
+      where: {
+        userId: 'user-private-goal',
+        status: 'ACTIVE',
+        includeExternalHoldings: false,
+      },
+    })
     expect(result?.toProtocol).toBe('Luma')
   })
 })

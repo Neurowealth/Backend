@@ -20,7 +20,9 @@ export async function snoozeAlertRule(
   }
 
   try {
-    const rule = await db.alertRule.findFirst({ where: { id, userId } })
+    const rule = await db.alertRule.findFirst({
+      where: { id, userId, deletedAt: null },
+    })
     if (!rule) {
       res.status(404).json({ error: 'Alert rule not found' })
       return
@@ -107,7 +109,7 @@ export async function acknowledgeAlert(
 
   try {
     const rule = await db.alertRule.findFirst({
-      where: { id: targetRuleId, userId: targetUserId },
+      where: { id: targetRuleId, userId: targetUserId, deletedAt: null },
     })
     if (!rule) {
       res.status(404).json({ error: 'Alert rule not found' })
@@ -181,7 +183,9 @@ export async function listAlertFires(
   }
 
   try {
-    const rule = await db.alertRule.findFirst({ where: { id, userId } })
+    const rule = await db.alertRule.findFirst({
+      where: { id, userId, deletedAt: null },
+    })
     if (!rule) {
       res.status(404).json({ error: 'Alert rule not found' })
       return

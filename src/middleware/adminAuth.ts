@@ -20,6 +20,11 @@ export const ADMIN_SCOPES = [
   'write',
   'wallet',
   'agent',
+  'agent:read',
+  'agent:write',
+  'sessions:read',
+  'sessions:write',
+  'reserves:read',
   'metrics:read',
   'dlq:read',
   'dlq:write',
@@ -54,14 +59,46 @@ export const ADMIN_SCOPES = [
 ] as const
 export type AdminScope = (typeof ADMIN_SCOPES)[number]
 
-/** Scopes that `super` implicitly grants. */
-const SUPER_GRANTS: Set<AdminScope> = new Set(ADMIN_SCOPES)
-
 export interface AdminAuthContext {
   id: string
   name: string
   role: string
   scopes: string[]
+}
+
+/** Validate runtime context before trusting its identity or scopes. */
+export function getAdminAuth(res: Response): AdminAuthContext | undefined {
+  const auth: unknown = res.locals.adminAuth
+  if (!auth || typeof auth !== 'object') return undefined
+  const candidate = auth as Partial<AdminAuthContext>
+  if (
+    typeof candidate.id !== 'string' ||
+    !candidate.id.trim() ||
+    typeof candidate.name !== 'string' ||
+    !candidate.name.trim() ||
+    typeof candidate.role !== 'string' ||
+    !candidate.role.trim() ||
+    !Array.isArray(candidate.scopes) ||
+    !candidate.scopes.every(
+      (scope) =>
+        typeof scope === 'string' && ADMIN_SCOPES.includes(scope as AdminScope)
+    )
+  )
+    return undefined
+  return candidate as AdminAuthContext
+}
+
+/** Generic read/write scopes grant no resource-specific privileges. */
+export function hasAdminScope(
+  auth: AdminAuthContext,
+  scope: AdminScope
+): boolean {
+  return (
+    auth.scopes.includes(scope) ||
+    auth.scopes.includes('super') ||
+    ((scope === 'agent:read' || scope === 'agent:write') &&
+      auth.scopes.includes('agent'))
+  )
 }
 
 // ── Internal helpers ────────────────────────────────────────────────────────
@@ -194,18 +231,12 @@ export async function requireAdminAuth(
 /**
  * requireAdminScope(scope)
  *
- * #215 – Factory that returns a middleware enforcing `scope` on the route.
+ * #215 & #517 – Factory that returns a middleware enforcing `scope` on the route.
  * Must be placed AFTER requireAdminAuth in the middleware chain.
  *
  * A key with scope `super` is granted access to all routes.
+ * The legacy `agent` scope grants `agent:read` and `agent:write` only.
  * Scope mismatches are written to AdminAuditLog and return 403.
- *
- * @example
- *   router.delete('/key/:id',
- *     requireAdminAuth,
- *     requireAdminScope('super'),
- *     deleteKeyHandler,
- *   )
  */
 export function requireAdminScope(scope: AdminScope) {
   return async (
@@ -213,7 +244,7 @@ export function requireAdminScope(scope: AdminScope) {
     res: Response,
     next: NextFunction
   ): Promise<void> => {
-    const auth = res.locals.adminAuth as AdminAuthContext | undefined
+    const auth = getAdminAuth(res)
 
     if (!auth) {
       res
@@ -223,7 +254,7 @@ export function requireAdminScope(scope: AdminScope) {
     }
 
     const scopes = auth.scopes as AdminScope[]
-    const hasScope = scopes.includes(scope) || scopes.includes('super')
+    const hasScope = hasAdminScope(auth, scope)
 
     if (!hasScope) {
       // #215 – audit log every scope-check failure

@@ -12,6 +12,7 @@ import { deriveIdempotencyKey } from '../outbox/idempotency'
 import { OutboxOpKind } from '../outbox/types'
 import { guardOperation } from '../approvals/service'
 import { getFeeSnapshot } from '../stellar/feeOracle'
+import { invalidatePortfolioCache } from '../utils/user-cache-invalidation'
 
 /**
  * Persist the Transaction row (PENDING, no hash yet) and its outbox intent in
@@ -90,7 +91,7 @@ async function enqueueAndDispatch(params: {
     const result = await dispatchOne(pending.opId)
     const succeeded = !result.status || result.status === 'success'
     const stillPending = result.status === 'pending'
-    return db.transaction.update({
+    const updatedTx = await db.transaction.update({
       where: { id: pending.transaction.id },
       data: {
         txHash: result.hash,
@@ -98,6 +99,8 @@ async function enqueueAndDispatch(params: {
         confirmedAt: succeeded ? new Date() : null,
       },
     })
+    await invalidatePortfolioCache(params.userId)
+    return updatedTx
   } catch (err) {
     if (err instanceof Error && 'txHash' in err) {
       await db.transaction

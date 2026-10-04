@@ -46,6 +46,87 @@ groups:
         annotations:
           summary: "High failure rate detected"
           description: "Failure rate is {{ $value }}/min (> 10)"
+          runbook: "docs/RUNBOOK.md"
+
+      - alert: OutboundNotificationDLQGrowing
+        expr: outbound_notification_dlq_size > 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Outbound notifications are accumulating in the DLQ"
+          description: "{{ $value }} email/SMS/Telegram/WhatsApp notifications require operator review."
+          runbook: "docs/NOTIFICATIONS.md"
+
+      - alert: OutboundNotificationRetriesElevated
+        expr: sum(rate(outbound_notification_attempts_total{status=~"retrying|dead"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbound notification provider failures are elevated"
+          description: "Notification retries are above 1/sec; inspect channel labels and provider health."
+          runbook: "docs/NOTIFICATIONS.md"
+
+      - alert: OutboundNotificationRetriesRepeated
+        expr: increase(outbound_notification_attempts_total{status="retrying"}[15m]) > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "An outbound notification has retried repeatedly"
+          description: "More than five retry attempts occurred in 15 minutes; inspect the affected channel."
+          runbook: "docs/NOTIFICATIONS.md"
+
+      - alert: OutboundNotificationDeadLettered
+        expr: increase(outbound_notification_attempts_total{status="dead"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "An outbound notification exhausted its retry policy"
+          description: "At least one outbound notification entered the DLQ in the last 15 minutes."
+          runbook: "docs/NOTIFICATIONS.md"
+
+      - alert: SecretCredentialValidationFailed
+        expr: secret_credential_validation_failures > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A required backend credential is missing, malformed, or expired"
+          description: "Review secret validation logs and rotate the affected credential."
+          runbook: "docs/SECRETS_ROTATION.md"
+
+      - alert: HttpRequestP99LatencyHigh
+        expr: histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m]))) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP request P99 latency is above 2 seconds"
+          description: "P99 latency for {{ $labels.route }} is {{ $value }}s."
+          runbook: "docs/SLO_GUIDANCE.md"
+
+      - alert: DatabaseP99LatencyHigh
+        expr: histogram_quantile(0.99, sum by (le, operation) (rate(db_operation_duration_seconds_bucket[5m]))) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database operation P99 latency is above 1 second"
+          description: "P99 latency for {{ $labels.operation }} is {{ $value }}s."
+          runbook: "docs/SLO_GUIDANCE.md"
+
+      - alert: StellarRpcP99LatencyHigh
+        expr: histogram_quantile(0.99, sum by (le, endpoint) (rate(stellar_rpc_request_duration_seconds_bucket[5m]))) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Stellar RPC P99 latency is above 5 seconds"
+          description: "P99 RPC latency for {{ $labels.endpoint }} is {{ $value }}s."
+          runbook: "docs/RUNBOOK.md"
 
       - alert: SponsorLowXlm
         expr: sponsor_available_xlm < 10
@@ -121,6 +202,7 @@ groups:
         annotations:
           summary: "Event processing slow"
           description: "P95 event processing duration is {{ $value }}s (> 2s)"
+          runbook: "docs/RUNBOOK.md"
 
       - alert: DatabaseOperationsSlow
         expr: histogram_quantile(0.95, rate(db_operation_duration_seconds_bucket[5m])) > 1
@@ -130,6 +212,7 @@ groups:
         annotations:
           summary: "Database operations slow"
           description: "P95 DB operation duration is {{ $value }}s (> 1s)"
+          runbook: "docs/RUNBOOK.md"
 
       - alert: DBPoolSaturation
         expr: db_pool_wait_count > 5
@@ -148,6 +231,7 @@ groups:
         annotations:
           summary: "HTTP requests slow"
           description: "P95 HTTP request duration is {{ $value }}s (> 5s)"
+          runbook: "docs/RUNBOOK.md"
 
       - alert: AgentBreakerOpen
         expr: agent_breaker_state{scope!="GLOBAL"} == 2

@@ -14,6 +14,9 @@ export type OutboxOpKind =
   | 'YIELD_CLAIM'
   | 'ACCOUNT_PROVISION'
   | 'TREASURY_SWEEP'
+  | 'LOAN_DISBURSE'
+  | 'LOAN_REPAYMENT'
+  | 'LOAN_LIQUIDATION'
 
 export type OutboxOpActor = 'USER' | 'AGENT' | 'SYSTEM'
 
@@ -91,6 +94,56 @@ export type OutboxPayload =
       amount: number
       sweepId: string
     }
+  /**
+   * #532 — hand borrowed stablecoin to the user. Funds leave the vault, so it
+   * settles through the same audited write path as a withdrawal, under its own
+   * kind and transaction type: a loan is not a withdrawal and must never be
+   * reported as one.
+   */
+  | {
+      method: 'loan_disburse'
+      userId: string
+      userAddress: string
+      amount: number
+      assetSymbol: string
+      transactionId: string
+      loanId: string
+    }
+  /** #532 — borrowed stablecoin returning to the vault to retire debt. */
+  | {
+      method: 'loan_repayment'
+      userId: string
+      userAddress: string
+      amount: number
+      assetSymbol: string
+      transactionId: string
+      loanId: string
+    }
+  /**
+   * #532 — protective forced sale of collateral.
+   *
+   * Deliberately carries NO destination: the collateral never leaves the
+   * platform, so the sale is a netting entry (position derecognised, debt
+   * retired, remainder to bad debt) rather than a Stellar transfer. The op
+   * exists so that action is durable, priority-ordered, retried and
+   * observable exactly like every other money movement, and so the executor
+   * has one place to perform it. See docs/LENDING.md.
+   */
+  | {
+      method: 'loan_liquidation'
+      userId: string
+      loanId: string
+      positionId: string
+      collateralAmount: number
+      collateralAssetSymbol: string
+      /** Outstanding principal + accrued interest at the moment of the sale. */
+      debtOutstanding: number
+      borrowedAsset: string
+      trigger: 'scheduled' | 'circuit_breaker'
+      transactionId: string
+      /** Monotonic per loan, so the sale is idempotent under outbox retry. */
+      sequence: number
+    }
 
 export interface OutboxOpRecord {
   id: string
@@ -122,4 +175,11 @@ export const PRIORITY_BY_KIND: Record<OutboxOpKind, OutboxPriority> = {
   REBALANCE: 'LOW',
   ACCOUNT_PROVISION: 'LOW',
   TREASURY_SWEEP: 'NORMAL',
+  // #532 — all three loan legs are CRITICAL. A disbursal is a user waiting on
+  // borrowed cash; a repayment is a claim being settled; a liquidation is a
+  // protective sale whose recovery decays with every minute it sits behind an
+  // agent rebalance.
+  LOAN_DISBURSE: 'CRITICAL',
+  LOAN_REPAYMENT: 'CRITICAL',
+  LOAN_LIQUIDATION: 'CRITICAL',
 }

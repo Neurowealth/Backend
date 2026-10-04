@@ -20,6 +20,8 @@
 // previous approach — is O(live sessions) bcrypt operations on an unauthenticated
 // endpoint, which is a denial-of-service primitive as much as a correctness bug.
 
+import type { SessionAnomalyHeuristic } from './session-anomaly.service'
+import { resolveApproxLocation } from '../utils/geoip'
 import crypto from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import db from '../db'
@@ -27,6 +29,7 @@ import { JwtAdapter } from '../config'
 import { logger } from '../utils/logger'
 import { publishUserEvent } from '../events/publisher'
 import { closeUserSockets } from '../ws/server'
+import { invalidateAllUserCaches } from '../utils/user-cache-invalidation'
 
 /** Refresh tokens are high-entropy random bytes, so a fast hash is the right
  *  lookup key; the bcrypt hash is what actually verifies the secret. */
@@ -42,7 +45,12 @@ async function hashRefreshToken(raw: string): Promise<string> {
 }
 
 export type RevocationReason =
-  'logout' | 'user' | 'logout_others' | 'admin' | 'refresh_token_reuse'
+  | 'logout'
+  | 'user'
+  | 'logout_others'
+  | 'admin'
+  | 'refresh_token_reuse'
+  | `session_anomaly:${SessionAnomalyHeuristic}`
 
 export type RefreshFailureReason =
   | 'invalid_token'
@@ -51,6 +59,7 @@ export type RefreshFailureReason =
   | 'user_inactive'
   | 'reuse_detected'
   | 'rotation_conflict'
+  | 'session_anomaly_detected'
 
 export type RefreshResult =
   | {
@@ -127,7 +136,8 @@ export function newRefreshTokenFields(pair: {
  * as a replay and revoke the session.
  */
 export async function rotateRefreshToken(
-  rawToken: string
+  rawToken: string,
+  reqContext?: { ip?: string; userAgent?: string }
 ): Promise<RefreshResult> {
   if (!rawToken || typeof rawToken !== 'string') {
     return { ok: false, reason: 'invalid_token', status: 400 }
@@ -160,6 +170,19 @@ export async function rotateRefreshToken(
 
   if (session.revokedAt) {
     return { ok: false, reason: 'session_revoked', status: 401 }
+  }
+
+  if (reqContext) {
+    const {
+      evaluateAndHandleSessionAnomaly,
+    } = require('./session-anomaly.service')
+    const isAnomalous = await evaluateAndHandleSessionAnomaly(
+      session,
+      reqContext
+    )
+    if (isAnomalous) {
+      return { ok: false, reason: 'session_anomaly_detected', status: 401 }
+    }
   }
 
   if (!session.refreshTokenExpiresAt || session.refreshTokenExpiresAt <= now) {
@@ -211,6 +234,12 @@ export async function rotateRefreshToken(
       refreshTokenUsedAt: now,
       refreshTokenRotations: { increment: 1 },
       lastSeenAt: now,
+      ...(reqContext?.ip
+        ? {
+            lastSeenIp: reqContext.ip,
+            approxLocation: resolveApproxLocation(reqContext.ip),
+          }
+        : {}),
     },
   })
 
@@ -266,7 +295,7 @@ export async function revokeSession(
     approxLocation?: string | null
   }
 ): Promise<void> {
-  await db.session.update({
+  const session = await db.session.update({
     where: { id: sessionId },
     data: {
       revokedAt: new Date(),
@@ -276,18 +305,21 @@ export async function revokeSession(
       refreshTokenUsedAt: null,
       refreshTokenExpiresAt: null,
     },
+    select: { userId: true },
   })
 
-  if (context?.userId) {
-    // A revoked session must also drop the user's live sockets on this pod; the
-    // per-connection recheck would catch it within WS_SESSION_RECHECK_MS anyway.
-    closeUserSockets(context.userId, 'Session revoked')
+  const targetUserId = session.userId
 
-    publishUserEvent(context.userId, 'alerts', 'security.session_revoked', {
+  if (targetUserId) {
+    // Invalidate cached user state and drop live sockets on session revocation (#514)
+    closeUserSockets(targetUserId, 'Session revoked')
+    await invalidateAllUserCaches(targetUserId)
+
+    publishUserEvent(targetUserId, 'alerts', 'security.session_revoked', {
       sessionId,
       reason,
-      deviceType: context.deviceType ?? null,
-      approxLocation: context.approxLocation ?? null,
+      deviceType: context?.deviceType ?? null,
+      approxLocation: context?.approxLocation ?? null,
       revokedAt: new Date().toISOString(),
     }).catch((err) =>
       logger.warn('[Auth] Failed to emit security.session_revoked', { err })

@@ -128,6 +128,7 @@ export const mapGoalToResponse = (goal: any) => ({
   startingAmount: Number(goal.startingAmount),
   targetDate: goal.targetDate.toISOString(),
   riskCeiling: goal.riskCeiling,
+  includeExternalHoldings: goal.includeExternalHoldings ?? false,
   status: goal.status,
   createdAt: goal.createdAt.toISOString(),
   updatedAt: goal.updatedAt.toISOString(),

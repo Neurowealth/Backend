@@ -11,6 +11,11 @@
 import { Prisma } from '@prisma/client'
 import db from '../db'
 import { logger } from '../utils/logger'
+import {
+  EXTERNAL_WALLET_STALE_AFTER_MS,
+  valueExternalBalanceUsd,
+} from '../externalWallets/service'
+import type { ExternalWalletBalance } from '../stellar/externalWalletBalances'
 import { logAgentAction } from '../agent/router'
 import { scanAllProtocols } from '../agent/scanner'
 import {
@@ -31,12 +36,14 @@ export interface CreateGoalInput {
   startingAmount?: number
   positionId?: string
   riskCeiling?: number
+  includeExternalHoldings?: boolean
 }
 
 export interface UpdateGoalInput {
   targetAmount?: number
   targetDate?: Date
   riskCeiling?: number
+  includeExternalHoldings?: boolean
 }
 
 export interface GoalProgress {
@@ -51,34 +58,107 @@ export interface GoalProgress {
   onTrack: boolean
   reachable: boolean
   projectedCompletionDate: string | null
+  includeExternalHoldings: boolean
+  externalStaleWalletCount: number
+  unpricedExternalHoldingCount: number
   note?: string
 }
 
-/**
- * Sum of currentValue across the user's active positions, or a single
- * position's value when the goal is scoped to one. Used both to default
- * startingAmount at creation and to report currentAmount for progress.
- */
-async function resolveCurrentAmount(
+interface CurrentAmountSnapshot {
+  platformAmount: number
+  externalAmount: number
+  externalStaleWalletCount: number
+  unpricedExternalHoldingCount: number
+}
+
+async function resolveCurrentAmounts(
   userId: string,
   positionId: string | null | undefined,
-  database: Db
-): Promise<number> {
+  database: Db,
+  includeExternalHoldings = false
+): Promise<CurrentAmountSnapshot> {
+  let platformValue: number
   if (positionId) {
     const position = await (database as any).position.findUnique({
       where: { id: positionId },
     })
-    if (!position || position.userId !== userId) return 0
-    return Number(position.currentValue)
+    if (!position || position.userId !== userId) {
+      return {
+        platformAmount: 0,
+        externalAmount: 0,
+        externalStaleWalletCount: 0,
+        unpricedExternalHoldingCount: 0,
+      }
+    }
+    platformValue = Number(position.currentValue)
+  } else {
+    const positions = await (database as any).position.findMany({
+      where: { userId, status: 'ACTIVE' },
+    })
+    platformValue = positions.reduce(
+      (sum: number, p: any) => sum + Number(p.currentValue),
+      0
+    )
   }
 
-  const positions = await (database as any).position.findMany({
-    where: { userId, status: 'ACTIVE' },
+  if (!includeExternalHoldings) {
+    return {
+      platformAmount: platformValue,
+      externalAmount: 0,
+      externalStaleWalletCount: 0,
+      unpricedExternalHoldingCount: 0,
+    }
+  }
+  const wallets = await (database as any).linkedExternalWallet.findMany({
+    where: { userId },
+    select: {
+      balances: true,
+      lastSyncedAt: true,
+      lastSyncAttemptAt: true,
+      syncError: true,
+    },
   })
-  return positions.reduce(
-    (sum: number, p: any) => sum + Number(p.currentValue),
-    0
-  )
+  let externalAmount = 0
+  let unpricedExternalHoldingCount = 0
+  let externalStaleWalletCount = 0
+  const now = Date.now()
+
+  for (const wallet of wallets) {
+    const lastSyncedAt = wallet.lastSyncedAt as Date | null
+    if (
+      !lastSyncedAt ||
+      wallet.syncError ||
+      (wallet.lastSyncAttemptAt && wallet.lastSyncAttemptAt > lastSyncedAt) ||
+      now - lastSyncedAt.getTime() > EXTERNAL_WALLET_STALE_AFTER_MS
+    ) {
+      externalStaleWalletCount++
+    }
+    if (!Array.isArray(wallet.balances)) continue
+    for (const value of wallet.balances) {
+      if (
+        !value ||
+        typeof value !== 'object' ||
+        typeof (value as ExternalWalletBalance).amount !== 'string' ||
+        typeof (value as ExternalWalletBalance).assetCode !== 'string'
+      ) {
+        continue
+      }
+      const balance = value as ExternalWalletBalance
+      const usdValue = valueExternalBalanceUsd(balance)
+      if (usdValue === null) {
+        unpricedExternalHoldingCount++
+      } else {
+        externalAmount += usdValue
+      }
+    }
+  }
+
+  return {
+    platformAmount: platformValue,
+    externalAmount,
+    externalStaleWalletCount,
+    unpricedExternalHoldingCount,
+  }
 }
 
 /**
@@ -107,7 +187,8 @@ export async function createGoal(
 
   const startingAmount =
     input.startingAmount ??
-    (await resolveCurrentAmount(userId, input.positionId, database))
+    (await resolveCurrentAmounts(userId, input.positionId, database))
+      .platformAmount
 
   const status = input.targetAmount <= startingAmount ? 'ACHIEVED' : 'ACTIVE'
 
@@ -119,6 +200,7 @@ export async function createGoal(
       startingAmount,
       targetDate: input.targetDate,
       riskCeiling: input.riskCeiling ?? null,
+      includeExternalHoldings: input.includeExternalHoldings ?? false,
       status,
     },
   })
@@ -190,6 +272,9 @@ export async function updateGoal(
         : {}),
       ...(updates.riskCeiling !== undefined
         ? { riskCeiling: updates.riskCeiling }
+        : {}),
+      ...(updates.includeExternalHoldings !== undefined
+        ? { includeExternalHoldings: updates.includeExternalHoldings }
         : {}),
     },
   })
@@ -290,18 +375,20 @@ export async function computeGoalProgress(
 
   const targetAmount = Number(goal.targetAmount)
   const startingAmount = Number(goal.startingAmount)
-  const requiredApy = calculateRequiredApy(
+  let requiredApy = calculateRequiredApy(
     startingAmount,
     targetAmount,
     calculateYearsRemaining(goal.targetDate)
   )
 
   if (goal.status !== 'ACTIVE') {
-    const currentAmount = await resolveCurrentAmount(
+    const amounts = await resolveCurrentAmounts(
       goal.userId,
       goal.positionId,
-      database
+      database,
+      goal.includeExternalHoldings
     )
+    const currentAmount = amounts.platformAmount + amounts.externalAmount
     return {
       goalId: goal.id,
       status: goal.status,
@@ -314,6 +401,9 @@ export async function computeGoalProgress(
       onTrack: goal.status === 'ACHIEVED',
       reachable: goal.status === 'ACHIEVED',
       projectedCompletionDate: null,
+      includeExternalHoldings: goal.includeExternalHoldings,
+      externalStaleWalletCount: amounts.externalStaleWalletCount,
+      unpricedExternalHoldingCount: amounts.unpricedExternalHoldingCount,
     }
   }
 
@@ -337,11 +427,24 @@ export async function computeGoalProgress(
     }
   }
 
-  const currentAmount = await resolveCurrentAmount(
+  const amounts = await resolveCurrentAmounts(
     goal.userId,
     goal.positionId,
-    database
+    database,
+    goal.includeExternalHoldings
   )
+  const currentAmount = amounts.platformAmount + amounts.externalAmount
+  if (goal.includeExternalHoldings) {
+    const managedTargetAmount = Math.max(
+      0,
+      targetAmount - amounts.externalAmount
+    )
+    requiredApy = calculateRequiredApy(
+      amounts.platformAmount,
+      managedTargetAmount,
+      calculateYearsRemaining(goal.targetDate)
+    )
+  }
   const actualApy = await resolveActualApy(goal.userId, database)
   const yearsRemaining = calculateYearsRemaining(goal.targetDate)
 
@@ -372,6 +475,9 @@ export async function computeGoalProgress(
       onTrack: true,
       reachable: true,
       projectedCompletionDate: new Date().toISOString(),
+      includeExternalHoldings: goal.includeExternalHoldings,
+      externalStaleWalletCount: amounts.externalStaleWalletCount,
+      unpricedExternalHoldingCount: amounts.unpricedExternalHoldingCount,
     }
   }
 
@@ -402,6 +508,9 @@ export async function computeGoalProgress(
       onTrack: false,
       reachable: false,
       projectedCompletionDate: null,
+      includeExternalHoldings: goal.includeExternalHoldings,
+      externalStaleWalletCount: amounts.externalStaleWalletCount,
+      unpricedExternalHoldingCount: amounts.unpricedExternalHoldingCount,
     }
   }
 
@@ -409,9 +518,18 @@ export async function computeGoalProgress(
   const onTrack = actualApy >= requiredApy
 
   let projectedCompletionDate: string | null = null
-  if (actualApy > 0 && currentAmount > 0 && currentAmount < targetAmount) {
+  const managedTargetAmount = goal.includeExternalHoldings
+    ? Math.max(0, targetAmount - amounts.externalAmount)
+    : targetAmount
+  if (
+    actualApy > 0 &&
+    amounts.platformAmount > 0 &&
+    amounts.platformAmount < managedTargetAmount
+  ) {
     const yearsToComplete =
-      (targetAmount - currentAmount) / currentAmount / (actualApy / 100)
+      (managedTargetAmount - amounts.platformAmount) /
+      amounts.platformAmount /
+      (actualApy / 100)
     const projected = new Date()
     projected.setDate(
       projected.getDate() + Math.round(yearsToComplete * 365.25)
@@ -441,6 +559,26 @@ export async function computeGoalProgress(
     goal.positionId ?? undefined
   )
 
+  const progressNotes = []
+  if (!reachable) {
+    progressNotes.push('Target not reachable within your risk tolerance')
+  }
+  if (goal.includeExternalHoldings) {
+    progressNotes.push(
+      'Includes unverified external snapshots; future returns on those assets are not modeled.'
+    )
+    if (amounts.externalStaleWalletCount > 0) {
+      progressNotes.push(
+        `${amounts.externalStaleWalletCount} external wallet snapshot(s) are stale.`
+      )
+    }
+    if (amounts.unpricedExternalHoldingCount > 0) {
+      progressNotes.push(
+        `${amounts.unpricedExternalHoldingCount} unpriced external holding(s) are excluded.`
+      )
+    }
+  }
+
   return {
     goalId: goal.id,
     status: goal.status,
@@ -453,8 +591,9 @@ export async function computeGoalProgress(
     onTrack,
     reachable,
     projectedCompletionDate,
-    note: reachable
-      ? undefined
-      : 'Target not reachable within your risk tolerance',
+    includeExternalHoldings: goal.includeExternalHoldings,
+    externalStaleWalletCount: amounts.externalStaleWalletCount,
+    unpricedExternalHoldingCount: amounts.unpricedExternalHoldingCount,
+    note: progressNotes.length > 0 ? progressNotes.join(' ') : undefined,
   }
 }

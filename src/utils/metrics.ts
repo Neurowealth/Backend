@@ -85,6 +85,25 @@ export const dlqAlertActive = new client.Gauge({
   registers: [register],
 })
 
+export const outboundNotificationAttempts = new client.Counter({
+  name: 'outbound_notification_attempts_total',
+  help: 'Outbound notification delivery attempts by channel and outcome',
+  labelNames: ['channel', 'status'] as const,
+  registers: [register],
+})
+
+export const outboundNotificationDlqSize = new client.Gauge({
+  name: 'outbound_notification_dlq_size',
+  help: 'Current number of outbound notifications in the dead-letter queue',
+  registers: [register],
+})
+
+export const secretCredentialValidationFailures = new client.Gauge({
+  name: 'secret_credential_validation_failures',
+  help: 'Number of missing, expired, or malformed configured secrets',
+  registers: [register],
+})
+
 // ── Cursor/Lag Metrics ──────────────────────────────────────────────────────────
 
 export const cursorLag = new client.Gauge({

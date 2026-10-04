@@ -29,7 +29,9 @@ import {
   getFiatQuote,
   getBestExecutionQuote,
   createFiatOrder,
+  hasProviderWebhookReplay,
   processProviderWebhook,
+  recordProviderWebhookDelivery,
 } from '../fiat/service'
 import { getProvider } from '../fiat/registry'
 import { NoHealthyProvidersError, FiatOrderError } from '../fiat/types'
@@ -203,7 +205,20 @@ router.post(
     }
 
     try {
+      if (await hasProviderWebhookReplay(providerName, rawBody)) {
+        return res.status(200).json({ received: true, replay: true })
+      }
+    } catch (err) {
+      logger.error('[Fiat] Webhook replay check failed', {
+        provider: providerName,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return sendError(res, 500, 'Webhook replay check failed')
+    }
+
+    try {
       const result = await processProviderWebhook(providerName, parsed)
+      await recordProviderWebhookDelivery(providerName, rawBody)
       // 200 regardless of handled/unknown — signature was valid; we don't want
       // the provider retrying a well-formed, authenticated delivery.
       return res.status(200).json({ received: true, ...result })

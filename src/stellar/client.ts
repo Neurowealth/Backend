@@ -19,6 +19,11 @@ import { config } from '../config'
 import { HttpClientAdapter, TimeoutError } from '../utils/http-client'
 import { logger } from '../utils/logger'
 import { TransactionConfirmationTimeoutError, TransactionResult } from './types'
+import { fetchWithRetry } from '../utils/fetchWithRetry'
+import {
+  ExternalWalletBalance,
+  normalizeExternalWalletBalances,
+} from './externalWalletBalances'
 import {
   rpcAttemptCounter,
   rpcFailoverCounter,
@@ -263,6 +268,40 @@ export async function getAccount(publicKey: string): Promise<Account> {
     (server) => server.getAccount(publicKey),
     'stellar.getAccount'
   )
+}
+
+const MAX_EXTERNAL_WALLET_RESPONSE_BYTES = 128 * 1024
+
+function horizonBaseUrl(): string {
+  const configured = process.env.HORIZON_URL
+  if (configured) return configured.replace(/\/+$/, '')
+
+  switch (config.stellar.network.toLowerCase()) {
+    case 'testnet':
+      return 'https://horizon-testnet.stellar.org'
+    case 'futurenet':
+      return 'https://horizon-futurenet.stellar.org'
+    default:
+      return 'https://horizon.stellar.org'
+  }
+}
+
+/** Read-only Horizon snapshot. Oversized accounts fail closed; never truncate. */
+export async function getExternalWalletBalances(
+  publicKey: string
+): Promise<ExternalWalletBalance[]> {
+  const url = `${horizonBaseUrl()}/accounts/${encodeURIComponent(publicKey)}`
+  const account = await fetchWithRetry(url, {
+    timeout: 5_000,
+    retries: 2,
+    maxResponseBytes: MAX_EXTERNAL_WALLET_RESPONSE_BYTES,
+  })
+
+  if (!Array.isArray(account?.balances)) {
+    throw new Error('Horizon account response omitted balances')
+  }
+
+  return normalizeExternalWalletBalances(account.balances)
 }
 
 export async function waitForConfirmation(

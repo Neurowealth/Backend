@@ -9,6 +9,8 @@ import { dispatchWebhookEvent } from '../../../src/services/webhookDispatcher'
 import { alertingService } from '../../../src/services/alerting'
 import {
   processProviderWebhook,
+  hasProviderWebhookReplay,
+  recordProviderWebhookDelivery,
   reconcileSingleOrder,
   reconcileFiatOrders,
   ageOutStaleFiatOrders,
@@ -58,6 +60,10 @@ beforeEach(() => {
     findMany: jest.fn(),
     update: jest.fn(),
     create: jest.fn(),
+  }
+  mockDb.fiatWebhookReceipt = {
+    findUnique: jest.fn().mockResolvedValue(null),
+    create: jest.fn().mockResolvedValue({ id: 'receipt-1' }),
   }
   mockDb.transaction = {
     findUnique: jest.fn(),
@@ -170,6 +176,41 @@ describe('processProviderWebhook', () => {
     )
     expect(settleCall).toBeDefined()
     expect(settleCall[0].data.transactionId).toBe('tx-1')
+  })
+})
+
+describe('provider webhook replay receipts', () => {
+  it('checks a provider-scoped hash of the exact callback body', async () => {
+    const rawBody = '{"data":{"id":"mp_1"}}'
+    await hasProviderWebhookReplay('moonpay', rawBody)
+
+    expect(mockDb.fiatWebhookReceipt.findUnique).toHaveBeenCalledWith({
+      where: {
+        provider_nonce: {
+          provider: 'moonpay',
+          nonce: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      },
+      select: { id: true },
+    })
+  })
+
+  it('persists only provider and nonce after successful processing', async () => {
+    await recordProviderWebhookDelivery('moonpay', '{"event":"ok"}')
+
+    expect(mockDb.fiatWebhookReceipt.create).toHaveBeenCalledWith({
+      data: {
+        provider: 'moonpay',
+        nonce: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    })
+  })
+
+  it('treats a concurrent unique-key collision as an already recorded delivery', async () => {
+    mockDb.fiatWebhookReceipt.create.mockRejectedValue({ code: 'P2002' })
+    await expect(
+      recordProviderWebhookDelivery('moonpay', '{"event":"ok"}')
+    ).resolves.toBeUndefined()
   })
 })
 

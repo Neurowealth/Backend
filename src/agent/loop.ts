@@ -152,6 +152,7 @@ async function rebalanceCheckJob(): Promise<void> {
         where: {
           userId: { in: userIds },
           status: 'ACTIVE',
+          includeExternalHoldings: false,
         },
         select: { userId: true },
       })

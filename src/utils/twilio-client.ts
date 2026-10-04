@@ -2,10 +2,11 @@ import twilio from 'twilio'
 import { config } from '../config'
 import { HttpClientAdapter } from './http-client'
 import { logger } from './logger'
+import { enqueueOutboundNotification } from '../services/outboundNotifications'
 
 const httpClient = new HttpClientAdapter({
   timeoutMs: config.httpClient.timeoutMs,
-  maxRetries: config.httpClient.maxRetries,
+  maxRetries: 0,
   baseDelayMs: config.httpClient.baseDelayMs,
   maxDelayMs: config.httpClient.maxDelayMs,
   circuitBreakerThreshold: config.httpClient.circuitBreakerThreshold,
@@ -13,17 +14,19 @@ const httpClient = new HttpClientAdapter({
 })
 
 let twilioClient: ReturnType<typeof twilio> | null = null
+let twilioCredential = ''
 
 function getClient(): ReturnType<typeof twilio> {
-  if (!twilioClient) {
-    const sid = config.whatsapp.twilioSid
-    const token = config.whatsapp.twilioToken
-    if (!sid || !token) {
-      throw new Error(
-        'Twilio credentials not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)'
-      )
-    }
+  const sid = config.whatsapp.twilioSid
+  const token = process.env.TWILIO_AUTH_TOKEN || config.whatsapp.twilioToken
+  if (!sid || !token) {
+    throw new Error(
+      'Twilio credentials not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)'
+    )
+  }
+  if (!twilioClient || twilioCredential !== token) {
     twilioClient = twilio(sid, token)
+    twilioCredential = token
   }
   return twilioClient
 }
@@ -36,22 +39,37 @@ export interface SendMessageParams {
 export async function sendWhatsAppMessage(
   params: SendMessageParams
 ): Promise<string> {
+  return enqueueOutboundNotification('whatsapp', params)
+}
+
+export async function sendSmsMessage(params: SendMessageParams): Promise<string> {
+  return enqueueOutboundNotification('sms', params)
+}
+
+export async function sendTwilioMessageNow(
+  params: SendMessageParams,
+  channel: 'sms' | 'whatsapp'
+): Promise<string> {
   return httpClient.execute(async () => {
     const client = getClient()
     const message = await client.messages.create({
-      from: config.whatsapp.fromNumber,
+      from:
+        channel === 'whatsapp'
+          ? config.whatsapp.fromNumber
+          : config.whatsapp.fromNumber.replace(/^whatsapp:/, ''),
       to: params.to,
       body: params.body,
     })
-    logger.info(
-      `[Twilio] WhatsApp message sent to ${params.to}: sid=${message.sid}`
-    )
+    logger.info(`[Twilio] ${channel} message delivered`, {
+      messageId: message.sid,
+    })
     return message.sid
-  }, 'twilio.sendWhatsAppMessage')
+  }, `twilio.send${channel}`)
 }
 
 export function resetTwilioClient(): void {
   twilioClient = null
+  twilioCredential = ''
 }
 
 export function getTwilioHttpClient(): HttpClientAdapter {

@@ -6,6 +6,8 @@ This document provides production-grade observability guidance including alert t
 - **SLO Guidance**: See `docs/SLO_GUIDANCE.md` for latency budgets and performance targets
 - **Runbook**: See `docs/RUNBOOK.md` for incident response procedures
 - **Incident response**: See `docs/INCIDENT_RESPONSE.md` for alert runbooks, escalation timers, and the postmortem workflow
+- **Notification delivery**: See `docs/NOTIFICATIONS.md` for retry/DLQ operations and replay controls
+- **Secret rotation**: See `docs/SECRETS_ROTATION.md` for the required/optional secret inventory and rotation procedure
 
 ## Overview
 
@@ -55,6 +57,9 @@ logs for `correlationId`, or search traces for `http.request_id`. The log line's
 
 - `dlq_size` - Gauge (current number of failed events)
 - `dlq_retry_total` - Counter with label: `status`
+- `outbound_notification_attempts_total` - Counter with labels: `channel`, `status`
+- `outbound_notification_dlq_size` - Gauge (dead-lettered outbound notifications)
+- `secret_credential_validation_failures` - Gauge (missing, malformed, or expired required secrets)
 
 ### Cursor/Lag Metrics
 
@@ -97,6 +102,11 @@ sum(rate(agent_breaker_trips_total[15m])) by (rule)
 - `http_requests_total` - Counter with labels: `method`, `route`, `status_code`
 - `http_request_duration_seconds` - Histogram with labels: `method`, `route`, `status_code`
 
+The Grafana Latency dashboard displays HTTP P50/P95/P99, DB P95/P99, and Stellar
+RPC P95/P99. Alert thresholds are HTTP P95 > 5s / P99 > 2s, DB P95 > 1s / P99 >
+1s, and Stellar RPC P99 > 5s. See `docs/SLO_GUIDANCE.md` for endpoint-level
+budgets and the Prometheus rules for runbook links.
+
 ### Analytics API Metrics
 
 - `analytics_requests_total` - Counter with labels: `endpoint`, `status`
@@ -125,6 +135,8 @@ sum(rate(agent_breaker_trips_total[15m])) by (rule)
 | `events_processing_duration_seconds` (p95) | `> 2 seconds` | Warning | Event processing slow |
 | `db_operation_duration_seconds` (p95) | `> 1 second` | Warning | Database operations slow |
 | `http_request_duration_seconds` (p95) | `> 5 seconds` | Warning | HTTP requests slow |
+| `outbound_notification_dlq_size` | `> 10` for 5m | Critical | Outbound notification DLQ needs operator review |
+| `secret_credential_validation_failures` | `> 0` for 1m | Critical | A required credential is missing, malformed, or expired |
 | `agent_breaker_state{scope!="GLOBAL"}` | `== 2` for 2m | Warning | Protocol or user breaker OPEN — affected rebalancing halted |
 
 ### Info Alerts (Monitor Trend)

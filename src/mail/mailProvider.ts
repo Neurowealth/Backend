@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import { logger } from '../utils/logger'
+import { enqueueOutboundNotification } from '../services/outboundNotifications'
 
 export interface MailMessage {
   to: string
@@ -77,8 +78,24 @@ export class MockMailProvider implements MailProvider {
 export class SmtpMailProvider implements MailProvider {
   name = 'smtp'
   private transporter: any = null
+  private transporterConfig = ''
 
   constructor() {
+    this.refreshTransporter()
+  }
+
+  private refreshTransporter(): void {
+    const fingerprint = [
+      process.env.SMTP_HOST,
+      process.env.SMTP_PORT,
+      process.env.SMTP_USER,
+      process.env.SMTP_PASS,
+      process.env.SMTP_SECURE,
+    ].join('|')
+    if (fingerprint === this.transporterConfig) return
+    this.transporterConfig = fingerprint
+    this.transporter = null
+
     if (
       process.env.SMTP_HOST &&
       process.env.SMTP_PORT &&
@@ -92,6 +109,8 @@ export class SmtpMailProvider implements MailProvider {
           host: process.env.SMTP_HOST,
           port: parseInt(process.env.SMTP_PORT),
           secure: process.env.SMTP_SECURE !== 'false',
+          connectionTimeout: 10_000,
+          socketTimeout: 10_000,
           auth: {
             user: process.env.SMTP_USER,
             pass: process.env.SMTP_PASS,
@@ -110,6 +129,7 @@ export class SmtpMailProvider implements MailProvider {
       throw new Error('Email message must include a plaintext part')
     }
 
+    this.refreshTransporter()
     if (!this.transporter) {
       throw new Error('SMTP provider not configured')
     }
@@ -166,10 +186,7 @@ export class SesMailProvider implements MailProvider {
   private client: any = null
 
   constructor() {
-    if (
-      process.env.AWS_REGION &&
-      (process.env.AWS_ACCESS_KEY_ID || process.env.AWS_PROFILE)
-    ) {
+    if (process.env.AWS_REGION) {
       try {
         const { SESv2Client } = require('@aws-sdk/client-sesv2')
         this.client = new SESv2Client({ region: process.env.AWS_REGION })
@@ -348,7 +365,22 @@ export class MailRegistry {
     return { primary, fallback }
   }
 
+  refreshProviders(): void {
+    const providers = this.detectProviders()
+    this.primaryProvider = providers.primary
+    this.fallbackProvider = providers.fallback
+    this.isHealthy = true
+  }
+
   async send(message: MailMessage): Promise<MailSendResult> {
+    if (!message.text || !message.text.trim()) {
+      throw new Error('Email message must include a plaintext part')
+    }
+    const messageId = await enqueueOutboundNotification('email', message)
+    return { messageId, provider: 'queue' }
+  }
+
+  async deliverQueued(message: MailMessage): Promise<MailSendResult> {
     if (this.isHealthy) {
       try {
         return await this.primaryProvider.send(message)

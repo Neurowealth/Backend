@@ -8,6 +8,7 @@ interface FetchOptions {
   timeout?: number
   retries?: number
   retryDelay?: number
+  maxResponseBytes?: number
 }
 
 interface CircuitBreaker {
@@ -20,11 +21,45 @@ const circuitBreakers: Record<string, CircuitBreaker> = {}
 const CIRCUIT_OPEN_DURATION = 60000 // 1 minute
 const FAILURE_THRESHOLD = 3
 
+async function readJsonResponse(
+  response: Response,
+  maxResponseBytes?: number
+): Promise<any> {
+  if (maxResponseBytes === undefined) return response.json()
+
+  const contentLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) {
+    throw new Error(`Response body exceeds ${maxResponseBytes} byte limit`)
+  }
+
+  if (!response.body) return response.json()
+
+  const reader = response.body.getReader()
+  const chunks: Buffer[] = []
+  let totalBytes = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    totalBytes += value.byteLength
+    if (totalBytes > maxResponseBytes) {
+      await reader.cancel()
+      throw new Error(`Response body exceeds ${maxResponseBytes} byte limit`)
+    }
+    chunks.push(Buffer.from(value))
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+}
+
 export async function fetchWithRetry(
   url: string,
   options: FetchOptions = {}
 ): Promise<any> {
-  const { timeout = 5000, retries = 3, retryDelay = 1000 } = options
+  const {
+    timeout = 5000,
+    retries = 3,
+    retryDelay = 1000,
+    maxResponseBytes,
+  } = options
 
   // Check circuit breaker
   const breaker = circuitBreakers[url] || {
@@ -44,27 +79,29 @@ export async function fetchWithRetry(
   let lastError: Error = new Error('Unknown error')
 
   for (let attempt = 0; attempt < retries; attempt++) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeout)
     try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), timeout)
-
       const res = await fetch(url, {
         signal: controller.signal,
         headers: correlationHeaders(),
       })
-      clearTimeout(timer)
 
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+
+      const payload = await readJsonResponse(res, maxResponseBytes)
 
       // Reset circuit breaker on success
       circuitBreakers[url] = { failures: 0, lastFailure: 0, isOpen: false }
 
-      return await res.json()
+      return payload
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err))
       if (attempt < retries - 1) {
         await new Promise((r) => setTimeout(r, retryDelay * (attempt + 1)))
       }
+    } finally {
+      clearTimeout(timer)
     }
   }
 

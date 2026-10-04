@@ -20,6 +20,7 @@
     "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\"",
     "typecheck": "tsc --noEmit",
     "env:parity": "ts-node scripts/check-env-parity.ts",
+    "profile:hot-queries": "ts-node scripts/profile-hot-queries.ts",
     "check:stellar:drift": "ts-node scripts/check-stellar-drift.ts",
     "clean": "rm -rf dist coverage",
     "smoke": "bash scripts/smoke-health.sh",

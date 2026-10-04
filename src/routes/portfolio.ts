@@ -253,11 +253,19 @@ router.get(
 
     const positions = userPositions.map(mapPositionToResponse)
 
+    const displayCurrency = user.displayCurrency || 'USD'
+    const { convertUsdToCurrency } = await import('../utils/fxConvert')
+    const displayTotalBalance = convertUsdToCurrency(totalBalance, displayCurrency)
+    const displayTotalEarnings = convertUsdToCurrency(totalEarnings, displayCurrency)
+
     return res.status(200).json({
       userId: user.id,
       ...buildPaginationMeta(page, limit, total),
       totalBalance,
       totalEarnings,
+      displayTotalBalance,
+      displayTotalEarnings,
+      displayCurrency,
       activePositions,
       positions,
       whatsappReply: formatPortfolioReply({

@@ -173,6 +173,7 @@ async function claimFire(rule: AlertRuleRow, now: Date): Promise<boolean> {
     where: {
       id: rule.id,
       isActive: true,
+      deletedAt: null,
       OR: [{ lastFiredAt: null }, { lastFiredAt: { lte: cutoff } }],
     },
     data: { lastFiredAt: now },
@@ -263,7 +264,7 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
 
     try {
       const rules = (await db.alertRule.findMany({
-        where: { isActive: true },
+        where: { isActive: true, deletedAt: null },
         select: {
           id: true,
           userId: true,
@@ -284,7 +285,7 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
 
           if (delisted) {
             await db.alertRule.updateMany({
-              where: { id: rule.id },
+              where: { id: rule.id, deletedAt: null },
               data: { isActive: false },
             })
             deactivated++

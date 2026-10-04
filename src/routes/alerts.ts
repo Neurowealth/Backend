@@ -6,6 +6,10 @@ import { requireScope } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import { sendNotFound } from '../utils/errors'
 import {
+  restoreAlertRule,
+  softDeleteAlertRule,
+} from '../services/alertRuleLifecycle'
+import {
   createAlertRuleSchema,
   updateAlertRuleSchema,
   alertIdParamSchema,
@@ -151,6 +155,11 @@ router.get(
         take: limit,
       }),
     ])
+    const rules = await (db as any).alertRule.findMany({
+      where: { userId, deletedAt: null },
+      select: alertSelect,
+      orderBy: { createdAt: 'desc' },
+    })
 
     return res
       .status(200)
@@ -172,7 +181,7 @@ router.patch(
     const userId = req.auth!.userId
 
     const existing = await (db as any).alertRule.findFirst({
-      where: { id: req.params.id, userId },
+      where: { id: req.params.id, userId, deletedAt: null },
       select: { id: true, metric: true, protocolName: true },
     })
     if (!existing) return sendNotFound(res, 'Alert rule')
@@ -230,15 +239,22 @@ router.delete(
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
 
-    const existing = await (db as any).alertRule.findFirst({
-      where: { id: req.params.id, userId },
-      select: { id: true },
-    })
-    if (!existing) return sendNotFound(res, 'Alert rule')
-
-    await (db as any).alertRule.delete({ where: { id: req.params.id } })
+    const deleted = await softDeleteAlertRule(userId, req.params.id)
+    if (!deleted) return sendNotFound(res, 'Alert rule')
 
     return res.status(204).send()
+  }
+)
+
+router.post(
+  '/:id/restore',
+  requireAuth,
+  requireScope('alerts:manage'),
+  validate({ params: alertIdParamSchema }),
+  async (req: Request, res: Response) => {
+    const restored = await restoreAlertRule(req.auth!.userId, req.params.id)
+    if (!restored) return sendNotFound(res, 'Deleted alert rule')
+    return res.status(200).json({ restored: true, id: req.params.id })
   }
 )
 

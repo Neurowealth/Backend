@@ -12,15 +12,29 @@ const mockSessionFindFirst = jest.fn()
 const mockSessionFindUnique = jest.fn()
 const mockSessionUpdate = jest.fn()
 const mockSessionUpdateMany = jest.fn()
+const mockAuthNonceFindUnique = jest.fn()
+const mockAuthNonceUpsert = jest.fn()
+const mockAuthNonceDelete = jest.fn()
+const mockUserFindUnique = jest.fn()
+const mockSessionCreate = jest.fn()
 
 jest.mock('../src/db', () => ({
   __esModule: true,
   default: {
+    authNonce: {
+      findUnique: (...args: unknown[]) => mockAuthNonceFindUnique(...args),
+      upsert: (...args: unknown[]) => mockAuthNonceUpsert(...args),
+      delete: (...args: unknown[]) => mockAuthNonceDelete(...args),
+    },
+    user: {
+      findUnique: (...args: unknown[]) => mockUserFindUnique(...args),
+    },
     session: {
       findFirst: (...args: unknown[]) => mockSessionFindFirst(...args),
       findUnique: (...args: unknown[]) => mockSessionFindUnique(...args),
       update: (...args: unknown[]) => mockSessionUpdate(...args),
       updateMany: (...args: unknown[]) => mockSessionUpdateMany(...args),
+      create: (...args: unknown[]) => mockSessionCreate(...args),
     },
   },
 }))
@@ -34,6 +48,7 @@ jest.mock('../src/events/publisher', () => ({
 }))
 
 import request from 'supertest'
+import { Keypair } from '@stellar/stellar-sdk'
 import app from '../src/index'
 import { deriveRefreshTokenPrefix } from '../src/services/refresh-token.service'
 
@@ -65,11 +80,75 @@ beforeAll(async () => {
 
 beforeEach(() => {
   jest.clearAllMocks()
+  mockAuthNonceFindUnique.mockResolvedValue(null)
+  mockAuthNonceUpsert.mockResolvedValue({})
+  mockAuthNonceDelete.mockResolvedValue({})
+  mockUserFindUnique.mockResolvedValue(null)
+  mockSessionCreate.mockResolvedValue({})
   mockSessionUpdate.mockResolvedValue({})
   mockSessionUpdateMany.mockResolvedValue({ count: 1 })
 })
 
 describe('POST /api/v1/auth/refresh', () => {
+  it('completes sign-in and revokes the issued session on logout', async () => {
+    const keypair = Keypair.random()
+    const stellarPubKey = keypair.publicKey()
+    const user = { id: 'user-1', walletAddress: stellarPubKey }
+    mockUserFindUnique.mockResolvedValue(user)
+
+    const challenge = await request(app)
+      .post('/api/v1/auth/challenge')
+      .send({ stellarPubKey })
+
+    expect(challenge.status).toBe(200)
+    const nonce = challenge.body.nonce as string
+    mockAuthNonceFindUnique.mockResolvedValue({
+      stellarPubKey,
+      nonce,
+      expiresAt: new Date(Date.now() + 60_000),
+    })
+    mockSessionCreate.mockImplementation(({ data }: { data: object }) => ({
+      id: 'login-session',
+      createdAt: new Date(),
+      ...data,
+    }))
+
+    const verify = await request(app)
+      .post('/api/v1/auth/verify')
+      .send({
+        stellarPubKey,
+        signature: keypair.sign(Buffer.from(nonce)).toString('base64'),
+      })
+
+    expect(verify.status).toBe(200)
+    expect(verify.body.accessToken).toBeTruthy()
+    expect(verify.body.refreshToken).toBeTruthy()
+
+    const session = {
+      id: 'login-session',
+      userId: user.id,
+      token: verify.body.accessToken,
+      expiresAt: new Date(Date.now() + 60_000),
+      revokedAt: null,
+      deviceType: 'unknown',
+      approxLocation: null,
+    }
+    mockSessionFindFirst.mockResolvedValue(session)
+    mockSessionFindUnique.mockResolvedValue(session)
+
+    const logout = await request(app)
+      .post('/api/v1/auth/logout')
+      .set('Authorization', `Bearer ${verify.body.accessToken}`)
+
+    expect(logout.status).toBe(200)
+    expect(mockSessionUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'login-session' },
+        data: expect.objectContaining({ revokedReason: 'logout' }),
+      })
+    )
+  })
+
   it('is mounted and returns a rotated pair for a valid token', async () => {
     mockSessionFindFirst.mockResolvedValue(liveSession('live-refresh-token'))
 
@@ -125,6 +204,35 @@ describe('POST /api/v1/auth/refresh', () => {
       .post('/api/v1/auth/refresh')
       .send({ refreshToken: 'never-issued' })
 
+    expect(res.status).toBe(401)
+  })
+
+  it('rejects an expired refresh token', async () => {
+    mockSessionFindFirst.mockResolvedValue(
+      liveSession('live-refresh-token', {
+        refreshTokenExpiresAt: new Date(Date.now() - 1000),
+      })
+    )
+
+    const res = await request(app)
+      .post('/api/v1/auth/refresh')
+      .send({ refreshToken: 'live-refresh-token' })
+
+    expect(res.status).toBe(401)
+    expect(res.body.error).toBe('Invalid or expired refresh token')
+  })
+
+  it('rejects sign-in verification without an active challenge', async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/verify')
+      .send({ stellarPubKey: 'G'.repeat(56), signature: 'AA==' })
+
+    expect(res.status).toBe(401)
+    expect(mockAuthNonceFindUnique).toHaveBeenCalled()
+  })
+
+  it('requires an authenticated session to log out', async () => {
+    const res = await request(app).post('/api/v1/auth/logout')
     expect(res.status).toBe(401)
   })
 

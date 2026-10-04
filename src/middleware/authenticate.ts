@@ -1,8 +1,10 @@
 import { NextFunction, Request, Response } from 'express'
 import { JwtAdapter } from '../config'
 import db from '../db'
+import { resolveApproxLocation } from '../utils/geoip'
 import { logger } from '../utils/logger'
 import { authenticateApiKey, isUserApiKeyToken } from './apiKeyAuth'
+import { evaluateAndHandleSessionAnomaly } from '../services/session-anomaly.service'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -30,25 +32,6 @@ function extractBearerToken(authHeader: string | undefined): string | null {
 
 function isExpired(date: Date): boolean {
   return date < new Date()
-}
-
-const lastSeenThrottle = new Map<string, number>()
-const LAST_SEEN_THROTTLE_MS = 60_000
-
-function updateLastSeenAsync(sessionId: string, ip: string | undefined): void {
-  const now = Date.now()
-  const last = lastSeenThrottle.get(sessionId) ?? 0
-  if (now - last < LAST_SEEN_THROTTLE_MS) return
-  lastSeenThrottle.set(sessionId, now)
-
-  db.session
-    .update({
-      where: { id: sessionId },
-      data: { lastSeenAt: new Date(), lastSeenIp: ip ?? null },
-    })
-    .catch((err) =>
-      logger.warn('[Auth] Failed to update lastSeenAt', { sessionId, err })
-    )
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
@@ -121,6 +104,20 @@ export async function requireAuth(
       return
     }
 
+    // #515 — Session anomaly evaluation & forced revocation check
+    const isAnomalous = await evaluateAndHandleSessionAnomaly(session, {
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    })
+
+    if (isAnomalous) {
+      res.status(401).json({
+        error: AUTH_ERRORS.SESSION_REVOKED,
+        reason: 'session_anomaly_detected',
+      })
+      return
+    }
+
     // 5. Expiry check — delete stale row in the background, don't await
     if (isExpired(session.expiresAt)) {
       db.session
@@ -150,7 +147,16 @@ export async function requireAuth(
       network: session.network,
     }
 
-    updateLastSeenAsync(session.id, req.ip)
+    // Keep time, IP and location from the same accepted request together.
+    // Await persistence so the next request cannot compare against stale location.
+    await db.session.update({
+      where: { id: session.id },
+      data: {
+        lastSeenAt: new Date(),
+        lastSeenIp: req.ip ?? null,
+        approxLocation: resolveApproxLocation(req.ip),
+      },
+    })
 
     next()
   } catch (error) {

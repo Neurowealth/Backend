@@ -14,6 +14,10 @@ import { maskIpAddress } from '../utils/geoip'
 import { revokeSession } from '../services/refresh-token.service'
 import { stellarVerification } from '../utils/stellar/stellar-verification'
 import { logger } from '../utils/logger'
+import { requireFreshSignature } from '../middleware/requireFreshSignature'
+import { auditLog } from '../services/audit-log.service'
+import { notifySecurityEvent } from '../services/security-notification.service'
+import { totpService } from '../services/totp.service'
 
 const router = Router()
 const prisma = db
@@ -24,6 +28,12 @@ router.use(requireSessionAuth)
 const sessionIdParam = z.object({ id: z.string().uuid() })
 const labelBody = z.object({ label: z.string().min(1).max(100) })
 const revokeOthersBody = z.object({
+  stellarPubKey: z.string(),
+  signature: z.string(),
+  nonce: z.string(),
+})
+
+const disable2faBody = z.object({
   stellarPubKey: z.string(),
   signature: z.string(),
   nonce: z.string(),
@@ -143,6 +153,59 @@ router.delete(
         ? 'Current session revoked; please sign in again'
         : undefined,
     })
+  }
+)
+
+/**
+ * POST /api/v1/sessions/2fa/disable — disable TOTP 2FA.
+ *
+ * Disabling 2FA is a security downgrade, so it requires a fresh
+ * wallet-signature challenge (proof-of-control), not merely an active
+ * session — the session itself could be the compromised asset.
+ */
+router.post(
+  '/2fa/disable',
+  validate({ body: disable2faBody }),
+  requireFreshSignature(),
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+    const { stellarPubKey, signature, nonce } = req.body
+
+    const isValid = stellarVerification.verifyStellarSignature(
+      stellarPubKey,
+      nonce,
+      signature
+    )
+    if (!isValid) {
+      return res.status(401).json({ error: 'Step-up authentication failed' })
+    }
+
+    const user = await db.user.findUnique({ where: { id: userId } })
+    if (!user || user.walletAddress !== stellarPubKey) {
+      return res.status(401).json({ error: 'Step-up authentication failed' })
+    }
+
+    const credential = await prisma.totpCredential.findUnique({
+      where: { userId },
+    })
+    if (!credential || !credential.verifiedAt) {
+      return res.status(404).json({ error: 'No active 2FA credential' })
+    }
+
+    await prisma.totpCredential.delete({ where: { userId } })
+
+    await auditLog.record({
+      userId,
+      action: '2fa.disabled',
+      metadata: { method: 'totp' },
+    })
+    await notifySecurityEvent(userId, '2fa.disabled', {
+      method: 'totp',
+    })
+
+    logger.info('[2FA] Disabled', { userId })
+
+    return res.status(200).json({ status: 'disabled' })
   }
 )
 

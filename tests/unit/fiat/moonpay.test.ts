@@ -29,7 +29,7 @@ describe('MoonPayProvider.verifyWebhookSignature', () => {
       type: 'transaction_updated',
       data: { id: 'mp_1', status: 'completed' },
     })
-    const ts = '1700000000'
+    const ts = String(Math.floor(Date.now() / 1000))
     const header = sign(body, ts)
     expect(
       provider.verifyWebhookSignature(body, { 'moonpay-signature-v2': header })
@@ -55,6 +55,33 @@ describe('MoonPayProvider.verifyWebhookSignature', () => {
     const header = sign(body, '1700000000', 'wrong_key')
     expect(
       provider.verifyWebhookSignature(body, { 'moonpay-signature-v2': header })
+    ).toBe(false)
+  })
+
+  it('rejects correctly signed timestamps outside the replay window', () => {
+    const body = JSON.stringify({ data: { id: 'mp_1', status: 'completed' } })
+    const staleHeader = sign(body, String(Math.floor(Date.now() / 1000) - 301))
+    const futureHeader = sign(body, String(Math.floor(Date.now() / 1000) + 301))
+
+    expect(
+      provider.verifyWebhookSignature(body, {
+        'moonpay-signature-v2': staleHeader,
+      })
+    ).toBe(false)
+    expect(
+      provider.verifyWebhookSignature(body, {
+        'moonpay-signature-v2': futureHeader,
+      })
+    ).toBe(false)
+  })
+
+  it('rejects a malformed timestamp even when its HMAC is valid', () => {
+    const body = '{}'
+    const header = sign(body, 'not-a-timestamp')
+    expect(
+      provider.verifyWebhookSignature(body, {
+        'moonpay-signature-v2': header,
+      })
     ).toBe(false)
   })
 

@@ -19,6 +19,8 @@ tags:
     description: Stellar network fee oracle and congestion (public).
   - name: Analytics
     description: Portfolio performance and risk analytics
+  - name: TwoFactorAuth
+    description: TOTP-based two-factor authentication enrollment and login verification (#2FA)
   - name: Assistant
     description: |
       Tool-calling conversational assistant (#318). Replaces the rule-based
@@ -46,6 +48,8 @@ tags:
     description: Alert rules and monitoring triggers (#366)
   - name: Webhooks
     description: User-scoped outbound webhook endpoints (#368)
+  - name: Net Worth
+    description: Owner-private net worth and read-only external Stellar wallet links (#540)
 
 # ─── Reusable components ──────────────────────────────────────────────────────
 components:
@@ -96,6 +100,353 @@ components:
       type: number
       format: double
       nullable: true
+
+    TotpEnrollResponse:
+      type: object
+      required: [otpauthUri, secret, recoveryCodes]
+      properties:
+        otpauthUri:
+          type: string
+          description: Standard otpauth:// URI for QR-code rendering.
+        secret:
+          type: string
+          description: Base32 TOTP secret. Returned only at enrollment; never re-exposed.
+        recoveryCodes:
+          type: array
+          items:
+            type: string
+          description: One-time backup codes. Returned only once at issuance; stored hashed.
+
+    TotpVerifyEnrollmentRequest:
+      type: object
+      required: [code]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: Six-digit code from the user's authenticator app.
+
+    TotpVerifyEnrollmentResponse:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+        verifiedAt:
+          type: string
+          format: date-time
+
+    TotpLoginVerifyRequest:
+      type: object
+      required: [challengeToken, code]
+      additionalProperties: false
+      properties:
+        challengeToken:
+          type: string
+          description: Opaque token returned by /auth/verify when requiresTotp is true.
+        code:
+          type: string
+          description: Six-digit TOTP code or a one-time recovery code.
+
+    TotpLoginVerifyResponse:
+      type: object
+      required: [accessToken, refreshToken]
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        expiresIn:
+          type: integer
+
+    TotpDisableRequest:
+      type: object
+      required: [challenge, signature]
+      additionalProperties: false
+      properties:
+        challenge:
+          type: string
+          description: Fresh wallet-signature challenge issued for this disable operation.
+        signature:
+          type: string
+          description: Signature over the challenge proving control of the wallet.
+
+    TotpRegenerateRecoveryCodesResponse:
+      type: object
+      required: [recoveryCodes]
+      properties:
+        recoveryCodes:
+          type: array
+          items:
+            type: string
+          description: New one-time backup codes. All previous codes are invalidated.
+
+    ExternalWalletLinkRequest:
+      type: object
+      required: [publicKey, label]
+      additionalProperties: false
+      properties:
+        publicKey:
+          type: string
+          description: Public Stellar G-address. Secret keys and signatures are never requested.
+        label:
+          type: string
+          minLength: 1
+          maxLength: 60
+
+    ExternalWalletLinkResponse:
+      type: object
+      required: [id, publicKey, label, verificationStatus, verified]
+      properties:
+        id:
+          type: string
+          format: uuid
+        publicKey:
+          type: string
+        label:
+          type: string
+        addedAt:
+          type: string
+          format: date-time
+        verificationStatus:
+          type: string
+          enum: [UNVERIFIED_SELF_REPORTED]
+        verified:
+          type: boolean
+          enum: [false]
+        notice:
+          type: string
+        lastSyncedAt:
+          type: string
+          format: date-time
+          nullable: true
+        stale:
+          type: boolean
+
+    NetWorthHolding:
+      type: object
+      required: [assetCode, amount, valueUsd, source]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Present for platform positions.
+        assetCode:
+          type: string
+        assetIssuer:
+          type: string
+          nullable: true
+        amount:
+          type: string
+          nullable: true
+          description: Exact token amount for external balances; null for platform position totals.
+        valueUsd:
+          type: number
+          nullable: true
+          description: Null when the external asset has no supported USD valuation.
+        source:
+          type: string
+          enum: [platform, external]
+        walletId:
+          type: string
+          format: uuid
+        label:
+          type: string
+        verificationStatus:
+          type: string
+          enum: [UNVERIFIED_SELF_REPORTED]
+        asOf:
+          type: string
+          format: date-time
+          nullable: true
+        stale:
+          type: boolean
+
+    NetWorthResponse:
+      type: object
+      required:
+        [
+          currency,
+          totalKnownUsd,
+          platformValueUsd,
+          externalKnownValueUsd,
+          valuationComplete,
+          unpricedExternalHoldingCount,
+          staleWalletCount,
+          holdings,
+          externalWallets,
+        ]
+      properties:
+        currency:
+          type: string
+          enum: [USD]
+        totalKnownUsd:
+          type: number
+          description: Known subtotal; not a complete total when valuationComplete is false.
+        platformValueUsd:
+          type: number
+        externalKnownValueUsd:
+          type: number
+        valuationComplete:
+          type: boolean
+        unpricedExternalHoldingCount:
+          type: integer
+        staleWalletCount:
+          type: integer
+        holdings:
+          type: array
+          items:
+            $ref: '#/components/schemas/NetWorthHolding'
+        externalWallets:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExternalWalletNetWorth'
+
+    ExternalWalletNetWorth:
+      type: object
+      required:
+        [
+          id,
+          label,
+          publicKey,
+          verificationStatus,
+          verified,
+          addedAt,
+          lastSyncedAt,
+          stale,
+          syncFailed,
+          holdings,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        label:
+          type: string
+        publicKey:
+          type: string
+        verificationStatus:
+          type: string
+          enum: [UNVERIFIED_SELF_REPORTED]
+        verified:
+          type: boolean
+          enum: [false]
+        addedAt:
+          type: string
+          format: date-time
+        lastSyncedAt:
+          type: string
+          format: date-time
+          nullable: true
+        stale:
+          type: boolean
+        syncFailed:
+          type: boolean
+        holdings:
+          type: array
+          items:
+            $ref: '#/components/schemas/NetWorthHolding'
+
+    GoalCreateRequest:
+      type: object
+      required: [targetAmount, targetDate]
+      properties:
+        targetAmount:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        targetDate:
+          type: string
+          format: date-time
+        startingAmount:
+          type: number
+          minimum: 0
+        positionId:
+          type: string
+          format: uuid
+        riskCeiling:
+          type: integer
+          minimum: 0
+          maximum: 100
+        includeExternalHoldings:
+          type: boolean
+          default: false
+          description: Include known external issuer-matched USDC in this owner's private goal progress.
+
+    GoalUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        targetAmount:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        targetDate:
+          type: string
+          format: date-time
+        riskCeiling:
+          type: integer
+          minimum: 0
+          maximum: 100
+        includeExternalHoldings:
+          type: boolean
+          description: Opt in or out of counting known external USDC in this owner's goal progress.
+
+    GoalProgressResponse:
+      type: object
+      required:
+        [
+          goalId,
+          status,
+          targetAmount,
+          startingAmount,
+          currentAmount,
+          targetDate,
+          requiredApy,
+          actualApy,
+          onTrack,
+          reachable,
+          projectedCompletionDate,
+          includeExternalHoldings,
+          externalStaleWalletCount,
+          unpricedExternalHoldingCount,
+        ]
+      properties:
+        goalId:
+          type: string
+          format: uuid
+        status:
+          type: string
+        targetAmount:
+          type: number
+        startingAmount:
+          type: number
+        currentAmount:
+          type: number
+        targetDate:
+          type: string
+          format: date-time
+        requiredApy:
+          type: number
+        actualApy:
+          type: number
+        onTrack:
+          type: boolean
+        reachable:
+          type: boolean
+        projectedCompletionDate:
+          type: string
+          format: date-time
+          nullable: true
+        includeExternalHoldings:
+          type: boolean
+        externalStaleWalletCount:
+          type: integer
+        unpricedExternalHoldingCount:
+          type: integer
+        note:
+          type: string
+          nullable: true
 
     RankedCandidate:
       type: object
@@ -333,7 +684,16 @@ components:
 
     StrategySimulateResponse:
       type: object
-      required: [immediate, historical, simulationToken, asOf, effectiveConfig, dataCaveats, label]
+      required:
+        [
+          immediate,
+          historical,
+          simulationToken,
+          asOf,
+          effectiveConfig,
+          dataCaveats,
+          label,
+        ]
       properties:
         immediate:
           $ref: '#/components/schemas/StrategyImmediateDecision'
@@ -1023,7 +1383,18 @@ components:
     AlertRule:
       type: object
       description: Alert rule for monitoring portfolio metrics and protocol APY.
-      required: [id, userId, metric, comparator, threshold, deliveryChannel, isActive, createdAt, updatedAt]
+      required:
+        [
+          id,
+          userId,
+          metric,
+          comparator,
+          threshold,
+          deliveryChannel,
+          isActive,
+          createdAt,
+          updatedAt,
+        ]
       properties:
         id:
           type: string
@@ -1118,6 +1489,124 @@ components:
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 paths:
+  # ── TOTP two-factor authentication (#2FA) ─────────────────────────────────────
+
+  /2fa/enroll:
+    post:
+      operationId: enrollTotp
+      summary: Begin TOTP 2FA enrollment
+      description: |
+        Generates a new TOTP secret and returns the otpauth:// URI plus
+        one-time recovery codes. The credential is NOT active until confirmed
+        via /2fa/verify-enrollment with a valid code from the authenticator app.
+      tags: [TwoFactorAuth]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Enrollment secret and recovery codes (returned once).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TotpEnrollResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /2fa/verify-enrollment:
+    post:
+      operationId: verifyTotpEnrollment
+      summary: Confirm TOTP 2FA enrollment
+      description: Confirms the enrollment with a code from the authenticator app and activates the credential.
+      tags: [TwoFactorAuth]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TotpVerifyEnrollmentRequest'
+      responses:
+        '200':
+          description: Enrollment confirmed and active.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TotpVerifyEnrollmentResponse'
+        '400':
+          description: Invalid or expired code.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /2fa/disable:
+    post:
+      operationId: disableTotp
+      summary: Disable TOTP 2FA
+      description: |
+        Disabling 2FA is a security downgrade and requires a fresh
+        wallet-signature challenge, not just an active session.
+      tags: [TwoFactorAuth]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TotpDisableRequest'
+      responses:
+        '204':
+          description: 2FA disabled.
+        '400':
+          description: Invalid challenge or signature.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /2fa/recovery-codes/regenerate:
+    post:
+      operationId: regenerateTotpRecoveryCodes
+      summary: Regenerate TOTP recovery codes
+      description: Issues a new set of one-time backup codes and invalidates all previous codes.
+      tags: [TwoFactorAuth]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: New recovery codes (returned once).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TotpRegenerateRecoveryCodesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/2fa/verify:
+    post:
+      operationId: verifyTotpLogin
+      summary: Complete login with TOTP second factor
+      description: |
+        Completes login when /auth/verify returned requiresTotp. Accepts a
+        valid TOTP code (±1 step tolerance, replay-protected) or a one-time
+        recovery code.
+      tags: [TwoFactorAuth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TotpLoginVerifyRequest'
+      responses:
+        '200':
+          description: Session issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TotpLoginVerifyResponse'
+        '400':
+          description: Invalid, expired, or already-used code.
+        '401':
+          description: Invalid or expired challenge token.
 
   # ── Assistant endpoints (#318) ────────────────────────────────────────────────
 
@@ -1163,12 +1652,12 @@ paths:
               action_proposal:
                 summary: A request that proposes an action
                 value:
-                  message: "withdraw 50 USDC"
+                  message: 'withdraw 50 USDC'
               sub_account:
                 summary: Acting on a linked sub-account
                 value:
                   message: "what's the balance on my kid's account?"
-                  targetUserId: "3f8e1c2a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+                  targetUserId: '3f8e1c2a-4b5d-6e7f-8a9b-0c1d2e3f4a5b'
       responses:
         '200':
           description: The assistant's reply.
@@ -1180,7 +1669,7 @@ paths:
                 grounded_answer:
                   summary: Grounded read-only answer
                   value:
-                    reply: "Your portfolio is currently worth 150.00 USDC."
+                    reply: 'Your portfolio is currently worth 150.00 USDC.'
                     usedFallback: false
                     pendingConfirmation: false
                 confirmation_prompt:
@@ -1192,7 +1681,7 @@ paths:
                 degraded:
                   summary: Model unavailable — graceful fallback
                   value:
-                    reply: "I'm having trouble understanding requests like that right now. Please try a specific command (e.g. \"balance\", \"deposit 10\"), or try again shortly."
+                    reply: 'I''m having trouble understanding requests like that right now. Please try a specific command (e.g. "balance", "deposit 10"), or try again shortly.'
                     usedFallback: true
                     pendingConfirmation: false
         '400':
@@ -2793,6 +3282,196 @@ paths:
           description: Missing/invalid bearer token.
         '404':
           description: Webhook endpoint not found.
+
+  # ── Private net worth and external wallets (#540) ─────────────────────────────
+
+  /net-worth:
+    get:
+      operationId: getPrivateNetWorth
+      summary: Get owner-private net worth
+      description: |
+        Combines active platform positions and read-only linked external wallet
+        balances for the authenticated user only. Every holding is tagged with
+        its source. External links are always unverified self-reported data;
+        unpriced balances are null and stale snapshots carry an as-of timestamp.
+        This data is not used in tax reports, agent decisions, or marketplace
+        track records.
+      tags: [Net Worth]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Private source-tagged holdings and valuation completeness.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetWorthResponse'
+        '401':
+          description: Missing/invalid bearer token.
+
+  /net-worth/external-wallets:
+    get:
+      operationId: listExternalWallets
+      summary: List the caller's external Stellar wallet links
+      tags: [Net Worth]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Owner-scoped external wallet links and sync freshness.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [wallets]
+                properties:
+                  wallets:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ExternalWalletLinkResponse'
+        '401':
+          description: Missing/invalid bearer token.
+
+    post:
+      operationId: linkExternalWallet
+      summary: Link an external Stellar address as unverified and read-only
+      description: |
+        This does not prove address ownership and does not grant signing,
+        transaction, or custody capability. The address is labeled
+        UNVERIFIED_SELF_REPORTED and appears only in the caller's private views.
+        The caller's platform-managed addresses cannot be linked as external.
+        API keys must have the `portfolio:write` scope.
+      tags: [Net Worth]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExternalWalletLinkRequest'
+      responses:
+        '201':
+          description: External address linked; response explicitly marks it unverified.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalWalletLinkResponse'
+        '400':
+          description: Invalid Stellar public key or label.
+        '401':
+          description: Missing/invalid bearer token.
+        '409':
+          description: Address is already linked, platform-managed, or the per-user link limit is reached.
+
+  /net-worth/external-wallets/{id}:
+    delete:
+      operationId: removeExternalWallet
+      summary: Remove one of the caller's external wallet links
+      description: Removal immediately excludes its balances from net-worth and opted-in goal calculations.
+      tags: [Net Worth]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: External wallet link removed.
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: External wallet not found for the caller.
+
+  /portfolio/goals:
+    post:
+      operationId: createSavingsGoal
+      summary: Create a savings goal
+      description: External balances remain excluded unless `includeExternalHoldings` is explicitly true.
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoalCreateRequest'
+      responses:
+        '201':
+          description: Savings goal created.
+        '400':
+          description: Goal validation failed.
+        '401':
+          description: Missing/invalid bearer token.
+        '409':
+          description: Caller already has an active goal.
+
+  /portfolio/goals/{id}:
+    patch:
+      operationId: updateSavingsGoal
+      summary: Update a savings goal
+      description: Set `includeExternalHoldings` to opt in or out; the default for existing goals is false.
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoalUpdateRequest'
+      responses:
+        '200':
+          description: Savings goal updated.
+        '400':
+          description: Goal validation failed.
+        '401':
+          description: Missing/invalid bearer token or the caller does not own the goal.
+        '404':
+          description: Goal not found.
+
+  /portfolio/goals/{id}/progress:
+    get:
+      operationId: getSavingsGoalProgress
+      summary: Get owner-scoped savings goal progress
+      description: |
+        When `includeExternalHoldings` is true, current known external value is
+        included as a static contribution. The projection applies managed APY
+        only to managed principal, and reports stale wallet and unpriced holding
+        counts. The owner remains the only audience for unverified values.
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Owner-only goal trajectory and external snapshot caveats.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalProgressResponse'
+        '401':
+          description: Missing/invalid bearer token or goal belongs to another user.
+        '404':
+          description: Goal not found.
 
   # ── Health ────────────────────────────────────────────────────────────────────
 

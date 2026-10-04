@@ -29,6 +29,15 @@ enum TransactionType {
   // #340: Inbound transfers and claimable balance claims
   INBOUND_TRANSFER
   CLAIMABLE_BALANCE_CLAIM
+  // #532: Borrow-against-collateral credit line. Each leg is a distinct
+  // transaction type so the money movement is separable from a user
+  // withdrawal in reporting, tax review and the outbox's priority ordering.
+  //   LOAN_DISBURSE  — platform lends stablecoin out against locked collateral
+  //   LOAN_REPAYMENT — borrower returns principal/interest into the vault
+  //   LOAN_LIQUIDATION — protective forced sale of collateral (system-initiated)
+  LOAN_DISBURSE
+  LOAN_REPAYMENT
+  LOAN_LIQUIDATION
 }
 
 enum TransactionStatus {
@@ -70,6 +79,31 @@ enum DeadLetterEventStatus {
   RESOLVED
 }
 
+enum OutboundNotificationStatus {
+  PENDING
+  PROCESSING
+  RETRYING
+  DELIVERED
+  DEAD
+}
+
+model OutboundNotification {
+  id            String                     @id @default(uuid())
+  channel       String
+  payload       Json
+  status        OutboundNotificationStatus @default(PENDING)
+  attempts      Int                        @default(0)
+  nextAttemptAt DateTime                   @default(now())
+  providerId    String?
+  lastError     String?                    @db.Text
+  createdAt     DateTime                   @default(now())
+  updatedAt     DateTime                   @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([createdAt])
+  @@map("outbound_notifications")
+}
+
 // #325 — durable outbox for on-chain money movements.
 enum OutboxOpKind {
   DEPOSIT
@@ -82,6 +116,15 @@ enum OutboxOpKind {
   TREASURY_SWEEP
   // #339: Sponsored account provisioning
   ACCOUNT_PROVISION
+  // #532: Borrow-against-collateral credit line. LOAN_DISBURSE and
+  // LOAN_REPAYMENT move stablecoin across the vault boundary, so they are
+  // CRITICAL — a user waiting on borrowed cash (or a lender's claim being
+  // settled) must not queue behind an agent rebalance. LOAN_LIQUIDATION is
+  // CRITICAL too: it is a protective forced sale, and the longer it waits the
+  // worse the platform's recovery on an underwater position.
+  LOAN_DISBURSE
+  LOAN_REPAYMENT
+  LOAN_LIQUIDATION
 }
 
 enum OutboxOpActor {
@@ -216,6 +259,10 @@ enum SubAccountPermission {
   DEPOSIT
   WITHDRAW
   MANAGE_STRATEGY
+  // #532: Originating a collateralized loan. A distinct permission (rather
+  // than reusing WITHDRAW) so a policy can gate "take on debt" independently
+  // of "take money out" — they are different risks for a delegated account.
+  BORROW
 }
 
 enum SubAccountStatus {
@@ -224,12 +271,12 @@ enum SubAccountStatus {
 }
 
 model User {
-  id                String           @id @default(uuid())
-  walletAddress     String           @unique
-  network           Network          @default(MAINNET)
-  displayName       String?
-  email             String?          @unique
-  avatarUrl         String?
+  id                  String           @id @default(uuid())
+  walletAddress       String           @unique
+  network             Network          @default(MAINNET)
+  displayName         String?
+  email               String?          @unique
+  avatarUrl           String?
   // E.164 WhatsApp number, when known. Nullable because most users onboard via
   // wallet auth and never link a number. Used as the WhatsApp delivery
   // destination for alert rules (#289); alerts on the WHATSAPP/BOTH channel are
@@ -243,17 +290,26 @@ model User {
   isActive          Boolean          @default(true)
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
+  phone               String?          @unique
+  riskTolerance       Int              @default(5)
+  rebalanceStrategy   String? // 'MAX_YIELD' | 'TARGET_ALLOCATION' | null (defaults to MAX_YIELD)
+  strategyConfig      Json? // e.g. { "targetAllocations": { "Blend": 50, "Stellar DEX": 30, "Luma": 20 } }
+  taxAwareRebalancing Boolean          @default(false) // #550 - opt-in wash-sale-aware rebalancing
+  isActive            Boolean          @default(true)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
   // #317 — cost-basis consumption method for the tax report. Changing this
   // is forward-only: methodEffectiveAt stamps when a change took effect, so
   // disposals recorded before it are never retroactively recomputed (see
   // docs/TAX_REPORT.md).
-  accountingMethod  AccountingMethod @default(FIFO)
-  methodEffectiveAt DateTime?
+  accountingMethod    AccountingMethod @default(FIFO)
+  methodEffectiveAt   DateTime?
   // #356 — selects the tax profile applied by buildTaxReport. Changing this
   // is forward-only, same convention as accountingMethod: it affects future
   // reports, never rewrites past disposal rows (which carry no jurisdiction
   // of their own — see src/tax/jurisdictions/).
-  taxJurisdiction   TaxJurisdiction  @default(US)
+  taxJurisdiction     TaxJurisdiction  @default(US)
+  displayCurrency     String           @default("USD")
 
   sessions                Session[]
   positions               Position[]
@@ -282,8 +338,11 @@ model User {
   userEventSequence       UserEventSequence?
   userApiKeys             UserApiKey[]
   userWebhookEndpoints    UserWebhookEndpoint[]
+  linkedExternalWallets   LinkedExternalWallet[]
   emailIdentity           EmailIdentity?
   pushDeviceTokens        PushDeviceToken[]
+  CollateralLoan          CollateralLoan[]
+  totpCredential          TotpCredential?
 
   @@map("users")
 }
@@ -334,6 +393,33 @@ model PushDeviceToken {
   @@index([token])
   @@index([isActive])
   @@map("push_device_tokens")
+}
+
+/// TOTP-based two-factor authentication credential (additive second factor).
+/// One row per user. `secretEncrypted` is encrypted at rest via the same
+/// wallet-encryption-key pattern as CustodialWallet (src/keys/registry.ts) and
+/// is never re-exposed after enrollment. `verifiedAt` is null until the user
+/// confirms a code from their authenticator app — an unverified row is never
+/// treated as active or enforced. `lastAcceptedStep` tracks the last accepted
+/// TOTP time-step so a code cannot be replayed within its window.
+model TotpCredential {
+  id               String    @id @default(uuid())
+  userId           String    @unique
+  secretEncrypted  String
+  iv               String
+  authTag          String
+  keyVersion       Int       @default(1)
+  encryptionKeyId  String?
+  verifiedAt       DateTime?
+  lastAcceptedStep BigInt?
+  recoveryCodesHashed String[]
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("totp_credentials")
 }
 
 model IdempotencyRecord {
@@ -496,10 +582,12 @@ model Position {
   closedAt        DateTime?
   updatedAt       DateTime       @updatedAt
 
-  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  transactions   Transaction[]
-  yieldSnapshots YieldSnapshot[]
-  savingsGoals   SavingsGoal[]
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions    Transaction[]
+  yieldSnapshots  YieldSnapshot[]
+  savingsGoals    SavingsGoal[]
+  collateralLoans CollateralLoan[]
+  coverageClaims  CoverageClaim[]
 
   @@index([userId])
   @@index([status])
@@ -511,33 +599,48 @@ model Position {
 }
 
 model Transaction {
-  id             String            @id @default(uuid())
-  userId         String
-  actingAsUserId String? // non-null when action was performed by a parent on behalf of a child
-  positionId     String?
-  txHash         String?           @unique
-  type           TransactionType
-  status         TransactionStatus @default(PENDING)
-  assetSymbol    String
-  amount         Decimal           @db.Decimal(36, 18)
-  fee            Decimal?          @db.Decimal(36, 18)
-  network        Network
-  protocolName   String?
-  memo           String?
-  confirmedAt    DateTime?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  id                      String            @id @default(uuid())
+  userId                  String
+  actingAsUserId          String? // non-null when action was performed by a parent on behalf of a child
+  positionId              String?
+  txHash                  String?           @unique
+  type                    TransactionType
+  status                  TransactionStatus @default(PENDING)
+  assetSymbol             String
+  amount                  Decimal           @db.Decimal(36, 18)
+  fee                     Decimal?          @db.Decimal(36, 18)
+  network                 Network
+  protocolName            String?
+  memo                    String?
+  confirmedAt             DateTime?
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
   // #317 — SPECIFIC_ID lot selection for a WITHDRAWAL, captured at request
   // time so the Stellar event listener (the sole writer of disposal rows,
   // see docs/TAX_REPORT.md) has it once the on-chain event confirms. Empty
   // for every other accounting method and for all non-withdrawal types.
-  selectedLotIds String[]          @default([])
+  selectedLotIds          String[]          @default([])
+  // #532 — the collateral loan this transaction settles, stamped on
+  // LOAN_DISBURSE and LOAN_REPAYMENT when the op is enqueued so the loan
+  // reconciler can find its settlements with an indexed query instead of
+  // parsing memos.
+  loanId                  String?
+  // #532 — set the instant a confirmed settlement has been applied to the loan
+  // row. NULL means "the money moved but the loan does not know yet", which is
+  // exactly the state a process crash leaves behind and exactly what the
+  // reconciler sweeps for. Each row is claimed with a conditional update, so
+  // replaying a settlement can never double-apply it.
+  loanSettlementAppliedAt DateTime?
 
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   position     Position?     @relation(fields: [positionId], references: [id])
   fiatOrders   FiatOrder[]
   costBasisLot CostBasisLot?
   lotDisposals LotDisposal[]
+
+  // #532 — the opposite side of CollateralLoan.transactions: every settlement
+  // recorded against a loan, disburse or repay.
+  loan CollateralLoan? @relation(fields: [loanId], references: [id])
 
   @@index([userId])
   @@index([positionId])
@@ -546,6 +649,9 @@ model Transaction {
   @@index([createdAt])
   @@index([userId, createdAt])
   @@index([actingAsUserId])
+  // #532 — the loan reconciler's sweep query: confirmed settlements for a loan
+  // that have not been applied yet.
+  @@index([loanId, loanSettlementAppliedAt])
   @@map("transactions")
 }
 
@@ -873,6 +979,28 @@ model CustodialWallet {
   @@map("custodial_wallets")
 }
 
+/// Read-only public Stellar address linked by its owner for personal net-worth
+/// views. Links are self-reported and never grant signing or transaction access.
+model LinkedExternalWallet {
+  id                 String    @id @default(uuid())
+  userId             String
+  publicKey          String
+  label              String
+  verificationStatus String    @default("UNVERIFIED_SELF_REPORTED")
+  balances           Json?
+  addedAt            DateTime  @default(now())
+  lastSyncedAt       DateTime?
+  lastSyncAttemptAt  DateTime?
+  syncError          String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, publicKey])
+  @@index([userId, addedAt])
+  @@index([lastSyncAttemptAt])
+  @@map("linked_external_wallets")
+}
+
 // #339: Sponsored reserves — one row per platform-sponsored ledger entry
 model ReserveSponsorship {
   id             String    @id @default(uuid())
@@ -971,6 +1099,8 @@ model WebhookDelivery {
   subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
 
   @@index([subscriptionId])
+  @@index([subscriptionId, createdAt])
+  @@index([subscriptionId, status, createdAt])
   @@index([status])
   @@index([createdAt])
   @@map("webhook_deliveries")
@@ -990,6 +1120,7 @@ model WebhookDeadLetter {
   subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
 
   @@index([subscriptionId, status])
+  @@index([subscriptionId, status, firstFailedAt])
   @@map("webhook_dead_letters")
 }
 
@@ -1016,14 +1147,31 @@ model AlertRule {
   snoozedUntil    DateTime?
   snoozeReason    String?
   isActive        Boolean         @default(true)
+  deletedAt       DateTime?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([userId])
+  @@index([userId, deletedAt])
   @@index([isActive, metric])
   @@map("alert_rules")
+}
+
+/// Append-only audit trail for user-scoped soft-delete and restore actions.
+/// Deliberately has no user foreign key so retention cannot cascade away audit.
+model UserDataAudit {
+  id           String   @id @default(uuid())
+  tenantUserId String
+  actorUserId  String
+  recordType   String
+  recordId     String
+  action       String
+  createdAt    DateTime @default(now())
+
+  @@index([tenantUserId, createdAt])
+  @@index([recordType, recordId])
+  @@map("user_data_audits")
 }
 
 model SubAccount {
@@ -1183,6 +1331,18 @@ model FiatOrder {
   @@index([status])
   @@index([createdAt])
   @@map("fiat_orders")
+}
+
+/// Hash-only receipts for authenticated inbound fiat callbacks. The provider
+/// plus SHA-256 body hash is the replay key; raw callback contents are not kept.
+model FiatWebhookReceipt {
+  id        String   @id @default(uuid())
+  provider  String
+  nonce     String
+  createdAt DateTime @default(now())
+
+  @@unique([provider, nonce])
+  @@map("fiat_webhook_receipts")
 }
 
 /// A time-boxed, provider-pinned quote returned by the best-execution quote
@@ -1354,16 +1514,17 @@ model LotDisposal {
 /// not via a DB constraint, since past goals (ACHIEVED/MISSED/CANCELLED) are
 /// kept for history.
 model SavingsGoal {
-  id             String     @id @default(uuid())
-  userId         String
-  positionId     String?
-  targetAmount   Decimal    @db.Decimal(36, 18)
-  startingAmount Decimal    @db.Decimal(36, 18)
-  targetDate     DateTime
-  riskCeiling    Int? // optional min protocol risk score (0-100), matches UserStrategyPreferences.riskCeiling
-  status         GoalStatus @default(ACTIVE)
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  id                      String     @id @default(uuid())
+  userId                  String
+  positionId              String?
+  targetAmount            Decimal    @db.Decimal(36, 18)
+  startingAmount          Decimal    @db.Decimal(36, 18)
+  targetDate              DateTime
+  riskCeiling             Int? // optional min protocol risk score (0-100), matches UserStrategyPreferences.riskCeiling
+  includeExternalHoldings Boolean    @default(false)
+  status                  GoalStatus @default(ACTIVE)
+  createdAt               DateTime   @default(now())
+  updatedAt               DateTime   @updatedAt
 
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   position Position? @relation(fields: [positionId], references: [id])
@@ -1733,6 +1894,7 @@ model UserWebhookDelivery {
 
   @@unique([endpointId, userEventSeq])
   @@index([endpointId])
+  @@index([endpointId, createdAt])
   @@index([status])
   @@map("user_webhook_deliveries")
 }
@@ -2095,4 +2257,229 @@ model AgentCircuitBreaker {
   @@unique([scope, scopeKey])
   @@index([state])
   @@map("agent_circuit_breakers")
+}
+
+// --- Issue #532: Borrow Against Deposited Collateral (non-liquidating credit line)
+//
+// A CollateralLoan lets a user borrow stablecoin against a position they have
+// already deposited, WITHOUT unwinding it: the position keeps earning yield and
+// keeps its vesting/goal progress. The position is the collateral — it is locked
+// for the life of the loan, and the agent's rebalance loop skips it (see
+// src/lending/collateralLock.ts) so the collateral backing the loan can never be
+// moved out from under it.
+//
+// ── Why the lock is derived, not stored ─────────────────────────────────────────
+// A Position has no `lockedAt` column. The lock IS "an ACTIVE CollateralLoan
+// points at this position". Deriving it from the loan row makes it impossible
+// for the lock and the debt to disagree (no two-writer problem, no reconciliation
+// job, no way to unlock collateral without also settling the debt). One ACTIVE
+// loan per position is enforced by the partial unique index below.
+enum LoanStatus {
+  ACTIVE
+  REPAID
+  LIQUIDATED
+}
+
+model CollateralLoan {
+  id                String   @id @default(uuid())
+  userId            String
+  // The locked collateral. A single position, by design: v1 does not
+  // cross-collateralize across positions or assets.
+  positionId        String
+  borrowedAsset     String
+  // The stablecoin handed to the user. Fixed at origination and never
+  // renegotiated — v1 has a single documented rate model, no rate shopping.
+  principalAmount   Decimal  @db.Decimal(36, 18)
+  interestAccrued   Decimal  @default(0) @db.Decimal(36, 18)
+  // Watermark for the next accrual: interest is simple (non-compounding) and
+  // is applied to `principalAmount` only, so the accrual is a pure function of
+  // (principal, rate, interestAccruedTo -> now) and re-running it is a no-op.
+  interestAccruedTo DateTime @default(now())
+
+  // Rate snapshot taken at origination. Frozen for the life of the loan: a
+  // borrower must never see their interest bill move because the underlying
+  // market's borrowApy moved. `underlyingBorrowApy` is what we paid to borrow
+  // on their behalf; `platformSpreadApy` is our documented margin on top;
+  // `interestRateApy` is the two summed, and is the rate actually charged.
+  //
+  // All three are in PERCENT, matching ProtocolRate.borrowApy: 8 means 8%, not
+  // 0.08. A fraction stored here would silently under-charge by 100x.
+  underlyingBorrowApy Decimal @db.Decimal(12, 6)
+  platformSpreadApy   Decimal @db.Decimal(12, 6)
+  interestRateApy     Decimal @db.Decimal(12, 6)
+
+  // LTV at origination and the LTV at which liquidation fires. Both are frozen
+  // on the row (not re-read from config at liquidation time) so a config change
+  // can never retroactively move the line under an existing borrower.
+  ltvRatio                Decimal @db.Decimal(12, 6)
+  liquidationLtvThreshold Decimal @db.Decimal(12, 6)
+
+  status               LoanStatus @default(ACTIVE)
+  originatedAt         DateTime   @default(now())
+  // Set when the loan leaves ACTIVE (repaid or liquidated).
+  closedAt             DateTime?
+  // Collateral mark used by the most recent health evaluation. Kept so a
+  // liquidation decision can be explained after the fact.
+  lastValuedAt         DateTime   @default(now())
+  lastValuedCollateral Decimal    @default(0) @db.Decimal(36, 18)
+
+  // Durable outbox ops for each leg of the loan's lifecycle. Dereferencing
+  // these makes "did the disbursal actually settle?" answerable without
+  // reconstructing the outbox queue.
+  disburseOutboxOpId    String?
+  liquidationOutboxOpId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user        User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  position    Position               @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  events      LoanLiquidationEvent[]
+  badDebt     PlatformBadDebt[]
+  // #532 — the disbursal and every repayment recorded against this loan.
+  settlements Transaction[]
+
+  // v1 rule: at most ONE active loan per locked position. A partial unique
+  // index (see the migration) enforces it in the database, so two concurrent
+  // origination requests can never both win.
+  @@index([userId, status])
+  @@index([status])
+  @@index([positionId, status])
+  @@index([status, lastValuedAt])
+  @@map("collateral_loans")
+}
+
+// One row per protective sale against a loan. Written whether the sale fully
+// restored a safe LTV (PARTIAL) or exhausted the collateral (FULL), and always
+// together with the audit-hash feed — a liquidation moves real value without a
+// fresh user action, so it has to be tamper-evident (see docs/LENDING.md).
+model LoanLiquidationEvent {
+  id             String   @id @default(uuid())
+  loanId         String
+  userId         String
+  // Why this sale ran: the scheduled monitor, or an out-of-cycle check the agent
+  // circuit breaker asked for after abnormal loss.
+  trigger        String // "scheduled" | "circuit_breaker"
+  // "PARTIAL" restored LTV to the target; "FULL" exhausted the collateral.
+  kind           String
+  ltvBefore      Decimal  @db.Decimal(12, 6)
+  ltvAfter       Decimal? @db.Decimal(12, 6)
+  collateralSold Decimal  @db.Decimal(36, 18)
+  debtRetired    Decimal  @db.Decimal(36, 18)
+  // Collateral value that did NOT cover the debt. Platform bad debt, never
+  // recovered from any other user's funds.
+  shortfall      Decimal  @default(0) @db.Decimal(36, 18)
+  outboxOpId     String?
+  correlationId  String?
+  createdAt      DateTime @default(now())
+
+  loan CollateralLoan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+
+  @@index([loanId, createdAt])
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("loan_liquidation_events")
+}
+
+// Explicit, queryable bad-debt reserve. A shortfall is never clawed back from
+// unrelated user funds — it lands here, stays visible to operators, and is the
+// number docs/LENDING.md's exposure model is measured against.
+model PlatformBadDebt {
+  id          String    @id @default(uuid())
+  loanId      String
+  userId      String
+  assetSymbol String
+  amount      Decimal   @db.Decimal(36, 18)
+  // OPEN until an operator writes it off or recovers it out-of-band.
+  status      String    @default("OPEN")
+  reason      String
+  recordedAt  DateTime  @default(now())
+  resolvedAt  DateTime?
+
+  loan CollateralLoan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+
+  @@index([status, recordedAt])
+  @@index([loanId])
+  @@map("platform_bad_debt")
+}
+
+// ─── #533 Protocol-Risk Protection Fund ───────────────────────────────────────
+
+model ProtectionFundBalance {
+  id          String   @id @default(uuid())
+  assetSymbol String
+  amount      Decimal  @db.Decimal(36, 18)
+  // BOOTSTRAP | ACCUMULATING | ACTIVE | DEPLETED
+  status      String   @default("BOOTSTRAP")
+  updatedAt   DateTime @updatedAt
+
+  @@unique([assetSymbol])
+  @@map("protection_fund_balances")
+}
+
+model ProtectionFundContribution {
+  id          String   @id @default(uuid())
+  source      String // "REVENUE_SKIM" | "MANUAL" | "TREASURY_TRANSFER"
+  assetSymbol String
+  amount      Decimal  @db.Decimal(36, 18)
+  // The revenue-stream reference (e.g. performance-fee transaction id)
+  sourceRef   String?
+  createdBy   String?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("protection_fund_contributions")
+}
+
+model CoverageEvent {
+  id          String   @id @default(uuid())
+  protocolName String
+  // EXPLOIT | INSOLVENCY | GOVERNANCE_FAILURE (narrow, published definition)
+  cause       String
+  // ISO-8601 date-time strings, UTC
+  lossWindowStart String
+  lossWindowEnd   String
+  totalPlatformExposure Decimal @db.Decimal(36, 18)
+  declaredBy  String
+  // PENDING_REVIEW | APPROVED | REJECTED
+  status      String   @default("PENDING_REVIEW")
+  reviewedBy  String?
+  coverageTerms Json? // snapshot of coverage rules at declaration time
+  description String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  claims CoverageClaim[]
+
+  @@index([protocolName, status])
+  @@index([status])
+  @@map("coverage_events")
+}
+
+model CoverageClaim {
+  id          String   @id @default(uuid())
+  eventId     String
+  userId      String
+  positionId  String
+  // The user's loss in this position during the loss window
+  actualLoss  Decimal  @db.Decimal(36, 18)
+  // Net of any protocol-level recovery already received
+  netLoss     Decimal  @db.Decimal(36, 18)
+  // The amount the fund will actually pay (capped + pro-rated)
+  payoutAmount Decimal @db.Decimal(36, 18)
+  // FULL | PRORATED | ZERO
+  coverageType String
+  // PENDING | PAID | REJECTED
+  status      String   @default("PENDING")
+  outboxOpId  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  event CoverageEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  position Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, positionId])
+  @@index([userId, status])
+  @@index([eventId, status])
+  @@map("coverage_claims")
 }
