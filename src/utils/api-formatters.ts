@@ -273,6 +273,57 @@ const USER_EVENT_PAYLOAD_ALLOWLIST: Record<string, readonly string[]> = {
   // `error` is the user's own op failure text, already sent to their webhooks.
   'outbox.op_failed': ['opId', 'kind', 'attempts', 'error'],
   'portfolio.updated': ['protocolName', 'positionsAffected', 'reason'],
+  // #535 — guardian social recovery. Two deliberate omissions.
+  //
+  // `reason` is the claimant's free text. It is attacker-controlled, so it must
+  // not reach a socket that renders anything, and it is already in the audit
+  // trail and the owner's email alert.
+  //
+  // `ownerUserId` is absent for the same reason `followerUserId` is: the frame
+  // is already scoped to the one user it is for. Naming another user's id in a
+  // payload is the pattern this allowlist exists to prevent — a delegated
+  // parent connection must not be able to enumerate who is guarding whom by
+  // reading frames off a child's stream.
+  'security.recovery_initiated': [
+    'requestId',
+    'status',
+    'requiredApprovals',
+    'acceptedGuardians',
+    'approvedBy',
+    'executeAfter',
+    'cancelledAt',
+    'revokedSessions',
+    'initiatedAt',
+    'occurredAt',
+  ],
+  'security.recovery_quorum_reached': [
+    'requestId',
+    'requiredApprovals',
+    'executeAfter',
+    'occurredAt',
+  ],
+  'security.recovery_cancelled': [
+    'requestId',
+    'status',
+    'executeAfter',
+    'cancelledAt',
+    'occurredAt',
+  ],
+  'security.recovery_completed': [
+    'requestId',
+    'status',
+    'revokedSessions',
+    'executedAt',
+    'occurredAt',
+  ],
+  'security.guardian_approval_requested': [
+    'requestId',
+    'accountHint',
+    'requiredApprovals',
+    'executeAfter',
+    'expiresAt',
+    'occurredAt',
+  ],
 }
 
 /**

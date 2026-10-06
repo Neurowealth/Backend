@@ -50,6 +50,23 @@ tags:
     description: User-scoped outbound webhook endpoints (#368)
   - name: Net Worth
     description: Owner-private net worth and read-only external Stellar wallet links (#540)
+  - name: Account Recovery
+    description: |
+      Guardian-based social recovery (#535). Recovery of a user's own ACCOUNT
+      ACCESS (their sessions and ability to authenticate), not of custodial
+      wallet key material.
+
+      Three structural controls, each enforced in more than one layer: a quorum
+      of two or more guardians that is never 1-of-N; a mandatory waiting period
+      stamped ONCE at quorum onto the request row, so editing the policy
+      mid-flight cannot pull a live deadline forward; and loud multi-channel
+      alerting to the account owner, who can cancel unilaterally at any point
+      before execution. Execution is platform-side only (a scheduled sweep) and
+      has no HTTP endpoint by design.
+
+      `POST /initiate` is deliberately UNAUTHENTICATED and returns an identical
+      202 response in every case, so it cannot be used to discover whether a
+      wallet exists. See docs/ACCOUNT_RECOVERY.md for the threat model.
 
 # ─── Reusable components ──────────────────────────────────────────────────────
 components:
@@ -1456,6 +1473,153 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+
+  # ─── #535 Guardian social recovery ─────────────────────────────────────────
+
+    RecoveryPolicy:
+      type: object
+      description: |
+        The account's standing recovery configuration. Created with safe defaults
+        on first read.
+      properties:
+        requiredApprovals:
+          type: integer
+          minimum: 2
+          description: Guardian approvals needed to reach quorum. Never 1.
+        recoveryDelayHours:
+          type: integer
+          minimum: 24
+          maximum: 168
+          description: |
+            Mandatory gap between quorum and effect. Stamped onto the request at
+            quorum, so a later policy edit cannot shorten a live deadline.
+        maxGuardians:
+          type: integer
+          description: Cap on active (PENDING or ACCEPTED) guardians.
+      required: [requiredApprovals, recoveryDelayHours, maxGuardians]
+
+    RecoveryGuardian:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [PENDING, ACCEPTED, DECLINED, REMOVED]
+          description: |
+            Only ACCEPTED guardians can vote. A PENDING nomination contributes
+            nothing to quorum.
+        kind:
+          type: string
+          enum: [platform, email, phone]
+        label:
+          type: string
+          description: |
+            Masked identifier (e.g. `a***e@example.com`, `GA***WF`). Enough for
+            the owner to recognise their own list, not enough to harvest it.
+        acceptedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, status, kind, label, createdAt]
+
+    NominateGuardianRequest:
+      type: object
+      description: |
+        Identify the guardian either by platform account or by external contact
+        details. Combining `guardianUserId` with an external field is rejected.
+      properties:
+        guardianUserId:
+          type: string
+          format: uuid
+          description: Another verified platform user.
+        externalEmail:
+          type: string
+          format: email
+        externalPhone:
+          type: string
+          description: E.164, digits and an optional leading `+` only.
+
+    RecoveryApproval:
+      type: object
+      properties:
+        guardianId:
+          type: string
+          format: uuid
+        approved:
+          type: boolean
+          description: False is a stored refusal, not a no-op.
+        decidedAt:
+          type: string
+          format: date-time
+        method:
+          type: string
+          enum: [session, external_token]
+          description: How the guardian proved who they were.
+
+    RecoveryRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        reason:
+          type: string
+          description: The claimant's stated reason. Attacker-controlled free text.
+        status:
+          type: string
+          enum:
+            [
+              PENDING,
+              QUORUM_REACHED,
+              COMPLETED,
+              CANCELLED,
+              EXPIRED,
+            ]
+        approvals:
+          type: array
+          description: |
+            For the owner, every decision. For a guardian, only their own —
+            guardians cannot see who else was asked or what they said.
+          items:
+            $ref: '#/components/schemas/RecoveryApproval'
+        quorumReachedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Stamped exactly once, by whichever approval wins the race.
+        executeAfter:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            The frozen deadline. Derived from the policy at the instant quorum was
+            reached and never recomputed, so a policy edit mid-flight cannot pull
+            it forward.
+        executedAt:
+          type: string
+          format: date-time
+          nullable: true
+        cancelledAt:
+          type: string
+          format: date-time
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, status, createdAt]
+
 
   responses:
     Unauthorized:
@@ -3439,6 +3603,506 @@ paths:
           description: Missing/invalid bearer token or goal belongs to another user.
         '404':
           description: Goal not found.
+
+
+  # ── #535 Guardian social recovery ────────────────────────────────────────────
+
+  /recovery/policy:
+    get:
+      operationId: getRecoveryPolicy
+      summary: Read the caller's recovery policy
+      description: |
+        Returns the caller's quorum size, mandatory delay and guardian cap. The
+        policy is created with safe defaults on first read, so this never 404s
+        for a legitimate account. Quorum below 2 and delays below the floor are
+        not representable: the service refuses them on every read, not only on
+        write.
+      tags: [Account Recovery]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The caller's recovery policy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy:
+                    $ref: '#/components/schemas/RecoveryPolicy'
+        '401':
+          description: Missing or invalid bearer token.
+
+    put:
+      operationId: updateRecoveryPolicy
+      summary: Change quorum size or mandatory delay
+      description: |
+        Bounds are enforced three times — here, in the service, and by a database
+        CHECK constraint. `requiredApprovals` is additionally rejected if it
+        exceeds the number of accepted guardians, so a policy cannot be set to a
+        quorum the account can never actually reach.
+      tags: [Account Recovery]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                requiredApprovals:
+                  type: integer
+                  minimum: 2
+                  description: Guardian approvals needed. Never 1.
+                recoveryDelayHours:
+                  type: integer
+                  minimum: 24
+                  maximum: 168
+                  description: |
+                    Mandatory, non-negotiable gap between quorum and effect. The
+                    issue suggested 48-72h; 24h is the hard floor enforced in code.
+      responses:
+        '200':
+          description: Updated policy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy:
+                    $ref: '#/components/schemas/RecoveryPolicy'
+        '400':
+          description: Quorum below 2, or delay outside the permitted band.
+        '401':
+          description: Missing or invalid bearer token.
+        '409':
+          description: Quorum exceeds the number of accepted guardians.
+
+  /recovery/guardians:
+    get:
+      operationId: listRecoveryGuardians
+      summary: List the caller's guardians
+      description: |
+        Contact details are masked — enough for an owner to recognise their own
+        list, not enough to harvest it from a shared screen.
+      tags: [Account Recovery]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The caller's guardian set.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  guardians:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RecoveryGuardian'
+                  count:
+                    type: integer
+        '401':
+          description: Missing or invalid bearer token.
+
+    post:
+      operationId: nominateRecoveryGuardian
+      summary: Nominate a guardian
+      description: |
+        A guardian is identified EITHER by a platform user id OR by external
+        contact details, never both; mixing them is rejected because one
+        nomination must resolve to exactly one party.
+
+        The returned `inviteToken` is shown ONCE. Only its SHA-256 digest is
+        stored. The token is also delivered out of band by email/WhatsApp. A
+        nominated guardian contributes nothing to quorum until they accept, so
+        silent enrolment is impossible.
+      tags: [Account Recovery]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NominateGuardianRequest'
+      responses:
+        '201':
+          description: Guardian nominated; awaiting their acceptance.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  guardian:
+                    $ref: '#/components/schemas/RecoveryGuardian'
+                  inviteToken:
+                    type: string
+                    description: Raw token, returned exactly once.
+                  inviteExpiresAt:
+                    type: string
+                    format: date-time
+        '400':
+          description: No identifier, or a platform id combined with external details.
+        '401':
+          description: Missing or invalid bearer token.
+        '409':
+          description: The account is already at its guardian cap.
+
+  /recovery/guardians/{guardianId}:
+    delete:
+      operationId: removeRecoveryGuardian
+      summary: Remove a guardian
+      description: |
+        Immediate and unilateral. A removed guardian cannot vote on any open
+        request.
+      tags: [Account Recovery]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: guardianId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Guardian removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  guardian:
+                    $ref: '#/components/schemas/RecoveryGuardian'
+        '401':
+          description: Missing or invalid bearer token.
+        '404':
+          description: Not a guardian of this account.
+
+  /recovery/guardians/{guardianId}/accept:
+    post:
+      operationId: acceptRecoveryGuardianInvitation
+      summary: Accept a nomination (platform guardian)
+      description: |
+        For a guardian who has their own platform account. The service re-checks
+        that the session's user really is the nominated guardian, so a valid
+        token for one account cannot be used to accept another.
+      tags: [Account Recovery]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: guardianId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Nomination accepted; the guardian now counts toward quorum.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  guardian:
+                    $ref: '#/components/schemas/RecoveryGuardian'
+        '401':
+          description: Missing or invalid bearer token.
+        '404':
+          description: No pending nomination for this user.
+
+  /recovery/invitations/respond:
+    post:
+      operationId: respondToRecoveryGuardianInvitation
+      summary: Accept or decline a nomination (external contact)
+      description: |
+        For a guardian with no platform account, using the token from their
+        invitation link. Declining is a first-class outcome with no effect on the
+        account.
+      tags: [Account Recovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, accept]
+              properties:
+                token:
+                  type: string
+                accept:
+                  type: boolean
+      responses:
+        '200':
+          description: Invitation answered.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  guardian:
+                    $ref: '#/components/schemas/RecoveryGuardian'
+        '404':
+          description: Unknown or already-answered token.
+        '410':
+          description: The invitation token has expired.
+        '429':
+          description: Rate limited.
+
+  /recovery/initiate:
+    post:
+      operationId: initiateAccountRecovery
+      summary: Request account recovery (the locked-out door)
+      description: |
+        Deliberately UNAUTHENTICATED: the caller is by definition someone who
+        cannot authenticate.
+
+        **The response is identical in every case** — 202 with a fixed body —
+        whether or not the wallet exists, is a primary account, has enough
+        accepted guardians, or already has an open request. Any variation would
+        turn this into a wallet-existence and sub-account oracle, which is worth
+        more to an attacker than the recovery itself. A genuine fault is logged
+        but still answered with the same 202, because an error rate that differs
+        by wallet is the same leak by another name.
+
+        The owner learns the outcome from the loud alert instead: realtime socket
+        event, registered email and registered phone.
+      tags: [Account Recovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [walletAddress, reason]
+              properties:
+                walletAddress:
+                  type: string
+                  description: The account being claimed. Never proof of anything.
+                reason:
+                  type: string
+                  maxLength: 500
+                  description: Free text. Sanitised and shown to guardians.
+      responses:
+        '202':
+          description: |
+            Accepted for processing. This response is intentionally
+            uninformative.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: accepted
+                  message:
+                    type: string
+        '400':
+          description: Malformed body. Concerns the caller's input, not the wallet.
+        '429':
+          description: Rate limited.
+
+  /recovery/requests/{requestId}:
+    get:
+      operationId: getRecoveryRequest
+      summary: Read one of the caller's own recovery requests
+      description: |
+        Owner-only. The service verifies the request belongs to the caller and
+        returns 404 rather than 403 for somebody else's, so request ids are not
+        an enumeration surface.
+      tags: [Account Recovery]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: requestId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The request, with the owner's full approval list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request:
+                    $ref: '#/components/schemas/RecoveryRequest'
+        '401':
+          description: Missing or invalid bearer token.
+        '404':
+          description: Not found, or not the caller's request.
+
+  /recovery/requests/{requestId}/cancel:
+    post:
+      operationId: cancelAccountRecovery
+      summary: Cancel a recovery request
+      description: |
+        Owner-only, immediate, and unilateral: no quorum, no guardian consent,
+        no waiting period. Permitted at any point before execution wins the race,
+        including after quorum has been reached. The conditional update is the
+        whole safety argument — a cancellation racing an execution cannot
+        resurrect a dead request, and whichever write lands first is the one that
+        counts.
+      tags: [Account Recovery]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: requestId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request:
+                    $ref: '#/components/schemas/RecoveryRequest'
+        '401':
+          description: Missing or invalid bearer token.
+        '404':
+          description: Not found, or not the caller's request.
+        '409':
+          description: Already cancelled, expired, or executed.
+
+  /recovery/guardian/requests:
+    get:
+      operationId: listGuardianRecoveryRequests
+      summary: Requests this platform user must decide on
+      description: |
+        Only requests where this user is an ACCEPTED guardian. Approval lists are
+        narrowed to the caller's own decision: a guardian can see that a request
+        exists and how far along it is, but not who else was asked or what they
+        said.
+      tags: [Account Recovery]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Pending requests awaiting this guardian.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requests:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RecoveryRequest'
+                  count:
+                    type: integer
+        '401':
+          description: Missing or invalid bearer token.
+
+  /recovery/guardian/requests/{requestId}/decide:
+    post:
+      operationId: decideRecoveryAsPlatformGuardian
+      summary: Approve or decline as a platform guardian
+      description: |
+        One decision, recorded against the named guardian. `approved: false` is
+        a stored refusal, not a no-op: it keeps the decision history honest and
+        stops the guardian being re-asked. A decision is final.
+      tags: [Account Recovery]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: requestId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approved]
+              properties:
+                approved:
+                  type: boolean
+                note:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: Decision recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request:
+                    $ref: '#/components/schemas/RecoveryRequest'
+        '401':
+          description: Missing or invalid bearer token.
+        '404':
+          description: Not an accepted guardian for this request.
+        '409':
+          description: Already decided, not accepted, or the request has closed.
+
+  /recovery/guardian/decide:
+    post:
+      operationId: decideRecoveryAsExternalGuardian
+      summary: Approve or decline as an external guardian
+      description: |
+        For a guardian with no platform session, using the token in their
+        decision link. The token identifies WHICH guardian is deciding, so one
+        guardian can never decide on another's behalf, and the one-decision-per-
+        (request, guardian) row stops a replayed link producing a second vote.
+      tags: [Account Recovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requestId, token, approved]
+              properties:
+                requestId:
+                  type: string
+                  format: uuid
+                token:
+                  type: string
+                approved:
+                  type: boolean
+                note:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: Decision recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request:
+                    $ref: '#/components/schemas/RecoveryRequest'
+        '404':
+          description: Unknown token, or not a guardian for this request.
+        '409':
+          description: Already decided, or the request has closed.
+        '429':
+          description: Rate limited.
+
 
   # ── Health ────────────────────────────────────────────────────────────────────
 

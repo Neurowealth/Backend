@@ -63,6 +63,7 @@ import { startFeeOracle, stopFeeOracle } from './stellar/feeOracle'
 import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
 import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { scheduleApprovalExpiry } from './jobs/approvalExpiry'
+import { scheduleGuardianRecoverySweep } from './jobs/guardianRecoverySweep'
 import { scheduleReserveReconciliation } from './jobs/reserveReconciliation'
 import { scheduleLoanAccrual } from './jobs/loanAccrual'
 import { scheduleLoanLiquidationMonitor } from './jobs/loanLiquidationMonitor'
@@ -104,6 +105,7 @@ import keysRouter from './routes/keys'
 import sessionsRouter from './routes/sessions'
 import streamRouter from './routes/stream'
 import notificationsRouter from './routes/notifications'
+import recoveryRouter from './routes/recovery'
 import notificationDlqRouter from './routes/notification-dlq'
 import networkRouter from './routes/network'
 import netWorthRouter from './routes/net-worth'
@@ -147,6 +149,9 @@ let attributionHandle: NodeJS.Timeout | null = null
 let outboxDispatcherHandle: NodeJS.Timeout | null = null
 let portfolioRiskJobHandle: NodeJS.Timeout | null = null
 let approvalExpiryHandle: NodeJS.Timeout | null = null
+// #535 — the sweep is the ONLY thing that executes a recovery. Its interval is
+// therefore the granularity of the mandatory delay window.
+let guardianRecoverySweepHandle: NodeJS.Timeout | null = null
 let reserveReconciliationHandle: NodeJS.Timeout | null = null
 let outboundNotificationsHandle: NodeJS.Timeout | null = null
 let linkedExternalWalletSyncHandle: NodeJS.Timeout | null = null
@@ -377,6 +382,12 @@ const apiRoutes: ApiRoute[] = [
   { path: 'sessions', handlers: [sessionsRouter] },
   { path: 'stream', handlers: [streamRouter] },
   { path: 'notifications', handlers: [notificationsRouter] },
+  // #535 — guardian social recovery. Mixed surface: the owner endpoints under
+  // this mount are authenticated, but /initiate, /invitations/respond and
+  // /guardian/decide are deliberately public, so those three carry their own
+  // tighter `recoveryRateLimiter` INSIDE the router. Do not add a blanket
+  // limiter here and do not remove the public endpoints.
+  { path: 'recovery', handlers: [recoveryRouter] },
   { path: 'admin/notifications/dlq', handlers: [adminRateLimiter, notificationDlqRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
@@ -501,6 +512,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(approvalExpiryHandle)
     approvalExpiryHandle = null
     logger.info('[Shutdown] Approval expiry sweep timer cleared')
+  }
+
+  if (guardianRecoverySweepHandle) {
+    clearInterval(guardianRecoverySweepHandle)
+    guardianRecoverySweepHandle = null
+    logger.info('[Shutdown] Guardian recovery sweep timer cleared')
   }
 
   if (reserveReconciliationHandle) {
@@ -743,6 +760,7 @@ async function main(): Promise<void> {
   attributionHandle = scheduleAttribution()
   portfolioRiskJobHandle = schedulePortfolioRiskJob()
   approvalExpiryHandle = scheduleApprovalExpiry()
+  guardianRecoverySweepHandle = scheduleGuardianRecoverySweep()
   reserveReconciliationHandle = scheduleReserveReconciliation()
   outboundNotificationsHandle = scheduleOutboundNotifications()
   linkedExternalWalletSyncHandle = scheduleLinkedExternalWalletSync()

@@ -471,6 +471,16 @@ export const config = {
       max: parseInt(process.env.SENSITIVE_RATE_LIMIT_MAX || '10'),
     },
     /**
+     * Guardian recovery (#535). Tighter than the general limiter because the
+     * public recovery endpoints send real email and WhatsApp to third-party
+     * guardians, so the abuse being defended against is flooding a bystander
+     * rather than credential guessing.
+     */
+    recoveryRateLimit: {
+      windowMs: parseInt(process.env.RECOVERY_RATE_LIMIT_WINDOW_MS || '900000'),
+      max: parseInt(process.env.RECOVERY_RATE_LIMIT_MAX || '10'),
+    },
+    /**
      * Portfolio optimizer (#322) — the only genuinely CPU-bound endpoint in the
      * API. Tighter than the global limiter and applied per-endpoint rather than
      * via the apiRoutes table, which would throttle read-only portfolio traffic
@@ -742,6 +752,21 @@ export const config = {
     expirySweepIntervalMs: parseInt(
       process.env.APPROVAL_EXPIRY_SWEEP_INTERVAL_MS || '60000'
     ),
+  },
+  /**
+   * Guardian social recovery (#535). The sweep is the ONLY thing that executes a
+   * recovery, so its cadence is also the granularity of the mandatory delay:
+   * a request whose `executeAfter` has passed waits at most one interval before
+   * it takes effect. It is deliberately coarse relative to a 48h minimum delay —
+   * a minute of extra lateness is immaterial next to two days of warning, and
+   * polling harder would only add write amplification.
+   */
+  recovery: {
+    sweepIntervalMs: parseInt(
+      process.env.RECOVERY_SWEEP_INTERVAL_MS || '60000'
+    ),
+    /** Cap on requests executed per tick, so one sweep cannot run unbounded. */
+    sweepBatchSize: parseInt(process.env.RECOVERY_SWEEP_BATCH_SIZE || '50'),
   },
   /**
    * Borrow-against-collateral credit line (#532) — the platform's lending book.

@@ -54,6 +54,24 @@ export const SOCKET_ONLY_EVENT_TYPES = [
   'security.session_anomaly',
   /** #548 — admin impersonation session started. */
   'account.impersonation_started',
+  // #535 — guardian-based social recovery. Socket-only by design: a recovery is
+  // an attempt to hand over an account, so it must never be forwarded to an
+  // operator-configured webhook endpoint that the attacker does not control but
+  // the account owner might. The owner's own stream is the alert channel.
+  /** A recovery request was opened against the account. Emit BEFORE any guardian
+   *  is contacted, and again on the owner's stream, so the loud-alert
+   *  requirement in docs/ACCOUNT_RECOVERY.md holds even if every guardian is
+   *  compromised. */
+  'security.recovery_initiated',
+  /** Quorum reached; the mandatory delay is now running and the request is
+   *  cancellable until `executeAfter`. */
+  'security.recovery_quorum_reached',
+  /** The account owner (or a parent account) cancelled it. */
+  'security.recovery_cancelled',
+  /** Executed: auth reset and every session revoked. */
+  'security.recovery_completed',
+  /** #535 — this user is a nominated guardian and a decision is wanted. */
+  'security.guardian_approval_requested',
 ] as const
 
 export type SocketOnlyEventType = (typeof SOCKET_ONLY_EVENT_TYPES)[number]
@@ -97,6 +115,16 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'security.api_key_changed': 'alerts',
   'security.new_session': 'alerts',
   'security.session_revoked': 'alerts',
+  // #535 — recovery events are the one alert a user must never be able to
+  // filter out, so they ride 'alerts' rather than a quieter topic. `account`
+  // would arguably fit ("something happened to my account"), but a client that
+  // subscribes to alerts-without-account and silences the rest would miss the
+  // single notification that matters most.
+  'security.recovery_initiated': 'alerts',
+  'security.recovery_quorum_reached': 'alerts',
+  'security.recovery_cancelled': 'alerts',
+  'security.recovery_completed': 'alerts',
+  'security.guardian_approval_requested': 'alerts',
   'security.session_anomaly': 'alerts',
   'account.impersonation_started': 'account',
 }

@@ -415,6 +415,27 @@ export const webhookRateLimiter = buildRateLimiter({
 })
 
 /**
+ * Guardian recovery limiter (#535) — the PUBLIC recovery endpoints.
+ * Defaults: 10 req / 15 min (env: RECOVERY_RATE_LIMIT_MAX / RECOVERY_RATE_LIMIT_WINDOW_MS).
+ *
+ * Applied only to the unauthenticated recovery endpoints, not to the whole
+ * router. The reason is abuse rather than credential guessing: recovery tokens
+ * are 256-bit random, so they cannot be brute-forced, but `POST /recovery/initiate`
+ * is deliberately open to anyone and triggers real email to real guardians. Left
+ * unthrottled it is an email-bombing and SMS-flooding primitive aimed at a
+ * third party who never consented to be a guardian. Owner endpoints sit under the
+ * caller's own session and are already limited by `authRateLimiter`.
+ */
+export const recoveryRateLimiter = buildRateLimiter({
+  windowMs: config.security.recoveryRateLimit.windowMs,
+  max: config.security.recoveryRateLimit.max,
+  skip: isTrusted,
+  limiterType: 'recovery',
+  message:
+    'Too many recovery requests. Please wait before trying again, and contact support if you are locked out.',
+})
+
+/**
  * Sensitive-operation limiter (#473) — money movement and credential changes.
  * Defaults: 10 req / 15 min (env: SENSITIVE_RATE_LIMIT_MAX / SENSITIVE_RATE_LIMIT_WINDOW_MS).
  *
