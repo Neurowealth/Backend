@@ -92,6 +92,13 @@ export const outboundNotificationAttempts = new client.Counter({
   registers: [register],
 })
 
+export const mailWebhookRejectionsTotal = new client.Counter({
+  name: 'mail_webhook_rejections_total',
+  help: 'Mail provider webhook deliveries rejected by the gateway',
+  labelNames: ['reason'] as const,
+  registers: [register],
+})
+
 export const outboundNotificationDlqSize = new client.Gauge({
   name: 'outbound_notification_dlq_size',
   help: 'Current number of outbound notifications in the dead-letter queue',
@@ -1103,7 +1110,10 @@ export function recordQueueDepth(queueName: string, depth: number): void {
 /**
  * Record queue throughput (items per second)
  */
-export function recordQueueThroughput(queueName: string, throughput: number): void {
+export function recordQueueThroughput(
+  queueName: string,
+  throughput: number
+): void {
   queueThroughputPerSecond.set({ queue_name: queueName }, throughput)
 }
 
@@ -1130,10 +1140,7 @@ export function recordWorkerActiveCount(
 /**
  * Record idle worker count
  */
-export function recordWorkerIdleCount(
-  workerType: string,
-  count: number
-): void {
+export function recordWorkerIdleCount(workerType: string, count: number): void {
   workerIdleCount.set({ worker_type: workerType }, count)
 }
 
@@ -1158,13 +1165,19 @@ export function recordQueueProcessingError(
   queueName: string,
   errorType: string
 ): void {
-  queueProcessingErrorsTotal.inc({ queue_name: queueName, error_type: errorType })
+  queueProcessingErrorsTotal.inc({
+    queue_name: queueName,
+    error_type: errorType,
+  })
 }
 
 /**
  * Record queue blocked time
  */
-export function recordQueueBlocked(queueName: string, blockedSeconds: number): void {
+export function recordQueueBlocked(
+  queueName: string,
+  blockedSeconds: number
+): void {
   queueBlockedSeconds.set({ queue_name: queueName }, blockedSeconds)
 }
 
