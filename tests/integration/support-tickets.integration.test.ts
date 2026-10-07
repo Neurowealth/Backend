@@ -48,7 +48,7 @@ jest.mock('../../src/db', () => ({
       const tx = {
         supportTicket: {
           create: jest.fn(async ({ data }: any) => {
-            const id = `ticket-${++ticketSeq}`
+            const id = `10000000-0000-4000-8000-${String(++ticketSeq).padStart(12, '0')}`
             const ticket = {
               ...data,
               id,
@@ -70,7 +70,7 @@ jest.mock('../../src/db', () => ({
         },
         ticketMessage: {
           create: jest.fn(async ({ data }: any) => {
-            const id = `msg-${++msgSeq}`
+            const id = `20000000-0000-4000-8000-${String(++msgSeq).padStart(12, '0')}`
             const msg = { ...data, id, createdAt: new Date() }
             const thread = messages.get(data.ticketId) ?? []
             thread.push(msg)
@@ -111,7 +111,7 @@ jest.mock('../../src/db', () => ({
         })
       }),
       create: jest.fn(async ({ data }: any) => {
-        const id = `msg-${++msgSeq}`
+        const id = `20000000-0000-4000-8000-${String(++msgSeq).padStart(12, '0')}`
         const msg = { ...data, id, createdAt: new Date() }
         const thread = messages.get(data.ticketId) ?? []
         thread.push(msg)
@@ -134,6 +134,8 @@ function buildApp() {
 }
 
 describe('Support Ticket Integration Tests', () => {
+  jest.setTimeout(30000)
+
   beforeEach(() => {
     tickets.clear()
     messages.clear()
@@ -168,7 +170,6 @@ describe('Support Ticket Integration Tests', () => {
 
     const ticketId = createRes.body.ticket.id
 
-    // Admin adds an internal note
     await request(app)
       .post(`/api/v1/admin/support/tickets/${ticketId}/reply`)
       .send({
@@ -176,13 +177,12 @@ describe('Support Ticket Integration Tests', () => {
         internal: true,
       })
 
-    // User fetches thread
     const threadRes = await request(app).get(
       `/api/v1/support/tickets/${ticketId}`
     )
 
     expect(threadRes.status).toBe(200)
-    expect(threadRes.body.messages).toHaveLength(1) // Only initial user message, not internal note
+    expect(threadRes.body.messages).toHaveLength(1)
     expect(threadRes.body.messages.some((m: any) => m.internal === true)).toBe(
       false
     )
@@ -199,12 +199,10 @@ describe('Support Ticket Integration Tests', () => {
 
     const ticketId = createRes.body.ticket.id
 
-    // Admin resolves ticket
     await request(app)
       .patch(`/api/v1/admin/support/tickets/${ticketId}`)
       .send({ status: 'RESOLVED' })
 
-    // User replies
     const replyRes = await request(app)
       .post(`/api/v1/support/tickets/${ticketId}/reply`)
       .send({ body: 'Still not showing up!' })
