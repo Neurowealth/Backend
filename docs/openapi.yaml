@@ -54,6 +54,10 @@ tags:
 # ─── Reusable components ──────────────────────────────────────────────────────
 components:
   securitySchemes:
+    adminAuth:
+      type: http
+      scheme: bearer
+      description: Admin API key with the required resource scope
     bearerAuth:
       type: http
       scheme: bearer
@@ -1467,6 +1471,272 @@ components:
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 paths:
+  /support/tickets:
+    get:
+      tags:
+        - Auth
+      operationId: listSupportTickets
+      summary: List owned tickets excluding internal notes in the database query
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+    post:
+      tags:
+        - Auth
+      operationId: createSupportTicket
+      summary: Create a rate-limited support ticket
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                subject:
+                  type: string
+                  minLength: 3
+                  maxLength: 200
+                category: &ref_1
+                  type: string
+                  enum:
+                    - ACCOUNT
+                    - TRANSACTION
+                    - TAX
+                    - TECHNICAL
+                    - OTHER
+                priority: &ref_3
+                  type: string
+                  enum:
+                    - LOW
+                    - MEDIUM
+                    - HIGH
+                    - URGENT
+                body:
+                  type: string
+                  minLength: 5
+                  maxLength: 5000
+                contextRef:
+                  type: string
+              required:
+                - subject
+                - category
+                - body
+      responses:
+        '201':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+        '429':
+          description: Creation rate limit exceeded
+  /support/tickets/{id}:
+    parameters:
+      - &ref_0
+        name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags:
+        - Auth
+      operationId: getSupportTicket
+      summary: Read owned ticket and public message thread
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /support/tickets/{id}/reply:
+    parameters:
+      - *ref_0
+    post:
+      tags:
+        - Auth
+      operationId: replySupportTicket
+      summary: Append public reply; reopen a resolved ticket
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                body: &ref_4
+                  type: string
+                  minLength: 1
+                  maxLength: 5000
+              required:
+                - body
+      responses:
+        '201':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /admin/support/tickets:
+    get:
+      tags:
+        - Admin
+      operationId: adminListSupportTickets
+      summary: Filter support queue with SLA deadlines; requires support:read
+      security:
+        - adminAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+      parameters:
+        - name: status
+          in: query
+          schema: &ref_2
+            type: string
+            enum:
+              - OPEN
+              - IN_PROGRESS
+              - AWAITING_USER
+              - RESOLVED
+              - CLOSED
+        - name: category
+          in: query
+          schema: *ref_1
+        - name: assignedTo
+          in: query
+          schema:
+            type: string
+            description: Admin identifier or unassigned
+        - name: slaBreached
+          in: query
+          schema:
+            type: boolean
+  /admin/support/tickets/{id}:
+    parameters:
+      - *ref_0
+    get:
+      tags:
+        - Admin
+      operationId: adminGetSupportTicket
+      summary: Read full thread including internal notes; requires support:read
+      security:
+        - adminAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+    patch:
+      tags:
+        - Admin
+      operationId: adminUpdateSupportTicket
+      summary: Update status, priority and assignment with transactional audit; requires support:write
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: *ref_2
+                priority: *ref_3
+                assignedTo:
+                  type: string
+                  nullable: true
+              required: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+        '409':
+          description: Invalid state transition
+  /admin/support/tickets/{id}/reply:
+    parameters:
+      - *ref_0
+    post:
+      tags:
+        - Admin
+      operationId: adminReplySupportTicket
+      summary: Append public reply or internal note; requires support:write
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                body: *ref_4
+                internal:
+                  type: boolean
+                  default: false
+              required:
+                - body
+      responses:
+        '201':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
   /recurring-withdrawals:
     get:
       tags: [Transactions]

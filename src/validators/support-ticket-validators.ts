@@ -48,6 +48,13 @@ export const supportTicketIdParamSchema = z.object({
   id: z.string().uuid('Invalid ticket ID'),
 })
 
+export const supportQueueQuerySchema = z.object({
+  status: statusEnum.optional(),
+  category: categoryEnum.optional(),
+  assignedTo: z.string().min(1).max(100).optional(),
+  slaBreached: z.enum(['true', 'false']).optional(),
+})
+
 export type CreateSupportTicketInput = z.infer<typeof createSupportTicketSchema>
 export type ReplySupportTicketInput = z.infer<typeof replySupportTicketSchema>
 export type AdminReplySupportTicketInput = z.infer<

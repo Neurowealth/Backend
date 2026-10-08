@@ -2,6 +2,7 @@ const mockUserId = '11111111-1111-4111-8111-111111111111'
 
 import request from 'supertest'
 import express from 'express'
+import db from '../../src/db'
 
 jest.mock('../../src/middleware/authenticate', () => {
   const requireAuth = jest.fn((req: any, _res: any, next: any) => {
@@ -17,8 +18,15 @@ jest.mock('../../src/middleware/authenticate', () => {
 })
 
 jest.mock('../../src/middleware/adminAuth', () => ({
+  requireAdminScope: () => (_req: any, _res: any, next: any) => next(),
+  getAdminAuth: (res: any) => res.locals.adminAuth,
   requireAdminAuth: (req: any, _res: any, next: any) => {
-    req.adminKey = { id: 'admin-1', name: 'Support Admin' }
+    _res.locals.adminAuth = {
+      id: 'admin-1',
+      name: 'Support Admin',
+      role: 'ADMIN',
+      scopes: ['support:read', 'support:write'],
+    }
     next()
   },
 }))
@@ -46,6 +54,7 @@ jest.mock('../../src/db', () => ({
   default: {
     $transaction: jest.fn(async (cb: any) => {
       const tx = {
+        adminAuditLog: { create: jest.fn(async () => ({})) },
         supportTicket: {
           create: jest.fn(async ({ data }: any) => {
             const id = `10000000-0000-4000-8000-${String(++ticketSeq).padStart(12, '0')}`
@@ -141,6 +150,84 @@ describe('Support Ticket Integration Tests', () => {
     messages.clear()
     ticketSeq = 0
     msgSeq = 0
+  })
+
+  it('enforces internal visibility in both user-facing database read queries', async () => {
+    const app = buildApp()
+    const created = await request(app)
+      .post('/api/v1/support/tickets')
+      .send({
+        subject: 'Private notes',
+        category: 'OTHER',
+        body: 'Please help with this issue',
+      })
+    await request(app).get('/api/v1/support/tickets')
+    expect(db.supportTicket.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: { userId: mockUserId },
+        include: {
+          messages: expect.objectContaining({ where: { internal: false } }),
+        },
+      })
+    )
+    await request(app).get(`/api/v1/support/tickets/${created.body.ticket.id}`)
+    expect(db.ticketMessage.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: { ticketId: created.body.ticket.id, internal: false },
+      })
+    )
+  })
+
+  it('rejects reads and replies for another owner', async () => {
+    const app = buildApp()
+    const created = await request(app)
+      .post('/api/v1/support/tickets')
+      .send({
+        subject: 'Ownership test',
+        category: 'OTHER',
+        body: 'Please help with this issue',
+      })
+    tickets.get(created.body.ticket.id).userId = 'another-user'
+    expect(
+      (
+        await request(app).get(
+          `/api/v1/support/tickets/${created.body.ticket.id}`
+        )
+      ).status
+    ).toBe(403)
+    expect(
+      (
+        await request(app)
+          .post(`/api/v1/support/tickets/${created.body.ticket.id}/reply`)
+          .send({ body: 'Reply' })
+      ).status
+    ).toBe(403)
+  })
+
+  it('computes urgent SLA breaches and excludes closed tickets', async () => {
+    const app = buildApp()
+    const created = await request(app)
+      .post('/api/v1/support/tickets')
+      .send({
+        subject: 'Urgent test',
+        category: 'OTHER',
+        priority: 'URGENT',
+        body: 'Please help with this issue',
+      })
+    tickets.get(created.body.ticket.id).createdAt = new Date(
+      Date.now() - 3 * 3600000
+    )
+    const queue = await request(app).get('/api/v1/admin/support/tickets')
+    expect(queue.body.tickets[0].slaBreached).toBe(true)
+    expect(queue.body.tickets[0].slaDueAt).toBeDefined()
+    tickets.get(created.body.ticket.id).status = 'CLOSED'
+    expect(
+      (
+        await request(app)
+          .post(`/api/v1/support/tickets/${created.body.ticket.id}/reply`)
+          .send({ body: 'Reply' })
+      ).status
+    ).toBe(409)
   })
 
   it('POST /api/v1/support/tickets creates ticket + initial message', async () => {

@@ -99,6 +99,8 @@ import recurringWithdrawalRouter from './routes/recurring-withdrawals'
 import alertsRouter from './routes/alerts'
 import strategiesRouter from './routes/strategies'
 import subAccountsRouter from './routes/sub-accounts'
+import supportTicketsRouter from './routes/support-tickets'
+import adminSupportTicketsRouter from './routes/admin/support-tickets'
 import assistantRouter from './routes/assistant'
 import approvalsRouter from './routes/approvals'
 import approvalPoliciesRouter from './routes/approval-policies'
@@ -374,6 +376,8 @@ const apiRoutes: ApiRoute[] = [
   { path: 'alerts', handlers: [alertsRouter] },
   { path: 'strategies', handlers: [strategiesRouter] },
   { path: 'sub-accounts', handlers: [subAccountsRouter] },
+  { path: 'support/tickets', handlers: [supportTicketsRouter] },
+  { path: 'admin/support/tickets', handlers: [adminRateLimiter, adminSupportTicketsRouter] },
   { path: 'assistant', handlers: [assistantRouter] },
   { path: 'approvals', handlers: [approvalsRouter] },
   { path: 'approval-policies', handlers: [approvalPoliciesRouter] },

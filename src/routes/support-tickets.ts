@@ -149,6 +149,11 @@ router.post(
       return
     }
 
+    if (ticket.status === 'CLOSED') {
+      res.status(409).json({ error: 'Ticket is closed' })
+      return
+    }
+
     const result = await (db as any).$transaction(async (tx: any) => {
       const message = await tx.ticketMessage.create({
         data: {
@@ -163,9 +168,9 @@ router.post(
 
       // Auto-reopen if ticket status was RESOLVED
       let updatedTicket = ticket
-      if (ticket.status === 'RESOLVED') {
+      if (ticket.status === 'RESOLVED' || ticket.status === 'AWAITING_USER') {
         updatedTicket = await tx.supportTicket.update({
-          where: { id },
+          where: { id, status: ticket.status },
           data: {
             status: 'IN_PROGRESS',
             resolvedAt: null,
@@ -178,7 +183,7 @@ router.post(
         })
       } else {
         await tx.supportTicket.update({
-          where: { id },
+          where: { id, status: ticket.status },
           data: { updatedAt: new Date() },
         })
       }

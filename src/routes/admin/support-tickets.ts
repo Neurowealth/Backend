@@ -1,179 +1,224 @@
-import { Router, Request, Response } from 'express'
-import { requireAuth } from '../../middleware/authenticate'
-import { requireAdminAuth } from '../../middleware/adminAuth'
+import {
+  Router,
+  Request,
+  Response,
+  NextFunction,
+  RequestHandler,
+} from 'express'
+import { Prisma, TicketPriority } from '@prisma/client'
+import {
+  requireAdminAuth,
+  requireAdminScope,
+  getAdminAuth,
+} from '../../middleware/adminAuth'
 import { validate } from '../../middleware/validate'
 import db from '../../db'
-import { logger } from '../../utils/logger'
+import {
+  supportSla,
+  supportSlaHours,
+  SUPPORT_TRANSITIONS,
+} from '../../services/support-ticket.service'
 import {
   adminUpdateSupportTicketSchema,
   adminReplySupportTicketSchema,
   supportTicketIdParamSchema,
+  supportQueueQuerySchema,
 } from '../../validators/support-ticket-validators'
 
 const router = Router()
-
-// Admin guard middleware fallback if requireAdminAuth is not present
-const adminGuard = requireAdminAuth ?? requireAuth
-
-// ── GET / — Filterable support tickets queue ─────────────────────────────────
-router.get('/', adminGuard, async (req: Request, res: Response) => {
-  const { status, category, assignedTo, slaBreached } = req.query
-
-  const where: any = {}
-  if (status) where.status = status as string
-  if (category) where.category = category as string
-  if (assignedTo !== undefined) {
-    where.assignedTo =
-      assignedTo === 'unassigned' ? null : (assignedTo as string)
-  }
-  if (slaBreached !== undefined) {
-    where.slaBreached = slaBreached === 'true'
+const handle =
+  (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>
+  (req: Request, res: Response, next: NextFunction) => {
+    void fn(req, res).catch(next)
   }
 
-  const tickets = await (db as any).supportTicket.findMany({
-    where,
-    orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
-    include: {
-      user: {
-        select: {
-          id: true,
-          displayName: true,
-          email: true,
-          walletAddress: true,
+router.use(requireAdminAuth)
+router.get(
+  '/',
+  requireAdminScope('support:read'),
+  validate({ query: supportQueueQuerySchema }),
+  handle(async (req, res) => {
+    const query = supportQueueQuerySchema.parse(req.query)
+    const where: Prisma.SupportTicketWhereInput = {
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.category ? { category: query.category } : {}),
+      ...(query.assignedTo
+        ? {
+            assignedTo:
+              query.assignedTo === 'unassigned' ? null : query.assignedTo,
+          }
+        : {}),
+    }
+    const now = new Date()
+    const breached: Prisma.SupportTicketWhereInput = {
+      status: { notIn: ['RESOLVED', 'CLOSED'] },
+      OR: Object.values(TicketPriority).map((priority) => ({
+        priority,
+        createdAt: {
+          lt: new Date(now.getTime() - supportSlaHours(priority) * 3600000),
         },
+      })),
+    }
+    if (query.slaBreached === 'true') where.AND = [breached]
+    if (query.slaBreached === 'false') where.NOT = breached
+    const tickets = await db.supportTicket.findMany({
+      where,
+      orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+      include: {
+        user: { select: { id: true, displayName: true, email: true } },
+        messages: { orderBy: { createdAt: 'desc' }, take: 1 },
       },
-      messages: {
-        orderBy: { createdAt: 'desc' },
-        take: 1,
-      },
-    },
+    })
+    res.json({
+      tickets: tickets.map((ticket) => ({
+        ...ticket,
+        ...supportSla(ticket, now),
+      })),
+    })
   })
-
-  res.json({ tickets })
-})
-
-// ── PATCH /:id — Admin update ticket status / priority / assignment ─────────
-router.patch(
-  '/:id',
-  adminGuard,
-  validate({
-    params: supportTicketIdParamSchema,
-    body: adminUpdateSupportTicketSchema,
-    errorMessage: 'Validation error',
-  }),
-  async (req: Request, res: Response) => {
-    const { id } = req.params
-    const { status, priority, assignedTo } = req.body
-    const adminId = (req as any).adminKey?.id ?? req.auth?.userId ?? 'admin'
-
-    const existing = await (db as any).supportTicket.findUnique({
-      where: { id },
-    })
-    if (!existing) {
-      res.status(404).json({ error: 'Support ticket not found' })
-      return
-    }
-
-    const data: any = {}
-    if (status !== undefined) data.status = status
-    if (priority !== undefined) data.priority = priority
-    if (assignedTo !== undefined) data.assignedTo = assignedTo
-
-    if (status === 'RESOLVED' && existing.status !== 'RESOLVED') {
-      data.resolvedAt = new Date()
-    }
-
-    const updated = await (db as any).supportTicket.update({
-      where: { id },
-      data,
-    })
-
-    // Audit log status/assignment/priority changes
-    logger.info('[SupportTicketAdmin] Updated ticket', {
-      ticketId: id,
-      adminId,
-      changes: {
-        status: status ?? existing.status,
-        priority: priority ?? existing.priority,
-        assignedTo: assignedTo ?? existing.assignedTo,
-      },
-    })
-
-    // Write to admin audit log if model exists
-    if ((db as any).adminAuditLog) {
-      await (db as any).adminAuditLog
-        .create({
-          data: {
-            adminKeyId: (req as any).adminKey?.id ?? null,
-            adminName: (req as any).adminKey?.name ?? 'admin',
-            action: 'SUPPORT_TICKET_UPDATE',
-            target: id,
-            result: 'SUCCESS',
-            details: { changes: data },
-          },
-        })
-        .catch(() => {})
-    }
-
-    res.json({ ticket: updated })
-  }
 )
 
-// ── POST /:id/reply — Admin reply (public or internal note) ──────────────────
-router.post(
-  '/:id/reply',
-  adminGuard,
-  validate({
-    params: supportTicketIdParamSchema,
-    body: adminReplySupportTicketSchema,
-    errorMessage: 'Validation error',
-  }),
-  async (req: Request, res: Response) => {
-    const { id } = req.params
-    const { body, attachmentRefs, internal } = req.body
-    const adminId = (req as any).adminKey?.id ?? req.auth?.userId ?? 'admin'
-
-    const ticket = await (db as any).supportTicket.findUnique({
-      where: { id },
+router.get(
+  '/:id',
+  requireAdminScope('support:read'),
+  validate({ params: supportTicketIdParamSchema }),
+  handle(async (req, res) => {
+    const ticket = await db.supportTicket.findUnique({
+      where: { id: req.params.id },
+      include: { messages: { orderBy: { createdAt: 'asc' } } },
     })
     if (!ticket) {
       res.status(404).json({ error: 'Support ticket not found' })
       return
     }
+    res.json({ ticket: { ...ticket, ...supportSla(ticket) } })
+  })
+)
 
-    const isInternal = Boolean(internal)
-
-    const message = await (db as any).ticketMessage.create({
-      data: {
-        ticketId: id,
-        authorUserId: adminId,
-        authorRole: 'ADMIN',
-        body,
-        attachmentRefs: attachmentRefs ?? [],
-        internal: isInternal,
-      },
+router.patch(
+  '/:id',
+  requireAdminScope('support:write'),
+  validate({
+    params: supportTicketIdParamSchema,
+    body: adminUpdateSupportTicketSchema,
+  }),
+  handle(async (req, res) => {
+    const admin = getAdminAuth(res)!
+    const existing = await db.supportTicket.findUnique({
+      where: { id: req.params.id },
     })
-
-    // If admin replies publicly, update ticket status to AWAITING_USER if currently OPEN or IN_PROGRESS
-    let updatedTicket = ticket
-    if (
-      !isInternal &&
-      (ticket.status === 'OPEN' || ticket.status === 'IN_PROGRESS')
-    ) {
-      updatedTicket = await (db as any).supportTicket.update({
-        where: { id },
-        data: { status: 'AWAITING_USER' },
-      })
+    if (!existing) {
+      res.status(404).json({ error: 'Support ticket not found' })
+      return
     }
-
-    logger.info('[SupportTicketAdmin] Admin replied to ticket', {
-      ticketId: id,
-      adminId,
-      internal: isInternal,
+    const { status, priority, assignedTo } =
+      adminUpdateSupportTicketSchema.parse(req.body)
+    if (
+      status &&
+      status !== existing.status &&
+      !SUPPORT_TRANSITIONS[existing.status].includes(status)
+    ) {
+      res
+        .status(409)
+        .json({
+          error: `Invalid transition from ${existing.status} to ${status}`,
+        })
+      return
+    }
+    const data: Prisma.SupportTicketUpdateInput = {
+      ...(status !== undefined
+        ? {
+            status,
+            resolvedAt:
+              status === 'RESOLVED'
+                ? new Date()
+                : status === 'CLOSED'
+                  ? existing.resolvedAt
+                  : null,
+          }
+        : {}),
+      ...(priority !== undefined ? { priority } : {}),
+      ...(assignedTo !== undefined ? { assignedTo } : {}),
+    }
+    const ticket = await db.$transaction(async (tx) => {
+      const updated = await tx.supportTicket.update({
+        where: { id: existing.id, status: existing.status },
+        data,
+      })
+      await tx.adminAuditLog.create({
+        data: {
+          adminKeyId: admin.id,
+          adminName: admin.name,
+          adminRole: admin.role,
+          action: 'SUPPORT_TICKET_UPDATE',
+          target: existing.id,
+          result: 'SUCCESS',
+          details: {
+            before: {
+              status: existing.status,
+              priority: existing.priority,
+              assignedTo: existing.assignedTo,
+            },
+            after: {
+              status: updated.status,
+              priority: updated.priority,
+              assignedTo: updated.assignedTo,
+            },
+          },
+        },
+      })
+      return updated
     })
+    res.json({ ticket })
+  })
+)
 
-    res.status(201).json({ message, ticket: updatedTicket })
-  }
+router.post(
+  '/:id/reply',
+  requireAdminScope('support:write'),
+  validate({
+    params: supportTicketIdParamSchema,
+    body: adminReplySupportTicketSchema,
+  }),
+  handle(async (req, res) => {
+    const admin = getAdminAuth(res)!
+    const ticket = await db.supportTicket.findUnique({
+      where: { id: req.params.id },
+    })
+    if (!ticket) {
+      res.status(404).json({ error: 'Support ticket not found' })
+      return
+    }
+    if (ticket.status === 'CLOSED') {
+      res.status(409).json({ error: 'Ticket is closed' })
+      return
+    }
+    const { body, attachmentRefs, internal } =
+      adminReplySupportTicketSchema.parse(req.body)
+    const result = await db.$transaction(async (tx) => {
+      const message = await tx.ticketMessage.create({
+        data: {
+          ticketId: ticket.id,
+          authorUserId: admin.id,
+          authorRole: 'ADMIN',
+          body,
+          attachmentRefs: attachmentRefs ?? [],
+          internal,
+        },
+      })
+      const updated = await tx.supportTicket.update({
+        where: { id: ticket.id, status: ticket.status },
+        data: {
+          updatedAt: new Date(),
+          ...(!internal && ['OPEN', 'IN_PROGRESS'].includes(ticket.status)
+            ? { status: 'AWAITING_USER' }
+            : {}),
+        },
+      })
+      return { message, ticket: updated }
+    })
+    res.status(201).json(result)
+  })
 )
 
 export default router
