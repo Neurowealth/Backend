@@ -1471,6 +1471,178 @@ components:
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 paths:
+  /auth/webauthn/register-options:
+    post:
+      tags:
+        - Auth
+      operationId: webAuthnRegisterOptions
+      summary: Generate registration options from an active wallet-established session
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceLabel:
+                  type: string
+                  maxLength: 100
+              required: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /auth/webauthn/register-verify:
+    post:
+      tags:
+        - Auth
+      operationId: webAuthnRegisterVerify
+      summary: Verify attestation, RP, origin, session-bound challenge and user verification
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                challengeId: &ref_1
+                  type: string
+                  pattern: ^[A-Za-z0-9_-]+$
+                response: &ref_2
+                  type: object
+                  additionalProperties: true
+                  description: The complete navigator.credentials response serialized as WebAuthn JSON
+                deviceLabel:
+                  type: string
+                  maxLength: 100
+              required:
+                - challengeId
+                - response
+      responses:
+        '201':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /auth/webauthn/login-options:
+    post:
+      tags:
+        - Auth
+      operationId: webAuthnLoginOptions
+      summary: Generate account-specific or discoverable passkey login options
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId: &ref_0
+                  type: string
+                  format: uuid
+              required: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /auth/webauthn/login-verify:
+    post:
+      tags:
+        - Auth
+      operationId: webAuthnLoginVerify
+      summary: Verify single-use assertion and counter; issue a normal session or enrolled TOTP challenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId: *ref_0
+                challengeId: *ref_1
+                response: *ref_2
+              required:
+                - challengeId
+                - response
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /webauthn/credentials:
+    get:
+      tags:
+        - Auth
+      operationId: webAuthnListCredentials
+      summary: List owner-scoped passkey metadata with an active session
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /webauthn/credentials/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: *ref_0
+    delete:
+      tags:
+        - Auth
+      operationId: webAuthnDeleteCredential
+      summary: Delete an owned passkey with an active session; wallet login remains available
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
   /support/tickets:
     get:
       tags:

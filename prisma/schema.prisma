@@ -2604,3 +2604,16 @@ model WebAuthnCredential {
   @@map("webauthn_credentials")
 }
 
+// One-time, session-bound ceremonies shared across application instances.
+model WebAuthnChallenge {
+  id        String   @id @default(uuid())
+  challenge String   @unique
+  purpose   String
+  userId    String?
+  sessionId String?
+  expiresAt DateTime
+
+  @@index([expiresAt])
+  @@map("webauthn_challenges")
+}
+

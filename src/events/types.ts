@@ -36,6 +36,8 @@ export function isUserEventTopic(value: unknown): value is UserEventTopic {
  * change what an operator's configured webhook receives.
  */
 export const SOCKET_ONLY_EVENT_TYPES = [
+  'security.passkey_changed',
+  'security.passkey_anomaly',
   'recurring_withdrawal.executed',
   'recurring_withdrawal.held',
   'recurring_withdrawal.skipped',
@@ -71,6 +73,8 @@ export type UserEventType = WebhookEvent | SocketOnlyEventType
  * emit site by hand.
  */
 export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
+  'security.passkey_changed': 'alerts',
+  'security.passkey_anomaly': 'alerts',
   'recurring_withdrawal.executed': 'transactions',
   'recurring_withdrawal.held': 'alerts',
   'recurring_withdrawal.skipped': 'alerts',

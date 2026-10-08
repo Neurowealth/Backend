@@ -106,6 +106,7 @@ import approvalsRouter from './routes/approvals'
 import approvalPoliciesRouter from './routes/approval-policies'
 import keysRouter from './routes/keys'
 import sessionsRouter from './routes/sessions'
+import webAuthnRouter from './routes/webauthn'
 import streamRouter from './routes/stream'
 import notificationsRouter from './routes/notifications'
 import notificationDlqRouter from './routes/notification-dlq'
@@ -350,7 +351,9 @@ const apiRoutes: ApiRoute[] = [
   { path: 'net-worth', handlers: [netWorthRouter] },
   { path: 'agent/decisions', handlers: [agentDecisionsRouter] },
   { path: 'agent', handlers: [internalRateLimiter, agentRouter] },
+  { path: 'auth/webauthn', handlers: [authRateLimiter, webAuthnRouter] },
   { path: 'auth', handlers: [authRateLimiter, authRouter] },
+  { path: 'webauthn', handlers: [authRateLimiter, webAuthnRouter] },
   { path: 'whatsapp', handlers: [webhookRateLimiter, whatsappRouter] },
   { path: 'telegram', handlers: [webhookRateLimiter, telegramRouter] },
   { path: 'portfolio', handlers: [portfolioRouter] },
