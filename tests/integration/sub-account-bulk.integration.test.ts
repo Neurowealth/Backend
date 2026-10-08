@@ -5,6 +5,8 @@ const mockOtherChildUserId = '44444444-4444-4444-8444-444444444444'
 
 import request from 'supertest'
 import express from 'express'
+import db from '../../src/db'
+import { logger } from '../../src/utils/logger'
 
 jest.mock('../../src/middleware/authenticate', () => {
   const requireAuth = jest.fn((req: any, _res: any, next: any) => {
@@ -35,6 +37,7 @@ jest.mock('../../src/db', () => ({
   __esModule: true,
   default: {
     $transaction: jest.fn(async (cb: any) => {
+      const snapshot = structuredClone(subAccounts)
       const tx = {
         user: {
           findUnique: jest.fn(async ({ where }: any) => {
@@ -74,7 +77,13 @@ jest.mock('../../src/db', () => ({
           }),
         },
       }
-      return cb(tx)
+      try {
+        return await cb(tx)
+      } catch (error) {
+        subAccounts.clear()
+        for (const [key, value] of snapshot) subAccounts.set(key, value)
+        throw error
+      }
     }),
     user: {
       findUnique: jest.fn(async ({ where }: any) => {
@@ -90,7 +99,7 @@ jest.mock('../../src/db', () => ({
     },
     subAccount: {
       findMany: jest.fn(async ({ where }: any) => {
-        const result = []
+        const result: any[] = []
         for (const s of subAccounts.values()) {
           if (s.parentUserId === where.parentUserId) {
             if (!result.some((r) => r.id === s.id)) result.push(s)
@@ -139,8 +148,130 @@ function buildApp() {
 
 describe('Sub-Account Bulk Operations & Summary Integration Tests', () => {
   beforeEach(() => {
+    jest.clearAllMocks()
     subAccounts.clear()
     subSeq = 0
+  })
+
+  it('validates malformed rows independently and preserves deterministic order', async () => {
+    const app = buildApp()
+    const response = await request(app)
+      .post('/api/v1/sub-accounts/bulk')
+      .send({
+        operations: [
+          {
+            action: 'create',
+            childUserId: mockChildUserId1,
+            payload: { permissions: ['VIEW'] },
+          },
+          {
+            action: 'setPermission',
+            childUserId: mockChildUserId1,
+            payload: { permissions: [] },
+          },
+          {
+            action: 'setPermission',
+            childUserId: mockChildUserId1,
+            payload: { permissions: ['DEPOSIT'] },
+          },
+          {
+            action: 'setLimit',
+            childUserId: mockChildUserId1,
+            payload: { dailyLimit: 123 },
+          },
+        ],
+      })
+    expect(response.status).toBe(200)
+    expect(response.body.results.map((r: any) => r.success)).toEqual([
+      true,
+      false,
+      true,
+      true,
+    ])
+    const stored = subAccounts.get(`${mockParentUserId}:${mockChildUserId1}`)
+    expect(stored.permissions).toEqual(['DEPOSIT'])
+    expect(stored.dailyLimit).toBe(123)
+    expect(logger.info).toHaveBeenCalledTimes(3)
+  })
+
+  it('rolls back all atomic mutations and identifies the failing operation', async () => {
+    const response = await request(buildApp())
+      .post('/api/v1/sub-accounts/bulk')
+      .send({
+        atomic: true,
+        operations: [
+          {
+            action: 'create',
+            childUserId: mockChildUserId1,
+            payload: { permissions: ['VIEW'] },
+          },
+          {
+            action: 'setPermission',
+            childUserId: mockChildUserId1,
+            payload: { permissions: [] },
+          },
+        ],
+      })
+    expect(response.status).toBe(400)
+    expect(response.body.rolledBack).toBe(true)
+    expect(response.body.failedIndex).toBe(1)
+    expect(response.body.results[0].rolledBack).toBe(true)
+    expect(subAccounts.size).toBe(0)
+    expect(logger.info).not.toHaveBeenCalled()
+  })
+
+  it('uses the same forbidden response for foreign children as single calls', async () => {
+    const foreignId = '55555555-5555-4555-8555-555555555555'
+    subAccounts.set(foreignId, {
+      id: foreignId,
+      parentUserId: 'another-parent',
+      childUserId: mockOtherChildUserId,
+      permissions: ['VIEW'],
+      status: 'ACTIVE',
+    })
+    const response = await request(buildApp())
+      .post('/api/v1/sub-accounts/bulk')
+      .send({
+        operations: [
+          {
+            action: 'setLimit',
+            subAccountId: foreignId,
+            payload: { dailyLimit: 1 },
+          },
+        ],
+      })
+    expect(response.body.results[0]).toMatchObject({
+      success: false,
+      status: 403,
+      error: 'Forbidden',
+    })
+    expect(subAccounts.get(foreignId).dailyLimit).toBeUndefined()
+  })
+
+  it('rejects duplicate active creations rather than silently changing permissions', async () => {
+    const response = await request(buildApp())
+      .post('/api/v1/sub-accounts/bulk')
+      .send({
+        operations: [
+          {
+            action: 'create',
+            childUserId: mockChildUserId1,
+            payload: { permissions: ['VIEW'] },
+          },
+          {
+            action: 'create',
+            childUserId: mockChildUserId1,
+            payload: { permissions: ['WITHDRAW'] },
+          },
+        ],
+      })
+    expect(response.body.results[1]).toMatchObject({
+      success: false,
+      status: 409,
+    })
+    expect(
+      subAccounts.get(`${mockParentUserId}:${mockChildUserId1}`).permissions
+    ).toEqual(['VIEW'])
   })
 
   it('POST /api/v1/sub-accounts/bulk processes non-atomic batch with partial failures', async () => {
@@ -185,6 +316,8 @@ describe('Sub-Account Bulk Operations & Summary Integration Tests', () => {
 
     expect(res.status).toBe(400)
     expect(res.body.error).toContain('Batch size exceeds maximum limit')
+    expect(db.subAccount.create).not.toHaveBeenCalled()
+    expect(db.$transaction).not.toHaveBeenCalled()
   })
 
   it('GET /api/v1/sub-accounts/summary returns aggregate statistics', async () => {

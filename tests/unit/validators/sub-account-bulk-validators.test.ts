@@ -48,4 +48,30 @@ describe('sub-account-bulk-validators', () => {
     const res = bulkSubAccountOpSchema.safeParse(validOp)
     expect(res.success).toBe(true)
   })
+
+  it('rejects empty permissions and missing action-specific data', () => {
+    expect(
+      bulkSubAccountOpSchema.safeParse({
+        action: 'create',
+        childUserId: '11111111-1111-4111-8111-111111111111',
+        payload: { permissions: [] },
+      }).success
+    ).toBe(false)
+    expect(
+      bulkSubAccountOpSchema.safeParse({
+        action: 'setLimit',
+        childUserId: '11111111-1111-4111-8111-111111111111',
+        payload: {},
+      }).success
+    ).toBe(false)
+  })
+
+  it('keeps malformed rows for independent per-operation validation', () => {
+    expect(
+      bulkSubAccountsSchema.safeParse({
+        operations: [{ action: 'unsupported' }, null],
+      }).success
+    ).toBe(true)
+    expect(bulkSubAccountOpSchema.safeParse(null).success).toBe(false)
+  })
 })
