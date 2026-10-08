@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, RequestHandler } from 'express'
 import { requireAuth } from '../middleware/authenticate'
 import { validate } from '../middleware/validate'
 import { sensitiveRateLimiter } from '../middleware/rateLimiter'
@@ -11,6 +11,19 @@ import {
 } from '../validators/support-ticket-validators'
 
 const router = Router()
+const handle =
+  (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>
+  (req, res, next) => {
+    void fn(req, res).catch((error) => {
+      if (error && error.code === 'P2025') {
+        res
+          .status(409)
+          .json({ error: 'Resource changed during the request; retry' })
+        return
+      }
+      next(error)
+    })
+  }
 
 // ── POST / — Create a new support ticket ─────────────────────────────────────
 router.post(
@@ -21,7 +34,7 @@ router.post(
     body: createSupportTicketSchema,
     errorMessage: 'Validation error',
   }),
-  async (req: Request, res: Response) => {
+  handle(async (req: Request, res: Response) => {
     const { subject, category, body, priority, contextRef, attachmentRefs } =
       req.body
     const userId = req.auth!.userId
@@ -60,27 +73,31 @@ router.post(
     })
 
     res.status(201).json(result)
-  }
+  })
 )
 
 // ── GET / — List user's support tickets ──────────────────────────────────────
-router.get('/', requireAuth, async (req: Request, res: Response) => {
-  const userId = req.auth!.userId
+router.get(
+  '/',
+  requireAuth,
+  handle(async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
 
-  const tickets = await (db as any).supportTicket.findMany({
-    where: { userId },
-    orderBy: { createdAt: 'desc' },
-    include: {
-      messages: {
-        where: { internal: false },
-        orderBy: { createdAt: 'asc' },
-        take: 1, // first message snippet
+    const tickets = await (db as any).supportTicket.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        messages: {
+          where: { internal: false },
+          orderBy: { createdAt: 'asc' },
+          take: 1, // first message snippet
+        },
       },
-    },
-  })
+    })
 
-  res.json({ tickets })
-})
+    res.json({ tickets })
+  })
+)
 
 // ── GET /:id — View single support ticket thread ─────────────────────────────
 router.get(
@@ -90,7 +107,7 @@ router.get(
     params: supportTicketIdParamSchema,
     errorMessage: 'Validation error',
   }),
-  async (req: Request, res: Response) => {
+  handle(async (req: Request, res: Response) => {
     const { id } = req.params
     const userId = req.auth!.userId
 
@@ -118,7 +135,7 @@ router.get(
     })
 
     res.json({ ticket, messages })
-  }
+  })
 )
 
 // ── POST /:id/reply — User reply to ticket ───────────────────────────────────
@@ -130,7 +147,7 @@ router.post(
     body: replySupportTicketSchema,
     errorMessage: 'Validation error',
   }),
-  async (req: Request, res: Response) => {
+  handle(async (req: Request, res: Response) => {
     const { id } = req.params
     const { body, attachmentRefs } = req.body
     const userId = req.auth!.userId
@@ -192,7 +209,7 @@ router.post(
     })
 
     res.status(201).json(result)
-  }
+  })
 )
 
 export default router

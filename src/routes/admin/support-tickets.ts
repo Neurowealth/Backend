@@ -118,11 +118,9 @@ router.patch(
       status !== existing.status &&
       !SUPPORT_TRANSITIONS[existing.status].includes(status)
     ) {
-      res
-        .status(409)
-        .json({
-          error: `Invalid transition from ${existing.status} to ${status}`,
-        })
+      res.status(409).json({
+        error: `Invalid transition from ${existing.status} to ${status}`,
+      })
       return
     }
     const data: Prisma.SupportTicketUpdateInput = {
@@ -215,6 +213,19 @@ router.post(
             : {}),
         },
       })
+      if (updated.status !== ticket.status) {
+        await tx.adminAuditLog.create({
+          data: {
+            adminKeyId: admin.id,
+            adminName: admin.name,
+            adminRole: admin.role,
+            action: 'SUPPORT_TICKET_STATUS',
+            target: ticket.id,
+            result: 'SUCCESS',
+            details: { before: ticket.status, after: updated.status },
+          },
+        })
+      }
       return { message, ticket: updated }
     })
     res.status(201).json(result)
