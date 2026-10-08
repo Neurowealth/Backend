@@ -1467,6 +1467,98 @@ components:
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 paths:
+  /recurring-withdrawals:
+    get:
+      tags: [Transactions]
+      operationId: listRecurringWithdrawals
+      summary: List the current user's recurring withdrawal plans
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Owner-scoped plans }
+        '401': { description: Active session required }
+    post:
+      tags: [Transactions]
+      operationId: createRecurringWithdrawal
+      summary: Schedule a confirmed recurring on-chain withdrawal
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, destinationAddress, assetSymbol, cadence, confirmed]
+              properties:
+                userId: { type: string, format: uuid }
+                destinationAddress: { type: string }
+                assetSymbol: { type: string }
+                amountMode: { type: string, enum: [FIXED, YIELD_ONLY, PERCENT_OF_BALANCE], default: FIXED }
+                amount: { type: number, minimum: 0, exclusiveMinimum: true }
+                percentage: { type: number, minimum: 0.01, maximum: 100 }
+                minAmount: { type: number, minimum: 0, exclusiveMinimum: true }
+                cadence: { type: string, enum: [WEEKLY, BIWEEKLY, MONTHLY] }
+                confirmed: { type: boolean, enum: [true] }
+      responses:
+        '201': { description: Plan created }
+        '400': { description: Invalid or unconfirmed schedule }
+        '401': { description: Active owner session required }
+  /recurring-withdrawals/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Transactions]
+      operationId: getRecurringWithdrawal
+      summary: Read an owner-scoped withdrawal plan
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Plan details }
+        '403': { description: Forbidden }
+        '404': { description: Plan not found }
+    patch:
+      tags: [Transactions]
+      operationId: updateRecurringWithdrawal
+      summary: Update or pause a plan; destination changes pause for review
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                destinationAddress: { type: string }
+                amountMode: { type: string, enum: [FIXED, YIELD_ONLY, PERCENT_OF_BALANCE] }
+                amount: { type: number, minimum: 0, exclusiveMinimum: true }
+                percentage: { type: number, minimum: 0.01, maximum: 100 }
+                cadence: { type: string, enum: [WEEKLY, BIWEEKLY, MONTHLY] }
+                minAmount: { type: number, minimum: 0, exclusiveMinimum: true }
+                status: { type: string, enum: [ACTIVE, PAUSED, CANCELLED] }
+      responses:
+        '200': { description: Updated plan }
+        '400': { description: Invalid update }
+        '403': { description: Forbidden }
+        '404': { description: Plan not found }
+    delete:
+      tags: [Transactions]
+      operationId: cancelRecurringWithdrawal
+      summary: Cancel a recurring withdrawal plan
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Plan cancelled }
+        '403': { description: Forbidden }
+        '404': { description: Plan not found }
+  /recurring-withdrawals/{id}/preview:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [Transactions]
+      operationId: previewRecurringWithdrawal
+      summary: Preview amount, minimum, destination risk and goal conflicts
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Projected next occurrence without sending funds }
+        '403': { description: Forbidden }
+        '404': { description: Plan not found }
   # ── TOTP two-factor authentication (#2FA) ─────────────────────────────────────
 
   /2fa/enroll:

@@ -40,7 +40,8 @@ jest.mock('../../src/db', () => ({
   default: {
     recurringWithdrawalPlan: {
       create: jest.fn(async ({ data }: any) => {
-        const id = `plan-${++planSeq}`
+        const id =
+          mockUserId.slice(0, -12) + String(++planSeq).padStart(12, '0')
         const plan = {
           ...data,
           id,
@@ -109,17 +110,15 @@ describe('Recurring Withdrawals Integration Tests', () => {
   it('POST /api/v1/recurring-withdrawals creates a new plan when confirmed', async () => {
     const app = buildApp()
 
-    const res = await request(app)
-      .post('/api/v1/recurring-withdrawals')
-      .send({
-        userId: mockUserId,
-        destinationAddress: 'GDESTINATION1234567890',
-        assetSymbol: 'USDC',
-        amountMode: 'FIXED',
-        amount: 100,
-        cadence: 'MONTHLY',
-        confirmed: true,
-      })
+    const res = await request(app).post('/api/v1/recurring-withdrawals').send({
+      userId: mockUserId,
+      destinationAddress: 'GDESTINATION1234567890',
+      assetSymbol: 'USDC',
+      amountMode: 'FIXED',
+      amount: 100,
+      cadence: 'MONTHLY',
+      confirmed: true,
+    })
 
     expect(res.status).toBe(201)
     expect(res.body.plan).toBeDefined()
@@ -130,16 +129,14 @@ describe('Recurring Withdrawals Integration Tests', () => {
   it('POST /api/v1/recurring-withdrawals fails when confirmed is false or omitted', async () => {
     const app = buildApp()
 
-    const res = await request(app)
-      .post('/api/v1/recurring-withdrawals')
-      .send({
-        userId: mockUserId,
-        destinationAddress: 'GDESTINATION1234567890',
-        assetSymbol: 'USDC',
-        amountMode: 'FIXED',
-        amount: 100,
-        cadence: 'MONTHLY',
-      })
+    const res = await request(app).post('/api/v1/recurring-withdrawals').send({
+      userId: mockUserId,
+      destinationAddress: 'GDESTINATION1234567890',
+      assetSymbol: 'USDC',
+      amountMode: 'FIXED',
+      amount: 100,
+      cadence: 'MONTHLY',
+    })
 
     expect(res.status).toBe(400)
   })
@@ -147,17 +144,15 @@ describe('Recurring Withdrawals Integration Tests', () => {
   it('GET /api/v1/recurring-withdrawals lists user plans', async () => {
     const app = buildApp()
 
-    await request(app)
-      .post('/api/v1/recurring-withdrawals')
-      .send({
-        userId: mockUserId,
-        destinationAddress: 'GDESTINATION1234567890',
-        assetSymbol: 'USDC',
-        amountMode: 'FIXED',
-        amount: 50,
-        cadence: 'WEEKLY',
-        confirmed: true,
-      })
+    await request(app).post('/api/v1/recurring-withdrawals').send({
+      userId: mockUserId,
+      destinationAddress: 'GDESTINATION1234567890',
+      assetSymbol: 'USDC',
+      amountMode: 'FIXED',
+      amount: 50,
+      cadence: 'WEEKLY',
+      confirmed: true,
+    })
 
     const res = await request(app).get('/api/v1/recurring-withdrawals')
 

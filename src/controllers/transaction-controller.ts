@@ -13,6 +13,7 @@ import { OutboxOpKind } from '../outbox/types'
 import { guardOperation } from '../approvals/service'
 import { getFeeSnapshot } from '../stellar/feeOracle'
 import { invalidatePortfolioCache } from '../utils/user-cache-invalidation'
+import { assessWithdrawal } from '../services/withdrawal-controls.service'
 
 /**
  * Persist the Transaction row (PENDING, no hash yet) and its outbox intent in
@@ -304,6 +305,22 @@ export async function executeWithdraw(
   })
   if (!user) {
     throw new Error('User not found')
+  }
+
+  const assessment = await assessWithdrawal(
+    userId,
+    walletAddress,
+    assetSymbol,
+    amount
+  )
+  if (assessment.held) {
+    await publishUserEvent(userId, 'alerts', 'recurring_withdrawal.held', {
+      reason: assessment.reason,
+      amount,
+      assetSymbol,
+      destinationAddress: walletAddress,
+    })
+    throw new Error(`Withdrawal held for review: ${assessment.reason}`)
   }
 
   if (!skipApprovalGuard) {

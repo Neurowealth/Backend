@@ -43,6 +43,9 @@ describe('recurringWithdrawals job helpers', () => {
 
   describe('resolveWithdrawalAmount', () => {
     it('returns FIXED amount directly', async () => {
+      ;(db.position.findMany as jest.Mock).mockResolvedValue([
+        { currentValue: 200 },
+      ])
       const plan: any = {
         userId: 'user-1',
         assetSymbol: 'USDC',
@@ -52,6 +55,19 @@ describe('recurringWithdrawals job helpers', () => {
 
       const res = await resolveWithdrawalAmount(plan)
       expect(res.amount).toBe(150)
+    })
+
+    it('skips a fixed amount when funds are insufficient', async () => {
+      ;(db.position.findMany as jest.Mock).mockResolvedValue([
+        { currentValue: 10 },
+      ])
+      const result = await resolveWithdrawalAmount({
+        userId: 'user-1',
+        assetSymbol: 'USDC',
+        amountMode: 'FIXED',
+        amount: 50,
+      } as any)
+      expect(result).toEqual({ amount: 0, reason: 'insufficient_balance' })
     })
 
     it('returns yield amount for YIELD_ONLY mode', async () => {

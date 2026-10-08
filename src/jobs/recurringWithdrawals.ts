@@ -12,6 +12,7 @@ import { executeWithdraw } from '../controllers/transaction-controller'
 import { publishUserEvent } from '../events/publisher'
 import { EVENT_TYPE_TOPIC } from '../events/types'
 import { addCadence } from '../utils/cadence'
+import { assessWithdrawal } from '../services/withdrawal-controls.service'
 
 export { addCadence } from '../utils/cadence'
 
@@ -70,9 +71,8 @@ async function claimDuePlan(
       id: planId,
       status: 'ACTIVE',
       nextRunAt: plan.nextRunAt,
-      ...(staleExecuting
-        ? { lastRunStatus: 'executing' }
-        : { NOT: { lastRunStatus: 'executing' } }),
+      lastRunAt: plan.lastRunAt,
+      lastRunStatus: plan.lastRunStatus,
     },
     data: {
       lastRunAt: now,
@@ -84,17 +84,14 @@ async function claimDuePlan(
     return null
   }
 
-  return (db as any).recurringWithdrawalPlan.findUnique({ where: { id: planId } })
+  return (db as any).recurringWithdrawalPlan.findUnique({
+    where: { id: planId },
+  })
 }
 
 export async function resolveWithdrawalAmount(
   plan: RecurringWithdrawalPlan
 ): Promise<{ amount: number; reason?: string }> {
-  if (plan.amountMode === 'FIXED') {
-    const amt = plan.amount ? Number(plan.amount) : 0
-    return { amount: amt }
-  }
-
   const positions = await db.position.findMany({
     where: {
       userId: plan.userId,
@@ -112,11 +109,18 @@ export async function resolveWithdrawalAmount(
     0
   )
 
+  if (plan.amountMode === 'FIXED') {
+    const requested = plan.amount ? Number(plan.amount) : 0
+    return totalValue >= requested
+      ? { amount: requested }
+      : { amount: 0, reason: 'insufficient_balance' }
+  }
+
   if (plan.amountMode === 'YIELD_ONLY') {
     if (totalYield <= 0) {
       return { amount: 0, reason: 'insufficient_yield' }
     }
-    return { amount: totalYield }
+    return { amount: Math.min(totalYield, totalValue) }
   }
 
   if (plan.amountMode === 'PERCENT_OF_BALANCE') {
@@ -138,6 +142,8 @@ export async function checkDestinationRisk(
   const priorTx = await db.transaction.findFirst({
     where: {
       userId,
+      type: 'WITHDRAWAL',
+      status: 'CONFIRMED',
       memo: { contains: destinationAddress },
     },
   })
@@ -244,8 +250,8 @@ async function executePlan(plan: RecurringWithdrawalPlan): Promise<void> {
 
     publishUserEvent(
       plan.userId,
-      EVENT_TYPE_TOPIC['recurring_deposit.failed'],
-      'recurring_deposit.failed',
+      EVENT_TYPE_TOPIC['recurring_withdrawal.skipped'],
+      'recurring_withdrawal.skipped',
       {
         planId: plan.id,
         userId: plan.userId,
@@ -266,6 +272,7 @@ async function executePlan(plan: RecurringWithdrawalPlan): Promise<void> {
       where: { id: plan.id },
       data: {
         lastRunStatus: `held_risk:${riskCheck.reason}`,
+        status: 'PAUSED',
         nextRunAt,
       },
     })
@@ -278,8 +285,8 @@ async function executePlan(plan: RecurringWithdrawalPlan): Promise<void> {
 
     publishUserEvent(
       plan.userId,
-      EVENT_TYPE_TOPIC['recurring_deposit.failed'],
-      'recurring_deposit.failed',
+      EVENT_TYPE_TOPIC['recurring_withdrawal.held'],
+      'recurring_withdrawal.held',
       {
         planId: plan.id,
         userId: plan.userId,
@@ -304,22 +311,48 @@ async function executePlan(plan: RecurringWithdrawalPlan): Promise<void> {
       },
     })
 
-    logger.warn('[RecurringWithdrawal] Plan held due to goal guardrail conflict', {
-      planId: plan.id,
-      userId: plan.userId,
-      reason: goalCheck.reason,
-    })
+    logger.warn(
+      '[RecurringWithdrawal] Plan held due to goal guardrail conflict',
+      {
+        planId: plan.id,
+        userId: plan.userId,
+        reason: goalCheck.reason,
+      }
+    )
 
     publishUserEvent(
       plan.userId,
-      EVENT_TYPE_TOPIC['recurring_deposit.failed'],
-      'recurring_deposit.failed',
+      EVENT_TYPE_TOPIC['recurring_withdrawal.held'],
+      'recurring_withdrawal.held',
       {
         planId: plan.id,
         userId: plan.userId,
         reason: goalCheck.reason,
       }
     ).catch(() => {})
+    return
+  }
+
+  const assessment = await assessWithdrawal(
+    plan.userId,
+    plan.destinationAddress,
+    plan.assetSymbol,
+    amount
+  )
+  if (assessment.held) {
+    await db.recurringWithdrawalPlan.update({
+      where: { id: plan.id },
+      data: {
+        nextRunAt,
+        lastRunStatus: `held:${assessment.reason}`,
+        ...(assessment.reason !== 'goal_guardrail' ? { status: 'PAUSED' } : {}),
+      },
+    })
+    await publishUserEvent(plan.userId, 'alerts', 'recurring_withdrawal.held', {
+      planId: plan.id,
+      reason: assessment.reason,
+      riskScore: assessment.score?.totalScore,
+    })
     return
   }
 
@@ -350,8 +383,8 @@ async function executePlan(plan: RecurringWithdrawalPlan): Promise<void> {
 
       publishUserEvent(
         plan.userId,
-        EVENT_TYPE_TOPIC['recurring_deposit.executed'],
-        'recurring_deposit.executed',
+        EVENT_TYPE_TOPIC['recurring_withdrawal.executed'],
+        'recurring_withdrawal.executed',
         {
           planId: plan.id,
           userId: plan.userId,
@@ -364,7 +397,7 @@ async function executePlan(plan: RecurringWithdrawalPlan): Promise<void> {
     } else if (result.status === 'PENDING_APPROVAL') {
       await (db as any).recurringWithdrawalPlan.update({
         where: { id: plan.id },
-        data: { lastRunStatus: 'pending_approval' },
+        data: { lastRunStatus: 'pending_approval', nextRunAt },
       })
 
       logger.info('[RecurringWithdrawal] Plan occurrence pending approval', {
@@ -436,6 +469,31 @@ export async function processRecurringWithdrawals(): Promise<void> {
       for (const plan of duePlans) {
         if (plan.lastRunStatus === 'executing') {
           if (!isExecutingClaimStale(plan, now)) continue
+          // Submission may have succeeded before a crash. Never resend an
+          // uncertain occurrence automatically; require an operator review.
+          const held = await db.recurringWithdrawalPlan.updateMany({
+            where: {
+              id: plan.id,
+              lastRunStatus: 'executing',
+              lastRunAt: plan.lastRunAt,
+            },
+            data: {
+              status: 'PAUSED',
+              lastRunStatus: 'held:uncertain_execution',
+            },
+          })
+          if (held.count) {
+            await publishUserEvent(
+              plan.userId,
+              'alerts',
+              'recurring_withdrawal.held',
+              {
+                planId: plan.id,
+                reason: 'uncertain_execution',
+              }
+            )
+          }
+          continue
         }
 
         const claimed = await claimDuePlan(plan.id)
@@ -444,10 +502,13 @@ export async function processRecurringWithdrawals(): Promise<void> {
         try {
           await executePlan(claimed)
         } catch (err) {
-          logger.error('[RecurringWithdrawal] Unexpected error executing plan', {
-            planId: plan.id,
-            error: err instanceof Error ? err.message : String(err),
-          })
+          logger.error(
+            '[RecurringWithdrawal] Unexpected error executing plan',
+            {
+              planId: plan.id,
+              error: err instanceof Error ? err.message : String(err),
+            }
+          )
         }
       }
 

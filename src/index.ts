@@ -54,6 +54,7 @@ import { schedulePoolMetrics } from './jobs/poolMetrics'
 import { scheduleFiatReconciliation } from './jobs/fiatReconciliation'
 import { scheduleReferralPayout } from './jobs/referralPayout'
 import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
+import { scheduleRecurringWithdrawals } from './jobs/recurringWithdrawals'
 import { scheduleAlertRules } from './jobs/alertRules'
 import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { scheduleAllocationSuggestions } from './jobs/allocationSuggestions'
@@ -94,6 +95,7 @@ import webhooksRouter from './routes/webhooks'
 import fiatRouter from './routes/fiat'
 import referralsRouter from './routes/referrals'
 import recurringDepositRouter from './routes/recurring-deposits'
+import recurringWithdrawalRouter from './routes/recurring-withdrawals'
 import alertsRouter from './routes/alerts'
 import strategiesRouter from './routes/strategies'
 import subAccountsRouter from './routes/sub-accounts'
@@ -139,6 +141,7 @@ let poolMetricsHandle: NodeJS.Timeout | null = null
 let fiatReconciliationHandle: NodeJS.Timeout | null = null
 let referralPayoutHandle: NodeJS.Timeout | null = null
 let recurringDepositsHandle: NodeJS.Timeout | null = null
+let recurringWithdrawalsHandle: NodeJS.Timeout | null = null
 let alertRulesHandle: NodeJS.Timeout | null = null
 let strategyMetricsHandle: NodeJS.Timeout | null = null
 let allocationSuggestionsHandle: NodeJS.Timeout | null = null
@@ -367,6 +370,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'fiat', handlers: [fiatRouter] },
   { path: 'referrals', handlers: [referralsRouter] },
   { path: 'deposit/recurring', handlers: [recurringDepositRouter] },
+  { path: 'recurring-withdrawals', handlers: [recurringWithdrawalRouter] },
   { path: 'alerts', handlers: [alertsRouter] },
   { path: 'strategies', handlers: [strategiesRouter] },
   { path: 'sub-accounts', handlers: [subAccountsRouter] },
@@ -453,6 +457,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(recurringDepositsHandle)
     recurringDepositsHandle = null
     logger.info('[Shutdown] Recurring deposits timer cleared')
+  }
+  if (recurringWithdrawalsHandle) {
+    clearInterval(recurringWithdrawalsHandle)
+    recurringWithdrawalsHandle = null
   }
 
   if (alertRulesHandle) {
@@ -734,6 +742,7 @@ async function main(): Promise<void> {
   fiatReconciliationHandle = scheduleFiatReconciliation()
   referralPayoutHandle = scheduleReferralPayout()
   recurringDepositsHandle = scheduleRecurringDeposits()
+  recurringWithdrawalsHandle = scheduleRecurringWithdrawals()
   alertRulesHandle = scheduleAlertRules()
   strategyMetricsHandle = scheduleStrategyMetrics()
   // Ordered before the suggestion job so the first suggestion run sees freshly

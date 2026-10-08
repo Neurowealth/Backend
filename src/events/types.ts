@@ -36,6 +36,9 @@ export function isUserEventTopic(value: unknown): value is UserEventTopic {
  * change what an operator's configured webhook receives.
  */
 export const SOCKET_ONLY_EVENT_TYPES = [
+  'recurring_withdrawal.executed',
+  'recurring_withdrawal.held',
+  'recurring_withdrawal.skipped',
   /** Emitted alongside agent.rebalanced: this user's positions moved. */
   'portfolio.updated',
   /** #343 — a rebalance decision was recorded; deep-linkable explanation. */
@@ -68,6 +71,9 @@ export type UserEventType = WebhookEvent | SocketOnlyEventType
  * emit site by hand.
  */
 export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
+  'recurring_withdrawal.executed': 'transactions',
+  'recurring_withdrawal.held': 'alerts',
+  'recurring_withdrawal.skipped': 'alerts',
   'transaction.confirmed': 'transactions',
   'deposit.received': 'transactions',
   'withdraw.completed': 'transactions',

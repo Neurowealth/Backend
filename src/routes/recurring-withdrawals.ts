@@ -65,7 +65,12 @@ router.post(
     if (riskCheck.isRisk) {
       logger.warn(
         '[RecurringWithdrawal] Created plan with unverified/new destination risk signal',
-        { planId: plan.id, userId, destinationAddress, reason: riskCheck.reason }
+        {
+          planId: plan.id,
+          userId,
+          destinationAddress,
+          reason: riskCheck.reason,
+        }
       )
     }
 
@@ -117,9 +122,8 @@ router.post(
       percentage,
     }
 
-    const { amount: projectedAmount, reason } = await resolveWithdrawalAmount(
-      mockPlan
-    )
+    const { amount: projectedAmount, reason } =
+      await resolveWithdrawalAmount(mockPlan)
     const riskCheck = destinationAddress
       ? await checkDestinationRisk(userId, destinationAddress)
       : { isRisk: false }
@@ -169,9 +173,8 @@ router.post(
       return
     }
 
-    const { amount: projectedAmount, reason } = await resolveWithdrawalAmount(
-      plan
-    )
+    const { amount: projectedAmount, reason } =
+      await resolveWithdrawalAmount(plan)
     const riskCheck = await checkDestinationRisk(
       plan.userId,
       plan.destinationAddress
@@ -287,7 +290,13 @@ router.patch(
 
     const updated = await db.recurringWithdrawalPlan.update({
       where: { id },
-      data: updates,
+      data: {
+        ...updates,
+        ...(updates.destinationAddress &&
+        updates.destinationAddress !== existing.destinationAddress
+          ? { status: 'PAUSED', lastRunStatus: 'held_risk:destination_changed' }
+          : {}),
+      },
     })
 
     res.json({ plan: updated })
