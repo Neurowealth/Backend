@@ -16,6 +16,9 @@ export type SecurityEventType =
   | 'session.revoked'
   | 'session.revoke_others'
   | 'password.changed'
+  | 'passkey.registered'
+  | 'passkey.deleted'
+  | 'passkey.anomaly'
 
 /**
  * Fire a security notification to the user. Non-blocking — a failure is

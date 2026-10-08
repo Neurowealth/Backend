@@ -54,6 +54,10 @@ tags:
 # ─── Reusable components ──────────────────────────────────────────────────────
 components:
   securitySchemes:
+    adminAuth:
+      type: http
+      scheme: bearer
+      description: Admin API key with the required resource scope
     bearerAuth:
       type: http
       scheme: bearer
@@ -1467,6 +1471,662 @@ components:
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 paths:
+  /sub-accounts/bulk:
+    post:
+      tags:
+        - Auth
+      operationId: bulkSubAccountManagement
+      summary: Sequential, individually authorized sub-account operations with partial results or atomic rollback
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                atomic:
+                  type: boolean
+                  default: false
+                operations:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: object
+                    required:
+                      - action
+                    properties:
+                      action:
+                        type: string
+                        enum:
+                          - create
+                          - update
+                          - setPermission
+                          - setLimit
+                          - revoke
+                      childUserId: &ref_0
+                        type: string
+                        format: uuid
+                      subAccountId: *ref_0
+                      payload:
+                        type: object
+                        properties:
+                          permissions:
+                            type: array
+                            minItems: 1
+                            maxItems: 4
+                            items:
+                              type: string
+                              enum:
+                                - VIEW
+                                - DEPOSIT
+                                - WITHDRAW
+                                - REBALANCE
+                          dailyLimit: &ref_1
+                            type: number
+                            minimum: 0
+                            exclusiveMinimum: true
+                            nullable: true
+                          transactionLimit: *ref_1
+              required:
+                - operations
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+      description: Create requires childUserId and nonempty permissions. Other actions require exactly one target and action-specific payload. Invalid rows fail independently by default. Atomic errors include failedIndex, rolledBack and per-row rollback/skipped results. SUB_ACCOUNT_MAX_BATCH_SIZE can lower the default 100-row limit.
+  /sub-accounts/summary:
+    get:
+      tags:
+        - Auth
+      operationId: subAccountSummary
+      summary: Summarize owned children, permissions, daily-limit exposure, unlimited limits and 30-day activity
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /sub-accounts/{id}/limits:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: *ref_0
+    patch:
+      tags:
+        - Auth
+      operationId: updateSubAccountLimits
+      summary: Update owned child limits using the same primitive as bulk setLimit
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dailyLimit: *ref_1
+                transactionLimit: *ref_1
+              required: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /auth/webauthn/register-options:
+    post:
+      tags:
+        - Auth
+      operationId: webAuthnRegisterOptions
+      summary: Generate registration options from an active wallet-established session
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceLabel:
+                  type: string
+                  maxLength: 100
+              required: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /auth/webauthn/register-verify:
+    post:
+      tags:
+        - Auth
+      operationId: webAuthnRegisterVerify
+      summary: Verify attestation, RP, origin, session-bound challenge and user verification
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                challengeId: &ref_1
+                  type: string
+                  pattern: ^[A-Za-z0-9_-]+$
+                response: &ref_2
+                  type: object
+                  additionalProperties: true
+                  description: The complete navigator.credentials response serialized as WebAuthn JSON
+                deviceLabel:
+                  type: string
+                  maxLength: 100
+              required:
+                - challengeId
+                - response
+      responses:
+        '201':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /auth/webauthn/login-options:
+    post:
+      tags:
+        - Auth
+      operationId: webAuthnLoginOptions
+      summary: Generate account-specific or discoverable passkey login options
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId: &ref_0
+                  type: string
+                  format: uuid
+              required: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /auth/webauthn/login-verify:
+    post:
+      tags:
+        - Auth
+      operationId: webAuthnLoginVerify
+      summary: Verify single-use assertion and counter; issue a normal session or enrolled TOTP challenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId: *ref_0
+                challengeId: *ref_1
+                response: *ref_2
+              required:
+                - challengeId
+                - response
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /webauthn/credentials:
+    get:
+      tags:
+        - Auth
+      operationId: webAuthnListCredentials
+      summary: List owner-scoped passkey metadata with an active session
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /webauthn/credentials/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: *ref_0
+    delete:
+      tags:
+        - Auth
+      operationId: webAuthnDeleteCredential
+      summary: Delete an owned passkey with an active session; wallet login remains available
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /support/tickets:
+    get:
+      tags:
+        - Auth
+      operationId: listSupportTickets
+      summary: List owned tickets excluding internal notes in the database query
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+    post:
+      tags:
+        - Auth
+      operationId: createSupportTicket
+      summary: Create a rate-limited support ticket
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                subject:
+                  type: string
+                  minLength: 3
+                  maxLength: 200
+                category: &ref_1
+                  type: string
+                  enum:
+                    - ACCOUNT
+                    - TRANSACTION
+                    - TAX
+                    - TECHNICAL
+                    - OTHER
+                priority: &ref_3
+                  type: string
+                  enum:
+                    - LOW
+                    - MEDIUM
+                    - HIGH
+                    - URGENT
+                body:
+                  type: string
+                  minLength: 5
+                  maxLength: 5000
+                contextRef:
+                  type: string
+              required:
+                - subject
+                - category
+                - body
+      responses:
+        '201':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+        '429':
+          description: Creation rate limit exceeded
+  /support/tickets/{id}:
+    parameters:
+      - &ref_0
+        name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags:
+        - Auth
+      operationId: getSupportTicket
+      summary: Read owned ticket and public message thread
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /support/tickets/{id}/reply:
+    parameters:
+      - *ref_0
+    post:
+      tags:
+        - Auth
+      operationId: replySupportTicket
+      summary: Append public reply; reopen a resolved ticket
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                body: &ref_4
+                  type: string
+                  minLength: 1
+                  maxLength: 5000
+              required:
+                - body
+      responses:
+        '201':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /admin/support/tickets:
+    get:
+      tags:
+        - Admin
+      operationId: adminListSupportTickets
+      summary: Filter support queue with SLA deadlines; requires support:read
+      security:
+        - adminAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+      parameters:
+        - name: status
+          in: query
+          schema: &ref_2
+            type: string
+            enum:
+              - OPEN
+              - IN_PROGRESS
+              - AWAITING_USER
+              - RESOLVED
+              - CLOSED
+        - name: category
+          in: query
+          schema: *ref_1
+        - name: assignedTo
+          in: query
+          schema:
+            type: string
+            description: Admin identifier or unassigned
+        - name: slaBreached
+          in: query
+          schema:
+            type: boolean
+  /admin/support/tickets/{id}:
+    parameters:
+      - *ref_0
+    get:
+      tags:
+        - Admin
+      operationId: adminGetSupportTicket
+      summary: Read full thread including internal notes; requires support:read
+      security:
+        - adminAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+    patch:
+      tags:
+        - Admin
+      operationId: adminUpdateSupportTicket
+      summary: Update status, priority and assignment with transactional audit; requires support:write
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: *ref_2
+                priority: *ref_3
+                assignedTo:
+                  type: string
+                  nullable: true
+              required: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+        '409':
+          description: Invalid state transition
+  /admin/support/tickets/{id}/reply:
+    parameters:
+      - *ref_0
+    post:
+      tags:
+        - Admin
+      operationId: adminReplySupportTicket
+      summary: Append public reply or internal note; requires support:write
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                body: *ref_4
+                internal:
+                  type: boolean
+                  default: false
+              required:
+                - body
+      responses:
+        '201':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '404':
+          description: Resource not found
+  /recurring-withdrawals:
+    get:
+      tags: [Transactions]
+      operationId: listRecurringWithdrawals
+      summary: List the current user's recurring withdrawal plans
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Owner-scoped plans }
+        '401': { description: Active session required }
+    post:
+      tags: [Transactions]
+      operationId: createRecurringWithdrawal
+      summary: Schedule a confirmed recurring on-chain withdrawal
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, destinationAddress, assetSymbol, cadence, confirmed]
+              properties:
+                userId: { type: string, format: uuid }
+                destinationAddress: { type: string }
+                assetSymbol: { type: string }
+                amountMode: { type: string, enum: [FIXED, YIELD_ONLY, PERCENT_OF_BALANCE], default: FIXED }
+                amount: { type: number, minimum: 0, exclusiveMinimum: true }
+                percentage: { type: number, minimum: 0.01, maximum: 100 }
+                minAmount: { type: number, minimum: 0, exclusiveMinimum: true }
+                cadence: { type: string, enum: [WEEKLY, BIWEEKLY, MONTHLY] }
+                confirmed: { type: boolean, enum: [true] }
+      responses:
+        '201': { description: Plan created }
+        '400': { description: Invalid or unconfirmed schedule }
+        '401': { description: Active owner session required }
+  /recurring-withdrawals/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Transactions]
+      operationId: getRecurringWithdrawal
+      summary: Read an owner-scoped withdrawal plan
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Plan details }
+        '403': { description: Forbidden }
+        '404': { description: Plan not found }
+    patch:
+      tags: [Transactions]
+      operationId: updateRecurringWithdrawal
+      summary: Update or pause a plan; destination changes pause for review
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                destinationAddress: { type: string }
+                amountMode: { type: string, enum: [FIXED, YIELD_ONLY, PERCENT_OF_BALANCE] }
+                amount: { type: number, minimum: 0, exclusiveMinimum: true }
+                percentage: { type: number, minimum: 0.01, maximum: 100 }
+                cadence: { type: string, enum: [WEEKLY, BIWEEKLY, MONTHLY] }
+                minAmount: { type: number, minimum: 0, exclusiveMinimum: true }
+                status: { type: string, enum: [ACTIVE, PAUSED, CANCELLED] }
+      responses:
+        '200': { description: Updated plan }
+        '400': { description: Invalid update }
+        '403': { description: Forbidden }
+        '404': { description: Plan not found }
+    delete:
+      tags: [Transactions]
+      operationId: cancelRecurringWithdrawal
+      summary: Cancel a recurring withdrawal plan
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Plan cancelled }
+        '403': { description: Forbidden }
+        '404': { description: Plan not found }
+  /recurring-withdrawals/{id}/preview:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [Transactions]
+      operationId: previewRecurringWithdrawal
+      summary: Preview amount, minimum, destination risk and goal conflicts
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Projected next occurrence without sending funds }
+        '403': { description: Forbidden }
+        '404': { description: Plan not found }
   # ── TOTP two-factor authentication (#2FA) ─────────────────────────────────────
 
   /2fa/enroll:

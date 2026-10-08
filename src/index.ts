@@ -54,6 +54,7 @@ import { schedulePoolMetrics } from './jobs/poolMetrics'
 import { scheduleFiatReconciliation } from './jobs/fiatReconciliation'
 import { scheduleReferralPayout } from './jobs/referralPayout'
 import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
+import { scheduleRecurringWithdrawals } from './jobs/recurringWithdrawals'
 import { scheduleAlertRules } from './jobs/alertRules'
 import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { scheduleAllocationSuggestions } from './jobs/allocationSuggestions'
@@ -94,14 +95,18 @@ import webhooksRouter from './routes/webhooks'
 import fiatRouter from './routes/fiat'
 import referralsRouter from './routes/referrals'
 import recurringDepositRouter from './routes/recurring-deposits'
+import recurringWithdrawalRouter from './routes/recurring-withdrawals'
 import alertsRouter from './routes/alerts'
 import strategiesRouter from './routes/strategies'
 import subAccountsRouter from './routes/sub-accounts'
+import supportTicketsRouter from './routes/support-tickets'
+import adminSupportTicketsRouter from './routes/admin/support-tickets'
 import assistantRouter from './routes/assistant'
 import approvalsRouter from './routes/approvals'
 import approvalPoliciesRouter from './routes/approval-policies'
 import keysRouter from './routes/keys'
 import sessionsRouter from './routes/sessions'
+import webAuthnRouter from './routes/webauthn'
 import streamRouter from './routes/stream'
 import notificationsRouter from './routes/notifications'
 import notificationDlqRouter from './routes/notification-dlq'
@@ -139,6 +144,7 @@ let poolMetricsHandle: NodeJS.Timeout | null = null
 let fiatReconciliationHandle: NodeJS.Timeout | null = null
 let referralPayoutHandle: NodeJS.Timeout | null = null
 let recurringDepositsHandle: NodeJS.Timeout | null = null
+let recurringWithdrawalsHandle: NodeJS.Timeout | null = null
 let alertRulesHandle: NodeJS.Timeout | null = null
 let strategyMetricsHandle: NodeJS.Timeout | null = null
 let allocationSuggestionsHandle: NodeJS.Timeout | null = null
@@ -345,7 +351,9 @@ const apiRoutes: ApiRoute[] = [
   { path: 'net-worth', handlers: [netWorthRouter] },
   { path: 'agent/decisions', handlers: [agentDecisionsRouter] },
   { path: 'agent', handlers: [internalRateLimiter, agentRouter] },
+  { path: 'auth/webauthn', handlers: [authRateLimiter, webAuthnRouter] },
   { path: 'auth', handlers: [authRateLimiter, authRouter] },
+  { path: 'webauthn', handlers: [authRateLimiter, webAuthnRouter] },
   { path: 'whatsapp', handlers: [webhookRateLimiter, whatsappRouter] },
   { path: 'telegram', handlers: [webhookRateLimiter, telegramRouter] },
   { path: 'portfolio', handlers: [portfolioRouter] },
@@ -367,9 +375,12 @@ const apiRoutes: ApiRoute[] = [
   { path: 'fiat', handlers: [fiatRouter] },
   { path: 'referrals', handlers: [referralsRouter] },
   { path: 'deposit/recurring', handlers: [recurringDepositRouter] },
+  { path: 'recurring-withdrawals', handlers: [recurringWithdrawalRouter] },
   { path: 'alerts', handlers: [alertsRouter] },
   { path: 'strategies', handlers: [strategiesRouter] },
   { path: 'sub-accounts', handlers: [subAccountsRouter] },
+  { path: 'support/tickets', handlers: [supportTicketsRouter] },
+  { path: 'admin/support/tickets', handlers: [adminRateLimiter, adminSupportTicketsRouter] },
   { path: 'assistant', handlers: [assistantRouter] },
   { path: 'approvals', handlers: [approvalsRouter] },
   { path: 'approval-policies', handlers: [approvalPoliciesRouter] },
@@ -453,6 +464,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(recurringDepositsHandle)
     recurringDepositsHandle = null
     logger.info('[Shutdown] Recurring deposits timer cleared')
+  }
+  if (recurringWithdrawalsHandle) {
+    clearInterval(recurringWithdrawalsHandle)
+    recurringWithdrawalsHandle = null
   }
 
   if (alertRulesHandle) {
@@ -734,6 +749,7 @@ async function main(): Promise<void> {
   fiatReconciliationHandle = scheduleFiatReconciliation()
   referralPayoutHandle = scheduleReferralPayout()
   recurringDepositsHandle = scheduleRecurringDeposits()
+  recurringWithdrawalsHandle = scheduleRecurringWithdrawals()
   alertRulesHandle = scheduleAlertRules()
   strategyMetricsHandle = scheduleStrategyMetrics()
   // Ordered before the suggestion job so the first suggestion run sees freshly

@@ -1,5 +1,5 @@
 import { Request, Response } from 'express'
-import { Transaction } from '@prisma/client'
+import { Prisma, Transaction } from '@prisma/client'
 import db from '../db'
 import { formatDepositReply, formatWithdrawReply } from '../whatsapp/formatters'
 import { sendNotFound, sendUnauthorized } from '../utils/errors'
@@ -13,6 +13,7 @@ import { OutboxOpKind } from '../outbox/types'
 import { guardOperation } from '../approvals/service'
 import { getFeeSnapshot } from '../stellar/feeOracle'
 import { invalidatePortfolioCache } from '../utils/user-cache-invalidation'
+import { assessWithdrawal } from '../services/withdrawal-controls.service'
 
 /**
  * Persist the Transaction row (PENDING, no hash yet) and its outbox intent in
@@ -40,6 +41,38 @@ async function enqueueAndDispatch(params: {
   selectedLotIds?: string[]
 }): Promise<Transaction> {
   const pending = await db.$transaction(async (tx) => {
+    if (params.kind === 'WITHDRAW') {
+      // Serialize reservations across manual and scheduled withdrawals for
+      // the same owner/asset before creating an intent or submitting on-chain.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.userId}), hashtext(${params.assetSymbol}))`
+      const balance = await tx.position.aggregate({
+        where: {
+          userId: params.userId,
+          assetSymbol: params.assetSymbol,
+          status: 'ACTIVE',
+        },
+        _sum: { currentValue: true },
+      })
+      const reserved = await tx.transaction.aggregate({
+        where: {
+          userId: params.userId,
+          assetSymbol: params.assetSymbol,
+          type: 'WITHDRAWAL',
+          status: 'PENDING',
+        },
+        _sum: { amount: true },
+      })
+      const available = new Prisma.Decimal(
+        balance._sum.currentValue ?? 0
+      ).minus(reserved._sum.amount ?? 0)
+      if (available.lessThan(params.amount))
+        throw Object.assign(
+          new Error(
+            'Insufficient balance after pending withdrawal reservations'
+          ),
+          { status: 409 }
+        )
+    }
     const transaction = await tx.transaction.create({
       data: {
         userId: params.userId,
@@ -260,6 +293,7 @@ export interface ExecuteWithdrawParams {
   // #317 — SPECIFIC_ID lot selection, WITHDRAWAL only. Persisted so the
   // Stellar event listener has it when the withdrawal confirms.
   selectedLotIds?: string[]
+  acknowledgeGoalImpact?: boolean
 }
 
 export interface ExecuteWithdrawResult {
@@ -296,6 +330,7 @@ export async function executeWithdraw(
     actingAsUserId,
     skipApprovalGuard,
     selectedLotIds,
+    acknowledgeGoalImpact,
   } = params
 
   const user = await db.user.findUnique({
@@ -304,6 +339,32 @@ export async function executeWithdraw(
   })
   if (!user) {
     throw new Error('User not found')
+  }
+
+  const assessment = await assessWithdrawal(
+    userId,
+    walletAddress,
+    assetSymbol,
+    amount,
+    acknowledgeGoalImpact
+  )
+  if (assessment.held) {
+    await publishUserEvent(userId, 'alerts', 'recurring_withdrawal.held', {
+      reason: assessment.reason,
+      amount,
+      assetSymbol,
+      destinationAddress: walletAddress,
+    })
+    throw Object.assign(
+      new Error(`Withdrawal held for review: ${assessment.reason}`),
+      {
+        status: 409,
+        details: {
+          reason: assessment.reason,
+          requiresAcknowledgement: assessment.reason === 'goal_guardrail',
+        },
+      }
+    )
   }
 
   if (!skipApprovalGuard) {
@@ -323,6 +384,7 @@ export async function executeWithdraw(
         memo,
         actingAsUserId,
         selectedLotIds,
+        acknowledgeGoalImpact,
       },
     })
     if (!guard.allowed) {
@@ -388,8 +450,15 @@ export async function processOnChainTransaction(
   res: Response,
   type: 'DEPOSIT' | 'WITHDRAWAL'
 ) {
-  const { userId, amount, assetSymbol, protocolName, memo, selectedLotIds } =
-    req.body
+  const {
+    userId,
+    amount,
+    assetSymbol,
+    protocolName,
+    memo,
+    selectedLotIds,
+    acknowledgeGoalImpact,
+  } = req.body
 
   if (!req.auth) {
     return sendUnauthorized(res)
@@ -422,6 +491,7 @@ export async function processOnChainTransaction(
       memo,
       actingAsUserId,
       selectedLotIds,
+      acknowledgeGoalImpact,
     })
 
     if (result.status === 'PENDING_APPROVAL') {

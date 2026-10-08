@@ -345,6 +345,9 @@ model User {
   emailIdentity           EmailIdentity?
   webhookEndpoints        UserWebhookEndpoint[]
   notificationPreferences NotificationPreference[]
+  recurringWithdrawalPlans RecurringWithdrawalPlan[]
+  supportTickets          SupportTicket[]
+  webAuthnCredentials     WebAuthnCredential[]
 
   @@map("users")
 }
@@ -2464,3 +2467,153 @@ model NotificationPreferenceAuditLog {
   @@index([changedAt])
   @@map("notification_preference_audit_logs")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Recurring Withdrawal Plans (#551)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum WithdrawalAmountMode {
+  FIXED
+  YIELD_ONLY
+  PERCENT_OF_BALANCE
+}
+
+enum RecurringWithdrawalPlanStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+model RecurringWithdrawalPlan {
+  id                 String                        @id @default(uuid())
+  userId             String
+  destinationAddress String
+  assetSymbol        String
+  amountMode         WithdrawalAmountMode          @default(FIXED)
+  amount             Decimal?                      @db.Decimal(36, 18)
+  percentage         Decimal?                      @db.Decimal(12, 6)
+  cadence            DepositCadence
+  nextRunAt          DateTime
+  status             RecurringWithdrawalPlanStatus @default(ACTIVE)
+  minAmount          Decimal?                      @db.Decimal(36, 18)
+  lastRunAt          DateTime?
+  lastRunStatus      String?
+  createdAt          DateTime                      @default(now())
+  updatedAt          DateTime                      @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status, nextRunAt])
+  @@map("recurring_withdrawal_plans")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Support Ticket System (#552)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum TicketCategory {
+  ACCOUNT
+  TRANSACTION
+  TAX
+  TECHNICAL
+  OTHER
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  AWAITING_USER
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model SupportTicket {
+  id          String         @id @default(uuid())
+  userId      String
+  subject     String
+  category    TicketCategory
+  status      TicketStatus   @default(OPEN)
+  priority    TicketPriority @default(MEDIUM)
+  assignedTo  String?
+  contextRef  String?
+  slaBreached Boolean        @default(false)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  resolvedAt  DateTime?
+
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages TicketMessage[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([category])
+  @@index([assignedTo])
+  @@index([slaBreached])
+  @@map("support_tickets")
+}
+
+enum MessageAuthorRole {
+  USER
+  ADMIN
+}
+
+model TicketMessage {
+  id             String            @id @default(uuid())
+  ticketId       String
+  authorUserId   String?
+  authorRole     MessageAuthorRole @default(USER)
+  body           String            @db.Text
+  attachmentRefs String[]          @default([])
+  internal       Boolean           @default(false)
+  createdAt      DateTime          @default(now())
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+  @@index([ticketId, internal])
+  @@map("ticket_messages")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WebAuthn / Passkey Credentials (#553)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model WebAuthnCredential {
+  id           String    @id @default(uuid())
+  userId       String
+  credentialId String    @unique
+  publicKey    String
+  signCount    BigInt    @default(0)
+  deviceLabel  String?
+  transports   String[]  @default([])
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([credentialId])
+  @@map("webauthn_credentials")
+}
+
+// One-time, session-bound ceremonies shared across application instances.
+model WebAuthnChallenge {
+  id        String   @id @default(uuid())
+  challenge String   @unique
+  purpose   String
+  userId    String?
+  sessionId String?
+  expiresAt DateTime
+
+  @@index([expiresAt])
+  @@map("webauthn_challenges")
+}
+

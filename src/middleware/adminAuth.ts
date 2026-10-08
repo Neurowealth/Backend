@@ -16,6 +16,8 @@ const prisma = db
  * A `super` key implicitly includes all other scopes.
  */
 export const ADMIN_SCOPES = [
+  'support:read',
+  'support:write',
   'read',
   'write',
   'wallet',
