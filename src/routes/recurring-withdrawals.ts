@@ -1,5 +1,6 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, RequestHandler } from 'express'
 import { requireAuth } from '../middleware/authenticate'
+import { requireScope, requireWithdrawScope } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import db from '../db'
 import { logger } from '../utils/logger'
@@ -17,16 +18,31 @@ import {
 } from '../jobs/recurringWithdrawals'
 
 const router = Router()
+const handle =
+  (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>
+  (req, res, next) => {
+    void fn(req, res).catch((error) => {
+      if (error && error.code === 'P2025') {
+        res
+          .status(409)
+          .json({ error: 'Resource changed during the request; retry' })
+        return
+      }
+      next(error)
+    })
+  }
 
 // ── POST / — Create recurring withdrawal plan ────────────────────────────────
 router.post(
   '/',
   requireAuth,
+  requireScope('withdraw:write'),
+  requireWithdrawScope,
   validate({
     body: createRecurringWithdrawalSchema,
     errorMessage: 'Validation error',
   }),
-  async (req: Request, res: Response) => {
+  handle(async (req: Request, res: Response) => {
     const {
       userId,
       destinationAddress,
@@ -83,7 +99,7 @@ router.post(
     })
 
     res.status(201).json({ plan })
-  }
+  })
 )
 
 // ── POST /preview or /:id/preview — Preview projected run ───────────────────
@@ -94,7 +110,7 @@ router.post(
     body: previewRecurringWithdrawalSchema,
     errorMessage: 'Validation error',
   }),
-  async (req: Request, res: Response) => {
+  handle(async (req: Request, res: Response) => {
     const {
       userId,
       destinationAddress,
@@ -149,7 +165,7 @@ router.post(
         guardrailReason: goalCheck.reason ?? null,
       },
     })
-  }
+  })
 )
 
 router.post(
@@ -159,7 +175,7 @@ router.post(
     params: recurringWithdrawalIdParamSchema,
     errorMessage: 'Validation error',
   }),
-  async (req: Request, res: Response) => {
+  handle(async (req: Request, res: Response) => {
     const { id } = req.params
 
     const plan = await db.recurringWithdrawalPlan.findUnique({ where: { id } })
@@ -201,25 +217,29 @@ router.post(
         guardrailReason: goalCheck.reason ?? null,
       },
     })
-  }
+  })
 )
 
 // ── GET / — List user's recurring withdrawal plans ───────────────────────────
-router.get('/', requireAuth, async (req: Request, res: Response) => {
-  const userId = (req.query.userId as string) ?? req.auth!.userId
+router.get(
+  '/',
+  requireAuth,
+  handle(async (req: Request, res: Response) => {
+    const userId = (req.query.userId as string) ?? req.auth!.userId
 
-  if (userId !== req.auth!.userId) {
-    res.status(401).json({ error: 'Unauthorized' })
-    return
-  }
+    if (userId !== req.auth!.userId) {
+      res.status(401).json({ error: 'Unauthorized' })
+      return
+    }
 
-  const plans = await db.recurringWithdrawalPlan.findMany({
-    where: { userId },
-    orderBy: { createdAt: 'desc' },
+    const plans = await db.recurringWithdrawalPlan.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    res.json({ plans })
   })
-
-  res.json({ plans })
-})
+)
 
 // ── GET /:id — Get single plan ───────────────────────────────────────────────
 router.get(
@@ -229,7 +249,7 @@ router.get(
     params: recurringWithdrawalIdParamSchema,
     errorMessage: 'Validation error',
   }),
-  async (req: Request, res: Response) => {
+  handle(async (req: Request, res: Response) => {
     const { id } = req.params
 
     const plan = await db.recurringWithdrawalPlan.findUnique({ where: { id } })
@@ -244,19 +264,21 @@ router.get(
     }
 
     res.json({ plan })
-  }
+  })
 )
 
 // ── PATCH /:id — Update plan ─────────────────────────────────────────────────
 router.patch(
   '/:id',
   requireAuth,
+  requireScope('withdraw:write'),
+  requireWithdrawScope,
   validate({
     params: recurringWithdrawalIdParamSchema,
     body: updateRecurringWithdrawalSchema,
     errorMessage: 'Validation error',
   }),
-  async (req: Request, res: Response) => {
+  handle(async (req: Request, res: Response) => {
     const { id } = req.params
     const updates = req.body
 
@@ -274,6 +296,27 @@ router.patch(
     }
 
     // Treat destinationAddress change as NEW_DESTINATION risk signal
+    const amountMode = updates.amountMode ?? existing.amountMode
+    if (
+      (amountMode === 'FIXED' &&
+        Number(updates.amount ?? existing.amount) <= 0) ||
+      (amountMode === 'PERCENT_OF_BALANCE' &&
+        Number(updates.percentage ?? existing.percentage) <= 0)
+    ) {
+      res
+        .status(400)
+        .json({
+          error:
+            'The selected amount mode requires a positive amount or percentage',
+        })
+      return
+    }
+    if (existing.lastRunStatus === 'executing') {
+      res.status(409).json({
+        error: 'A withdrawal occurrence is executing; retry after it finishes',
+      })
+      return
+    }
     if (
       updates.destinationAddress &&
       updates.destinationAddress !== existing.destinationAddress
@@ -289,9 +332,16 @@ router.patch(
     }
 
     const updated = await db.recurringWithdrawalPlan.update({
-      where: { id },
+      where: {
+        id,
+        lastRunAt: existing.lastRunAt,
+        lastRunStatus: existing.lastRunStatus,
+      },
       data: {
         ...updates,
+        ...(updates.cadence
+          ? { nextRunAt: addCadence(updates.cadence, new Date()) }
+          : {}),
         ...(updates.destinationAddress &&
         updates.destinationAddress !== existing.destinationAddress
           ? { status: 'PAUSED', lastRunStatus: 'held_risk:destination_changed' }
@@ -300,18 +350,20 @@ router.patch(
     })
 
     res.json({ plan: updated })
-  }
+  })
 )
 
 // ── DELETE /:id — Cancel plan ────────────────────────────────────────────────
 router.delete(
   '/:id',
   requireAuth,
+  requireScope('withdraw:write'),
+  requireWithdrawScope,
   validate({
     params: recurringWithdrawalIdParamSchema,
     errorMessage: 'Validation error',
   }),
-  async (req: Request, res: Response) => {
+  handle(async (req: Request, res: Response) => {
     const { id } = req.params
 
     const existing = await db.recurringWithdrawalPlan.findUnique({
@@ -328,7 +380,11 @@ router.delete(
     }
 
     const cancelled = await db.recurringWithdrawalPlan.update({
-      where: { id },
+      where: {
+        id,
+        lastRunAt: existing.lastRunAt,
+        lastRunStatus: existing.lastRunStatus,
+      },
       data: { status: 'CANCELLED' },
     })
 
@@ -338,7 +394,7 @@ router.delete(
     })
 
     res.json({ plan: cancelled })
-  }
+  })
 )
 
 export default router

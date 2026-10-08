@@ -84,9 +84,7 @@ async function claimDuePlan(
     return null
   }
 
-  return (db as any).recurringWithdrawalPlan.findUnique({
-    where: { id: planId },
-  })
+  return { ...plan, lastRunAt: now, lastRunStatus: 'executing' }
 }
 
 export async function resolveWithdrawalAmount(
@@ -120,7 +118,7 @@ export async function resolveWithdrawalAmount(
     if (totalYield <= 0) {
       return { amount: 0, reason: 'insufficient_yield' }
     }
-    return { amount: Math.min(totalYield, totalValue) }
+    return { amount: Math.floor(Math.min(totalYield, totalValue) * 1e7) / 1e7 }
   }
 
   if (plan.amountMode === 'PERCENT_OF_BALANCE') {
@@ -129,7 +127,7 @@ export async function resolveWithdrawalAmount(
       return { amount: 0, reason: 'insufficient_balance' }
     }
     const calculated = (totalValue * pct) / 100
-    return { amount: calculated }
+    return { amount: Math.floor(calculated * 1e7) / 1e7 }
   }
 
   return { amount: plan.amount ? Number(plan.amount) : 0 }
@@ -139,17 +137,13 @@ export async function checkDestinationRisk(
   userId: string,
   destinationAddress: string
 ): Promise<{ isRisk: boolean; reason?: string }> {
-  const priorTx = await db.transaction.findFirst({
+  const priorTx = await db.outboxOp.findFirst({
     where: {
       userId,
-      type: 'WITHDRAWAL',
+      kind: 'WITHDRAW',
       status: 'CONFIRMED',
-      memo: { contains: destinationAddress },
+      payload: { path: ['userAddress'], equals: destinationAddress },
     },
-  })
-
-  const linkedWallet = await db.linkedExternalWallet.findFirst({
-    where: { userId, publicKey: destinationAddress },
   })
 
   const activeCase = await db.complianceCase.findFirst({
@@ -166,7 +160,7 @@ export async function checkDestinationRisk(
     }
   }
 
-  if (!priorTx && !linkedWallet) {
+  if (!priorTx) {
     return {
       isRisk: true,
       reason: 'new_destination_unverified',
@@ -223,6 +217,34 @@ export async function checkGoalGuardrailConflict(
 
 async function executePlan(plan: RecurringWithdrawalPlan): Promise<void> {
   const nextRunAt = addCadence(plan.cadence, new Date())
+
+  const user = await db.user.findUnique({
+    where: { id: plan.userId },
+    select: { isActive: true },
+  })
+  const complianceHold = await db.complianceCase.findFirst({
+    where: {
+      userId: plan.userId,
+      status: {
+        in: ['OPEN', 'TRIAGE', 'INVESTIGATING', 'ESCALATED', 'PENDING_SAR'],
+      },
+    },
+  })
+  if (!user?.isActive || complianceHold) {
+    await db.recurringWithdrawalPlan.update({
+      where: { id: plan.id },
+      data: {
+        status: 'PAUSED',
+        lastRunStatus: 'held:compliance_freeze',
+        nextRunAt,
+      },
+    })
+    await publishUserEvent(plan.userId, 'alerts', 'recurring_withdrawal.held', {
+      planId: plan.id,
+      reason: 'compliance_freeze',
+    })
+    return
+  }
 
   const { amount, reason: resolveReason } = await resolveWithdrawalAmount(plan)
   const minAmt = plan.minAmount ? Number(plan.minAmount) : 0
@@ -419,14 +441,37 @@ async function executePlan(plan: RecurringWithdrawalPlan): Promise<void> {
     const isInsufficient =
       reason.toLowerCase().includes('insufficient') ||
       reason.toLowerCase().includes('balance')
+    const heldReason = (err as { details?: { reason?: string } }).details
+      ?.reason
 
     await (db as any).recurringWithdrawalPlan.update({
       where: { id: plan.id },
       data: {
-        lastRunStatus: isInsufficient ? 'skipped:insufficient_balance' : reason,
+        lastRunStatus: isInsufficient
+          ? 'skipped:insufficient_balance'
+          : heldReason
+            ? `held:${heldReason}`
+            : 'held:execution_error',
+        ...(!isInsufficient && heldReason !== 'goal_guardrail'
+          ? { status: 'PAUSED' }
+          : {}),
         nextRunAt,
       },
     })
+
+    await publishUserEvent(
+      plan.userId,
+      'alerts',
+      isInsufficient
+        ? 'recurring_withdrawal.skipped'
+        : 'recurring_withdrawal.held',
+      {
+        planId: plan.id,
+        reason: isInsufficient
+          ? 'insufficient_balance'
+          : heldReason || 'execution_error',
+      }
+    )
 
     logger.warn('[RecurringWithdrawal] Plan execution failed or skipped', {
       planId: plan.id,

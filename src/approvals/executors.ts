@@ -36,6 +36,7 @@ export type ApprovalPayload =
       memo?: string
       actingAsUserId?: string | null
       selectedLotIds?: string[]
+      acknowledgeGoalImpact?: boolean
     }
 
 /**
@@ -79,5 +80,6 @@ export async function runApprovedPayload(
     actingAsUserId: payload.actingAsUserId,
     skipApprovalGuard: true,
     selectedLotIds: payload.selectedLotIds,
+    acknowledgeGoalImpact: payload.acknowledgeGoalImpact,
   })
 }

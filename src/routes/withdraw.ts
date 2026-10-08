@@ -21,6 +21,7 @@ const withdrawSchema = z.object({
   // ignored otherwise. Enforced in src/tax/service.ts at disposal-recording
   // time, not here — this route has no tax-module awareness.
   selectedLotIds: z.array(z.string().uuid()).optional(),
+  acknowledgeGoalImpact: z.boolean().optional(),
 })
 
 router.post(
@@ -35,8 +36,12 @@ router.post(
   sensitiveRateLimiter,
   validate({ body: withdrawSchema, errorMessage: 'Validation error' }),
   requireSubAccountPermission('WITHDRAW'),
-  async (req: Request, res: Response) => {
-    return processOnChainTransaction(req, res, 'WITHDRAWAL')
+  async (req: Request, res: Response, next) => {
+    try {
+      await processOnChainTransaction(req, res, 'WITHDRAWAL')
+    } catch (error) {
+      next(error)
+    }
   }
 )
 

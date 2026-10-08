@@ -6,6 +6,10 @@ import express from 'express'
 jest.mock('../../src/middleware/authenticate', () => {
   const requireAuth = jest.fn((req: any, _res: any, next: any) => {
     req.userId = mockUserId
+    req.authScopes = req.headers['x-test-scopes']
+      ? String(req.headers['x-test-scopes']).split(',')
+      : ['*']
+    req.authKind = req.headers['x-test-auth-kind'] || 'session'
     req.auth = {
       userId: mockUserId,
       walletAddress: 'GWALLET_USER_1',
@@ -74,9 +78,7 @@ jest.mock('../../src/db', () => ({
         return plan
       }),
     },
-    transaction: {
-      findFirst: jest.fn(async () => null),
-    },
+    outboxOp: { findFirst: jest.fn(async () => null) },
     linkedExternalWallet: {
       findFirst: jest.fn(async () => null),
     },
@@ -105,6 +107,71 @@ describe('Recurring Withdrawals Integration Tests', () => {
   beforeEach(() => {
     plans.clear()
     planSeq = 0
+  })
+
+  it('rejects read-only API keys before creating any withdrawal schedule', async () => {
+    const response = await request(buildApp())
+      .post('/api/v1/recurring-withdrawals')
+      .set('x-test-auth-kind', 'api_key')
+      .set('x-test-scopes', 'portfolio:read')
+      .send({})
+    expect(response.status).toBe(403)
+    expect(response.body.required).toBe('withdraw:write')
+    expect(plans.size).toBe(0)
+  })
+
+  it('honors the platform API-key withdrawal kill switch for scheduling', async () => {
+    const response = await request(buildApp())
+      .post('/api/v1/recurring-withdrawals')
+      .set('x-test-auth-kind', 'api_key')
+      .set('x-test-scopes', 'withdraw:write')
+      .send({})
+    expect(response.status).toBe(403)
+    expect(plans.size).toBe(0)
+  })
+
+  it('does not let edits replace an executing occurrence', async () => {
+    const app = buildApp()
+    const created = await request(app)
+      .post('/api/v1/recurring-withdrawals')
+      .send({
+        userId: mockUserId,
+        destinationAddress: 'GDESTINATION',
+        assetSymbol: 'USDC',
+        amountMode: 'FIXED',
+        amount: 100,
+        cadence: 'MONTHLY',
+        confirmed: true,
+      })
+    const plan = plans.get(created.body.plan.id)
+    plan.lastRunStatus = 'executing'
+    const edited = await request(app)
+      .patch(`/api/v1/recurring-withdrawals/${plan.id}`)
+      .send({ amount: 200 })
+    expect(edited.status).toBe(409)
+    expect(plan.amount).toBe(100)
+  })
+
+  it('validates the merged amount mode when editing a plan', async () => {
+    const app = buildApp()
+    const created = await request(app)
+      .post('/api/v1/recurring-withdrawals')
+      .send({
+        userId: mockUserId,
+        destinationAddress: 'GDESTINATION',
+        assetSymbol: 'USDC',
+        amountMode: 'FIXED',
+        amount: 100,
+        cadence: 'MONTHLY',
+        confirmed: true,
+      })
+    expect(
+      (
+        await request(app)
+          .patch(`/api/v1/recurring-withdrawals/${created.body.plan.id}`)
+          .send({ amountMode: 'PERCENT_OF_BALANCE' })
+      ).status
+    ).toBe(400)
   })
 
   it('POST /api/v1/recurring-withdrawals creates a new plan when confirmed', async () => {

@@ -14,6 +14,7 @@ jest.mock('../../../src/events/publisher', () => ({
 jest.mock('../../../src/db', () => ({
   __esModule: true,
   default: {
+    user: { findUnique: jest.fn() },
     recurringWithdrawalPlan: {
       findMany: jest.fn(),
       findUnique: jest.fn(),
@@ -21,7 +22,7 @@ jest.mock('../../../src/db', () => ({
       update: jest.fn(),
     },
     position: { findMany: jest.fn() },
-    transaction: { findFirst: jest.fn() },
+    outboxOp: { findFirst: jest.fn() },
     linkedExternalWallet: { findFirst: jest.fn() },
     complianceCase: { findFirst: jest.fn() },
     savingsGoal: { findMany: jest.fn() },
@@ -74,7 +75,8 @@ describe('recurring withdrawal occurrences', () => {
     ;(db.position.findMany as jest.Mock).mockResolvedValue([
       { currentValue: 100, yieldEarned: 5 },
     ])
-    ;(db.transaction.findFirst as jest.Mock).mockResolvedValue({ id: 'known' })
+    ;(db.user.findUnique as jest.Mock).mockResolvedValue({ isActive: true })
+    ;(db.outboxOp.findFirst as jest.Mock).mockResolvedValue({ id: 'known' })
     ;(db.linkedExternalWallet.findFirst as jest.Mock).mockResolvedValue(null)
     ;(db.complianceCase.findFirst as jest.Mock).mockResolvedValue(null)
     ;(db.savingsGoal.findMany as jest.Mock).mockResolvedValue([])
@@ -111,7 +113,7 @@ describe('recurring withdrawal occurrences', () => {
     )
   })
   it('pauses unknown destinations and notifies the owner', async () => {
-    ;(db.transaction.findFirst as jest.Mock).mockResolvedValue(null)
+    ;(db.outboxOp.findFirst as jest.Mock).mockResolvedValue(null)
     await processRecurringWithdrawals()
     expect(plan.status).toBe('PAUSED')
     expect(executeWithdraw).not.toHaveBeenCalled()
@@ -152,5 +154,14 @@ describe('recurring withdrawal occurrences', () => {
     expect(executeWithdraw).not.toHaveBeenCalled()
     expect(plan.status).toBe('PAUSED')
     expect(plan.lastRunStatus).toBe('held:uncertain_execution')
+  })
+
+  it('pauses frozen users even when their current balance cannot fund a run', async () => {
+    ;(db.user.findUnique as jest.Mock).mockResolvedValue({ isActive: false })
+    ;(db.position.findMany as jest.Mock).mockResolvedValue([])
+    await processRecurringWithdrawals()
+    expect(plan.status).toBe('PAUSED')
+    expect(plan.lastRunStatus).toBe('held:compliance_freeze')
+    expect(executeWithdraw).not.toHaveBeenCalled()
   })
 })

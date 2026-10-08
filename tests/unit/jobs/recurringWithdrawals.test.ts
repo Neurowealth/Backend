@@ -14,9 +14,7 @@ jest.mock('../../../src/db', () => ({
     position: {
       findMany: jest.fn(),
     },
-    transaction: {
-      findFirst: jest.fn(),
-    },
+    outboxOp: { findFirst: jest.fn() },
     linkedExternalWallet: {
       findFirst: jest.fn(),
     },
@@ -106,7 +104,7 @@ describe('recurringWithdrawals job helpers', () => {
 
   describe('checkDestinationRisk', () => {
     it('returns isRisk: false if address is in prior transactions', async () => {
-      ;(db.transaction.findFirst as jest.Mock).mockResolvedValue({ id: 'tx-1' })
+      ;(db.outboxOp.findFirst as jest.Mock).mockResolvedValue({ id: 'tx-1' })
       ;(db.linkedExternalWallet.findFirst as jest.Mock).mockResolvedValue(null)
       ;(db.complianceCase.findFirst as jest.Mock).mockResolvedValue(null)
 
@@ -115,7 +113,7 @@ describe('recurringWithdrawals job helpers', () => {
     })
 
     it('returns isRisk: true if address is unknown', async () => {
-      ;(db.transaction.findFirst as jest.Mock).mockResolvedValue(null)
+      ;(db.outboxOp.findFirst as jest.Mock).mockResolvedValue(null)
       ;(db.linkedExternalWallet.findFirst as jest.Mock).mockResolvedValue(null)
       ;(db.complianceCase.findFirst as jest.Mock).mockResolvedValue(null)
 

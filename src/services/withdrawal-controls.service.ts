@@ -1,4 +1,5 @@
 import db from '../db'
+import { StrKey } from '@stellar/stellar-sdk'
 import { scoreTransaction, TransactionTypeLike } from '../compliance/scoring'
 
 /** Shared pre-submission checks for HTTP, approved and scheduled withdrawals. */
@@ -6,8 +7,11 @@ export async function assessWithdrawal(
   userId: string,
   destinationAddress: string,
   assetSymbol: string,
-  amount: number
+  amount: number,
+  acknowledgeGoalImpact = false
 ) {
+  if (!StrKey.isValidEd25519PublicKey(destinationAddress))
+    return { held: true, reason: 'invalid_destination', score: null }
   const user = await db.user.findUnique({ where: { id: userId } })
   if (!user || !user.isActive)
     return { held: true, reason: 'compliance_freeze', score: null }
@@ -31,14 +35,9 @@ export async function assessWithdrawal(
     where: { userId, kind: 'WITHDRAW', status: 'CONFIRMED' },
     select: { payload: true },
   })
-  const linked = await db.linkedExternalWallet.findMany({
-    where: { userId },
-    select: { publicKey: true },
-  })
-  const knownDestinations = [
-    user.walletAddress,
-    ...linked.map((w) => w.publicKey),
-  ]
+  // Net-worth links are self-reported read-only holdings, not proof that a
+  // withdrawal destination has been approved.
+  const knownDestinations = [user.walletAddress]
   for (const op of priorDestinations) {
     const payload = op.payload as { userAddress?: string }
     if (payload.userAddress) knownDestinations.push(payload.userAddress)
@@ -92,7 +91,10 @@ export async function assessWithdrawal(
     where: { userId, assetSymbol, status: 'ACTIVE' },
   })
   const balance = positions.reduce((sum, p) => sum + Number(p.currentValue), 0)
-  if (goals.some((goal) => balance - amount < Number(goal.targetAmount))) {
+  if (
+    !acknowledgeGoalImpact &&
+    goals.some((goal) => balance - amount < Number(goal.targetAmount))
+  ) {
     return { held: true, reason: 'goal_guardrail', score }
   }
   return { held: false, reason: null, score }
