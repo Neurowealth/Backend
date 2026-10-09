@@ -19,7 +19,10 @@ import type {
   MailProvider,
   MailSendResult,
 } from '../../../src/mail/mailProvider'
-import { MailRegistry } from '../../../src/mail/mailProvider'
+import {
+  MailRegistry,
+  SesSignatureVerificationError,
+} from '../../../src/mail/mailProvider'
 
 jest.mock('../../../src/utils/logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
@@ -107,7 +110,7 @@ describe('MailRegistry failover (#496)', () => {
     }
   })
 
-  it('prefers the primary provider when parsing mail webhooks', () => {
+  it('prefers the primary provider when parsing mail webhooks', async () => {
     const primary = makeProvider('primary')
     ;(primary.parseWebhook as jest.Mock).mockReturnValue({
       type: 'bounce',
@@ -117,11 +120,11 @@ describe('MailRegistry failover (#496)', () => {
     const fallback = makeProvider('fallback')
     const registry = new MailRegistry(primary, fallback)
 
-    expect(registry.parseWebhook({ notificationType: 'Bounce' })).toMatchObject(
-      {
-        type: 'bounce',
-      }
-    )
+    await expect(
+      registry.parseWebhook({ notificationType: 'Bounce' })
+    ).resolves.toMatchObject({
+      type: 'bounce',
+    })
 
     // When the primary yields nothing, the fallback gets a chance.
     ;(primary.parseWebhook as jest.Mock).mockReturnValue(null)
@@ -130,10 +133,32 @@ describe('MailRegistry failover (#496)', () => {
       messageId: 'm-2',
       recipient: 'user@example.com',
     })
-    expect(
+    await expect(
       registry.parseWebhook({ notificationType: 'Delivery' })
-    ).toMatchObject({
+    ).resolves.toMatchObject({
       type: 'delivery',
     })
+  })
+
+  it('propagates a primary authentication rejection instead of falling back', async () => {
+    const primary = makeProvider('primary')
+    const reject = new SesSignatureVerificationError('invalid_signature')
+    ;(primary.parseWebhook as jest.Mock).mockRejectedValue(reject)
+    const fallback = makeProvider('fallback')
+    fallback.parseWebhook = jest
+      .fn()
+      .mockResolvedValue({
+        type: 'delivery',
+        messageId: 'm-2',
+        recipient: 'u@e.co',
+      })
+    const registry = new MailRegistry(primary, fallback)
+
+    // A forged/tampered SES payload must never be rescued into processing by a
+    // fallback that trusts its shape (#524).
+    await expect(
+      registry.parseWebhook({ notificationType: 'Bounce' })
+    ).rejects.toMatchObject({ code: 'SES_WEBHOOK_SIGNATURE_INVALID' })
+    expect(fallback.parseWebhook).not.toHaveBeenCalled()
   })
 })

@@ -1,6 +1,33 @@
 import crypto from 'node:crypto'
 import { logger } from '../utils/logger'
 import { enqueueOutboundNotification } from '../services/outboundNotifications'
+import { mailWebhookRejectionsTotal } from '../utils/metrics'
+import {
+  createSnsSignatureVerifier,
+  isSnsEnvelope,
+  type SnsRejectionReason,
+  type SnsSignatureVerifier,
+} from './snsSignature'
+
+/**
+ * Raised when a payload addressed to the SES webhook fails SNS signature
+ * verification (#524). The controller maps this to HTTP 401 and never
+ * processes the payload — a spoofed or tampered delivery is rejected as
+ * unauthenticated, not as malformed (400) and not served.
+ *
+ * `code` is a plain string marker so a consumer can detect the class without
+ * importing it (the module may be mocked under test).
+ */
+export class SesSignatureVerificationError extends Error {
+  readonly code = 'SES_WEBHOOK_SIGNATURE_INVALID'
+  readonly reason: SnsRejectionReason
+
+  constructor(reason: SnsRejectionReason) {
+    super(`SES webhook failed SNS signature verification (${reason})`)
+    this.name = 'SesSignatureVerificationError'
+    this.reason = reason
+  }
+}
 
 export interface MailMessage {
   to: string
@@ -26,7 +53,10 @@ export interface MailWebhookEvent {
 export interface MailProvider {
   name: string
   send(message: MailMessage): Promise<MailSendResult>
-  parseWebhook(rawPayload: any, signature?: string): MailWebhookEvent | null
+  parseWebhook(
+    rawPayload: any,
+    signature?: string
+  ): MailWebhookEvent | null | Promise<MailWebhookEvent | null>
 }
 
 function verifySmtpWebhookSignature(
@@ -181,12 +211,20 @@ export class SmtpMailProvider implements MailProvider {
 
 /**
  * AWS SES Mail Provider using AWS SDK v3.
+ *
+ * SES notifications arrive as SNS envelopes (see `snsSignature.ts`). The old
+ * behaviour — "any plausible body is genuine" — is gone: every delivery is
+ * cryptographically verified, and the SES notification rides inside the SNS
+ * `Message` field, which this provider unwraps before mapping (#524).
  */
 export class SesMailProvider implements MailProvider {
   name = 'ses'
   private client: any = null
+  private readonly snsVerifier: SnsSignatureVerifier
 
-  constructor() {
+  constructor(options: { snsVerifier?: SnsSignatureVerifier } = {}) {
+    this.snsVerifier = options.snsVerifier ?? createSnsSignatureVerifier()
+
     if (process.env.AWS_REGION) {
       try {
         const { SESv2Client } = require('@aws-sdk/client-sesv2')
@@ -252,62 +290,79 @@ export class SesMailProvider implements MailProvider {
     }
   }
 
-  parseWebhook(rawPayload: any, signature?: string): MailWebhookEvent | null {
-    if (!rawPayload || !rawPayload.notificationType) return null
+  async parseWebhook(
+    rawPayload: any,
+    signature?: string
+  ): Promise<MailWebhookEvent | null> {
+    if (!rawPayload || typeof rawPayload !== 'object') return null
 
-    if (signature) {
-      if (!this.verifySesSignature(rawPayload, signature)) {
-        logger.warn('[SesMailProvider] Invalid SES webhook signature')
+    // SES never posts its notification JSON directly — it posts an SNS
+    // envelope signed by AWS (#524). A body that lacks the envelope (no
+    // `Type` + `Signature`) has no verifiable provenance and is rejected as
+    // unauthenticated rather than trusted because it looks plausible.
+    if (!isSnsEnvelope(rawPayload)) {
+      this.rejectWebhook('missing_signing_fields')
+      throw new SesSignatureVerificationError('missing_signing_fields')
+    }
+
+    const outcome = await this.snsVerifier.verify(rawPayload)
+    if (!outcome.ok) {
+      this.rejectWebhook(outcome.reason)
+      throw new SesSignatureVerificationError(outcome.reason)
+    }
+    // The SNS envelope's `Message` carries the SES notification JSON: the
+    // pieces we map from (notificationType, mail, bounce/complaint) live
+    // there, not on the envelope itself.
+    let notification = rawPayload
+    if (typeof rawPayload.Message === 'string' && rawPayload.Message.trim()) {
+      try {
+        notification = JSON.parse(rawPayload.Message)
+      } catch {
+        // Genuine delivery with an unparseable payload: authenticated but not
+        // processable. Null → the controller answers 400, nothing is mutated.
         return null
       }
     }
 
-    const notificationType = (rawPayload.notificationType || '').toLowerCase()
-    const type =
-      notificationType === 'bounce'
-        ? 'bounce'
-        : notificationType === 'complaint'
-          ? 'complaint'
-          : 'delivery'
-    const mail = rawPayload.mail || {}
-    const recipient = mail.destination?.[0] || 'unknown@example.com'
-    return {
-      type,
-      messageId: mail.messageId || 'msg_ses_unknown',
-      recipient,
-      reason:
-        rawPayload.bounce?.bounceType ||
-        rawPayload.complaint?.complaintFeedbackType,
-    }
+    return mapSesNotification(notification)
   }
 
-  private verifySesSignature(payload: any, signature: string): boolean {
-    const certUrl = payload.SigningCertUrl
-    if (!certUrl || !certUrl.startsWith('https://')) {
-      logger.warn('[SesMailProvider] Invalid or missing certificate URL')
-      return false
-    }
+  private rejectWebhook(reason: SnsRejectionReason): void {
+    logger.warn(`[SesMailProvider] Rejected webhook: ${reason}`)
+    mailWebhookRejectionsTotal.inc({ reason })
+  }
+}
 
-    try {
-      const message = payload.Message
-      const timestamp = payload.Timestamp
-      const type = payload.Type
+/**
+ * Translate a verified SES notification (the object inside the SNS `Message`
+ * field) into the registry event shape. `notificationType` and `mail` are the
+ * canonical SES NotificationConfiguration fields.
+ */
+function mapSesNotification(notification: any): MailWebhookEvent | null {
+  if (
+    !notification ||
+    typeof notification !== 'object' ||
+    !notification.notificationType
+  ) {
+    return null
+  }
 
-      const stringToSign = `${message}${timestamp}${type}`
-      const verifyPayload = `${stringToSign}${signature}`
-
-      // For production, you would fetch the cert from certUrl and verify
-      // This is a placeholder that validates the structure
-      logger.warn(
-        '[SesMailProvider] SES signature verification deferred to HTTPS cert check'
-      )
-      return true
-    } catch (err) {
-      logger.warn('[SesMailProvider] Failed to verify SES signature', {
-        error: err instanceof Error ? err.message : String(err),
-      })
-      return false
-    }
+  const notificationType = (notification.notificationType || '').toLowerCase()
+  const type =
+    notificationType === 'bounce'
+      ? 'bounce'
+      : notificationType === 'complaint'
+        ? 'complaint'
+        : 'delivery'
+  const mail = notification.mail || {}
+  const recipient = mail.destination?.[0] || 'unknown@example.com'
+  return {
+    type,
+    messageId: mail.messageId || 'msg_ses_unknown',
+    recipient,
+    reason:
+      notification.bounce?.bounceType ||
+      notification.complaint?.complaintFeedbackType,
   }
 }
 
@@ -401,10 +456,36 @@ export class MailRegistry {
     return await this.fallbackProvider.send(message)
   }
 
-  parseWebhook(rawPayload: any, signature?: string): MailWebhookEvent | null {
+  /**
+   * Route a mail webhook to the providers in priority order.
+   *
+   * A primary that *rejects the payload as unauthenticated* propagates the
+   * rejection (the controller turns it into 401) instead of falling through to
+   * the fallback: a forged SES payload must never be rescued into processing
+   * by a provider that trusts its shape (#524). A primary that returns null —
+   * "not my format" without an identity question — lets the fallback try.
+   */
+  async parseWebhook(
+    rawPayload: any,
+    signature?: string
+  ): Promise<MailWebhookEvent | null> {
+    try {
+      const primary = await this.primaryProvider.parseWebhook(
+        rawPayload,
+        signature
+      )
+      if (primary) return primary
+    } catch (err) {
+      if (err instanceof SesSignatureVerificationError) throw err
+      // A provider error that is not an authentication failure must not fail
+      // the whole path on a delivery the fallback might understand.
+      logger.warn('[MailRegistry] Mail webhook error on primary provider', {
+        provider: this.primaryProvider.name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
     return (
-      this.primaryProvider.parseWebhook(rawPayload, signature) ||
-      this.fallbackProvider.parseWebhook(rawPayload, signature)
+      (await this.fallbackProvider.parseWebhook(rawPayload, signature)) ?? null
     )
   }
 }

@@ -10,6 +10,7 @@ process.env.NODE_ENV = 'test'
 import type { Network } from '@prisma/client'
 import type { Request, Response } from 'express'
 import {
+  handleMailWebhook,
   requestEmailVerification,
   verifyEmail,
 } from '../../../src/controllers/email-identity-controller'
@@ -54,6 +55,7 @@ const mockUpsert = db.emailIdentity.upsert as jest.Mock
 const mockUpdate = db.emailIdentity.update as jest.Mock
 const mockSend = mailRegistry.send as jest.Mock
 const mockPublish = publishUserEvent as jest.Mock
+const mockParseWebhook = mailRegistry.parseWebhook as jest.Mock
 
 const USER_ID = 'user-1'
 const sha256 = (input: string) =>
@@ -70,6 +72,7 @@ function makeReq(overrides: Partial<Request> = {}) {
   return {
     body: {},
     query: {},
+    headers: {},
     ...overrides,
   } as unknown as Request
 }
@@ -394,5 +397,108 @@ describe('emailAddressSchema', () => {
 
   it.each(['', '   ', 'nope', 'a@b', '@b.co', 'a@'])('rejects %p', (value) => {
     expect(emailAddressSchema.safeParse(value).success).toBe(false)
+  })
+})
+
+describe('handleMailWebhook (#524)', () => {
+  beforeEach(() => {
+    mockParseWebhook.mockReset()
+    mockFindFirst.mockReset()
+    mockUpdate.mockReset()
+    mockPublish.mockReset()
+  })
+
+  it('200s and marks the identity as BOUNCED on a verified bounce', async () => {
+    mockParseWebhook.mockResolvedValue({
+      type: 'bounce',
+      messageId: 'm-1',
+      recipient: 'user@example.com',
+      reason: 'Permanent',
+    })
+    mockFindFirst.mockResolvedValue({
+      id: 'ei-1',
+      userId: 'user-1',
+      email: 'user@example.com',
+    })
+    mockUpdate.mockResolvedValue({ id: 'ei-1' })
+    const res = makeRes()
+
+    await handleMailWebhook(makeReq({ body: {} }), res)
+
+    expect(mockFindFirst).toHaveBeenCalledWith({
+      where: { email: 'user@example.com' },
+    })
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'ei-1' },
+        data: expect.objectContaining({ status: 'BOUNCED' }),
+      })
+    )
+    expect(res.status).not.toHaveBeenCalled()
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      message: 'Mail webhook processed',
+    })
+  })
+
+  it('200s and marks the identity as COMPLAINED on a verified complaint', async () => {
+    mockParseWebhook.mockResolvedValue({
+      type: 'complaint',
+      messageId: 'm-2',
+      recipient: 'User@Example.COM',
+      reason: 'abuse',
+    })
+    mockFindFirst.mockResolvedValue({
+      id: 'ei-1',
+      userId: 'user-1',
+      email: 'user@example.com',
+    })
+    const res = makeRes()
+
+    await handleMailWebhook(makeReq({ body: {} }), res)
+
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'COMPLAINED' }),
+      })
+    )
+  })
+
+  it('400s when the provider yields no event', async () => {
+    mockParseWebhook.mockResolvedValue(null)
+    const res = makeRes()
+
+    await handleMailWebhook(makeReq({ body: {} }), res)
+
+    expect(res.status).toHaveBeenCalledWith(400)
+    expect(mockFindFirst).not.toHaveBeenCalled()
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  it('401s a tampered delivery that fails SNS signature verification', async () => {
+    const error = new Error('SES webhook failed SNS signature verification')
+    ;(error as { code?: string }).code = 'SES_WEBHOOK_SIGNATURE_INVALID'
+    mockParseWebhook.mockRejectedValue(error)
+    const res = makeRes()
+
+    await handleMailWebhook(makeReq({ body: {} }), res)
+
+    expect(res.status).toHaveBeenCalledWith(401)
+    expect(res.json).toHaveBeenCalledWith({ error: 'Unauthorized' })
+    // An unauthenticated delivery is never processed.
+    expect(mockFindFirst).not.toHaveBeenCalled()
+    expect(mockUpdate).not.toHaveBeenCalled()
+    expect(mockPublish).not.toHaveBeenCalled()
+    expect(logger.warn).toHaveBeenCalled()
+  })
+
+  it('500s on an unexpected registry failure', async () => {
+    mockParseWebhook.mockRejectedValue(new Error('db down'))
+    const res = makeRes()
+
+    await handleMailWebhook(makeReq({ body: {} }), res)
+
+    expect(res.status).toHaveBeenCalledWith(500)
+    expect(logger.error).toHaveBeenCalled()
   })
 })
