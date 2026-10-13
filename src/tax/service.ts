@@ -55,7 +55,9 @@ export async function createLotForDeposit(
   database: Db = db
 ): Promise<void> {
   try {
-    const { price, source } = priceForAsset(assetSymbol)
+    const { price, source } = await priceForAsset(assetSymbol, {
+      asOfDate: acquiredAt,
+    })
     const lotAmount = new Decimal(amount)
 
     await (database as any).costBasisLot.create({
@@ -158,7 +160,9 @@ export async function recordDisposalsForWithdrawal(
       orderBy: [{ acquiredAt: 'asc' }, { id: 'asc' }],
     })
 
-    const { price } = priceForAsset(assetSymbol)
+    const { price } = await priceForAsset(assetSymbol, {
+      asOfDate: disposedAt,
+    })
     const { disposals, updatedLots } = resolveMethod(method).consumeLots(
       openLots.map((lot: any) => ({
         id: lot.id,

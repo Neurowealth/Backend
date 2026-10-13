@@ -1,4 +1,6 @@
 import { TaxJurisdiction } from '@prisma/client'
+import { Decimal } from '@prisma/client/runtime/library'
+import { priceForAsset } from './pricing'
 import { resolveJurisdiction } from './jurisdictions'
 
 /**
@@ -73,4 +75,72 @@ export function isSameAssetRebuyLikely(
   }
 
   return false
+}
+
+/**
+ * Result of evaluating potential unrealized loss for tax-loss harvesting.
+ */
+export interface TaxLossHarvestEstimate {
+  assetSymbol: string
+  currentPrice: Decimal
+  costBasisPerUnit: Decimal
+  unrealizedLossTotal: Decimal
+  isLoss: boolean
+  washSaleRisk: boolean
+}
+
+/**
+ * Evaluate if a lot or position is in a loss position using live or historical market feed prices.
+ * Enables tax-loss harvesting logic to consume non-stablecoin prices.
+ *
+ * @param assetSymbol - Symbol of the asset.
+ * @param amount - Position or lot quantity.
+ * @param costBasisPerUnit - Acquisition price per unit.
+ * @param asOfDate - Evaluation date.
+ * @param options - Wash-sale evaluation parameters.
+ * @returns TaxLossHarvestEstimate or null if unpriced.
+ */
+export async function evaluateTaxLossHarvest(
+  assetSymbol: string,
+  amount: Decimal | string | number,
+  costBasisPerUnit: Decimal | string | number,
+  asOfDate?: Date,
+  options?: {
+    jurisdiction?: TaxJurisdiction
+    hasRecentAcquisition?: boolean
+  }
+): Promise<TaxLossHarvestEstimate | null> {
+  const priceInfo = await priceForAsset(assetSymbol, { asOfDate })
+  if (!priceInfo.price) {
+    return null
+  }
+
+  const currentPrice = priceInfo.price
+  const basis = new Decimal(costBasisPerUnit)
+  const difference = currentPrice.minus(basis)
+  const isLoss = difference.isNegative()
+  const unrealizedLossTotal = isLoss
+    ? difference.abs().times(new Decimal(amount))
+    : new Decimal(0)
+
+  const washSaleRisk =
+    isLoss &&
+    options?.jurisdiction &&
+    options.hasRecentAcquisition !== undefined
+      ? hasWashSaleRisk(
+          assetSymbol,
+          asOfDate ?? new Date(),
+          options.jurisdiction,
+          options.hasRecentAcquisition
+        )
+      : false
+
+  return {
+    assetSymbol,
+    currentPrice,
+    costBasisPerUnit: basis,
+    unrealizedLossTotal,
+    isLoss,
+    washSaleRisk,
+  }
 }
