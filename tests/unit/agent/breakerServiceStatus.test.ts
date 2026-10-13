@@ -4,7 +4,13 @@
 import {
   getBreakerStatusForUser,
   getBreakerStatusSummary,
+  getStablecoinPrice,
+  getStablecoinPriceSync,
 } from '../../../src/agent/breakerService'
+import {
+  setCachedStablecoinPrice,
+  clearPriceFeedCache,
+} from '../../../src/stellar/priceFeed'
 
 jest.mock('../../../src/db', () => {
   const mockFindMany = jest.fn()
@@ -20,6 +26,9 @@ jest.mock('../../../src/db', () => {
   }
 })
 
+jest.mock('../../../src/utils/fetchWithRetry', () => ({
+  fetchWithRetry: jest.fn().mockRejectedValue(new Error('Horizon offline')),
+}))
 jest.mock('../../../src/utils/logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }))
@@ -123,6 +132,23 @@ describe('breakerService status surfaces', () => {
   describe('getBreakerStatusSummary', () => {
     it('returns a closed (null) global summary before any tick', () => {
       expect(getBreakerStatusSummary()).toEqual({ global: null })
+    })
+  })
+
+  describe('getStablecoinPrice integration', () => {
+    afterEach(() => {
+      clearPriceFeedCache()
+    })
+
+    it('returns cached price when populated', async () => {
+      setCachedStablecoinPrice('USDC', 0.998)
+      expect(getStablecoinPriceSync()).toBe(0.998)
+      await expect(getStablecoinPrice()).resolves.toBe(0.998)
+    })
+
+    it('returns null when feed fails or is empty', async () => {
+      clearPriceFeedCache()
+      await expect(getStablecoinPrice()).resolves.toBeNull()
     })
   })
 

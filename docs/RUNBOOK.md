@@ -502,16 +502,30 @@ recovering to `HALF_OPEN`, then one clean probe to close.
 `BREAKER_COOLDOWN_MS` (1h) is the base cooldown; a repeated HALF_OPEN trip
 doubles it up to `BREAKER_MAX_COOLDOWN_MS` (24h).
 
-### Known limitation — de-peg price feed
+### De-peg price feed configuration
 
-The de-peg rule is a pure consumer of a stablecoin spot price. As of this
-change no live price feed exists in this codebase: the fee oracle
-(`src/stellar/feeOracle.ts`) publishes only fees, and `src/stellar/routing.ts`
-is a stub. `getStablecoinPrice()` (`src/agent/breakerService.ts`) is the single
-integration point and currently returns `null` (fails safe — the rule never
-trips); the rule is disabled by default. Wire the oracle there, keep the pure
-rule unchanged, flip `BREAKER_DEPEG_ENABLED=true`, and re-run the de-peg unit
-tests.
+The de-peg breaker rule consumes a stablecoin spot price to protect against de-pegging events on Stellar. The integration point `getStablecoinPrice()` (`src/agent/breakerService.ts`) is wired to the Horizon DEX orderbook feed module (`src/stellar/priceFeed.ts`).
+
+#### Feed Mechanism
+- The feed polls the orderbook endpoint (`${HORIZON_URL}/order_book`) between the configured stablecoin asset (e.g., USDC) and counter asset (e.g., USD or USDT).
+- The mid-market price is calculated as `(topBid + topAsk) / 2`. If only one side of the book has liquidity, that price is used.
+- Fail-safe behavior: If the orderbook is empty, unconfigured, or unreachable (network timeouts/HTTP errors), the feed logs a warning and returns `null`. A `null` price never trips the breaker.
+
+#### Configuration Variables
+- `BREAKER_DEPEG_ENABLED`: Set to `true` to enable de-peg monitoring (defaults to `false`).
+- `BREAKER_DEPEG_BPS`: Maximum allowable deviation in basis points from $1.00 before tripping (defaults to `150`, or 1.5%).
+- `BREAKER_DEPEG_SUSTAINED_CHECKS`: Number of consecutive clean checks before transitioning from `OPEN` to `HALF_OPEN` (defaults to `3`).
+- `HORIZON_URL`: Horizon RPC instance (defaults to `https://horizon.stellar.org`).
+- `USDC_ISSUER`: Issuer address for the base stablecoin (defaults to Circle's mainnet issuer `GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`).
+- `BREAKER_DEPEG_COUNTER_CODE`: Asset code for the counter trading pair (defaults to `USD`).
+- `BREAKER_DEPEG_COUNTER_ISSUER`: Issuer public key for the counter asset on Horizon.
+
+#### Enabling the Feed
+To activate de-peg protection in production or staging:
+1. Ensure `HORIZON_URL` and `USDC_ISSUER` match your target network (Mainnet or Testnet).
+2. Configure `BREAKER_DEPEG_COUNTER_CODE` and `BREAKER_DEPEG_COUNTER_ISSUER` for the target reference pair on Horizon DEX.
+3. Set `BREAKER_DEPEG_ENABLED=true` in your environment or secrets manager.
+4. Restart the backend service. Monitor agent status via `/api/v1/agent/status` to ensure breaker evaluations succeed cleanly without unexpected trips.
 
 ### Inspector
 
