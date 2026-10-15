@@ -49,6 +49,9 @@ export const ADMIN_SCOPES = [
   // #394 — GDPR/CCPA right-to-erasure
   'erasure:write',
   'erasure:read',
+  // #494 — feature flags management and staged rollout/rollback
+  'flags:read',
+  'flags:write',
   // #493 — Telegram and WhatsApp message delivery management & recovery
   'messages:read',
   'messages:write',

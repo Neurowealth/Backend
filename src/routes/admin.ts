@@ -31,6 +31,10 @@ import {
   manualTripBreaker,
   manualResetBreaker,
 } from '../agent/breakerService'
+import {
+  featureFlagManager,
+  getCurrentEnvironment,
+} from '../config/featureFlags'
 import { messageDeliveryService } from '../messaging'
 
 const router = Router()
@@ -166,6 +170,12 @@ router.get(
   '/jobs/dashboard',
   requireAdminScope('metrics:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const jobSnapshot = await getJobDashboardSnapshot()
       const dlqSize = await DeadLetterQueue.getSize()
@@ -986,6 +996,12 @@ router.post(
   '/keys/:id/rotate',
   requireAdminScope('keys:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { id } = req.params
 
@@ -2339,6 +2355,12 @@ router.get(
   '/messages',
   requireAdminScope('messages:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { channel, status, recipient, userId, category, limit, offset } =
         req.query
@@ -2382,6 +2404,12 @@ router.get(
   '/messages/stats',
   requireAdminScope('messages:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const stats = await messageDeliveryService.getMessageStats()
       auditLog(req, res, 'MESSAGES_STATS', 'success')
@@ -2408,6 +2436,12 @@ router.get(
   '/messages/:id',
   requireAdminScope('messages:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const msg = await messageDeliveryService.getMessage(req.params.id)
       if (!msg) {
@@ -2439,6 +2473,12 @@ router.post(
   '/messages/:id/retry',
   requireAdminScope('messages:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const msg = await messageDeliveryService.getMessage(req.params.id)
       if (!msg) {
@@ -2480,6 +2520,12 @@ router.post(
   '/messages/retry-dead-letters',
   requireAdminScope('messages:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const { channel } = req.body ?? {}
       const result = await messageDeliveryService.retryAllDeadLetters(channel)
@@ -2515,6 +2561,12 @@ router.delete(
   '/messages/:id',
   requireAdminScope('messages:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
       const msg = await messageDeliveryService.getMessage(req.params.id)
       if (!msg) {
@@ -2549,390 +2601,453 @@ router.delete(
   }
 )
 
-export default router
-
-// ── Privacy Erasure Routes (#489) ───────────────────────────────────────────
-
-import {
-  createErasureRequest,
-  approveErasureRequest,
-  rejectErasureRequest,
-  executeErasure,
-  listErasureRequests,
-  previewErasure,
-} from '../compliance/privacyErasure'
+// ── Feature Flag Operational & Rollback Routes (#494) ────────────────────────
 
 /**
- * GET /api/admin/erasure/requests
- * List all erasure requests with optional status filter.
- * Required scope: read
+ * GET /api/v1/admin/feature-flags
+ * List all feature flags and their evaluation status for the current environment.
  */
 router.get(
-  '/erasure/requests',
-  requireAdminScope('read'),
+  '/feature-flags',
+  requireAdminScope('flags:read'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
-      const { status, limit, offset } = req.query
-      const result = await listErasureRequests({
-        status: status as any,
-        limit: limit ? parseInt(limit as string) : undefined,
-        offset: offset ? parseInt(offset as string) : undefined,
-      })
-
-      res.json({
+      const env = getCurrentEnvironment()
+      const entityId =
+        typeof req.query.entityId === 'string' ? req.query.entityId : undefined
+      const flags = featureFlagManager.getAllFlags(
+        entityId ? { entityId } : undefined
+      )
+      res.status(200).json({
         success: true,
-        data: result,
-        timestamp: new Date().toISOString(),
+        data: {
+          environment: env,
+          flags,
+        },
       })
-    } catch (error: any) {
-      logger.error('[Admin] Failed to list erasure requests', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      res.status(500).json({
-        success: false,
-        error: 'Failed to list erasure requests',
-      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      res.status(500).json({ success: false, error: message })
     }
   }
 )
 
 /**
- * POST /api/admin/erasure/requests
- * Create a new erasure request for a user.
- * Required scope: write
- *
- * Body: { userId: string, reason: string }
+ * GET /api/v1/admin/feature-flags/history
+ * List emergency rollback and configuration change history.
+ */
+router.get(
+  '/feature-flags/history',
+  requireAdminScope('flags:read'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+    try {
+      const history = featureFlagManager.getRollbackHistory()
+      res.status(200).json({
+        success: true,
+        data: history,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/v1/admin/feature-flags/emergency-disable-all
+ * Platform-wide emergency kill switch to activate maintenance mode and disable flags.
  */
 router.post(
-  '/erasure/requests',
-  requireAdminScope('write'),
+  '/feature-flags/emergency-disable-all',
+  requireAdminScope('flags:write'),
   async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
     try {
-      const { userId, reason } = req.body
-      const adminAuth = res.locals.adminAuth
-
-      if (!userId || !reason) {
-        return res.status(400).json({
-          success: false,
-          error: 'userId and reason are required',
+      const { reason } = req.body ?? {}
+      if (typeof reason !== 'string' || reason.trim() === '') {
+        auditLog(req, res, 'EMERGENCY_DISABLE_ALL_FEATURE_FLAGS', 'failure', {
+          error: 'missing_reason',
         })
+        res.status(400).json({ success: false, error: 'reason is required' })
+        return
       }
 
-      const request = await createErasureRequest(userId, adminAuth.name, reason)
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
 
-      auditLog(req, res, 'CREATE_ERASURE_REQUEST', 'success', {
-        requestId: request.id,
-        userId,
+      featureFlagManager.emergencyDisableAll(reason.trim(), adminIdentity)
+      auditLog(req, res, 'EMERGENCY_DISABLE_ALL_FEATURE_FLAGS', 'success', {
+        reason: reason.trim(),
       })
 
-      res.status(201).json({
+      res.status(200).json({
         success: true,
-        data: request,
-        timestamp: new Date().toISOString(),
+        message:
+          'Platform-wide emergency kill switch activated; all flags disabled',
       })
-    } catch (error: any) {
-      logger.error('[Admin] Failed to create erasure request', {
-        error: error instanceof Error ? error.message : 'Unknown error',
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'EMERGENCY_DISABLE_ALL_FEATURE_FLAGS', 'failure', {
+        error: message,
       })
-      auditLog(req, res, 'CREATE_ERASURE_REQUEST', 'failure', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      res.status(500).json({
-        success: false,
-        error:
-          error instanceof Error ? error.message : 'Failed to create request',
-      })
+      res.status(500).json({ success: false, error: message })
     }
   }
 )
 
 /**
- * POST /api/admin/erasure/requests/:id/approve
- * Approve an erasure request.
- * Required scope: super
+ * GET /api/v1/admin/feature-flags/:key
+ * Retrieve specific feature flag details and evaluation.
  */
-router.post(
-  '/erasure/requests/:id/approve',
-  requireAdminScope('super'),
+router.get(
+  '/feature-flags/:key',
+  requireAdminScope('flags:read'),
   async (req: Request, res: Response) => {
-    try {
-      const { id } = req.params
-      const adminAuth = res.locals.adminAuth
-
-      const request = await approveErasureRequest(id, adminAuth.name)
-
-      auditLog(req, res, 'APPROVE_ERASURE_REQUEST', 'success', {
-        requestId: id,
-      })
-
-      res.json({
-        success: true,
-        data: request,
-        timestamp: new Date().toISOString(),
-      })
-    } catch (error: any) {
-      logger.error('[Admin] Failed to approve erasure request', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      auditLog(req, res, 'APPROVE_ERASURE_REQUEST', 'failure', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      res.status(500).json({
-        success: false,
-        error:
-          error instanceof Error ? error.message : 'Failed to approve request',
-      })
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
     }
-  }
-)
-
-/**
- * POST /api/admin/erasure/requests/:id/reject
- * Reject an erasure request.
- * Required scope: super
- *
- * Body: { rejectionReason: string }
- */
-router.post(
-  '/erasure/requests/:id/reject',
-  requireAdminScope('super'),
-  async (req: Request, res: Response) => {
     try {
-      const { id } = req.params
-      const { rejectionReason } = req.body
-      const adminAuth = res.locals.adminAuth
-
-      if (!rejectionReason) {
-        return res.status(400).json({
-          success: false,
-          error: 'rejectionReason is required',
-        })
+      const { key } = req.params
+      const flag = featureFlagManager.getFlag(key)
+      if (!flag) {
+        res
+          .status(404)
+          .json({ success: false, error: `Feature flag "${key}" not found` })
+        return
       }
 
-      const request = await rejectErasureRequest(
-        id,
-        adminAuth.name,
-        rejectionReason
+      const entityId =
+        typeof req.query.entityId === 'string' ? req.query.entityId : undefined
+      const currentEvaluation = featureFlagManager.evaluate(
+        key,
+        entityId ? { entityId } : undefined
       )
 
-      auditLog(req, res, 'REJECT_ERASURE_REQUEST', 'success', {
-        requestId: id,
-      })
-
-      res.json({
+      res.status(200).json({
         success: true,
-        data: request,
-        timestamp: new Date().toISOString(),
+        data: {
+          ...flag,
+          currentEvaluation,
+        },
       })
-    } catch (error: any) {
-      logger.error('[Admin] Failed to reject erasure request', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      auditLog(req, res, 'REJECT_ERASURE_REQUEST', 'failure', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      res.status(500).json({
-        success: false,
-        error:
-          error instanceof Error ? error.message : 'Failed to reject request',
-      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      res.status(500).json({ success: false, error: message })
     }
   }
 )
 
 /**
- * POST /api/admin/erasure/requests/:id/execute
- * Execute an approved erasure request. THIS IS IRREVERSIBLE.
- * Required scope: super
+ * PUT /api/v1/admin/feature-flags/:key
+ * Update runtime override for a feature flag.
  */
-router.post(
-  '/erasure/requests/:id/execute',
-  requireAdminScope('super'),
+router.put(
+  '/feature-flags/:key',
+  requireAdminScope('flags:write'),
   async (req: Request, res: Response) => {
-    try {
-      const { id } = req.params
-
-      const summary = await executeErasure(id)
-
-      auditLog(req, res, 'EXECUTE_ERASURE', 'success', {
-        requestId: id,
-        summary,
-      })
-
-      res.json({
-        success: true,
-        data: summary,
-        timestamp: new Date().toISOString(),
-      })
-    } catch (error: any) {
-      logger.error('[Admin] Failed to execute erasure', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      auditLog(req, res, 'EXECUTE_ERASURE', 'failure', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      res.status(500).json({
-        success: false,
-        error:
-          error instanceof Error ? error.message : 'Failed to execute erasure',
-      })
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
     }
-  }
-)
-
-/**
- * GET /api/admin/erasure/preview/:userId
- * Preview what would be deleted for a user.
- * Required scope: read
- */
-router.get(
-  '/erasure/preview/:userId',
-  requireAdminScope('read'),
-  async (req: Request, res: Response) => {
     try {
-      const { userId } = req.params
-
-      const preview = await previewErasure(userId)
-
-      res.json({
-        success: true,
-        data: preview,
-        timestamp: new Date().toISOString(),
-      })
-    } catch (error: any) {
-      logger.error('[Admin] Failed to preview erasure', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      res.status(500).json({
-        success: false,
-        error: 'Failed to preview erasure',
-      })
-    }
-  }
-)
-
-// ── Referral Fraud Review Routes (#490) ─────────────────────────────────────
-
-import {
-  listConversionsForReview,
-  approveReferralConversion,
-  rejectReferralConversion,
-} from '../referral/service'
-
-/**
- * GET /api/admin/referrals/review
- * List referral conversions flagged for manual review.
- * Required scope: read
- */
-router.get(
-  '/referrals/review',
-  requireAdminScope('read'),
-  async (req: Request, res: Response) => {
-    try {
-      const conversions = await listConversionsForReview()
-
-      res.json({
-        success: true,
-        data: conversions,
-        timestamp: new Date().toISOString(),
-      })
-    } catch (error: any) {
-      logger.error('[Admin] Failed to list referral reviews', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      res.status(500).json({
-        success: false,
-        error: 'Failed to list referral reviews',
-      })
-    }
-  }
-)
-
-/**
- * POST /api/admin/referrals/review/:id/approve
- * Approve a referral conversion after manual review.
- * Required scope: write
- */
-router.post(
-  '/referrals/review/:id/approve',
-  requireAdminScope('write'),
-  async (req: Request, res: Response) => {
-    try {
-      const { id } = req.params
-      const adminAuth = res.locals.adminAuth
-
-      await approveReferralConversion(id, adminAuth.name)
-
-      auditLog(req, res, 'APPROVE_REFERRAL', 'success', { conversionId: id })
-
-      res.json({
-        success: true,
-        message: 'Referral conversion approved',
-        timestamp: new Date().toISOString(),
-      })
-    } catch (error: any) {
-      logger.error('[Admin] Failed to approve referral conversion', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      auditLog(req, res, 'APPROVE_REFERRAL', 'failure', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      res.status(500).json({
-        success: false,
-        error:
-          error instanceof Error ? error.message : 'Failed to approve referral',
-      })
-    }
-  }
-)
-
-/**
- * POST /api/admin/referrals/review/:id/reject
- * Reject a referral conversion after manual review.
- * Required scope: write
- *
- * Body: { rejectionReason: string }
- */
-router.post(
-  '/referrals/review/:id/reject',
-  requireAdminScope('write'),
-  async (req: Request, res: Response) => {
-    try {
-      const { id } = req.params
-      const { rejectionReason } = req.body
-      const adminAuth = res.locals.adminAuth
-
-      if (!rejectionReason) {
-        return res.status(400).json({
-          success: false,
-          error: 'rejectionReason is required',
+      const { key } = req.params
+      const flag = featureFlagManager.getFlag(key)
+      if (!flag) {
+        auditLog(req, res, 'UPDATE_FEATURE_FLAG', 'failure', {
+          error: 'not_found',
+          key,
         })
+        res
+          .status(404)
+          .json({ success: false, error: `Feature flag "${key}" not found` })
+        return
       }
 
-      await rejectReferralConversion(id, adminAuth.name, rejectionReason)
+      const { enabled, rolloutPercentage, allowlist, blocklist, killSwitch } =
+        req.body ?? {}
 
-      auditLog(req, res, 'REJECT_REFERRAL', 'success', {
-        conversionId: id,
-        reason: rejectionReason,
+      if (enabled !== undefined && typeof enabled !== 'boolean') {
+        res
+          .status(400)
+          .json({ success: false, error: 'enabled must be a boolean' })
+        return
+      }
+
+      if (
+        rolloutPercentage !== undefined &&
+        (typeof rolloutPercentage !== 'number' ||
+          rolloutPercentage < 0 ||
+          rolloutPercentage > 100)
+      ) {
+        res.status(400).json({
+          success: false,
+          error: 'rolloutPercentage must be a number between 0 and 100',
+        })
+        return
+      }
+
+      if (allowlist !== undefined && !Array.isArray(allowlist)) {
+        res
+          .status(400)
+          .json({
+            success: false,
+            error: 'allowlist must be an array of strings',
+          })
+        return
+      }
+
+      if (blocklist !== undefined && !Array.isArray(blocklist)) {
+        res
+          .status(400)
+          .json({
+            success: false,
+            error: 'blocklist must be an array of strings',
+          })
+        return
+      }
+
+      if (killSwitch !== undefined && typeof killSwitch !== 'boolean') {
+        res
+          .status(400)
+          .json({ success: false, error: 'killSwitch must be a boolean' })
+        return
+      }
+
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
+
+      featureFlagManager.setOverride(
+        key,
+        {
+          ...(enabled !== undefined ? { enabled } : {}),
+          ...(rolloutPercentage !== undefined ? { rolloutPercentage } : {}),
+          ...(allowlist !== undefined ? { allowlist } : {}),
+          ...(blocklist !== undefined ? { blocklist } : {}),
+          ...(killSwitch !== undefined ? { killSwitch } : {}),
+        },
+        adminIdentity
+      )
+
+      auditLog(req, res, 'UPDATE_FEATURE_FLAG', 'success', {
+        key,
+        override: req.body,
       })
 
-      res.json({
+      res.status(200).json({
         success: true,
-        message: 'Referral conversion rejected',
-        timestamp: new Date().toISOString(),
+        data: featureFlagManager.evaluate(key),
       })
-    } catch (error: any) {
-      logger.error('[Admin] Failed to reject referral conversion', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      auditLog(req, res, 'REJECT_REFERRAL', 'failure', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      })
-      res.status(500).json({
-        success: false,
-        error:
-          error instanceof Error ? error.message : 'Failed to reject referral',
-      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'UPDATE_FEATURE_FLAG', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
     }
   }
 )
+
+/**
+ * POST /api/v1/admin/feature-flags/:key/staged-rollout
+ * Advance or adjust staged rollout percentage (0-100).
+ */
+router.post(
+  '/feature-flags/:key/staged-rollout',
+  requireAdminScope('flags:write'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+    try {
+      const { key } = req.params
+      const flag = featureFlagManager.getFlag(key)
+      if (!flag) {
+        auditLog(req, res, 'STAGED_ROLLOUT_FEATURE_FLAG', 'failure', {
+          error: 'not_found',
+          key,
+        })
+        res
+          .status(404)
+          .json({ success: false, error: `Feature flag "${key}" not found` })
+        return
+      }
+
+      const { percentage } = req.body ?? {}
+      if (
+        typeof percentage !== 'number' ||
+        percentage < 0 ||
+        percentage > 100
+      ) {
+        auditLog(req, res, 'STAGED_ROLLOUT_FEATURE_FLAG', 'failure', {
+          error: 'invalid_percentage',
+          percentage,
+        })
+        res.status(400).json({
+          success: false,
+          error: 'percentage must be a number between 0 and 100',
+        })
+        return
+      }
+
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
+
+      featureFlagManager.stagedRollout(key, percentage, adminIdentity)
+      auditLog(req, res, 'STAGED_ROLLOUT_FEATURE_FLAG', 'success', {
+        key,
+        percentage,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: featureFlagManager.evaluate(key),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'STAGED_ROLLOUT_FEATURE_FLAG', 'failure', {
+        error: message,
+      })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/v1/admin/feature-flags/:key/rollback
+ * Fast emergency rollback for a specific feature flag.
+ */
+router.post(
+  '/feature-flags/:key/rollback',
+  requireAdminScope('flags:write'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+    try {
+      const { key } = req.params
+      const flag = featureFlagManager.getFlag(key)
+      if (!flag) {
+        auditLog(req, res, 'ROLLBACK_FEATURE_FLAG', 'failure', {
+          error: 'not_found',
+          key,
+        })
+        res
+          .status(404)
+          .json({ success: false, error: `Feature flag "${key}" not found` })
+        return
+      }
+
+      const { reason } = req.body ?? {}
+      if (typeof reason !== 'string' || reason.trim() === '') {
+        auditLog(req, res, 'ROLLBACK_FEATURE_FLAG', 'failure', {
+          error: 'missing_reason',
+        })
+        res.status(400).json({ success: false, error: 'reason is required' })
+        return
+      }
+
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
+
+      const rollbackEvent = featureFlagManager.rollback(
+        key,
+        reason.trim(),
+        adminIdentity
+      )
+
+      auditLog(req, res, 'ROLLBACK_FEATURE_FLAG', 'success', {
+        key,
+        reason: reason.trim(),
+        rollbackEvent,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: rollbackEvent,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'ROLLBACK_FEATURE_FLAG', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/v1/admin/feature-flags/:key/reset
+ * Reset a feature flag back to its default environment configuration.
+ */
+router.post(
+  '/feature-flags/:key/reset',
+  requireAdminScope('flags:write'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+    try {
+      const { key } = req.params
+      const flag = featureFlagManager.getFlag(key)
+      if (!flag) {
+        auditLog(req, res, 'RESET_FEATURE_FLAG', 'failure', {
+          error: 'not_found',
+          key,
+        })
+        res
+          .status(404)
+          .json({ success: false, error: `Feature flag "${key}" not found` })
+        return
+      }
+
+      const adminIdentity = res.locals.adminAuth
+        ? `${res.locals.adminAuth.name} (${res.locals.adminAuth.role})`
+        : 'unknown'
+
+      featureFlagManager.reset(key, adminIdentity)
+      auditLog(req, res, 'RESET_FEATURE_FLAG', 'success', { key })
+
+      res.status(200).json({
+        success: true,
+        data: featureFlagManager.evaluate(key),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'RESET_FEATURE_FLAG', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+export default router

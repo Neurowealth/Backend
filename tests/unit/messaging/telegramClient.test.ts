@@ -9,7 +9,10 @@ import {
   TelegramApiError,
   resetTelegramClient,
 } from '../../../src/utils/telegram-client'
-import { TimeoutError, CircuitBreakerError } from '../../../src/utils/http-client'
+import {
+  TimeoutError,
+  CircuitBreakerError,
+} from '../../../src/utils/http-client'
 
 describe('Telegram Client (#493)', () => {
   beforeEach(() => {
@@ -100,10 +103,13 @@ describe('Telegram Client (#493)', () => {
     })
     expect(isTelegramTransientError(err400)).toBe(false)
 
-    const err403 = new TelegramApiError('Forbidden: bot was blocked by the user', {
-      statusCode: 403,
-      isTransient: false,
-    })
+    const err403 = new TelegramApiError(
+      'Forbidden: bot was blocked by the user',
+      {
+        statusCode: 403,
+        isTransient: false,
+      }
+    )
     expect(isTelegramTransientError(err403)).toBe(false)
   })
 })

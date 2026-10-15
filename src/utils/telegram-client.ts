@@ -1,5 +1,9 @@
 import { config } from '../config'
-import { HttpClientAdapter, CircuitBreakerError, TimeoutError } from './http-client'
+import {
+  HttpClientAdapter,
+  CircuitBreakerError,
+  TimeoutError,
+} from './http-client'
 import { logger } from './logger'
 
 export interface SendTelegramMessageParams {
@@ -159,7 +163,9 @@ export async function sendTelegramMessage(
     }
 
     const messageId = String(data.result?.message_id ?? Date.now())
-    logger.info(`[Telegram] Message sent to chat ${params.chatId}: id=${messageId}`)
+    logger.info(
+      `[Telegram] Message sent to chat ${params.chatId}: id=${messageId}`
+    )
     return {
       messageId,
       ok: true,
