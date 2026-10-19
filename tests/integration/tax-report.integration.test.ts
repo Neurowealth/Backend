@@ -48,6 +48,7 @@ async function seedUserWithSession(): Promise<{
   const user = await db.user.create({
     data: {
       walletAddress,
+      authPublicKey: walletAddress,
       network: 'TESTNET',
       displayName: 'Tax IT',
       email: `tax-${Date.now()}-${Math.random()}@example.com`,

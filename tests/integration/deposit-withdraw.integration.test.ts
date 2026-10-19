@@ -125,6 +125,7 @@ async function seedAuthAndWallet(): Promise<{
   const user = await db.user.create({
     data: {
       walletAddress,
+      authPublicKey: walletAddress,
       network: 'TESTNET',
       displayName: 'IT Test',
       email: `it-${Date.now()}-${Math.random()}@example.com`,

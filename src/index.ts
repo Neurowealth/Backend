@@ -114,6 +114,7 @@ import liquidityFloorRouter from './routes/liquidity-floor'
 import notificationDlqRouter from './routes/notification-dlq'
 import networkRouter from './routes/network'
 import netWorthRouter from './routes/net-worth'
+import recoveryRouter from './routes/recovery'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -124,6 +125,7 @@ import {
 } from './middleware/corsandbody'
 import { setSpanUser } from './telemetry/spans'
 import { scheduleOutboundNotifications } from './services/outboundNotifications'
+import { scheduleRecoveryCompletion } from './services/account-recovery.service'
 
 // ── Readiness state ───────────────────────────────────────────────────────────
 
@@ -161,6 +163,7 @@ let outboundNotificationsHandle: NodeJS.Timeout | null = null
 let linkedExternalWalletSyncHandle: NodeJS.Timeout | null = null
 let loanAccrualHandle: NodeJS.Timeout | null = null
 let loanLiquidationHandle: NodeJS.Timeout | null = null
+let recoveryCompletionHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -352,6 +355,7 @@ interface ApiRoute {
 const apiRoutes: ApiRoute[] = [
   { path: 'network', handlers: [networkRouter] },
   { path: 'net-worth', handlers: [netWorthRouter] },
+  { path: 'recovery', handlers: [recoveryRouter] },
   { path: 'agent/decisions', handlers: [agentDecisionsRouter] },
   { path: 'agent', handlers: [internalRateLimiter, agentRouter] },
   { path: 'auth/webauthn', handlers: [authRateLimiter, webAuthnRouter] },
@@ -444,6 +448,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
   if (outboundNotificationsHandle) {
     clearInterval(outboundNotificationsHandle)
     outboundNotificationsHandle = null
+  }
+  if (recoveryCompletionHandle) {
+    clearInterval(recoveryCompletionHandle)
+    recoveryCompletionHandle = null
   }
 
   if (dataRetentionHandle) {
@@ -780,6 +788,7 @@ async function main(): Promise<void> {
   reserveReconciliationHandle = scheduleReserveReconciliation()
   messageDeliverySweepHandle = scheduleMessageDeliverySweep()
   outboundNotificationsHandle = scheduleOutboundNotifications()
+  recoveryCompletionHandle = scheduleRecoveryCompletion()
   linkedExternalWalletSyncHandle = scheduleLinkedExternalWalletSync()
   // #532 — accrual first, then the monitor: the monitor values loans, and it
   // must not value them on interest the accrual job has not yet recorded.

@@ -47,6 +47,13 @@ enum TransactionStatus {
   CANCELLED
 }
 
+enum RecoveryRequestStatus {
+  PENDING
+  CANCELLED
+  REJECTED
+  COMPLETED
+}
+
 enum PositionStatus {
   ACTIVE
   CLOSED
@@ -308,6 +315,9 @@ enum ErasureRequestStatus {
 model User {
   id                  String           @id @default(uuid())
   walletAddress       String           @unique
+  /// Wallet-signature credential. Kept separate from walletAddress so account
+  /// access recovery cannot redirect asset transfers or alter custody details.
+  authPublicKey       String           @unique
   network             Network          @default(MAINNET)
   displayName         String?
   email               String?          @unique
@@ -377,6 +387,10 @@ model User {
   recurringWithdrawalPlans RecurringWithdrawalPlan[]
   supportTickets          SupportTicket[]
   webAuthnCredentials     WebAuthnCredential[]
+  recoveryPolicy          RecoveryPolicy?
+  recoveryGuardians       RecoveryGuardian[]       @relation("RecoveryOwner")
+  guardianNominations     RecoveryGuardian[]       @relation("RecoveryGuardianUser")
+  recoveryRequests        RecoveryRequest[]
 
   @@map("users")
 }
@@ -514,6 +528,70 @@ model Session {
   @@index([revokedAt])
   @@index([refreshTokenPrefix])
   @@map("sessions")
+}
+
+model RecoveryPolicy {
+  id                  String   @id @default(uuid())
+  ownerUserId         String   @unique
+  requiredApprovals   Int      @default(2)
+  recoveryDelayHours  Int      @default(72)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  owner User @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@map("recovery_policies")
+}
+
+model RecoveryGuardian {
+  id                  String    @id @default(uuid())
+  ownerUserId         String
+  guardianUserId      String
+  acceptedAt          DateTime?
+  revokedAt           DateTime?
+  createdAt           DateTime  @default(now())
+
+  owner        User               @relation("RecoveryOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  guardianUser User               @relation("RecoveryGuardianUser", fields: [guardianUserId], references: [id], onDelete: Cascade)
+  approvals    RecoveryApproval[]
+
+  @@unique([ownerUserId, guardianUserId])
+  @@index([guardianUserId, acceptedAt])
+  @@map("recovery_guardians")
+}
+
+model RecoveryRequest {
+  id                       String               @id @default(uuid())
+  ownerUserId              String
+  proposedAuthPublicKey    String
+  status                   RecoveryRequestStatus @default(PENDING)
+  initiatedAt              DateTime             @default(now())
+  quorumReachedAt          DateTime?
+  completesAt              DateTime?
+  completedAt              DateTime?
+  cancellationTokenHash    String?
+  cancelledAt              DateTime?
+
+  owner     User                @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  approvals RecoveryApproval[]
+
+  @@index([ownerUserId, status])
+  @@index([status, completesAt])
+  @@map("recovery_requests")
+}
+
+model RecoveryApproval {
+  id         String   @id @default(uuid())
+  requestId  String
+  guardianId String
+  approvedAt DateTime @default(now())
+
+  request  RecoveryRequest  @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  guardian RecoveryGuardian @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, guardianId])
+  @@index([guardianId])
+  @@map("recovery_approvals")
 }
 
 model AdminApiKey {

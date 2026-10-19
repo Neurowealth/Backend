@@ -8,10 +8,13 @@ async function main() {
 
   // ── 1. Test User ─────────────────────────────────────────────────────────────
   const user = await prisma.user.upsert({
-    where: { walletAddress: 'GCKFBEIYV2U22IO2BJ4KVJOIP7XPWQGQFKKWXR65HOTVGT3WHCBLZXK' },
+    where: {
+      walletAddress: 'GCKFBEIYV2U22IO2BJ4KVJOIP7XPWQGQFKKWXR65HOTVGT3WHCBLZXK',
+    },
     update: {},
     create: {
       walletAddress: 'GCKFBEIYV2U22IO2BJ4KVJOIP7XPWQGQFKKWXR65HOTVGT3WHCBLZXK',
+      authPublicKey: 'GCKFBEIYV2U22IO2BJ4KVJOIP7XPWQGQFKKWXR65HOTVGT3WHCBLZXK',
       network: 'TESTNET',
       displayName: 'Alex Testnet',
       email: 'alex@neurowealth.dev',
@@ -40,7 +43,9 @@ async function main() {
       network: 'TESTNET',
     },
   })
-  console.warn(`✅ Protocol rates: Blend ${Number(blendRate.supplyApy) * 100}% APY, Aqua ${Number(aquaRate.supplyApy) * 100}% APY`)
+  console.warn(
+    `✅ Protocol rates: Blend ${Number(blendRate.supplyApy) * 100}% APY, Aqua ${Number(aquaRate.supplyApy) * 100}% APY`
+  )
 
   // ── 3. Position ───────────────────────────────────────────────────────────────
   const position = await prisma.position.create({
@@ -54,14 +59,17 @@ async function main() {
       status: 'ACTIVE',
     },
   })
-  console.warn(`✅ Position: ${position.depositedAmount} USDC on ${position.protocolName}`)
+  console.warn(
+    `✅ Position: ${position.depositedAmount} USDC on ${position.protocolName}`
+  )
 
   // ── 4. Deposit Transaction ────────────────────────────────────────────────────
   const depositTx = await prisma.transaction.create({
     data: {
       userId: user.id,
       positionId: position.id,
-      txHash: 'c3f1e2d4a5b6789012345678901234567890abcdef1234567890abcdef123456',
+      txHash:
+        'c3f1e2d4a5b6789012345678901234567890abcdef1234567890abcdef123456',
       type: 'DEPOSIT',
       status: 'CONFIRMED',
       assetSymbol: 'USDC',
@@ -73,7 +81,9 @@ async function main() {
       confirmedAt: new Date(),
     },
   })
-  console.warn(`✅ Transaction: ${depositTx.amount} ${depositTx.assetSymbol} (${depositTx.txHash?.slice(0, 16)}...)`)
+  console.warn(
+    `✅ Transaction: ${depositTx.amount} ${depositTx.assetSymbol} (${depositTx.txHash?.slice(0, 16)}...)`
+  )
 
   // ── 5. Yield Snapshot ─────────────────────────────────────────────────────────
   const snapshot = await prisma.yieldSnapshot.create({
@@ -92,7 +102,8 @@ async function main() {
       userId: user.id,
       action: 'DEPOSIT',
       status: 'SUCCESS',
-      reasoning: 'Blend USDC offered the highest risk-adjusted APY (8.42%) for risk tolerance 6/10. TVL healthy at $4.2M.',
+      reasoning:
+        'Blend USDC offered the highest risk-adjusted APY (8.42%) for risk tolerance 6/10. TVL healthy at $4.2M.',
       inputData: {
         availableBalance: 5000,
         assetSymbol: 'USDC',

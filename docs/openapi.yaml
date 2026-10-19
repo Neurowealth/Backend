@@ -50,6 +50,8 @@ tags:
     description: User-scoped outbound webhook endpoints (#368)
   - name: Net Worth
     description: Owner-private net worth and read-only external Stellar wallet links (#540)
+  - name: Recovery
+    description: Guardian-authorized account access recovery with a fixed 72-hour cooling-off period (#535)
 
 # ─── Reusable components ──────────────────────────────────────────────────────
 components:
@@ -1493,6 +1495,222 @@ components:
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 paths:
+  /recovery/guardians:
+    get:
+      tags: [Recovery]
+      operationId: listRecoveryGuardians
+      summary: List nominated guardians, incoming nominations, and the recovery quorum
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Guardian and policy state
+        '401':
+          description: Active session required
+    post:
+      tags: [Recovery]
+      operationId: nominateRecoveryGuardian
+      summary: Nominate another verified platform user as a guardian
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [guardianUserId]
+              properties:
+                guardianUserId:
+                  type: string
+                  format: uuid
+                requiredApprovals:
+                  type: integer
+                  minimum: 2
+                  maximum: 5
+      responses:
+        '201':
+          description: Nomination created; guardian acceptance is still required
+        '400':
+          description: Invalid quorum or guardian eligibility
+        '401':
+          description: Active session required
+  /recovery/guardians/{id}/accept:
+    post:
+      tags: [Recovery]
+      operationId: acceptRecoveryGuardianNomination
+      summary: Explicitly accept a guardian nomination
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Nomination accepted
+        '401':
+          description: Active session required
+        '404':
+          description: Pending nomination not found
+  /recovery/guardians/{id}/decline:
+    post:
+      tags: [Recovery]
+      operationId: declineRecoveryGuardianNomination
+      summary: Decline a guardian nomination
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Nomination declined
+        '401':
+          description: Active session required
+  /recovery/guardians/revoke:
+    post:
+      tags: [Recovery]
+      operationId: revokeRecoveryGuardian
+      summary: Revoke a nominated guardian
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [guardianId]
+              properties:
+                guardianId: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Guardian revoked
+        '401':
+          description: Active session required
+  /recovery/requests:
+    get:
+      tags: [Recovery]
+      operationId: listRecoveryRequests
+      summary: List the caller's pending request and requests awaiting their guardian approval
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Owner-scoped and guardian-scoped recovery requests
+        '401':
+          description: Active session required
+  /recovery/initiate:
+    post:
+      tags: [Recovery]
+      operationId: initiateAccountRecovery
+      summary: Request account access recovery using the registered email and a signed new Stellar key
+      description: Obtain a nonce from POST /auth/challenge for newAuthPublicKey, sign it, then submit the signature here. Returns the same generic response for eligible and ineligible account/email combinations.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, newAuthPublicKey, signature]
+              properties:
+                email: { type: string, format: email }
+                newAuthPublicKey:
+                  {
+                    type: string,
+                    description: New Stellar public key used for future sign-in; does not alter the user's asset wallet address,
+                  }
+                signature:
+                  {
+                    type: string,
+                    description: Signature of the unexpired challenge nonce for newAuthPublicKey,
+                  }
+      responses:
+        '202':
+          description: Generic response; eligible users and guardians are notified
+        '429':
+          description: Rate limit exceeded
+  /recovery/{id}/approve:
+    post:
+      tags: [Recovery]
+      operationId: approveAccountRecovery
+      summary: Record one guardian's independent approval
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Approval recorded; reaching quorum starts the fixed 72-hour delay
+        '403':
+          description: Caller is not an accepted guardian
+        '404':
+          description: Pending recovery not found
+  /recovery/{id}/reject:
+    post:
+      tags: [Recovery]
+      operationId: rejectAccountRecovery
+      summary: Reject a pending request, preventing completion
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Request rejected
+        '403':
+          description: Caller is not an accepted guardian
+        '404':
+          description: Pending recovery not found
+  /recovery/{id}/cancel:
+    post:
+      tags: [Recovery]
+      operationId: cancelAccountRecovery
+      summary: Cancel a pending recovery immediately using any active owner session
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Recovery cancelled without guardian approval
+        '401':
+          description: Active owner session required
+  /recovery/cancel:
+    post:
+      tags: [Recovery]
+      operationId: cancelAccountRecoveryByEmail
+      summary: Cancel a pending recovery using the one-time token sent to the registered email
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requestId, token]
+              properties:
+                requestId: { type: string, format: uuid }
+                token: { type: string, minLength: 32 }
+      responses:
+        '200':
+          description: Recovery cancelled
+        '404':
+          description: Invalid or completed recovery request
   /sub-accounts/bulk:
     post:
       tags:
@@ -2077,12 +2295,18 @@ paths:
           application/json:
             schema:
               type: object
-              required: [userId, destinationAddress, assetSymbol, cadence, confirmed]
+              required:
+                [userId, destinationAddress, assetSymbol, cadence, confirmed]
               properties:
                 userId: { type: string, format: uuid }
                 destinationAddress: { type: string }
                 assetSymbol: { type: string }
-                amountMode: { type: string, enum: [FIXED, YIELD_ONLY, PERCENT_OF_BALANCE], default: FIXED }
+                amountMode:
+                  {
+                    type: string,
+                    enum: [FIXED, YIELD_ONLY, PERCENT_OF_BALANCE],
+                    default: FIXED,
+                  }
                 amount: { type: number, minimum: 0, exclusiveMinimum: true }
                 percentage: { type: number, minimum: 0.01, maximum: 100 }
                 minAmount: { type: number, minimum: 0, exclusiveMinimum: true }
@@ -2094,7 +2318,12 @@ paths:
         '401': { description: Active owner session required }
   /recurring-withdrawals/{id}:
     parameters:
-      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - {
+          name: id,
+          in: path,
+          required: true,
+          schema: { type: string, format: uuid },
+        }
     get:
       tags: [Transactions]
       operationId: getRecurringWithdrawal
@@ -2117,7 +2346,11 @@ paths:
               type: object
               properties:
                 destinationAddress: { type: string }
-                amountMode: { type: string, enum: [FIXED, YIELD_ONLY, PERCENT_OF_BALANCE] }
+                amountMode:
+                  {
+                    type: string,
+                    enum: [FIXED, YIELD_ONLY, PERCENT_OF_BALANCE],
+                  }
                 amount: { type: number, minimum: 0, exclusiveMinimum: true }
                 percentage: { type: number, minimum: 0.01, maximum: 100 }
                 cadence: { type: string, enum: [WEEKLY, BIWEEKLY, MONTHLY] }
@@ -2139,7 +2372,12 @@ paths:
         '404': { description: Plan not found }
   /recurring-withdrawals/{id}/preview:
     parameters:
-      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      - {
+          name: id,
+          in: path,
+          required: true,
+          schema: { type: string, format: uuid },
+        }
     post:
       tags: [Transactions]
       operationId: previewRecurringWithdrawal

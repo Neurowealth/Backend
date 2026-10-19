@@ -58,9 +58,11 @@ function uuid(): string {
 }
 
 async function seedUser(overrides: { isActive?: boolean } = {}) {
+  const walletAddress = `G${uuid().replace(/-/g, '').slice(0, 47)}`.slice(0, 56)
   return db.user.create({
     data: {
-      walletAddress: `G${uuid().replace(/-/g, '').slice(0, 47)}`.slice(0, 56),
+      walletAddress,
+      authPublicKey: walletAddress,
       network: 'TESTNET',
       email: `${uuid()}@example.com`,
       isActive: overrides.isActive ?? true,
