@@ -1,5 +1,2 @@
 export * from './types'
-export {
-  MessageDeliveryService,
-  messageDeliveryService,
-} from './service'
+export { MessageDeliveryService, messageDeliveryService } from './service'

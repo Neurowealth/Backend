@@ -44,8 +44,8 @@ function shouldQueryDb(): boolean {
     if (!md) return false
     return Boolean(
       md.create?._isMockFunction ||
-        typeof md.create?.mockResolvedValue === 'function' ||
-        process.env.USE_REAL_DB_FOR_TESTS === 'true'
+      typeof md.create?.mockResolvedValue === 'function' ||
+      process.env.USE_REAL_DB_FOR_TESTS === 'true'
     )
   }
   return Boolean((db as any)?.messageDelivery)
@@ -107,10 +107,13 @@ export class MessageDeliveryService {
           },
         })
       } catch (error) {
-        logger.warn('[Messaging] Could not write message delivery to DB, retained in memory', {
-          id: record.id,
-          error: error instanceof Error ? error.message : String(error),
-        })
+        logger.warn(
+          '[Messaging] Could not write message delivery to DB, retained in memory',
+          {
+            id: record.id,
+            error: error instanceof Error ? error.message : String(error),
+          }
+        )
       }
     }
 
@@ -144,10 +147,13 @@ export class MessageDeliveryService {
           },
         })
       } catch (error) {
-        logger.warn('[Messaging] Could not update message delivery in DB, updated in memory', {
-          id: record.id,
-          error: error instanceof Error ? error.message : String(error),
-        })
+        logger.warn(
+          '[Messaging] Could not update message delivery in DB, updated in memory',
+          {
+            id: record.id,
+            error: error instanceof Error ? error.message : String(error),
+          }
+        )
       }
     }
 
@@ -371,11 +377,14 @@ export class MessageDeliveryService {
               record.category
             )
 
-            logger.info('[Messaging] Message successfully delivered via fallback', {
-              id: record.id,
-              fallbackChannel: fallback.channel,
-              recipient: sanitizeRecipient(fallback.recipient),
-            })
+            logger.info(
+              '[Messaging] Message successfully delivered via fallback',
+              {
+                id: record.id,
+                fallbackChannel: fallback.channel,
+                recipient: sanitizeRecipient(fallback.recipient),
+              }
+            )
 
             return record
           } catch (fallbackError) {
@@ -565,10 +574,26 @@ export class MessageDeliveryService {
    */
   public async refreshQueueMetrics(): Promise<void> {
     const stats = await this.getMessageStats()
-    updateMessageQueueDepth('TELEGRAM', 'PENDING', stats.byChannel.telegram.pending)
-    updateMessageQueueDepth('TELEGRAM', 'DEAD_LETTER', stats.byChannel.telegram.deadLetter)
-    updateMessageQueueDepth('WHATSAPP', 'PENDING', stats.byChannel.whatsapp.pending)
-    updateMessageQueueDepth('WHATSAPP', 'DEAD_LETTER', stats.byChannel.whatsapp.deadLetter)
+    updateMessageQueueDepth(
+      'TELEGRAM',
+      'PENDING',
+      stats.byChannel.telegram.pending
+    )
+    updateMessageQueueDepth(
+      'TELEGRAM',
+      'DEAD_LETTER',
+      stats.byChannel.telegram.deadLetter
+    )
+    updateMessageQueueDepth(
+      'WHATSAPP',
+      'PENDING',
+      stats.byChannel.whatsapp.pending
+    )
+    updateMessageQueueDepth(
+      'WHATSAPP',
+      'DEAD_LETTER',
+      stats.byChannel.whatsapp.deadLetter
+    )
   }
 
   /**
@@ -614,8 +639,7 @@ export class MessageDeliveryService {
 
     if (!deadLetters || deadLetters.length === 0) {
       deadLetters = Array.from(inMemoryStore.values()).filter(
-        (m) =>
-          m.status === 'DEAD_LETTER' && (!channel || m.channel === channel)
+        (m) => m.status === 'DEAD_LETTER' && (!channel || m.channel === channel)
       )
     }
 
@@ -749,10 +773,12 @@ export class MessageDeliveryService {
           defaultStats.total += count
 
           if (row.status === 'PENDING') defaultStats.byStatus.pending += count
-          else if (row.status === 'SENDING') defaultStats.byStatus.sending += count
+          else if (row.status === 'SENDING')
+            defaultStats.byStatus.sending += count
           else if (row.status === 'DELIVERED')
             defaultStats.byStatus.delivered += count
-          else if (row.status === 'FAILED') defaultStats.byStatus.failed += count
+          else if (row.status === 'FAILED')
+            defaultStats.byStatus.failed += count
           else if (row.status === 'DEAD_LETTER')
             defaultStats.byStatus.deadLetter += count
 
@@ -782,7 +808,8 @@ export class MessageDeliveryService {
       else if (msg.status === 'SENDING') defaultStats.byStatus.sending += 1
       else if (msg.status === 'DELIVERED') defaultStats.byStatus.delivered += 1
       else if (msg.status === 'FAILED') defaultStats.byStatus.failed += 1
-      else if (msg.status === 'DEAD_LETTER') defaultStats.byStatus.deadLetter += 1
+      else if (msg.status === 'DEAD_LETTER')
+        defaultStats.byStatus.deadLetter += 1
 
       const ch = msg.channel === 'TELEGRAM' ? 'telegram' : 'whatsapp'
       defaultStats.byChannel[ch].total += 1

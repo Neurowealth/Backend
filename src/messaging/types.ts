@@ -1,11 +1,7 @@
 export type MessageChannel = 'TELEGRAM' | 'WHATSAPP'
 
 export type MessageDeliveryStatus =
-  | 'PENDING'
-  | 'SENDING'
-  | 'DELIVERED'
-  | 'FAILED'
-  | 'DEAD_LETTER'
+  'PENDING' | 'SENDING' | 'DELIVERED' | 'FAILED' | 'DEAD_LETTER'
 
 export type MessagePriority = 'HIGH' | 'NORMAL' | 'LOW'
 

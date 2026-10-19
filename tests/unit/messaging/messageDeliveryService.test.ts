@@ -50,7 +50,9 @@ describe('MessageDeliveryService (#493)', () => {
     })
 
     it('tracks successful WhatsApp message delivery with Twilio SID', async () => {
-      jest.spyOn(twilioClient, 'sendWhatsAppMessage').mockResolvedValue('SM-twilio-sid-1')
+      jest
+        .spyOn(twilioClient, 'sendWhatsAppMessage')
+        .mockResolvedValue('SM-twilio-sid-1')
 
       const record = await messageDeliveryService.send({
         channel: 'WHATSAPP',
@@ -68,12 +70,17 @@ describe('MessageDeliveryService (#493)', () => {
 
   describe('Retry Policy & Backoff', () => {
     it('re-enqueues message for retry on transient failure with exponential backoff', async () => {
-      const transientError = new telegramClient.TelegramApiError('Rate limited', {
-        statusCode: 429,
-        retryAfterSeconds: 5,
-        isTransient: true,
-      })
-      jest.spyOn(telegramClient, 'sendTelegramMessage').mockRejectedValue(transientError)
+      const transientError = new telegramClient.TelegramApiError(
+        'Rate limited',
+        {
+          statusCode: 429,
+          retryAfterSeconds: 5,
+          isTransient: true,
+        }
+      )
+      jest
+        .spyOn(telegramClient, 'sendTelegramMessage')
+        .mockRejectedValue(transientError)
 
       const record = await messageDeliveryService.send({
         channel: 'TELEGRAM',
@@ -100,9 +107,9 @@ describe('MessageDeliveryService (#493)', () => {
   describe('Fallback Handling', () => {
     it('triggers fallback channel when primary channel fails and fallback is configured', async () => {
       // Primary fails with terminal error
-      jest.spyOn(twilioClient, 'sendWhatsAppMessage').mockRejectedValue(
-        new Error('21211: Invalid phone number')
-      )
+      jest
+        .spyOn(twilioClient, 'sendWhatsAppMessage')
+        .mockRejectedValue(new Error('21211: Invalid phone number'))
       // Fallback succeeds
       jest.spyOn(telegramClient, 'sendTelegramMessage').mockResolvedValue({
         ok: true,
@@ -128,7 +135,9 @@ describe('MessageDeliveryService (#493)', () => {
   describe('Dead Letter Queue & Alerting', () => {
     it('moves to DEAD_LETTER and emits alert when attempts and fallback are exhausted', async () => {
       const terminalErr = new Error('403: Forbidden - bot blocked by user')
-      jest.spyOn(telegramClient, 'sendTelegramMessage').mockRejectedValue(terminalErr)
+      jest
+        .spyOn(telegramClient, 'sendTelegramMessage')
+        .mockRejectedValue(terminalErr)
 
       const emitSpy = jest.spyOn(alertingService, 'emit')
 
@@ -155,9 +164,9 @@ describe('MessageDeliveryService (#493)', () => {
   describe('Safe Manual Recovery', () => {
     it('retries a dead-lettered message manually', async () => {
       // First attempt fails to DEAD_LETTER
-      jest.spyOn(telegramClient, 'sendTelegramMessage').mockRejectedValueOnce(
-        new Error('Fatal failure')
-      )
+      jest
+        .spyOn(telegramClient, 'sendTelegramMessage')
+        .mockRejectedValueOnce(new Error('Fatal failure'))
 
       const record = await messageDeliveryService.send({
         channel: 'TELEGRAM',
@@ -181,7 +190,9 @@ describe('MessageDeliveryService (#493)', () => {
 
     it('bulk retries all dead-lettered messages', async () => {
       // Seed 2 dead letter records
-      jest.spyOn(telegramClient, 'sendTelegramMessage').mockRejectedValue(new Error('Down'))
+      jest
+        .spyOn(telegramClient, 'sendTelegramMessage')
+        .mockRejectedValue(new Error('Down'))
 
       await messageDeliveryService.send({
         channel: 'TELEGRAM',
@@ -199,12 +210,15 @@ describe('MessageDeliveryService (#493)', () => {
       const stats = await messageDeliveryService.getMessageStats()
       expect(stats.byStatus.deadLetter).toBe(2)
 
-      const result = await messageDeliveryService.retryAllDeadLetters('TELEGRAM')
+      const result =
+        await messageDeliveryService.retryAllDeadLetters('TELEGRAM')
       expect(result.count).toBe(2)
     })
 
     it('cancels an unsent or dead-letter message safely', async () => {
-      jest.spyOn(telegramClient, 'sendTelegramMessage').mockRejectedValueOnce(new Error('Down'))
+      jest
+        .spyOn(telegramClient, 'sendTelegramMessage')
+        .mockRejectedValueOnce(new Error('Down'))
 
       const record = await messageDeliveryService.send({
         channel: 'TELEGRAM',
@@ -241,11 +255,15 @@ describe('MessageDeliveryService (#493)', () => {
       const all = await messageDeliveryService.listMessages()
       expect(all.total).toBe(2)
 
-      const onlyTelegram = await messageDeliveryService.listMessages({ channel: 'TELEGRAM' })
+      const onlyTelegram = await messageDeliveryService.listMessages({
+        channel: 'TELEGRAM',
+      })
       expect(onlyTelegram.total).toBe(1)
       expect(onlyTelegram.messages[0].channel).toBe('TELEGRAM')
 
-      const onlyAlerts = await messageDeliveryService.listMessages({ category: 'ALERT' })
+      const onlyAlerts = await messageDeliveryService.listMessages({
+        category: 'ALERT',
+      })
       expect(onlyAlerts.total).toBe(1)
       expect(onlyAlerts.messages[0].category).toBe('ALERT')
     })

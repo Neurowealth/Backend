@@ -30,7 +30,8 @@ jest.mock('../../../src/middleware/adminAuth', () => {
       }
       next()
     },
-    requireAdminScope: (_scope: string) => (_req: any, _res: any, next: any) => next(),
+    requireAdminScope: (_scope: string) => (_req: any, _res: any, next: any) =>
+      next(),
   }
 })
 
@@ -47,33 +48,35 @@ describe('Admin Messages Recovery Routes (#493)', () => {
   })
 
   it('GET /api/admin/messages lists tracked messages', async () => {
-    const listSpy = jest.spyOn(messageDeliveryService, 'listMessages').mockResolvedValue({
-      messages: [
-        {
-          id: 'msg-1',
-          channel: 'TELEGRAM',
-          recipient: '123456',
-          userId: 'user-1',
-          category: 'ALERT',
-          body: 'Price alert triggered',
-          status: 'DELIVERED',
-          priority: 'NORMAL',
-          attempts: 1,
-          maxAttempts: 5,
-          nextAttemptAt: null,
-          lastError: null,
-          providerMessageId: 'p-1',
-          metadata: null,
-          fallbackChannel: null,
-          fallbackRecipient: null,
-          fallbackTriggered: false,
-          deliveredAt: new Date(),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      ],
-      total: 1,
-    })
+    const listSpy = jest
+      .spyOn(messageDeliveryService, 'listMessages')
+      .mockResolvedValue({
+        messages: [
+          {
+            id: 'msg-1',
+            channel: 'TELEGRAM',
+            recipient: '123456',
+            userId: 'user-1',
+            category: 'ALERT',
+            body: 'Price alert triggered',
+            status: 'DELIVERED',
+            priority: 'NORMAL',
+            attempts: 1,
+            maxAttempts: 5,
+            nextAttemptAt: null,
+            lastError: null,
+            providerMessageId: 'p-1',
+            metadata: null,
+            fallbackChannel: null,
+            fallbackRecipient: null,
+            fallbackTriggered: false,
+            deliveredAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        ],
+        total: 1,
+      })
 
     const res = await request(app).get('/api/admin/messages')
     expect(res.status).toBe(200)
@@ -86,10 +89,28 @@ describe('Admin Messages Recovery Routes (#493)', () => {
   it('GET /api/admin/messages/stats returns queue and delivery metrics', async () => {
     jest.spyOn(messageDeliveryService, 'getMessageStats').mockResolvedValue({
       total: 10,
-      byStatus: { pending: 2, sending: 1, delivered: 6, failed: 0, deadLetter: 1 },
+      byStatus: {
+        pending: 2,
+        sending: 1,
+        delivered: 6,
+        failed: 0,
+        deadLetter: 1,
+      },
       byChannel: {
-        telegram: { total: 5, delivered: 4, failed: 0, pending: 1, deadLetter: 0 },
-        whatsapp: { total: 5, delivered: 2, failed: 0, pending: 2, deadLetter: 1 },
+        telegram: {
+          total: 5,
+          delivered: 4,
+          failed: 0,
+          pending: 1,
+          deadLetter: 0,
+        },
+        whatsapp: {
+          total: 5,
+          delivered: 2,
+          failed: 0,
+          pending: 2,
+          deadLetter: 1,
+        },
       },
     })
 
@@ -129,7 +150,9 @@ describe('Admin Messages Recovery Routes (#493)', () => {
     expect(foundRes.body.data.id).toBe('msg-target')
 
     jest.spyOn(messageDeliveryService, 'getMessage').mockResolvedValueOnce(null)
-    const notFoundRes = await request(app).get('/api/admin/messages/non-existent')
+    const notFoundRes = await request(app).get(
+      '/api/admin/messages/non-existent'
+    )
     expect(notFoundRes.status).toBe(404)
     expect(notFoundRes.body.success).toBe(false)
   })
@@ -181,7 +204,9 @@ describe('Admin Messages Recovery Routes (#493)', () => {
       updatedAt: new Date(),
     })
 
-    const res = await request(app).post('/api/admin/messages/msg-to-retry/retry')
+    const res = await request(app).post(
+      '/api/admin/messages/msg-to-retry/retry'
+    )
     expect(res.status).toBe(200)
     expect(res.body.success).toBe(true)
     expect(res.body.data.status).toBe('DELIVERED')

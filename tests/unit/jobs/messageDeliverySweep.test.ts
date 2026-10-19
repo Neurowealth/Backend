@@ -37,10 +37,28 @@ describe('Message Delivery Sweep Job (#493)', () => {
       .spyOn(messageDeliveryService, 'getMessageStats')
       .mockResolvedValue({
         total: 3,
-        byStatus: { pending: 1, sending: 0, delivered: 2, failed: 0, deadLetter: 0 },
+        byStatus: {
+          pending: 1,
+          sending: 0,
+          delivered: 2,
+          failed: 0,
+          deadLetter: 0,
+        },
         byChannel: {
-          telegram: { total: 2, delivered: 2, failed: 0, pending: 0, deadLetter: 0 },
-          whatsapp: { total: 1, delivered: 0, failed: 0, pending: 1, deadLetter: 0 },
+          telegram: {
+            total: 2,
+            delivered: 2,
+            failed: 0,
+            pending: 0,
+            deadLetter: 0,
+          },
+          whatsapp: {
+            total: 1,
+            delivered: 0,
+            failed: 0,
+            pending: 1,
+            deadLetter: 0,
+          },
         },
       })
 
@@ -55,19 +73,39 @@ describe('Message Delivery Sweep Job (#493)', () => {
   })
 
   it('emits an operational alert when dead letters exceed threshold', async () => {
-    jest.spyOn(messageDeliveryService, 'processPendingQueue').mockResolvedValue({
-      processed: 5,
-      delivered: 2,
-      retried: 0,
-      deadLettered: 3,
-    })
+    jest
+      .spyOn(messageDeliveryService, 'processPendingQueue')
+      .mockResolvedValue({
+        processed: 5,
+        delivered: 2,
+        retried: 0,
+        deadLettered: 3,
+      })
 
     jest.spyOn(messageDeliveryService, 'getMessageStats').mockResolvedValue({
       total: 5,
-      byStatus: { pending: 0, sending: 0, delivered: 2, failed: 0, deadLetter: 3 },
+      byStatus: {
+        pending: 0,
+        sending: 0,
+        delivered: 2,
+        failed: 0,
+        deadLetter: 3,
+      },
       byChannel: {
-        telegram: { total: 3, delivered: 1, failed: 0, pending: 0, deadLetter: 2 },
-        whatsapp: { total: 2, delivered: 1, failed: 0, pending: 0, deadLetter: 1 },
+        telegram: {
+          total: 3,
+          delivered: 1,
+          failed: 0,
+          pending: 0,
+          deadLetter: 2,
+        },
+        whatsapp: {
+          total: 2,
+          delivered: 1,
+          failed: 0,
+          pending: 0,
+          deadLetter: 1,
+        },
       },
     })
 
