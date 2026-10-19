@@ -550,3 +550,25 @@ environment, resolve the failure per §6 (rolling back) instead.
 **Prevention:** run the rehearsal (§5) before pushing, and write idempotent SQL
 (`IF [NOT] EXISTS`, `DO` blocks instead of `ADD CONSTRAINT IF NOT EXISTS` for
 PostgreSQL < 12).
+
+### A.4 Lexicographical migration sorting order (indexes before tables)
+
+**Incident:** `20261003_001_add_webhook_query_indexes`
+
+**Symptom:** `npx prisma migrate deploy` fails with `ERROR: relation "user_webhook_deliveries" does not exist` (error code P3018, database code 42P01).
+
+**Cause:** Prisma orders migrations alphabetically (lexicographically) by directory name. Because ASCII `'0'` (48) sorts before ASCII `'a'` (97), `20261003_001_add_webhook_query_indexes` was sorted and executed *before* `20261003_add_missing_models` (which creates `user_webhook_deliveries`).
+
+**Recipe**
+
+```bash
+# 1. Rename the migration folder so its timestamp sorts after the table creation:
+#    20261003_001_add_webhook_query_indexes -> 20261004000000_add_webhook_query_indexes
+
+# 2. If the migration failed on an existing environment, resolve the failed row:
+npx prisma migrate resolve --rolled-back 20261003_001_add_webhook_query_indexes
+npx prisma migrate deploy
+```
+
+**Prevention:** always use standard 14-digit timestamps (`YYYYMMDDHHMMSS_name`) or verify sorting order with `fs.readdirSync('prisma/migrations').sort()` when creating dependent migrations.
+
