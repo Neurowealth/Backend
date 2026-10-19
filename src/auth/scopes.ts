@@ -11,6 +11,7 @@ export const USER_SCOPES = [
   'transactions:read',
   'deposit:write',
   'withdraw:write',
+  'transfer:write',
   'alerts:manage',
   'fiat:write',
   'recurring_deposits:write',

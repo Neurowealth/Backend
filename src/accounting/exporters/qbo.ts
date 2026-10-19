@@ -17,6 +17,7 @@ const TRANSACTION_TYPE_TO_QBO_CATEGORY: Record<TransactionType, string> = {
   LOAN_DISBURSE: 'Transfer In',
   LOAN_REPAYMENT: 'Transfer Out',
   LOAN_LIQUIDATION: 'Transfer Out',
+  INTERNAL_TRANSFER: 'Transfer',
 }
 
 export interface QboTransaction {

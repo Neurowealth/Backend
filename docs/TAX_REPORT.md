@@ -26,6 +26,23 @@ methods" below). The lot/disposal schema itself is unchanged from #284 — the
 method only decides _which_ open lots a withdrawal consumes, never the shape
 of what gets written.
 
+## Platform-internal transfers (#546)
+
+An `INTERNAL_TRANSFER` is an ownership change between two platform users, not
+a sale or withdrawal. It creates no `LotDisposal` and does not realize a gain
+or loss. In the same database transaction as the paired transfer records, open
+sender cost-basis lots are reduced and corresponding recipient lots are created
+with the original acquisition price, price source, and acquisition date. Thus
+later withdrawals by either user continue to use the original basis and
+accounting-method rules. The source lot's consumed amount is not treated as a
+taxable disposal.
+
+Transfer amounts without a corresponding open cost-basis lot (for example,
+legacy balances or amounts attributable to yield) are credited without a new
+lot and remain unpriced for lot reporting. This transfer path changes ledger
+ownership only: it does not liquidate or move the underlying protocol assets
+on-chain. Consult a tax professional for jurisdiction-specific treatment.
+
 ## Accounting methods (#317)
 
 `src/tax/methods/` is a small interface (`CostBasisMethod.consumeLots`) with

@@ -52,6 +52,8 @@ tags:
     description: Owner-private net worth and read-only external Stellar wallet links (#540)
   - name: Recovery
     description: Guardian-authorized account access recovery with a fixed 72-hour cooling-off period (#535)
+  - name: P2P Transfers
+    description: Idempotent platform-internal transfers by public referral handle (#546)
 
 # ─── Reusable components ──────────────────────────────────────────────────────
 components:
@@ -1711,6 +1713,54 @@ paths:
           description: Recovery cancelled
         '404':
           description: Invalid or completed recovery request
+  /transfer:
+    post:
+      tags: [P2P Transfers]
+      operationId: createInternalTransfer
+      summary: Transfer an asset to another platform user by public handle
+      description: |
+        Reassigns ownership of existing, unlocked positions in one atomic database
+        transaction. No Stellar transaction is submitted. The recipient handle is
+        the user's eight-character public referral code; internal user IDs are not
+        accepted. The Idempotency-Key header is required.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recipientHandle, amount, assetSymbol]
+              properties:
+                recipientHandle:
+                  type: string
+                  pattern: '^[A-HJ-NP-Z2-9]{8}$'
+                  description: Eight-character public referral code; case-insensitive.
+                amount: { type: number, minimum: 0, exclusiveMinimum: true }
+                assetSymbol: { type: string, minLength: 1, maxLength: 32 }
+                note: { type: string, maxLength: 280 }
+                acknowledgeGoalImpact:
+                  type: boolean
+                  description: Acknowledge that this transfer may put the balance below an active savings goal.
+      responses:
+        '201':
+          description: Transfer settled internally; no on-chain transaction was submitted
+        '400':
+          description: Invalid request or self-transfer
+        '404':
+          description: Recipient handle not found
+        '409':
+          description: Insufficient available balance, network mismatch, goal guardrail, or compliance hold
+        '423':
+          description: Sender or recipient account is frozen
+        '429':
+          description: Rate limit exceeded
   /sub-accounts/bulk:
     post:
       tags:

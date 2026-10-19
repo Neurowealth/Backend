@@ -10,6 +10,7 @@ type TxSummary = {
   status: string
   amount: number
   assetSymbol: string
+  counterpartyHandle?: string | null
 }
 
 type ProtocolRateSummary = {
@@ -71,7 +72,10 @@ export function formatTransactionsReply(input: {
 }): string {
   const lines = input.transactions.map((tx) => {
     const hash = tx.txHash ? `${tx.txHash.slice(0, 8)}...` : 'pending'
-    return `• ${tx.type} ${tx.amount} ${tx.assetSymbol} (${tx.status}) [${hash}]`
+    const counterparty = tx.counterpartyHandle
+      ? ` with ${tx.counterpartyHandle}`
+      : ''
+    return `• ${tx.type} ${tx.amount} ${tx.assetSymbol}${counterparty} (${tx.status}) [${hash}]`
   })
 
   return [
@@ -86,6 +90,9 @@ export function formatTransactionDetailReply(input: TxSummary): string {
     `Type: *${input.type}*`,
     `Status: *${input.status}*`,
     `Amount: *${input.amount} ${input.assetSymbol}*`,
+    ...(input.counterpartyHandle
+      ? [`Counterparty: *${input.counterpartyHandle}*`]
+      : []),
     `Hash: _${input.txHash || 'pending'}_`,
   ].join('\n')
 }

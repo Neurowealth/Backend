@@ -37,6 +37,7 @@ const listSchema = z.object({
         'REFERRAL_REWARD',
         'INBOUND_TRANSFER',
         'CLAIMABLE_BALANCE_CLAIM',
+        'INTERNAL_TRANSFER',
       ])
       .optional(),
     status: z.enum(['PENDING', 'CONFIRMED', 'FAILED', 'CANCELLED']).optional(),
@@ -63,7 +64,18 @@ router.get(
   async (req: Request, res: Response) => {
     const txHash = String(req.params.txHash)
 
-    const tx = await db.transaction.findUnique({ where: { txHash } })
+    const tx = await db.transaction.findUnique({
+      where: { txHash },
+      include: {
+        internalTransfer: {
+          select: {
+            senderUserId: true,
+            senderHandle: true,
+            recipientHandle: true,
+          },
+        },
+      },
+    })
 
     if (!tx || tx.userId !== req.auth?.userId) {
       return sendNotFound(res, 'Transaction')
@@ -124,6 +136,15 @@ router.get(
         orderBy: [{ [query.sortBy]: query.sortOrder }, { id: 'desc' }],
         skip,
         take: limit,
+        include: {
+          internalTransfer: {
+            select: {
+              senderUserId: true,
+              senderHandle: true,
+              recipientHandle: true,
+            },
+          },
+        },
       }),
     ])
 

@@ -84,6 +84,7 @@ import transactionsRouter from './routes/transactions'
 import protocolsRouter from './routes/protocols'
 import depositRouter from './routes/deposit'
 import withdrawRouter from './routes/withdraw'
+import transferRouter from './routes/transfers'
 import loansRouter from './routes/loans'
 import protectionFundRouter from './routes/protection-fund'
 import settingsRouter from './routes/settings'
@@ -368,6 +369,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'protocols', handlers: [protocolsRouter] },
   { path: 'deposit', handlers: [depositRouter] },
   { path: 'withdraw', handlers: [withdrawRouter] },
+  { path: 'transfer', handlers: [transferRouter] },
   // #532 — collateral loans. Mounted beside withdraw rather than inside
   // portfolio: a loan is its own lifecycle with its own approval and rate
   // limits, and it must not inherit portfolio's read-only scope set.

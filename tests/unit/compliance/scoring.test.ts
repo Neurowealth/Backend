@@ -282,6 +282,22 @@ describe('computeVelocityFeature', () => {
     expect(result.reasonCodes).toContain('VELOCITY_HIGH_FREQUENCY')
   })
 
+  it('includes internal transfers in high-frequency scoring', () => {
+    const history = Array.from({ length: 8 }, (_, i) =>
+      hist({
+        type: 'INTERNAL_TRANSFER',
+        createdAt: new Date(NOW.getTime() - (i + 1) * 60 * 60 * 1000),
+      })
+    )
+    const result = computeVelocityFeature(
+      tx({ type: 'INTERNAL_TRANSFER' }),
+      history,
+      cfg
+    )
+    expect(result.triggered).toBe(true)
+    expect(result.reasonCodes).toContain('VELOCITY_HIGH_FREQUENCY')
+  })
+
   it('ignores transactions outside the velocity window', () => {
     const history = Array.from({ length: 8 }, () =>
       hist({ createdAt: new Date(NOW.getTime() - 30 * DAY) })
@@ -387,6 +403,28 @@ describe('computeStructuringFeature', () => {
     expect(result.reasonCodes).toContain('STRUCTURING_SUB_THRESHOLD_PATTERN')
   })
 
+  it('counts repeated internal transfers in the structuring feature', () => {
+    const history = [
+      hist({
+        type: 'INTERNAL_TRANSFER',
+        amount: 9_400,
+        createdAt: new Date(NOW.getTime() - 1 * DAY),
+      }),
+      hist({
+        type: 'INTERNAL_TRANSFER',
+        amount: 9_600,
+        createdAt: new Date(NOW.getTime() - 2 * DAY),
+      }),
+    ]
+    const result = computeStructuringFeature(
+      tx({ type: 'INTERNAL_TRANSFER', amount: 9_500 }),
+      history,
+      cfg
+    )
+    expect(result.triggered).toBe(true)
+    expect(result.reasonCodes).toContain('STRUCTURING_SUB_THRESHOLD_PATTERN')
+  })
+
   it('does not count occurrences outside the structuring window', () => {
     const history = [
       hist({ amount: 9_400, createdAt: new Date(NOW.getTime() - 60 * DAY) }),
@@ -432,6 +470,16 @@ describe('computeNewDestinationFeature', () => {
       cfg
     )
     expect(result.triggered).toBe(false)
+  })
+
+  it('treats a first-time internal recipient handle as a new destination', () => {
+    const result = computeNewDestinationFeature(
+      tx({ type: 'INTERNAL_TRANSFER', destinationAddress: 'ABCD2345' }),
+      account(),
+      cfg
+    )
+    expect(result.triggered).toBe(true)
+    expect(result.reasonCodes).toContain('NEW_DESTINATION_NO_HISTORY')
   })
 
   it('is triggered (moderately) for a new destination with a small amount', () => {

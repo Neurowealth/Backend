@@ -17,13 +17,15 @@
  *                                mean/stddev z-score, a handful of large past
  *                                transactions can't numb the model to a new
  *                                one that's equally large.
- *   VELOCITY (0.20)           — count/volume of deposits+withdrawals in a
+ *   VELOCITY (0.20)           — count/volume of deposits, withdrawals, and
+ *                                internal transfers in a
  *                                window, plus round-trip detection (an
  *                                opposite-direction transaction of a similar
  *                                amount shortly before/after).
- *   STRUCTURING (0.20)        — repeated deposits/withdrawals just under a
+ *   STRUCTURING (0.20)        — repeated deposits, withdrawals, and internal
+ *                                transfers just under a
  *                                configured reporting-style threshold.
- *   NEW_DESTINATION (0.15)    — transfer to a Stellar address with no prior
+ *   NEW_DESTINATION (0.15)    — transfer to an address/recipient with no prior
  *                                history on this account.
  *   ACCOUNT_AGE (0.05)        — how new the account is at transaction time.
  *   SUB_ACCOUNT_FANOUT (0.10) — a parent account whose children are
@@ -58,6 +60,7 @@ export type TransactionTypeLike =
   | 'REBALANCE'
   | 'SWAP'
   | 'REFERRAL_REWARD'
+  | 'INTERNAL_TRANSFER'
 
 /** A prior transaction on the account, used as scoring context. */
 export interface HistoricalTransaction {
@@ -432,13 +435,13 @@ export function computeVelocityFeature(
   if (transaction.isAgentDriven) return AGENT_EXEMPT_RESULT('VELOCITY')
 
   const isMoneyMovement = (t: TransactionTypeLike) =>
-    t === 'DEPOSIT' || t === 'WITHDRAWAL'
+    t === 'DEPOSIT' || t === 'WITHDRAWAL' || t === 'INTERNAL_TRANSFER'
   if (!isMoneyMovement(transaction.type)) {
     return featureResult(
       'VELOCITY',
       0,
       [],
-      'Velocity only applies to deposits/withdrawals.'
+      'Velocity only applies to deposits, withdrawals, and internal transfers.'
     )
   }
 
@@ -504,7 +507,7 @@ export function computeVelocityFeature(
     'VELOCITY',
     score,
     reasonCodes,
-    `${count} deposit/withdrawal(s) totalling ${volume} in the last ${cfg.windowMs}ms` +
+    `${count} money movement(s) totalling ${volume} in the last ${cfg.windowMs}ms` +
       (roundTripMatch
         ? '; matches an opposite-direction transaction of a similar amount within the round-trip window'
         : '.')
@@ -520,12 +523,16 @@ export function computeStructuringFeature(
 ) {
   if (transaction.isAgentDriven) return AGENT_EXEMPT_RESULT('STRUCTURING')
 
-  if (transaction.type !== 'DEPOSIT' && transaction.type !== 'WITHDRAWAL') {
+  if (
+    transaction.type !== 'DEPOSIT' &&
+    transaction.type !== 'WITHDRAWAL' &&
+    transaction.type !== 'INTERNAL_TRANSFER'
+  ) {
     return featureResult(
       'STRUCTURING',
       0,
       [],
-      'Structuring only applies to deposits/withdrawals.'
+      'Structuring only applies to deposits, withdrawals, and internal transfers.'
     )
   }
 

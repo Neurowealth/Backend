@@ -38,6 +38,7 @@ enum TransactionType {
   LOAN_DISBURSE
   LOAN_REPAYMENT
   LOAN_LIQUIDATION
+  INTERNAL_TRANSFER
 }
 
 enum TransactionStatus {
@@ -353,6 +354,8 @@ model User {
   sessions                Session[]
   positions               Position[]
   transactions            Transaction[]
+  sentInternalTransfers   InternalTransfer[] @relation("InternalTransferSender")
+  receivedInternalTransfers InternalTransfer[] @relation("InternalTransferRecipient")
   agentLogs               AgentLog[]
   webhookSubscriptions    WebhookSubscription[]
   fiatOrders              FiatOrder[]
@@ -737,6 +740,7 @@ model Transaction {
   // reconciler can find its settlements with an indexed query instead of
   // parsing memos.
   loanId                  String?
+  internalTransferId      String?
   // #532 — set the instant a confirmed settlement has been applied to the loan
   // row. NULL means "the money moved but the loan does not know yet", which is
   // exactly the state a process crash leaves behind and exactly what the
@@ -744,11 +748,12 @@ model Transaction {
   // replaying a settlement can never double-apply it.
   loanSettlementAppliedAt DateTime?
 
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  position     Position?     @relation(fields: [positionId], references: [id])
-  fiatOrders   FiatOrder[]
-  costBasisLot CostBasisLot?
-  lotDisposals LotDisposal[]
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  position         Position?         @relation(fields: [positionId], references: [id])
+  fiatOrders       FiatOrder[]
+  costBasisLot     CostBasisLot?
+  lotDisposals     LotDisposal[]
+  internalTransfer InternalTransfer? @relation(fields: [internalTransferId], references: [id], onDelete: Restrict)
 
   // #532 — the opposite side of CollateralLoan.transactions: every settlement
   // recorded against a loan, disburse or repay.
@@ -764,7 +769,32 @@ model Transaction {
   // #532 — the loan reconciler's sweep query: confirmed settlements for a loan
   // that have not been applied yet.
   @@index([loanId, loanSettlementAppliedAt])
+  @@index([internalTransferId])
   @@map("transactions")
+}
+
+/// Atomic platform-internal movement between two users. Paired transaction
+/// rows and position ownership changes are committed with this record.
+model InternalTransfer {
+  id              String   @id @default(uuid())
+  senderUserId    String
+  recipientUserId String
+  senderHandle    String
+  recipientHandle String
+  assetSymbol     String
+  amount          Decimal  @db.Decimal(36, 18)
+  note            String?  @db.VarChar(280)
+  riskScore       Int
+  createdAt       DateTime @default(now())
+
+  sender       User          @relation("InternalTransferSender", fields: [senderUserId], references: [id], onDelete: Restrict)
+  recipient    User          @relation("InternalTransferRecipient", fields: [recipientUserId], references: [id], onDelete: Restrict)
+  transactions Transaction[]
+
+  @@index([senderUserId, createdAt])
+  @@index([recipientUserId, createdAt])
+  @@index([senderUserId, recipientHandle])
+  @@map("internal_transfers")
 }
 
 model YieldSnapshot {

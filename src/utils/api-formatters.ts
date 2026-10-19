@@ -6,6 +6,11 @@ export const mapTransactionToResponse = (tx: any) => ({
   amount: Number(tx.amount),
   assetSymbol: tx.assetSymbol,
   protocolName: tx.protocolName,
+  counterpartyHandle: tx.internalTransfer
+    ? tx.userId === tx.internalTransfer.senderUserId
+      ? tx.internalTransfer.recipientHandle
+      : tx.internalTransfer.senderHandle
+    : null,
   createdAt: tx.createdAt.toISOString(),
 })
 
