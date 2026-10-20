@@ -18,6 +18,21 @@ import { Prisma } from '@prisma/client'
 import db from '../db'
 import { logger } from '../utils/logger'
 import { alertingService } from '../services/alerting'
+import { revokeAllUserSessions } from '../services/refresh-token.service'
+
+export class ErasureGuardError extends Error {
+  constructor(
+    message: string,
+    public readonly httpStatus: 403 | 409 | 422
+  ) {
+    super(message)
+    this.name = 'ErasureGuardError'
+  }
+}
+
+export function erasureConfirmationPhrase(userId: string): string {
+  return `DELETE ${userId}`
+}
 
 export enum ErasureRequestStatus {
   PENDING = 'PENDING',
@@ -150,6 +165,13 @@ export async function approveErasureRequest(
     )
   }
 
+  if (request.requestedBy === approvedBy) {
+    throw new ErasureGuardError(
+      'Self-approval is not allowed: the approver must be a different admin than the requester.',
+      403
+    )
+  }
+
   const updated = await db.erasureRequest.update({
     where: { id: requestId },
     data: {
@@ -213,7 +235,9 @@ export async function rejectErasureRequest(
  * This is irreversible. Only executes if request status is APPROVED.
  */
 export async function executeErasure(
-  requestId: string
+  requestId: string,
+  executedBy: string,
+  confirmation: string | undefined
 ): Promise<ErasureSummary> {
   const request = await db.erasureRequest.findUnique({
     where: { id: requestId },
@@ -237,7 +261,25 @@ export async function executeErasure(
     throw new Error(`User ${userId} not found`)
   }
 
+  if (request.approvedBy === executedBy) {
+    throw new ErasureGuardError(
+      'Dual control: the admin who approved this request cannot also execute it.',
+      403
+    )
+  }
+
+  if (confirmation !== erasureConfirmationPhrase(userId)) {
+    throw new ErasureGuardError(
+      `Typed confirmation mismatch. Send confirm: "${erasureConfirmationPhrase(userId)}".`,
+      422
+    )
+  }
+
   try {
+    // Cut off live access first so no session can act on or re-create data
+    // while the deletion transaction runs.
+    await revokeAllUserSessions(userId, 'admin')
+
     const summary: ErasureSummary = await db.$transaction(
       async (tx) => {
         // 1. Count records before deletion (for summary)
@@ -456,6 +498,38 @@ export async function listErasureRequests(params: {
   ])
 
   return { requests: requests as any, total }
+}
+
+/**
+ * Dry run of an approved erasure request: nothing is deleted or revoked.
+ * This is what the execute endpoint returns unless a typed confirmation is sent.
+ */
+export async function previewErasureRequest(requestId: string): Promise<{
+  requestId: string
+  userId: string
+  requiredConfirmation: string
+  preview: Omit<ErasureSummary, 'userId' | 'walletAddress'>
+}> {
+  const request = await db.erasureRequest.findUnique({
+    where: { id: requestId },
+  })
+
+  if (!request) {
+    throw new Error(`Erasure request ${requestId} not found`)
+  }
+
+  if (request.status !== ErasureRequestStatus.APPROVED) {
+    throw new Error(
+      `Cannot execute request in status ${request.status}. Must be APPROVED.`
+    )
+  }
+
+  return {
+    requestId,
+    userId: request.userId,
+    requiredConfirmation: erasureConfirmationPhrase(request.userId),
+    preview: await previewErasure(request.userId),
+  }
 }
 
 /**

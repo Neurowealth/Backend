@@ -19,6 +19,7 @@ import {
   ErasureRequestStatus,
 } from '../../../src/compliance/privacyErasure'
 import { alertingService } from '../../../src/services/alerting'
+import { revokeAllUserSessions } from '../../../src/services/refresh-token.service'
 
 jest.mock('../../../src/db', () => ({ __esModule: true, default: {} }))
 jest.mock('../../../src/utils/logger', () => ({
@@ -27,6 +28,9 @@ jest.mock('../../../src/utils/logger', () => ({
     error: jest.fn(),
     info: jest.fn(),
   },
+}))
+jest.mock('../../../src/services/refresh-token.service', () => ({
+  revokeAllUserSessions: jest.fn().mockResolvedValue(2),
 }))
 jest.mock('../../../src/services/alerting', () => ({
   alertingService: {
@@ -167,6 +171,7 @@ describe('Privacy Erasure Workflow', () => {
         id: requestId,
         status: ErasureRequestStatus.PENDING,
         userId: 'user-123',
+        requestedBy: 'admin@example.com',
       })
       mockDb.erasureRequest.update.mockResolvedValue({
         id: requestId,
@@ -179,6 +184,20 @@ describe('Privacy Erasure Workflow', () => {
 
       expect(result.status).toBe(ErasureRequestStatus.APPROVED)
       expect(result.approvedBy).toBe(approvedBy)
+    })
+
+    it('rejects self-approval by the requester', async () => {
+      mockDb.erasureRequest.findUnique.mockResolvedValue({
+        id: 'request-1',
+        status: ErasureRequestStatus.PENDING,
+        userId: 'user-123',
+        requestedBy: 'admin-a',
+      })
+
+      await expect(
+        approveErasureRequest('request-1', 'admin-a')
+      ).rejects.toThrow('Self-approval is not allowed')
+      expect(mockDb.erasureRequest.update).not.toHaveBeenCalled()
     })
 
     it('throws when request not found', async () => {
@@ -237,13 +256,20 @@ describe('Privacy Erasure Workflow', () => {
         id: requestId,
         userId,
         status: ErasureRequestStatus.APPROVED,
+        approvedBy: 'admin-b',
         user: {
           id: userId,
           walletAddress: 'GABC...',
         },
       })
 
-      const summary = await executeErasure(requestId)
+      const summary = await executeErasure(
+        requestId,
+        'admin-c',
+        'DELETE user-123'
+      )
+
+      expect(revokeAllUserSessions).toHaveBeenCalledWith(userId, 'admin')
 
       expect(summary.userId).toBe(userId)
       expect(summary.deletedRecords.sessions).toBe(5)
@@ -259,8 +285,7 @@ describe('Privacy Erasure Workflow', () => {
       expect(alertingService.emit).toHaveBeenCalledWith(
         expect.objectContaining({
           title: 'Privacy erasure completed',
-        }),
-        expect.any(Number)
+        })
       )
     })
 
@@ -270,9 +295,9 @@ describe('Privacy Erasure Workflow', () => {
         status: ErasureRequestStatus.PENDING,
       })
 
-      await expect(executeErasure('request-1')).rejects.toThrow(
-        'Must be APPROVED'
-      )
+      await expect(
+        executeErasure('request-1', 'admin-c', 'DELETE user-123')
+      ).rejects.toThrow('Must be APPROVED')
     })
 
     it('marks request as failed on error and alerts', async () => {
@@ -281,12 +306,15 @@ describe('Privacy Erasure Workflow', () => {
         id: requestId,
         userId: 'user-123',
         status: ErasureRequestStatus.APPROVED,
+        approvedBy: 'admin-b',
         user: { id: 'user-123', walletAddress: 'GA...' },
       })
 
       mockDb.$transaction.mockRejectedValue(new Error('Database error'))
 
-      await expect(executeErasure(requestId)).rejects.toThrow('Database error')
+      await expect(
+        executeErasure(requestId, 'admin-c', 'DELETE user-123')
+      ).rejects.toThrow('Database error')
 
       expect(mockDb.erasureRequest.update).toHaveBeenCalledWith({
         where: { id: requestId },
@@ -298,9 +326,8 @@ describe('Privacy Erasure Workflow', () => {
       expect(alertingService.emit).toHaveBeenCalledWith(
         expect.objectContaining({
           title: 'Privacy erasure failed',
-          severity: 'error',
-        }),
-        expect.any(Number)
+          severity: 'critical',
+        })
       )
     })
   })

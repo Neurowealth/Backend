@@ -13,20 +13,31 @@ jest.mock('../../../src/events/publisher', () => ({
 }))
 jest.mock('../../../src/db', () => ({
   __esModule: true,
-  default: {
-    user: { findUnique: jest.fn() },
-    recurringWithdrawalPlan: {
+  default: (() => {
+    const recurringWithdrawalPlan = {
       findMany: jest.fn(),
       findUnique: jest.fn(),
       updateMany: jest.fn(),
       update: jest.fn(),
-    },
-    position: { findMany: jest.fn() },
-    outboxOp: { findFirst: jest.fn() },
-    linkedExternalWallet: { findFirst: jest.fn() },
-    complianceCase: { findFirst: jest.fn() },
-    savingsGoal: { findMany: jest.fn() },
-  },
+    }
+    const recurringWithdrawalExecution = {
+      create: jest.fn(async () => ({ id: 'execution' })),
+      updateMany: jest.fn(async () => ({ count: 1 })),
+    }
+    return {
+      user: { findUnique: jest.fn() },
+      recurringWithdrawalPlan,
+      recurringWithdrawalExecution,
+      position: { findMany: jest.fn() },
+      outboxOp: { findFirst: jest.fn() },
+      linkedExternalWallet: { findFirst: jest.fn() },
+      complianceCase: { findFirst: jest.fn() },
+      savingsGoal: { findMany: jest.fn() },
+      $transaction: jest.fn(async (fn: (tx: any) => unknown) =>
+        fn({ recurringWithdrawalPlan, recurringWithdrawalExecution })
+      ),
+    }
+  })(),
 }))
 
 import db from '../../../src/db'
@@ -94,8 +105,19 @@ describe('recurring withdrawal occurrences', () => {
     ])
     expect(executeWithdraw).toHaveBeenCalledTimes(1)
     expect(executeWithdraw).toHaveBeenCalledWith(
-      expect.objectContaining({ walletAddress: 'GDEST', amount: 10 })
+      expect.objectContaining({
+        walletAddress: 'GDEST',
+        amount: 10,
+        idempotencyKey: `recurring-withdrawal:plan:${plan.nextRunAt.toISOString()}`,
+      })
     )
+    expect(db.recurringWithdrawalExecution.create).toHaveBeenCalledWith({
+      data: {
+        planId: 'plan',
+        scheduledFor: expect.any(Date),
+        status: 'EXECUTING',
+      },
+    })
     expect(plan.nextRunAt.getTime()).toBeGreaterThan(Date.now())
   })
   it('skips insufficient funds without a money movement attempt', async () => {

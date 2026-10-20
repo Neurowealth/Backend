@@ -142,10 +142,39 @@ export async function authenticateApiKey(
 }
 
 /**
+ * The symbol under which a scope-guard records the scope it requires.
+ *
+ * A scope guard is just a function to Express, so nothing in the routing
+ * layer says "this endpoint needs `withdraw:write`". Tagging the function
+ * makes that machine-readable: the scope-catalogue CI check walks the real
+ * route table, reads the tag off each route's middleware chain, and derives
+ * which endpoints each scope actually covers — so the catalogue cannot claim
+ * to unlock an endpoint that stopped requiring it.
+ */
+export const SCOPE_TAG = Symbol.for('neuro.apiKeyScope')
+
+/** A scope guard, tagged with the scope(s) it requires. */
+export type TaggedScopeGuard = ((
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => void) & {
+  [SCOPE_TAG]?: readonly UserScope[]
+}
+
+/** The scope(s) a guard requires, or undefined when it is not a scope guard. */
+export function guardScopes(
+  handler: unknown
+): readonly UserScope[] | undefined {
+  if (typeof handler !== 'function') return undefined
+  return (handler as TaggedScopeGuard)[SCOPE_TAG]
+}
+
+/**
  * Require one or more scopes. Sessions (`authScopes = ['*']`) pass all checks.
  */
 export function requireScope(...requiredScopes: UserScope[]) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  const guard = (req: Request, res: Response, next: NextFunction): void => {
     const scopes = req.authScopes ?? ['*']
     if (scopes.includes('*')) {
       next()
@@ -169,6 +198,9 @@ export function requireScope(...requiredScopes: UserScope[]) {
 
     next()
   }
+
+  ;(guard as TaggedScopeGuard)[SCOPE_TAG] = requiredScopes
+  return guard as TaggedScopeGuard
 }
 
 /**

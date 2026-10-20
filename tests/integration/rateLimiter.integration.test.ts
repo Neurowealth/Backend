@@ -66,6 +66,7 @@ describe('rate limiter – IETF rate-limit headers', () => {
         windowMs: 60000,
         max: 30,
         limiterType: 'test',
+        tier: 'global',
       })
       const app = buildTestApp(limiter)
       const res = await request(app).get('/test')
@@ -80,6 +81,7 @@ describe('rate limiter – IETF rate-limit headers', () => {
         windowMs: 60000,
         max: 1,
         limiterType: 'test',
+        tier: 'global',
       })
       const app = buildTestApp(limiter)
 
@@ -95,6 +97,7 @@ describe('rate limiter – IETF rate-limit headers', () => {
         windowMs: 60000,
         max: 1,
         limiterType: 'test',
+        tier: 'global',
       })
       const app = buildTestApp(limiter)
 
@@ -113,6 +116,7 @@ describe('rate limiter – IETF rate-limit headers', () => {
         windowMs: 60000,
         max: 1,
         limiterType: 'test',
+        tier: 'global',
       })
       const app = buildTestApp(limiter)
 

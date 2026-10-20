@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import db from '../db'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import {
   mapAllocationSuggestionToResponse,
@@ -168,6 +169,9 @@ router.post(
 router.get(
   '/:userId/suggestions',
   requireAuth,
+  // #615 — `portfolio:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's whole portfolio.
+  requireScope('portfolio:read'),
   enforceUserAccess,
   validate(listSuggestionsSchema),
   async (req: Request, res: Response) => {
@@ -207,6 +211,9 @@ router.get(
 router.get(
   '/:userId',
   requireAuth,
+  // #615 — `portfolio:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's whole portfolio.
+  requireScope('portfolio:read'),
   enforceUserAccess,
   validate(portfolioSchema),
   async (req: Request, res: Response) => {
@@ -287,6 +294,9 @@ router.get(
 router.get(
   '/:userId/history',
   requireAuth,
+  // #615 — `portfolio:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's whole portfolio.
+  requireScope('portfolio:read'),
   enforceUserAccess,
   validate(historySchema),
   async (req: Request, res: Response) => {
@@ -332,6 +342,9 @@ router.get(
 router.get(
   '/:userId/earnings',
   requireAuth,
+  // #615 — `portfolio:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's whole portfolio.
+  requireScope('portfolio:read'),
   enforceUserAccess,
   validate(portfolioParamsSchema),
   async (req: Request, res: Response) => {
@@ -385,6 +398,9 @@ router.get(
 router.get(
   '/:userId/tax-report',
   requireAuth,
+  // #615 — `portfolio:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's tax report.
+  requireScope('portfolio:read'),
   enforceUserAccess,
   validate(taxReportSchema),
   async (req: Request, res: Response) => {

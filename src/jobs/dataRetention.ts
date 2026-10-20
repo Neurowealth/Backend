@@ -62,11 +62,26 @@ async function anchorBeforeDelete(
  */
 export async function cleanupAuthNonces(): Promise<void> {
   const correlationId = generateCorrelationId()
+  const dryRun = process.env.DATA_RETENTION_DRY_RUN === 'true'
   return runWithCorrelationIdAsync(correlationId, async () => {
     const start = Date.now()
     const jobName = 'retention_auth_nonces'
 
     try {
+      const count = await db.authNonce.count({
+        where: { expiresAt: { lt: new Date() } },
+      })
+
+      if (dryRun) {
+        const durationMs = Date.now() - start
+        const duration = durationMs / 1000
+        logBackgroundJob(jobName, 'dry_run', duration, correlationId, {
+          wouldDelete: count,
+        })
+        recordBackgroundJob(jobName, 'dry_run', duration)
+        return
+      }
+
       const result = await db.authNonce.deleteMany({
         where: { expiresAt: { lt: new Date() } },
       })
@@ -103,6 +118,7 @@ export async function cleanupAuthNonces(): Promise<void> {
  */
 export async function cleanupProcessedEvents(): Promise<void> {
   const correlationId = generateCorrelationId()
+  const dryRun = process.env.DATA_RETENTION_DRY_RUN === 'true'
   return runWithCorrelationIdAsync(correlationId, async () => {
     const start = Date.now()
     const jobName = 'retention_processed_events'
@@ -120,6 +136,18 @@ export async function cleanupProcessedEvents(): Promise<void> {
           processedAt: true,
         },
       })
+
+      if (dryRun) {
+        const durationMs = Date.now() - start
+        const duration = durationMs / 1000
+        logBackgroundJob(jobName, 'dry_run', duration, correlationId, {
+          wouldDelete: rows.length,
+          retentionDays: config.retention.processedEventsDays,
+        })
+        recordBackgroundJob(jobName, 'dry_run', duration)
+        return
+      }
+
       if (rows.length > 0) {
         await anchorBeforeDelete('processed_event', rows)
       }
@@ -162,12 +190,32 @@ export async function cleanupProcessedEvents(): Promise<void> {
  */
 export async function cleanupDeadLetterEvents(): Promise<void> {
   const correlationId = generateCorrelationId()
+  const dryRun = process.env.DATA_RETENTION_DRY_RUN === 'true'
   return runWithCorrelationIdAsync(correlationId, async () => {
     const start = Date.now()
     const jobName = 'retention_dead_letter_events'
 
     try {
       const cutoff = cutoffDate(config.retention.deadLetterEventsDays)
+      const count = await db.deadLetterEvent.count({
+        where: {
+          status: 'RESOLVED',
+          createdAt: { lt: cutoff },
+        },
+      })
+
+      if (dryRun) {
+        const durationMs = Date.now() - start
+        const duration = durationMs / 1000
+        logBackgroundJob(jobName, 'dry_run', duration, correlationId, {
+          wouldDelete: count,
+          eventStatus: 'RESOLVED',
+          retentionDays: config.retention.deadLetterEventsDays,
+        })
+        recordBackgroundJob(jobName, 'dry_run', duration)
+        return
+      }
+
       const result = await db.deadLetterEvent.deleteMany({
         where: {
           status: 'RESOLVED',
@@ -211,6 +259,7 @@ export async function cleanupDeadLetterEvents(): Promise<void> {
  */
 export async function cleanupAgentLogs(): Promise<void> {
   const correlationId = generateCorrelationId()
+  const dryRun = process.env.DATA_RETENTION_DRY_RUN === 'true'
   return runWithCorrelationIdAsync(correlationId, async () => {
     const start = Date.now()
     const jobName = 'retention_agent_logs'
@@ -228,6 +277,18 @@ export async function cleanupAgentLogs(): Promise<void> {
           positionId: true,
         },
       })
+
+      if (dryRun) {
+        const durationMs = Date.now() - start
+        const duration = durationMs / 1000
+        logBackgroundJob(jobName, 'dry_run', duration, correlationId, {
+          wouldDelete: rows.length,
+          retentionDays: config.retention.agentLogsDays,
+        })
+        recordBackgroundJob(jobName, 'dry_run', duration)
+        return
+      }
+
       if (rows.length > 0) {
         await anchorBeforeDelete('agent_log', rows)
       }
@@ -281,12 +342,36 @@ export async function cleanupAgentLogs(): Promise<void> {
  */
 export async function cleanupUserEvents(): Promise<void> {
   const correlationId = generateCorrelationId()
+  const dryRun = process.env.DATA_RETENTION_DRY_RUN === 'true'
   return runWithCorrelationIdAsync(correlationId, async () => {
     const start = Date.now()
     const jobName = 'retention_user_events'
 
     try {
       const cutoff = cutoffDate(config.retention.userEventsDays)
+      const expiredCount = await db.userEvent.count({
+        where: { createdAt: { lt: cutoff } },
+      })
+
+      if (dryRun) {
+        const trimmed = await trimUserEventStreams(
+          config.retention.userEventsMaxPerUser
+        )
+        const durationMs = Date.now() - start
+        const duration = durationMs / 1000
+        const wouldDelete = expiredCount + trimmed
+
+        logBackgroundJob(jobName, 'dry_run', duration, correlationId, {
+          wouldDelete,
+          wouldExpireByAge: expiredCount,
+          wouldTrimByCap: trimmed,
+          retentionDays: config.retention.userEventsDays,
+          maxPerUser: config.retention.userEventsMaxPerUser,
+        })
+        recordBackgroundJob(jobName, 'dry_run', duration)
+        return
+      }
+
       const expired = await db.userEvent.deleteMany({
         where: { createdAt: { lt: cutoff } },
       })

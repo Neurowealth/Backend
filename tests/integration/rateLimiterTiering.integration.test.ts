@@ -341,6 +341,7 @@ describe('route grouping', () => {
       windowMs: 900000,
       max: 1,
       limiterType: 'test',
+      tier: 'global',
     })
     const app = appWith(limiter)
     await request(app).get('/api/v1/portfolio')

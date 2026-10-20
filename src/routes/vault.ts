@@ -29,28 +29,36 @@ router.get('/state', async (req: Request, res: Response) => {
   })
 })
 
-router.get('/balance', requireAuth, async (req: Request, res: Response) => {
-  const userId = req.auth?.userId
-  if (!userId) {
-    return res.status(401).json({ error: 'Unauthorized' })
+router.get(
+  '/balance',
+  requireAuth,
+  // #615 — `vault:read` was declared but never enforced, so ANY authenticated
+  // API key could read the user's vault balance. The scope catalogue is only
+  // worth publishing if the scope it describes actually gates something.
+  requireScope('vault:read'),
+  async (req: Request, res: Response) => {
+    const userId = req.auth?.userId
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+
+    const user = await db.user.findUnique({
+      where: { id: userId },
+      select: { walletAddress: true },
+    })
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    const onChain = await getOnChainBalance(user.walletAddress)
+
+    return res.status(200).json({
+      balance: toNumber(onChain.balance),
+      shares: toNumber(onChain.shares),
+    })
   }
-
-  const user = await db.user.findUnique({
-    where: { id: userId },
-    select: { walletAddress: true },
-  })
-
-  if (!user) {
-    return res.status(404).json({ error: 'User not found' })
-  }
-
-  const onChain = await getOnChainBalance(user.walletAddress)
-
-  return res.status(200).json({
-    balance: toNumber(onChain.balance),
-    shares: toNumber(onChain.shares),
-  })
-})
+)
 
 const buildTransactionSchema = z.object({
   type: z.enum(['deposit', 'withdraw']),

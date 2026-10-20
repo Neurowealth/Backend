@@ -1,4 +1,5 @@
 import type { Network } from '@prisma/client'
+import type { FlagEvaluationResult } from '../config/featureFlags'
 
 declare global {
   namespace Express {
@@ -10,6 +11,8 @@ declare global {
       authScopes?: string[]
       apiKeyId?: string
       apiKeyAllowWithdrawals?: boolean
+      isFeatureEnabled?: (flagKey: string) => boolean
+      evaluateFeatureFlag?: (flagKey: string) => FlagEvaluationResult
       auth?: {
         userId: string
         sessionId: string

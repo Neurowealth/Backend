@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import db from '../db'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import {
   buildPaginationMeta,
@@ -60,6 +61,9 @@ const router = Router()
 router.get(
   '/detail/:txHash',
   requireAuth,
+  // #615 — `transactions:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's transaction history.
+  requireScope('transactions:read'),
   validate({ params: txHashParamSchema }),
   async (req: Request, res: Response) => {
     const txHash = String(req.params.txHash)
@@ -98,6 +102,9 @@ router.get(
 router.get(
   '/:userId',
   requireAuth,
+  // #615 — `transactions:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's transaction history.
+  requireScope('transactions:read'),
   enforceUserAccess,
   validate(listSchema),
   async (req: Request, res: Response) => {
@@ -166,18 +173,25 @@ router.get(
  * GET /transactions/:id/events
  * Returns the ordered event history for a transaction (admin only).
  */
-router.get('/:id/events', requireAuth, async (req: Request, res: Response) => {
-  const id = String(req.params.id) // ← String() cast fixes the string | string[] error
+router.get(
+  '/:id/events',
+  requireAuth,
+  // #615 — `transactions:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's transaction history.
+  requireScope('transactions:read'),
+  async (req: Request, res: Response) => {
+    const id = String(req.params.id) // ← String() cast fixes the string | string[] error
 
-  const tx = await db.transaction.findUnique({ where: { id } })
-  if (!tx) return sendNotFound(res, 'Transaction')
+    const tx = await db.transaction.findUnique({ where: { id } })
+    if (!tx) return sendNotFound(res, 'Transaction')
 
-  const events = await (db as any).transactionEvent.findMany({
-    where: { transactionId: id },
-    orderBy: { occurredAt: 'asc' },
-  })
+    const events = await (db as any).transactionEvent.findMany({
+      where: { transactionId: id },
+      orderBy: { occurredAt: 'asc' },
+    })
 
-  return res.status(200).json({ transactionId: id, events })
-})
+    return res.status(200).json({ transactionId: id, events })
+  }
+)
 
 export default router

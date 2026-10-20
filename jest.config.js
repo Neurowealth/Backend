@@ -39,4 +39,32 @@ module.exports = {
     '/node_modules/(?!(@stellar|\\.pnpm|@noble|uint8array-extras|smol-toml|eventsource|feaxios|base32\\.js))',
   ],
   clearMocks: true,
-};
+  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts', '!src/index.ts'],
+  coverageThreshold: {
+    global: { branches: 3, functions: 4, lines: 5, statements: 5 },
+    'src/compliance/**/*.ts': {
+      branches: 0,
+      functions: 0,
+      lines: 10,
+      statements: 10,
+    },
+    'src/lending/**/*.ts': {
+      branches: 0,
+      functions: 0,
+      lines: 10,
+      statements: 10,
+    },
+    'src/outbox/**/*.ts': {
+      branches: 0,
+      functions: 0,
+      lines: 10,
+      statements: 9,
+    },
+    'src/jobs/recurringWithdrawals.ts': {
+      branches: 45,
+      functions: 50,
+      lines: 55,
+      statements: 55,
+    },
+  },
+}

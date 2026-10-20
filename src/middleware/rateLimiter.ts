@@ -5,6 +5,7 @@ import { recordRateLimitHit, updateRateLimitViolations } from '../utils/metrics'
 import { logger } from '../utils/logger'
 import db from '../db'
 import crypto from 'node:crypto'
+import type { RateLimitTierId } from './rateLimitTiers'
 
 // ── Trusted-IP / service-token bypass ─────────────────────────────────────
 
@@ -209,6 +210,47 @@ function handleRateLimitExceeded(
 
 // ── Rate limiter factory ───────────────────────────────────────────────────
 
+/**
+ * The symbol under which a limiter records the tier it belongs to.
+ *
+ * A limiter is just a function to Express, so nothing in the routing layer
+ * says "this route is rate-limited at the sensitive tier". Tagging the
+ * function makes that fact machine-readable: the tier-matrix CI check
+ * (tests/unit/middleware/rateLimitTierMatrix.test.ts) walks the real route
+ * table, reads the tag off each route's middleware chain, and fails if the
+ * code and the matrix in src/middleware/rateLimitTiers.ts disagree.
+ */
+export const RATE_LIMIT_TIER_TAG = Symbol.for('neuro.rateLimitTier')
+
+/** A rate-limiting middleware, tagged with the tier it enforces. */
+export type TaggedRateLimiter = ((
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => void) & {
+  [RATE_LIMIT_TIER_TAG]?: RateLimitTierId
+}
+
+/** Record the tier a limiter enforces. */
+export function tagLimiter(
+  limiter: (req: Request, res: Response, next: NextFunction) => void,
+  tier: RateLimitTierId
+): TaggedRateLimiter {
+  ;(limiter as TaggedRateLimiter)[RATE_LIMIT_TIER_TAG] = tier
+  return limiter as TaggedRateLimiter
+}
+
+/**
+ * The tier a limiter enforces, or undefined when the handler is not one of
+ * ours. Used by the tier-matrix CI check to read the effective tier straight
+ * off a route's middleware chain.
+ */
+export function limiterTier(handler: unknown): RateLimitTierId | undefined {
+  if (typeof handler !== 'function') return undefined
+  const tier = (handler as TaggedRateLimiter)[RATE_LIMIT_TIER_TAG]
+  return tier
+}
+
 export interface BuildRateLimiterOptions {
   windowMs: number
   max: number
@@ -222,6 +264,12 @@ export interface BuildRateLimiterOptions {
    * client can rotate IPs freely to escape the budget.
    */
   keyByPrincipal?: boolean
+  /**
+   * The catalogue tier this limiter enforces. Required for every limiter so
+   * the tier matrix stays complete — an untagged limiter is a limiter the
+   * matrix cannot describe.
+   */
+  tier: RateLimitTierId
 }
 
 /**
@@ -232,7 +280,7 @@ export interface BuildRateLimiterOptions {
  */
 export function buildRateLimiter(
   opts: BuildRateLimiterOptions
-): (req: Request, res: Response, next: NextFunction) => void {
+): TaggedRateLimiter {
   const usePrincipal = opts.keyByPrincipal !== false
 
   /**
@@ -280,12 +328,12 @@ export function buildRateLimiter(
       }),
   })
 
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return tagLimiter((req: Request, res: Response, next: NextFunction): void => {
     limiter(req, res, () => {
       applyPolicyHeader(req, res, { max: opts.max, windowMs: opts.windowMs })
       next()
     })
-  }
+  }, opts.tier)
 }
 
 // ── Rate limiters ──────────────────────────────────────────────────────────
@@ -299,6 +347,7 @@ export const rateLimiter = buildRateLimiter({
   max: config.security.rateLimit.max,
   skip: skipUnlessLimited,
   limiterType: 'global',
+  tier: 'global',
 })
 
 /**
@@ -362,7 +411,7 @@ export const tieredRateLimiter = (() => {
       }),
   })
 
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return tagLimiter((req: Request, res: Response, next: NextFunction): void => {
     limiter(req, res, () => {
       applyPolicyHeader(req, res, {
         max: anonymousMax,
@@ -370,7 +419,7 @@ export const tieredRateLimiter = (() => {
       })
       next()
     })
-  }
+  }, 'tiered')
 })()
 
 /**
@@ -386,6 +435,7 @@ export const authRateLimiter = buildRateLimiter({
   skip: isTrusted,
   limiterType: 'auth',
   keyByPrincipal: false,
+  tier: 'auth',
   message: 'Too many authentication attempts. Please try again in 15 minutes.',
 })
 
@@ -398,7 +448,21 @@ export const adminRateLimiter = buildRateLimiter({
   max: config.security.adminRateLimit.max,
   skip: isHealthProbe,
   limiterType: 'admin',
+  tier: 'admin',
   message: 'Too many requests to the admin API. Please try again later.',
+})
+
+/**
+ * Privacy-erasure limiter — irreversible operations, kept far below the
+ * general admin budget. 5 req / 15 min per admin principal.
+ */
+export const erasureRateLimiter = buildRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  skip: isHealthProbe,
+  limiterType: 'erasure',
+  tier: 'erasure',
+  message: 'Too many erasure operations. Please try again later.',
 })
 
 /**
@@ -411,6 +475,7 @@ export const webhookRateLimiter = buildRateLimiter({
   skip: isTrusted,
   limiterType: 'webhook',
   keyByPrincipal: false,
+  tier: 'webhook',
   message: 'Too many webhook requests. Please try again later.',
 })
 
@@ -427,6 +492,7 @@ export const sensitiveRateLimiter = buildRateLimiter({
   max: config.security.sensitiveRateLimit.max,
   skip: isTrusted,
   limiterType: 'sensitive',
+  tier: 'sensitive',
   message:
     'Too many sensitive operations. Please wait before retrying this action.',
 })
@@ -448,6 +514,7 @@ export const optimizerRateLimiter = buildRateLimiter({
   max: config.security.optimizerRateLimit.max,
   skip: isTrusted,
   limiterType: 'optimizer',
+  tier: 'optimizer',
   message:
     'Too many optimization requests. Portfolio optimization is compute-intensive; please try again shortly.',
 })
@@ -464,6 +531,7 @@ export const simulateRateLimiter = buildRateLimiter({
   max: config.security.simulateRateLimit.max,
   skip: isTrusted,
   limiterType: 'simulate',
+  tier: 'simulate',
   message:
     'Too many simulation requests. Historical replay is compute-intensive; please try again shortly.',
 })
@@ -477,5 +545,6 @@ export const internalRateLimiter = buildRateLimiter({
   skip: isTrusted,
   limiterType: 'internal',
   keyByPrincipal: false,
+  tier: 'internal',
   message: 'Too many requests from this service. Please slow down.',
 })

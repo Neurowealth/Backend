@@ -217,5 +217,45 @@ describe('User API Key auth (#374)', () => {
         )
       })
     })
+
+    // #615 — the read scopes were declared but never enforced, so a key
+    // scoped only to (say) alerts:manage could read the user's whole
+    // portfolio, transaction history and vault balance. These are the
+    // guards that close that hole.
+    describe('read scopes', () => {
+      const readScopes: UserScope[] = [
+        'portfolio:read',
+        'transactions:read',
+        'vault:read',
+      ]
+
+      it.each(readScopes)('allows a key holding %s', (scope) => {
+        req.authScopes = [scope]
+        requireScope(scope)(req as Request, res as Response, next)
+        expect(next).toHaveBeenCalled()
+      })
+
+      it.each(readScopes)(
+        'denies a key scoped only to alerts:manage for %s',
+        (scope) => {
+          req.authScopes = ['alerts:manage']
+          req.apiKeyId = 'key-1'
+          requireScope(scope)(req as Request, res as Response, next)
+          expect(res.status).toHaveBeenCalledWith(403)
+          expect(res.json).toHaveBeenCalledWith(
+            expect.objectContaining({
+              error: 'insufficient_scope',
+              required: scope,
+            })
+          )
+        }
+      )
+
+      it('lets a session through regardless', () => {
+        req.authScopes = ['*']
+        requireScope('portfolio:read')(req as Request, res as Response, next)
+        expect(next).toHaveBeenCalled()
+      })
+    })
   })
 })

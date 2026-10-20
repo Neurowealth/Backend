@@ -1,5 +1,7 @@
-import { cacheGet, cacheSet, cacheDel } from '../config/redis'
+import { cacheGet, cacheSet, cacheDel, getRedisClient, createRedisSubscriber } from '../config/redis'
 import { logger } from './logger'
+import { generateCorrelationId } from './correlation'
+import type { Redis } from 'ioredis'
 
 /** Cache key prefixes for user-related state */
 export const CACHE_PREFIXES = {
@@ -7,6 +9,18 @@ export const CACHE_PREFIXES = {
   USER_PROFILE: 'user_profile',
   ASSISTANT_MEMORY: 'assistant:memory',
 } as const
+
+const CACHE_INVALIDATION_CHANNEL = process.env.CACHE_INVALIDATION_CHANNEL || 'neurowealth:cache-invalidation'
+
+let subscriber: Redis | null = null
+let subscribed = false
+
+export interface CacheInvalidationEvent {
+  userId: string
+  correlationId: string
+  timestamp: number
+  originPodId: string
+}
 
 export interface StaleCheckOptions<T> {
   maxAgeMs?: number
@@ -90,9 +104,14 @@ export async function invalidateUserAssistantMemory(
 /**
  * Invalidate ALL cached state for a user.
  * Triggered on logout, session revocation, or user account changes.
+ * Publishes to Redis for cross-pod invalidation.
  */
 export async function invalidateAllUserCaches(userId: string): Promise<void> {
   if (!userId) return
+
+  const correlationId = generateCorrelationId()
+  const podId = process.env.HOSTNAME || 'unknown'
+
   await Promise.allSettled([
     invalidatePortfolioCache(userId),
     invalidateUserProfileCache(userId),
@@ -101,7 +120,27 @@ export async function invalidateAllUserCaches(userId: string): Promise<void> {
     invalidateUserAssistantMemory(userId, 'api'),
     invalidateUserAssistantMemory(userId, 'web'), // Remove legacy keys too.
   ])
+
   logger.info('[cache] Cleared all cached state for user', { userId })
+
+  const redis = getRedisClient()
+  if (redis) {
+    try {
+      const event: CacheInvalidationEvent = {
+        userId,
+        correlationId,
+        timestamp: Date.now(),
+        originPodId: podId,
+      }
+      await redis.publish(CACHE_INVALIDATION_CHANNEL, JSON.stringify(event))
+      logger.debug('[cache] Published cache invalidation event', { userId, podId })
+    } catch (error) {
+      logger.warn('[cache] Failed to publish cache invalidation event', {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
 }
 
 /**
@@ -178,4 +217,88 @@ export async function validateOrInvalidateCache<T>(
     }
   }
   return freshData
+}
+
+/**
+ * Start listening for cache invalidation events from other pods.
+ * Safe to call multiple times; no-op after first call.
+ */
+export function startCacheInvalidationSubscriber(): void {
+  if (subscribed) return
+  subscribed = true
+
+  subscriber = createRedisSubscriber()
+  if (!subscriber) {
+    logger.warn(
+      '[cache] REDIS_URL not set — cross-pod cache invalidation disabled. ' +
+        'Single-instance deployments are unaffected; horizontally scaled ones ' +
+        'will only invalidate caches on the pod where the mutation occurred.'
+    )
+    return
+  }
+
+  subscriber.on('message', (channel, raw) => {
+    if (channel !== CACHE_INVALIDATION_CHANNEL) return
+
+    try {
+      const event = JSON.parse(raw) as CacheInvalidationEvent
+      if (
+        typeof event?.userId !== 'string' ||
+        typeof event?.correlationId !== 'string' ||
+        typeof event?.timestamp !== 'number' ||
+        typeof event?.originPodId !== 'string'
+      ) {
+        logger.warn('[cache] Discarded invalid cache invalidation event')
+        return
+      }
+
+      const podId = process.env.HOSTNAME || 'unknown'
+      if (event.originPodId === podId) {
+        return
+      }
+
+      invalidateAllUserCaches(event.userId).catch((error) => {
+        logger.warn('[cache] Failed to process cross-pod invalidation', {
+          userId: event.userId,
+          originPodId: event.originPodId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
+
+      logger.debug('[cache] Processed cross-pod cache invalidation', {
+        userId: event.userId,
+        originPodId: event.originPodId,
+      })
+    } catch (error) {
+      logger.warn('[cache] Failed to parse cache invalidation event', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
+
+  subscriber.subscribe(CACHE_INVALIDATION_CHANNEL).then(() => {
+    logger.info(`[cache] Subscribed to ${CACHE_INVALIDATION_CHANNEL}`)
+  }).catch((error) => {
+    logger.error('[cache] Failed to subscribe to cache invalidation channel', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  })
+}
+
+/**
+ * Close the cache invalidation subscriber. Safe to call when never started.
+ */
+export async function stopCacheInvalidationSubscriber(): Promise<void> {
+  subscribed = false
+  if (!subscriber) return
+  try {
+    await subscriber.unsubscribe(CACHE_INVALIDATION_CHANNEL)
+    await subscriber.quit()
+  } catch (error) {
+    logger.warn('[cache] Subscriber shutdown error', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  } finally {
+    subscriber = null
+  }
 }

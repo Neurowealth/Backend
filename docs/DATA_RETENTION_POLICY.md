@@ -154,6 +154,9 @@ RETENTION_PROTOCOL_RATES_DAYS=180
 RETENTION_YIELD_SNAPSHOTS_DAYS=90
 RETENTION_ATTRIBUTION_DAYS=365
 
+# Dry-run mode (logs counts without deleting)
+DATA_RETENTION_DRY_RUN=false
+
 # Archival Settings
 ARCHIVAL_ENABLED=true
 ARCHIVAL_STORAGE_PROVIDER=s3
@@ -165,6 +168,27 @@ ARCHIVAL_RETENTION_YEARS=7
 RETENTION_INTERVAL_MS=86400000  # 24 hours
 ARCHIVAL_INTERVAL_MS=604800000 # 7 days
 ```
+
+## Dry-Run Mode
+
+The data retention job supports a dry-run mode for safe testing and validation:
+
+- **Enable**: Set `DATA_RETENTION_DRY_RUN=true`
+- **Behavior**: Logs the number of rows that would be deleted per table without performing any deletions
+- **Use cases**:
+  - Validate retention policies before deployment
+  - Estimate deletion impact without risk
+  - Debug retention job behavior in production-like environments
+  - Generate retention reports for compliance auditing
+
+Dry-run mode applies to all retention tables:
+- `auth_nonce` (expired nonces)
+- `processed_event` (events older than retention window)
+- `dead_letter_event` (RESOLVED entries older than retention window)
+- `agent_log` (logs older than retention window)
+- `user_event` (events older than retention window and per-user cap overages)
+
+Logs include per-table counts (`wouldDelete`) and retention parameters (retention days, max per user for user events).
 
 ## Monitoring and Alerts
 

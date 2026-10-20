@@ -32,19 +32,23 @@ import {
 import { requestLogger } from './middleware/logger'
 import { requestTimeoutMiddleware } from './middleware/requestTimeout'
 import {
-  rateLimiter,
-  tieredRateLimiter,
   authRateLimiter,
   adminRateLimiter,
   internalRateLimiter,
   webhookRateLimiter,
   trustedIpBypass,
 } from './middleware/rateLimiter'
+import { APP_LEVEL_LIMITERS } from './middleware/rateLimiterChain'
 import {
   configureTrustProxy,
   securityHeaders,
   permissionsPolicy,
 } from './middleware/security'
+import {
+  featureFlagMiddleware,
+  emergencyMaintenanceGuard,
+} from './middleware/featureFlags'
+import { featureFlagManager } from './config/featureFlags'
 import { logger } from './utils/logger'
 import { startAgentLoop, stopAgentLoop } from './agent/loop'
 import { connectDb } from './db'
@@ -66,12 +70,17 @@ import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { scheduleApprovalExpiry } from './jobs/approvalExpiry'
 import { scheduleReserveReconciliation } from './jobs/reserveReconciliation'
 import { scheduleMessageDeliverySweep } from './jobs/messageDeliverySweep'
+import { scheduleSignerRotation } from './jobs/signerRotation'
 import { scheduleLoanAccrual } from './jobs/loanAccrual'
 import { scheduleLoanLiquidationMonitor } from './jobs/loanLiquidationMonitor'
 import { scheduleLinkedExternalWalletSync } from './jobs/linkedExternalWalletSync'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { startEventBridge, stopEventBridge } from './events/bridge'
 import { attachWebSocketServer, closeWebSocketServer } from './ws/server'
+import {
+  startCacheInvalidationSubscriber,
+  stopCacheInvalidationSubscriber,
+} from './utils/user-cache-invalidation'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
 import agentRouter from './routes/agent'
@@ -116,6 +125,7 @@ import notificationDlqRouter from './routes/notification-dlq'
 import networkRouter from './routes/network'
 import netWorthRouter from './routes/net-worth'
 import recoveryRouter from './routes/recovery'
+import { API_ROUTES, EXTRA_MOUNTS } from './routes/registry'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -160,6 +170,7 @@ let portfolioRiskJobHandle: NodeJS.Timeout | null = null
 let approvalExpiryHandle: NodeJS.Timeout | null = null
 let reserveReconciliationHandle: NodeJS.Timeout | null = null
 let messageDeliverySweepHandle: NodeJS.Timeout | null = null
+let signerRotationHandle: NodeJS.Timeout | null = null
 let outboundNotificationsHandle: NodeJS.Timeout | null = null
 let linkedExternalWalletSyncHandle: NodeJS.Timeout | null = null
 let loanAccrualHandle: NodeJS.Timeout | null = null
@@ -236,16 +247,15 @@ app.use((req: Request & { user?: { id: string } }, _res: Response, next) => {
 })
 
 app.use(requestLogger)
+app.use(featureFlagMiddleware)
 app.use(trustedIpBypass)
-app.use(rateLimiter)
-// #473 — identity tiering. This single limiter charges anonymous callers to a
-// strict per-IP budget and authenticated callers to a generous per-principal one
-// (see tieredRateLimiter). It resolves identity from the request itself, so it
-// works here, ahead of each route's auth middleware: API keys are self-
-// describing in the Authorization header, and session tokens are classified once
-// the auth middleware has resolved req.userId.
-app.use(tieredRateLimiter)
+// The app-wide rate-limit chain: the flat global budget, then the identity
+// tier. Both apply to every request, so no route is ever unlimited. Kept in
+// src/middleware/rateLimiterChain.ts so the tier-matrix CI check can assert
+// that claim against the real chain.
+app.use(...APP_LEVEL_LIMITERS)
 app.use(requestTimeoutMiddleware)
+app.use(emergencyMaintenanceGuard)
 
 // Advertise the served API version on every response — must be registered
 // before the first route (including the health probes below).
@@ -407,14 +417,16 @@ const apiRoutes: ApiRoute[] = [
   },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
+const apiRoutes: ApiRoute[] = API_ROUTES
 
 // ── Application routes ────────────────────────────────────────────────────────
 
-app.use('/health', healthRouter)
-app.use('/api/analytics', analyticsRouter)
-app.use('/api/stellar', stellarRouter)
-app.use('/api/webhooks', webhooksRouter)
-app.use('/metrics', metricsRouter)
+// Operational endpoints and the pre-version paths (health, metrics, the legacy
+// webhooks surface). Declared in src/routes/registry.ts so the tier matrix
+// can describe every route the server serves, not just the versioned ones.
+for (const mount of EXTRA_MOUNTS) {
+  app.use(mount.path, ...mount.handlers)
+}
 
 // Primary, versioned mounts: /api/v1/*
 for (const route of apiRoutes) {
@@ -550,6 +562,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Message delivery sweep timer cleared')
   }
 
+  if (signerRotationHandle) {
+    clearInterval(signerRotationHandle)
+    signerRotationHandle = null
+    logger.info('[Shutdown] Signer rotation timer cleared')
+  }
+
   if (linkedExternalWalletSyncHandle) {
     clearInterval(linkedExternalWalletSyncHandle)
     linkedExternalWalletSyncHandle = null
@@ -587,6 +605,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   logger.info('[Shutdown] Draining WebSocket connections...')
   await closeWebSocketServer()
   await stopEventBridge()
+  await stopCacheInvalidationSubscriber()
 
   logger.info('[Shutdown] Closing HTTP server (no new requests accepted)')
   httpServer.close(async () => {
@@ -654,6 +673,23 @@ async function initServices(): Promise<void> {
   }
   logger.info('[Startup] Twilio auth token configured ✓')
 
+  // 0. Validate WebAuthn configuration in production
+  if (config.nodeEnv === 'production' || config.nodeEnv === 'staging') {
+    const { webAuthnConfig } = await import('./services/webauthn.service')
+    try {
+      webAuthnConfig()
+      logger.info('[Startup] WebAuthn configuration validated ✓')
+    } catch (error) {
+      const msg =
+        error instanceof Error ? error.message : String(error)
+      logger.error(
+        '[Startup] WebAuthn configuration validation failed — cannot continue',
+        { error: msg }
+      )
+      throw new Error(`WebAuthn: ${msg}`)
+    }
+  }
+
   // 0. Validate Stellar network configuration
   validateStellarNetworkReady()
 
@@ -706,6 +742,32 @@ async function initServices(): Promise<void> {
   } catch (error) {
     logger.error(
       '[Startup] Fee oracle failed to start — continuing with defaults',
+      {
+        error: error instanceof Error ? error.message : String(error),
+      }
+    )
+  }
+
+  // 5. Feature Flags Redis Sync (#494) — best-effort, never blocks startup
+  try {
+    await featureFlagManager.syncFromRedis()
+    logger.info('[Startup] Feature flag Redis sync initialized ✓')
+  } catch (error) {
+    logger.warn(
+      '[Startup] Feature flag Redis sync failed — continuing with local configuration',
+      {
+        error: error instanceof Error ? error.message : String(error),
+      }
+    )
+  }
+
+  // 6. Cache invalidation subscriber (#611) — best-effort, never blocks startup
+  try {
+    startCacheInvalidationSubscriber()
+    logger.info('[Startup] Cache invalidation subscriber initialized ✓')
+  } catch (error) {
+    logger.warn(
+      '[Startup] Cache invalidation subscriber failed — continuing with pod-local invalidation only',
       {
         error: error instanceof Error ? error.message : String(error),
       }
@@ -789,6 +851,7 @@ async function main(): Promise<void> {
   approvalExpiryHandle = scheduleApprovalExpiry()
   reserveReconciliationHandle = scheduleReserveReconciliation()
   messageDeliverySweepHandle = scheduleMessageDeliverySweep()
+  signerRotationHandle = scheduleSignerRotation()
   outboundNotificationsHandle = scheduleOutboundNotifications()
   recoveryCompletionHandle = scheduleRecoveryCompletion()
   linkedExternalWalletSyncHandle = scheduleLinkedExternalWalletSync()

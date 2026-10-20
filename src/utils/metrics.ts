@@ -111,6 +111,12 @@ export const secretCredentialValidationFailures = new client.Gauge({
   registers: [register],
 })
 
+export const stellarSignerRotationOverdueDays = new client.Gauge({
+  name: 'stellar_signer_rotation_overdue_days',
+  help: 'Days beyond the quarterly Stellar signer rotation due date',
+  registers: [register],
+})
+
 // ── Cursor/Lag Metrics ──────────────────────────────────────────────────────────
 
 export const cursorLag = new client.Gauge({
@@ -569,7 +575,7 @@ export function recordAnalyticsRequest(
  */
 export function recordBackgroundJob(
   job: string,
-  status: 'success' | 'failed',
+  status: 'success' | 'failed' | 'dry_run',
   durationSeconds: number
 ): void {
   backgroundJobsTotal.inc({ job, status })
@@ -1025,6 +1031,54 @@ export function recordAssistantFallback(
   reason: 'model_error' | 'budget_exceeded' | 'schema_error'
 ): void {
   assistantFallbackTotal.inc({ reason })
+}
+
+// ── Feature Flag Metrics (#494) ──────────────────────────────────────────────────
+export const featureFlagEvaluationsTotal = new client.Counter({
+  name: 'feature_flag_evaluations_total',
+  help: 'Total number of feature flag evaluations',
+  labelNames: ['flag', 'decision', 'result'] as const,
+  registers: [register],
+})
+
+export const featureFlagRollbacksTotal = new client.Counter({
+  name: 'feature_flag_rollbacks_total',
+  help: 'Total number of feature flag rollbacks triggered',
+  labelNames: ['flag', 'operator'] as const,
+  registers: [register],
+})
+
+export const featureFlagRolloutPercentage = new client.Gauge({
+  name: 'feature_flag_rollout_percentage',
+  help: 'Configured rollout percentage for a feature flag (0-100)',
+  labelNames: ['flag'] as const,
+  registers: [register],
+})
+
+export function recordFeatureFlagEvaluation(
+  flag: string,
+  decision: string,
+  result: boolean
+): void {
+  featureFlagEvaluationsTotal.inc({
+    flag,
+    decision,
+    result: result ? 'true' : 'false',
+  })
+}
+
+export function recordFeatureFlagRollback(
+  flag: string,
+  operator: string = 'system'
+): void {
+  featureFlagRollbacksTotal.inc({ flag, operator })
+}
+
+export function setFeatureFlagRolloutGauge(
+  flag: string,
+  percentage: number
+): void {
+  featureFlagRolloutPercentage.set({ flag }, percentage)
 }
 
 // ── Message Delivery Metrics (#493) ──────────────────────────────────────────────

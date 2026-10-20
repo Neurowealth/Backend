@@ -10,12 +10,12 @@ This document establishes the official Disaster Recovery (DR) rehearsal checklis
 
 ### Backup Scope
 
-| Resource | Scope / Items Included | Backup Type | Frequency | RPO Target | RTO Target |
-|---|---|---|---|---|---|
-| Primary Database | PostgreSQL schema, transactional data, user tables, audit logs | Automated Snapshots + WAL Archiving | Continuous (WAL) / Daily Snapshot | < 15 minutes | < 1 hour |
-| Key Custody | Wallet encryption keys, JWT seeds, API secrets | Secret Manager Versioning / Offline Vault | On creation / rotation | < 0 minutes | < 15 minutes |
-| Redis Cache & Queues | Outbox operations, DLQ metadata, rate limits | RDB Snapshots | Hourly | < 1 hour | < 30 minutes |
-| System Configuration | Deployment manifests, env templates, app configs | Git repository + Config Store | Version controlled | < 0 minutes | < 15 minutes |
+| Resource             | Scope / Items Included                                         | Backup Type                               | Frequency                         | RPO Target   | RTO Target   |
+| -------------------- | -------------------------------------------------------------- | ----------------------------------------- | --------------------------------- | ------------ | ------------ |
+| Primary Database     | PostgreSQL schema, transactional data, user tables, audit logs | Automated Snapshots + WAL Archiving       | Continuous (WAL) / Daily Snapshot | < 15 minutes | < 1 hour     |
+| Key Custody          | Wallet encryption keys, JWT seeds, API secrets                 | Secret Manager Versioning / Offline Vault | On creation / rotation            | < 0 minutes  | < 15 minutes |
+| Redis Cache & Queues | Outbox operations, DLQ metadata, rate limits                   | RDB Snapshots                             | Hourly                            | < 1 hour     | < 30 minutes |
+| System Configuration | Deployment manifests, env templates, app configs               | Git repository + Config Store             | Version controlled                | < 0 minutes  | < 15 minutes |
 
 ### Retention Windows
 
@@ -30,12 +30,12 @@ This document establishes the official Disaster Recovery (DR) rehearsal checklis
 
 ### Key Decision Matrix
 
-| Trigger Event | Initial Assessment | Action / Decision | Decision Owner |
-|---|---|---|---|
-| Primary DB Unreachable | Connection timeout > 3 mins | Failover to Read Replica or Restore PITR | Database Administrator |
-| Data Corruption Detected | Corrupted block/row count > 0 | Freeze write traffic & initiate PITR restore | Incident Commander |
-| Regional Outage | Full cloud region failure | Activate secondary region failover | Infrastructure Lead |
-| Encryption Key Compromise | Unauthorized key access | Key rotation + database re-encryption | Security Lead |
+| Trigger Event             | Initial Assessment            | Action / Decision                            | Decision Owner         |
+| ------------------------- | ----------------------------- | -------------------------------------------- | ---------------------- |
+| Primary DB Unreachable    | Connection timeout > 3 mins   | Failover to Read Replica or Restore PITR     | Database Administrator |
+| Data Corruption Detected  | Corrupted block/row count > 0 | Freeze write traffic & initiate PITR restore | Incident Commander     |
+| Regional Outage           | Full cloud region failure     | Activate secondary region failover           | Infrastructure Lead    |
+| Encryption Key Compromise | Unauthorized key access       | Key rotation + database re-encryption        | Security Lead          |
 
 ### Target Recovery Metrics
 
@@ -46,12 +46,12 @@ This document establishes the official Disaster Recovery (DR) rehearsal checklis
 
 ## 3. Owner Assignments & Responsibilities
 
-| Role | Primary Owner | Secondary Owner | Responsibilities |
-|---|---|---|---|
-| Incident Commander (IC) | DevOps Lead | Platform Lead | Coordinates DR response, manages communications, authorizes failover. |
-| Database Administrator (DBA) | Lead DBA | Sr Backend Engineer | Manages database snapshots, executes PITR restore, validates schema integrity. |
-| Infrastructure Lead | Cloud Architect | DevOps Engineer | Handles DNS failover, secret provisioning, and container cluster redeploy. |
-| Security Lead | CISO / Security Lead | Compliance Officer | Verifies key material integrity, audits data access, clears production restart. |
+| Role                         | Primary Owner        | Secondary Owner     | Responsibilities                                                                |
+| ---------------------------- | -------------------- | ------------------- | ------------------------------------------------------------------------------- |
+| Incident Commander (IC)      | DevOps Lead          | Platform Lead       | Coordinates DR response, manages communications, authorizes failover.           |
+| Database Administrator (DBA) | Lead DBA             | Sr Backend Engineer | Manages database snapshots, executes PITR restore, validates schema integrity.  |
+| Infrastructure Lead          | Cloud Architect      | DevOps Engineer     | Handles DNS failover, secret provisioning, and container cluster redeploy.      |
+| Security Lead                | CISO / Security Lead | Compliance Officer  | Verifies key material integrity, audits data access, clears production restart. |
 
 ---
 
@@ -80,6 +80,11 @@ This document establishes the official Disaster Recovery (DR) rehearsal checklis
 - [ ] Measure total RTO and RPO achieved during rehearsal.
 - [ ] Document rehearsal outcome in the incident post-mortem log.
 - [ ] Obtain sign-off from Incident Commander and Security Lead.
+- [ ] On Testnet, complete a signer dual-active rehearsal with zero failed
+      payments; attach public transaction hashes only.
+- [ ] Run `npm run verify:signer-rotation` with public signer/sponsor addresses
+      and confirm balances plus `numSponsoring`/`numSponsored` remain intact.
+- [ ] Exercise the break-glass rollback before removing either signer.
 
 ---
 
@@ -92,6 +97,7 @@ npx ts-node scripts/validate-backup-restore.ts
 ```
 
 The script verifies:
+
 1. Database connectivity and table schema completeness.
 2. Wallet encryption key availability and decryption integrity.
 3. Backup snapshot timestamp and WAL lag (< 15 mins).

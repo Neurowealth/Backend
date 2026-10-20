@@ -71,12 +71,23 @@ jobs:
       - name: Release tooling regression tests
         run: node --test scripts/tests/release.test.cjs
 
+      - name: Enforce and publish coverage thresholds
+        run: npm run test:coverage -- --runInBand --coverageReporters=text-summary --coverageReporters=lcov
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jest-coverage
+          path: coverage/
+          retention-days: 30
+
       - name: Release preflight gate
         run: npm run release:preflight
 
   # ── Security scanning ─────────────────────────────────────────────────────
   # Issue #114: npm audit for known vulnerabilities
-  # Fails on high or critical CVEs to prevent merging vulnerable dependencies
+  # Production dependencies block at moderate+ through audit:production.
   #
   # Policy: Builds fail on HIGH or CRITICAL vulnerabilities
   # - HIGH/CRITICAL: Must be fixed before merge (blocking)
@@ -104,6 +115,8 @@ jobs:
         # Development tooling has an independent, non-blocking full-tree report
         # in dependency-audit.yml; production dependencies block this workflow.
         run: npm audit --omit=dev --audit-level=high
+      - name: Run blocking production dependency audit
+        run: npm run audit:production
         continue-on-error: false
 
       - name: License check (block GPL/AGPL/LGPL)

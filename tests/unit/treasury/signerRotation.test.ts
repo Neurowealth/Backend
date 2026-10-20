@@ -82,11 +82,17 @@ describe('finalizeRotation', () => {
             .fn()
             .mockResolvedValue({ id: 'r1', status: 'FINALIZED' }),
         },
+        treasuryAccount: {
+          update: jest
+            .fn()
+            .mockResolvedValue({ id: 'acct-1', publicKey: 'GNEW' }),
+        },
       })
     )
 
     const result = await finalizeRotation('r1', 'admin-1')
 
     expect(result.status).toBe('FINALIZED')
+    expect(mockDb.$transaction).toHaveBeenCalledTimes(1)
   })
 })

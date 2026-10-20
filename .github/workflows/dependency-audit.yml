@@ -1,8 +1,6 @@
 name: Dependency audit
 
-# Issue #467: weekly, non-blocking snapshot of advisories and outdated
-# packages. Blocking enforcement (high/critical) lives in node-ci.yml; this
-# workflow feeds the backlog in docs/DEPENDENCY_AUDIT.md.
+# Weekly report plus a blocking moderate+ production dependency gate.
 
 on:
   schedule:
@@ -28,6 +26,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      - name: Block unexcepted moderate+ production advisories
+        run: npm run audit:production
 
       - name: npm audit (all severities)
         run: npm audit --json > npm-audit.json || true

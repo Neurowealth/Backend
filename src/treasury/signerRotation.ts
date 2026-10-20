@@ -67,10 +67,15 @@ export async function finalizeRotation(
   }
 
   const result = await (database as typeof db).$transaction(async (tx) => {
-    return tx.signerRotation.update({
+    const finalized = await tx.signerRotation.update({
       where: { id: rotationId },
       data: { status: 'FINALIZED', finalizedAt: new Date() },
     })
+    await tx.treasuryAccount.update({
+      where: { id: existing.treasuryAccountId },
+      data: { publicKey: existing.newSignerKey },
+    })
+    return finalized
   })
 
   logger.info('[SignerRotation] Rotation finalized', {

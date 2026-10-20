@@ -25,10 +25,26 @@ challenges are tied to the issuing user and session. Malformed requests and
 replayed, expired, cross-session or wrong-account challenges are rejected.
 
 SimpleWebAuthn verifies challenges, signatures, origins and RP IDs. User
-verification is required. Attestation uses `none` for platform and synced
-passkeys without identifying-device certificates; unsupported or invalid
-attestations are rejected by the library. This policy does not claim a hardware
-vendor allowlist or enterprise device trust.
+verification is required.
+
+## Attestation Policy
+
+The system uses attestation conveyance preference `none` for all registration
+ceremonies. This policy:
+
+- **Does not collect** identifying device certificates or manufacturer information
+- **Supports** platform authenticators (e.g., Touch ID, Windows Hello) and synced passkeys
+- **Accepts** both hardware security keys and software-based authenticators
+- **Rejects** unsupported or malformed attestation statements via SimpleWebAuthn validation
+
+This choice prioritizes consumer UX and privacy over hardware provenance. The
+policy does not claim a hardware vendor allowlist or enterprise device trust.
+Authenticator integrity is enforced through:
+
+1. Single-use challenge replay protection
+2. Strict origin and RP ID validation
+3. Signature counter regression detection
+4. AuthenticatorData cloned-authenticator checks (counter stalls/regressions trigger alerts)
 
 Positive signature counters must strictly increase. Stalls/regressions reject
 login and trigger security alerts, including anomalies thrown by the library.

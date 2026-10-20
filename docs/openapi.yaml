@@ -4445,3 +4445,184 @@ paths:
           description: All services ready.
         '503':
           description: One or more services not ready.
+  /admin/erasure/requests:
+    get:
+      tags:
+        - Admin
+      operationId: adminListErasureRequests
+      summary: List privacy erasure requests
+      security:
+        - adminAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [PENDING, APPROVED, REJECTED, COMPLETED, FAILED]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Successful operation
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '429':
+          description: Erasure rate limit exceeded
+    post:
+      tags:
+        - Admin
+      operationId: adminCreateErasureRequest
+      summary: Create a privacy erasure request (does not delete anything)
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, reason]
+              properties:
+                userId:
+                  type: string
+                reason:
+                  type: string
+      responses:
+        '201':
+          description: Request created in PENDING status
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '429':
+          description: Erasure rate limit exceeded
+  /admin/erasure/requests/{id}/approve:
+    post:
+      tags:
+        - Admin
+      operationId: adminApproveErasureRequest
+      summary: Approve an erasure request; the approver must differ from the requester
+      security:
+        - adminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Request approved
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden, or self-approval attempted
+        '429':
+          description: Erasure rate limit exceeded
+  /admin/erasure/requests/{id}/reject:
+    post:
+      tags:
+        - Admin
+      operationId: adminRejectErasureRequest
+      summary: Reject a pending erasure request
+      security:
+        - adminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rejectionReason]
+              properties:
+                rejectionReason:
+                  type: string
+      responses:
+        '200':
+          description: Request rejected
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '429':
+          description: Erasure rate limit exceeded
+  /admin/erasure/requests/{id}/execute:
+    post:
+      tags:
+        - Admin
+      operationId: adminExecuteErasureRequest
+      summary: Dry-run or execute an approved erasure (IRREVERSIBLE)
+      description: |
+        Without `confirm` this is a dry run that returns a preview and the
+        required phrase. With `confirm` equal to `DELETE <userId>` the erasure
+        runs: the user's sessions are revoked first, then data is deleted. The
+        executing admin must differ from the approving admin.
+      security:
+        - adminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                confirm:
+                  type: string
+                  example: DELETE 3f1c9a52-0000-0000-0000-000000000000
+      responses:
+        '200':
+          description: Dry-run preview (`dryRun` true) or erasure summary (`dryRun` false)
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden, or the approver attempted to execute
+        '422':
+          description: Typed confirmation missing or wrong
+        '429':
+          description: Erasure rate limit exceeded
+  /admin/erasure/preview/{userId}:
+    get:
+      tags:
+        - Admin
+      operationId: adminPreviewErasure
+      summary: Preview the records an erasure would delete or anonymize
+      security:
+        - adminAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+        '429':
+          description: Erasure rate limit exceeded

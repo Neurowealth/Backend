@@ -326,3 +326,23 @@ export async function revokeSession(
     )
   }
 }
+
+/**
+ * Revoke every live session for a user. Used before irreversible account
+ * operations (privacy erasure) so no refresh token survives.
+ */
+export async function revokeAllUserSessions(
+  userId: string,
+  reason: RevocationReason
+): Promise<number> {
+  const sessions = await db.session.findMany({
+    where: { userId, revokedAt: null },
+    select: { id: true },
+  })
+
+  for (const { id } of sessions) {
+    await revokeSession(id, reason, { userId })
+  }
+
+  return sessions.length
+}

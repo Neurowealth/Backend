@@ -23,7 +23,7 @@ Thank you for your interest in contributing! This guide will help you get starte
 
 ### Prerequisites
 
-- Node.js 22+ 
+- Node.js 22+
 - PostgreSQL 14+
 - Docker & Docker Compose
 - npm 9+
@@ -57,16 +57,17 @@ npm run dev
 
 Use descriptive branch names with a prefix:
 
-| Prefix | Use Case |
-|--------|----------|
-| `feat/` | New features |
-| `fix/` | Bug fixes |
-| `docs/` | Documentation updates |
-| `refactor/` | Code refactoring |
-| `test/` | Adding/updating tests |
-| `chore/` | Maintenance tasks |
+| Prefix      | Use Case              |
+| ----------- | --------------------- |
+| `feat/`     | New features          |
+| `fix/`      | Bug fixes             |
+| `docs/`     | Documentation updates |
+| `refactor/` | Code refactoring      |
+| `test/`     | Adding/updating tests |
+| `chore/`    | Maintenance tasks     |
 
 Examples:
+
 - `feat/add-dca-endpoint`
 - `fix/api-key-scope-enforcement`
 - `docs/update-deployment-guide`
@@ -94,6 +95,12 @@ npm run test:integration    # Integration tests only
 npm run test:coverage       # With coverage report
 ```
 
+`npm run test:coverage` enforces the floors checked into `jest.config.js`.
+Global thresholds begin modestly so they can be ratcheted upward; compliance,
+lending, outbox, and recurring-withdrawal code has higher path-specific floors.
+CI uploads the LCOV report as the `jest-coverage` artifact. Changes that reduce
+coverage below any floor must add tests rather than lower the threshold.
+
 ### Code Quality
 
 ```bash
@@ -105,6 +112,7 @@ npm run format:check        # Check formatting
 ```
 
 **All checks must pass before submitting a PR:**
+
 ```bash
 npm run lint && npm run typecheck && npm test
 ```
@@ -144,6 +152,7 @@ npm run lint && npm run typecheck && npm test
 ### Reporting Bugs
 
 Use the **Bug Report** template. Include:
+
 - Steps to reproduce
 - Expected vs actual behavior
 - Environment details
@@ -152,6 +161,7 @@ Use the **Bug Report** template. Include:
 ### Requesting Features
 
 Use the **Feature Request** template. Include:
+
 - Problem statement
 - Proposed solution
 - Alternatives considered
@@ -174,6 +184,20 @@ Every issue carries exactly one primary type label, plus community and dispositi
 - **Campaigns:** `Beta-Campaign`, `Official Campaign | FWC26`, `Third Campaign`
 
 When a triage pass (a **Backlog Cleanup** issue) touches a batch of issues, list every item and its outcome in the pass issue so the decision trail stays auditable.
+
+## Repo Hygiene
+
+Durable guidance belongs in `docs/` (MIGRATIONS.md, RUNBOOK.md, etc.). The CI job in `.github/workflows/repo-hygiene.yml` **fails a PR** when it adds any of these at the repo root:
+
+- `PR_*SUMMARY*.md`, `IMPLEMENTATION_SUMMARY.md`, `*FIX*.md`, `*GUIDE*.md`
+- `verify_*.sh`, `fix-*.sh`
+- Anything under `docs/superpowers/plans/`
+
+One-off implementation notes, fix scripts, and rehearsal guides do not belong in the repository root. If you find yourself writing one, put the durable parts into `docs/` and leave the rest in the PR description.
+
+## Env File Policy
+
+Tracked env files (`.env.example`, `.env.development`, `.env.production`, `.env.test`) contain **placeholders only** — never real credentials. The `.gitignore` explicitly allows exactly these four files. The CI job in `.github/workflows/env-secret-scan.yml` fails if a high-entropy secret pattern is found in any tracked `.env*` file.
 
 ## Need Help?
 

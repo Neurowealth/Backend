@@ -56,6 +56,29 @@ cache writes, or should bypass the cache. Do not advertise this implementation a
 all stale reads. The number of deleted keys is fixed; payload validation/serialization and
 Redis memory usage scale with payload size.
 
+## Cross-pod invalidation (#611)
+
+In multi-pod deployments, cache invalidation events are broadcast via Redis pub/sub:
+
+- **Channel**: `neurowealth:cache-invalidation` (configurable via `CACHE_INVALIDATION_CHANNEL`)
+- **Event format**: `{ userId, correlationId, timestamp, originPodId }`
+- **Behavior**: When a mutation invalidates a user's cache on pod A, the event is published to Redis; pod B receives it and invalidates the same keys locally
+- **Origin filtering**: Pods ignore events they published themselves to avoid duplicate invalidation
+- **Failure mode**: If Redis is unavailable, invalidation is pod-local only. Stale data on other pods expires via TTL or is refreshed on next read.
+
+This provides bounded consistency SLA: mutations are visible on other pods within the Redis pub/sub delivery latency (typically <100ms) plus processing time. Clients reading stale data will see corrections on their next request due to cache validation or TTL expiration.
+
+### Configuration
+
+```env
+CACHE_INVALIDATION_CHANNEL=neurowealth:cache-invalidation
+REDIS_URL=redis://...
+```
+
+### Startup and shutdown
+
+The cache invalidation subscriber is initialized during application startup (best-effort, never blocks startup) and gracefully shut down during termination. The subscriber uses a dedicated Redis connection (via `createRedisSubscriber`) to avoid interfering with the shared cache client.
+
 ## Verification
 
 ```bash

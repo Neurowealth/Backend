@@ -362,6 +362,9 @@ HEALTHCHECK_URL=http://localhost:3001/health/ready \
 # See docs/RUNBOOK.md for the incident procedure.
 ```
 
+If a migration failed part-way (rather than needing a rollback), see
+[Appendix A: Common failure modes](#appendix-a-common-failure-modes).
+
 After any rollback, redeploy the application version that matches the reverted
 schema. A tier-2 rollback that leaves the newer application running will fail at
 the first query against the dropped column — and the resulting 500s look like a
@@ -388,7 +391,162 @@ The reviewer confirms these before approving. The PR template in
 
 ## 8. Related documentation
 
+- [Appendix A: Common failure modes](#appendix-a-common-failure-modes) — recipes for failed migrations
 - [RUNBOOK.md](./RUNBOOK.md) — §6, the incident-time rollback procedure
 - [DEPLOYMENT.md](./DEPLOYMENT.md) — environment matrix, k8s deploy, secrets
 - [PRODUCTION_READINESS_CHECKLIST.md](./PRODUCTION_READINESS_CHECKLIST.md)
 - [RUNBOOK.md — incident contacts](./RUNBOOK.md#7-incident-contacts)
+
+---
+
+## Appendix A. Common failure modes
+
+Recipes distilled from real incidents. Each one ends with the same two
+commands: mark the failed row in `_prisma_migrations` so Prisma will retry, then
+`npx prisma migrate deploy`. A migration that fails midway leaves a row with
+`finished_at IS NULL AND rolled_back_at IS NULL`, and `migrate deploy` refuses
+to proceed (`P3009`) until that row is resolved.
+
+```sql
+-- Find the stuck row
+SELECT migration_name, started_at, logs
+FROM _prisma_migrations
+WHERE finished_at IS NULL AND rolled_back_at IS NULL
+ORDER BY started_at DESC;
+```
+
+### A.1 `CREATE INDEX CONCURRENTLY` inside a Prisma migration
+
+**Incident:** `20260928180000_add_webhook_query_indexes`
+
+**Symptom**
+
+```
+ERROR: CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+```
+
+**Cause:** `prisma migrate deploy` runs each migration in a transaction.
+PostgreSQL forbids `CONCURRENTLY` inside one. Any migration containing it fails
+on first apply.
+
+**Recipe: production (keep `CONCURRENTLY`, no table lock)**
+
+```bash
+# 1. Clear the failed row so Prisma will not block on it
+npx prisma migrate resolve --rolled-back 20260928180000_add_webhook_query_indexes
+
+# 2. Apply the indexes by hand, outside any transaction. IF NOT EXISTS makes
+#    this safe to re-run after an interrupted build.
+psql "$DATABASE_URL" <<'SQL'
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "user_webhook_deliveries_endpointId_createdAt_idx"
+  ON "user_webhook_deliveries"("endpointId", "createdAt");
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "webhook_deliveries_subscriptionId_status_createdAt_idx"
+  ON "webhook_deliveries"("subscriptionId", "status", "createdAt");
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "webhook_dead_letters_subscriptionId_status_firstFailedAt_idx"
+  ON "webhook_dead_letters"("subscriptionId", "status", "firstFailedAt");
+SQL
+
+# 3. Record the migration as applied, then continue with the rest
+npx prisma migrate resolve --applied 20260928180000_add_webhook_query_indexes
+npx prisma migrate deploy
+```
+
+An interrupted `CONCURRENTLY` build leaves an `INVALID` index behind; `IF NOT
+EXISTS` would then skip it. Check and drop before re-running:
+
+```sql
+SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+-- DROP INDEX CONCURRENTLY "<name>";
+```
+
+**Recipe: CI / throwaway databases:** remove `CONCURRENTLY` from the
+migration file (blocking builds are fine where there is no traffic), then
+`--rolled-back` and `migrate deploy`. Never do this to a migration that has
+already been applied to a shared environment; add a new migration instead.
+
+**Verify**
+
+```sql
+SELECT tablename, indexname FROM pg_indexes
+WHERE tablename IN ('user_webhook_deliveries','webhook_deliveries','webhook_dead_letters')
+  AND indexname LIKE '%_idx';
+```
+
+**Prevention:** do not put `CONCURRENTLY` in `migration.sql`. Ship the
+blocking form in the migration and a documented manual step for production, or
+classify the change per §2 and schedule the lock.
+
+### A.2 Duplicate column on `ADD COLUMN`
+
+**Incident:** `20260928172500_add_referral_fraud_detection`
+
+**Symptom:** the migration fails with `column "reviewedBy" of relation
+"referral_conversions" already exists` (likewise `reviewedAt`).
+
+**Cause:** an earlier migration (`20260830163707_add_referral_fraud_review`)
+already added those columns; the new migration added them again.
+
+**Recipe**
+
+```bash
+# 1. Fix the SQL. Drop the duplicate columns, and make the genuinely new ones
+#    idempotent:
+#      ALTER TABLE "referral_conversions"
+#        ADD COLUMN IF NOT EXISTS "fraudCheckScore" INTEGER;
+#      ALTER TABLE "referral_conversions"
+#        ADD COLUMN IF NOT EXISTS "fraudCheckFlags" TEXT[] DEFAULT ARRAY[]::TEXT[];
+#    Keep rollback.sql in step with it.
+
+# 2. Clear the failed row, then retry with the corrected file
+npx prisma migrate resolve --rolled-back 20260928172500_add_referral_fraud_detection
+npx prisma migrate deploy
+```
+
+Editing a migration file is only valid for one that has **not** succeeded
+anywhere shared. If any environment recorded it as applied, leave it alone and
+write a corrective migration.
+
+**Verify**
+
+```bash
+psql "$DATABASE_URL" -c '\d referral_conversions'
+```
+
+**Prevention:** before adding a column, grep the migration history for it
+(`grep -rn '"reviewedBy"' prisma/migrations`). Write `ADD COLUMN IF NOT EXISTS`
+and `CREATE INDEX IF NOT EXISTS` by default.
+
+### A.3 Failed rehearsal database
+
+**Symptom:** `scripts/rehearse-migration-rollback.sh` fails on a migration,
+you fix the SQL, and the next rehearsal still fails (or Prisma reports `P3009`)
+because the rehearsal database remembers the earlier failed attempt.
+
+**Recipe**
+
+```bash
+# Mark the failed migration rolled back so Prisma retries the fixed SQL
+DATABASE_URL="$REHEARSAL_DATABASE_URL" \
+  bash scripts/fix-failed-rehearsal.sh <migration-name>
+
+# Re-run the rehearsal
+DATABASE_URL="$REHEARSAL_DATABASE_URL" \
+  bash scripts/rehearse-migration-rollback.sh
+```
+
+`fix-failed-rehearsal.sh` is just `prisma migrate resolve --rolled-back`
+with argument checking. If the failed migration applied part of its changes
+before erroring, the retry can trip over them; in that case discard the
+rehearsal database instead:
+
+```bash
+psql -h <host> -U postgres -c 'DROP DATABASE IF EXISTS rehearsal_db;' \
+                           -c 'CREATE DATABASE rehearsal_db;'
+```
+
+**Only ever point this at a rehearsal or throwaway database.** On a shared
+environment, resolve the failure per §6 (rolling back) instead.
+
+**Prevention:** run the rehearsal (§5) before pushing, and write idempotent SQL
+(`IF [NOT] EXISTS`, `DO` blocks instead of `ADD CONSTRAINT IF NOT EXISTS` for
+PostgreSQL < 12).
