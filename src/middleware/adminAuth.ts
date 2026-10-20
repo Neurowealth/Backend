@@ -307,7 +307,8 @@ export const ADMIN_SCOPE_CATALOG: Record<AdminScope, ScopeDefinition> = {
   'flags:write': {
     scope: 'flags:write',
     enforcement: 'enforced',
-    description: 'Manage feature flags, staged rollouts and emergency rollbacks.',
+    description:
+      'Manage feature flags, staged rollouts and emergency rollbacks.',
     risk: 'operational',
     grants:
       'Update runtime overrides, advance staged rollouts, reset flags, and trigger emergency rollbacks.',
@@ -344,27 +345,21 @@ export const ADMIN_SCOPE_CATALOG: Record<AdminScope, ScopeDefinition> = {
   },
   'risk-metadata:read': {
     scope: 'risk-metadata:read',
-    enforcement: 'declared-only',
+    enforcement: 'enforced',
     description: 'Read protocol risk metadata.',
     risk: 'read',
     grants: 'The protocol risk metadata and its review state.',
     requires:
-      'No route requires this scope today — the risk-metadata review ' +
-      'workflow is administered from src/config/riskMetadataAdmin.ts, not ' +
-      'through the API. Declared so a key can be provisioned ahead of a ' +
-      'route that needs it.',
+      '`GET /api/v1/admin/risk-metadata` lists entries with a stale flag.',
   },
   'risk-metadata:write': {
     scope: 'risk-metadata:write',
-    enforcement: 'declared-only',
+    enforcement: 'enforced',
     description: 'Review and publish protocol risk metadata.',
     risk: 'operational',
     grants: 'Changes the risk metadata other users are shown.',
     requires:
-      'No route requires this scope today — the risk-metadata review ' +
-      'workflow is administered from src/config/riskMetadataAdmin.ts, not ' +
-      'through the API. Declared so a key can be provisioned ahead of a ' +
-      'route that needs it.',
+      '`PUT /api/v1/admin/risk-metadata/:protocolName` upserts an entry; each change writes a history row and an admin audit log row.',
   },
   'admin:impersonate': {
     scope: 'admin:impersonate',

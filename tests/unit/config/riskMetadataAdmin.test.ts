@@ -1,5 +1,6 @@
 import {
   updateRiskMetadata,
+  upsertRiskMetadata,
   RiskMetadataValidationError,
 } from '../../../src/config/riskMetadataAdmin'
 import db from '../../../src/db'
@@ -69,5 +70,66 @@ describe('updateRiskMetadata', () => {
     await expect(
       updateRiskMetadata('Luma', { dataConfidence: 'SELF_REPORTED' }, 'admin-1')
     ).resolves.toMatchObject({ dataConfidence: 'SELF_REPORTED' })
+  })
+})
+
+describe('upsertRiskMetadata (#621)', () => {
+  const admin = { id: 'k1', name: 'ops', role: 'super' }
+  const input = {
+    auditStatus: 'THIRD_PARTY_AUDITED' as const,
+    auditReference: 'https://example.com/audit.pdf',
+    sourceUrl: 'https://example.com/audit.pdf',
+    dataConfidence: 'VERIFIED' as const,
+    inceptionDate: new Date('2024-02-01'),
+    nextReviewDueAt: new Date(Date.now() + 86400000),
+  }
+
+  it('rejects VERIFIED without sourceUrl', async () => {
+    await expect(
+      upsertRiskMetadata('Blend', { ...input, sourceUrl: undefined }, admin)
+    ).rejects.toThrow(RiskMetadataValidationError)
+    expect(mockDb.$transaction).not.toHaveBeenCalled()
+  })
+
+  it('rejects a nextReviewDueAt in the past', async () => {
+    await expect(
+      upsertRiskMetadata(
+        'Blend',
+        { ...input, nextReviewDueAt: new Date('2020-01-01') },
+        admin
+      )
+    ).rejects.toThrow('nextReviewDueAt')
+  })
+
+  it('writes the entry, history row and audit row with before/after', async () => {
+    const tx = {
+      protocolRiskMetadataEntry: {
+        findUnique: jest.fn().mockResolvedValue({
+          auditStatus: 'UNAUDITED',
+          dataConfidence: 'UNVERIFIED',
+          sourceUrl: null,
+          nextReviewDueAt: new Date('2026-01-01'),
+        }),
+        upsert: jest.fn().mockResolvedValue({ id: 'e1', ...input }),
+      },
+      protocolRiskMetadataHistory: { create: jest.fn() },
+      adminAuditLog: { create: jest.fn() },
+    }
+    mockDb.$transaction.mockImplementation((fn: any) => fn(tx))
+
+    await upsertRiskMetadata('Blend', input, admin)
+
+    expect(tx.protocolRiskMetadataHistory.create).toHaveBeenCalledTimes(1)
+    expect(tx.adminAuditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        adminKeyId: 'k1',
+        action: 'RISK_METADATA_UPSERT',
+        target: 'Blend',
+        details: {
+          before: expect.objectContaining({ auditStatus: 'UNAUDITED' }),
+          after: expect.objectContaining({ dataConfidence: 'VERIFIED' }),
+        },
+      }),
+    })
   })
 })

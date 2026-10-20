@@ -2,6 +2,10 @@
  * Router - Compares APYs and triggers rebalancing when conditions are met
  */
 
+import {
+  getStaleProtocolNames,
+  applyStalenessPenalty,
+} from '../jobs/riskMetadataStaleness'
 import { logger } from '../utils/logger'
 import { getCorrelationId } from '../utils/correlation'
 import { hasWashSaleRisk, isSameAssetRebuyLikely } from '../tax/washSale'
@@ -55,9 +59,13 @@ async function loadProtocolRiskScores(): Promise<Record<string, number>> {
   const rows = await db.protocolRiskScore.findMany({
     select: { protocolName: true, score: true },
   })
+  const stale = await getStaleProtocolNames()
   const map: Record<string, number> = {}
   for (const row of rows as Array<{ protocolName: string; score: number }>) {
-    map[row.protocolName] = row.score
+    map[row.protocolName] = applyStalenessPenalty(
+      row.score,
+      stale.has(row.protocolName)
+    )
   }
   return map
 }

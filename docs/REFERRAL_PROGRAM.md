@@ -163,3 +163,28 @@ Signup attribution is **not** a route — it is the `referralCode` field on
   (deduplicated per conversion + leg).
 - Because payouts are agent-signed and platform-funded, ensure the agent
   account is funded for the configured reward asset.
+
+## Fraud review queue and calibration (#619)
+
+Admin endpoints (mounted at `/api/v1/admin/referrals/fraud`):
+
+- `GET /queue` (scope `referrals:read`) lists scored conversions. Filters: `state`
+  (`pending` default, `approved`, `rejected`, `all`), `scoreMin`/`scoreMax`, `flag`, `from`/`to`;
+  paginated with `page` and `pageSize` (max 100); highest score first.
+- `POST /bulk-review` (scope `referrals:write`) body `{ ids, decision: approve|reject, reason }`
+  (up to 100 ids; `reason` required for reject). Each conversion is decided and written to
+  `AdminAuditLog` (`REFERRAL_BULK_APPROVE`/`REFERRAL_BULK_REJECT`) in its own transaction; ids that
+  are unknown or not pending come back in `skipped`.
+- `GET /calibration?month=YYYY-MM` (scope `referrals:read`) returns the same report as
+  `npx ts-node scripts/referral-calibration.ts [YYYY-MM]`.
+
+Calibration report: score distribution in 20-point bands for conversions created in the month,
+and, for conversions reviewed in the month, the false-positive rate
+(`approved / reviewed`, since a flagged conversion that a human approves was a false positive) and a
+suggested `REFERRAL_FRAUD_REVIEW_SCORE`: the lowest observed score at which rejections make up at
+least `REFERRAL_FRAUD_TARGET_PRECISION` (default 0.7) of reviews at or above it.
+
+Thresholds and weights are environment-driven, not hard-coded: `REFERRAL_FRAUD_BLOCK_SCORE` (100),
+`REFERRAL_FRAUD_REVIEW_SCORE` (80), `REFERRAL_FRAUD_WEIGHT_{DUPLICATE_WALLET,DUPLICATE_EMAIL,
+DUPLICATE_PHONE,SAME_IP,VELOCITY,RAPID_ACTIVATION}`, `REFERRAL_FRAUD_VELOCITY_COUNT` (5) and
+`REFERRAL_FRAUD_RAPID_ACTIVATION_COUNT` (3). Defaults reproduce the previous behaviour.

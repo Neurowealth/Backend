@@ -335,3 +335,42 @@ groups:
         annotations:
           summary: 'Sustained rate limiting across route groups'
           description: '{{ $value }} route groups currently reporting blocked requests. Distinguishes an ongoing event from a historical total.'
+
+  - name: neurowealth_support
+    interval: 60s
+    rules:
+      - alert: SupportTicketSlaBreached
+        expr: sum(support_tickets_sla_breached) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Support tickets are past their response SLA'
+          description: '{{ $value }} open tickets have breached their response SLA. See docs/SUPPORT_TICKETS.md.'
+
+      - alert: SupportUrgentTicketSlaBreached
+        expr: support_tickets_sla_breached{priority=~"URGENT|HIGH"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'High-priority support ticket past response SLA'
+          description: '{{ $value }} {{ $labels.priority }} tickets have breached their response SLA.'
+
+      - alert: SupportTicketsStale
+        expr: support_tickets_stale > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Support tickets untouched beyond the stale threshold'
+          description: '{{ $value }} open tickets have had no activity for SUPPORT_STALE_HOURS.'
+
+      - alert: ProtocolRiskMetadataStale
+        expr: risk_metadata_stale_entries > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Protocol risk metadata is past its review date'
+          description: '{{ $value }} protocol risk metadata entries are stale. See docs/PROTOCOL_RISK_SCORING.md.'

@@ -18,23 +18,31 @@ const statusEnum = z.enum([
 
 const priorityEnum = z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT'])
 
+// Max attachments per message; enforced here and re-validated in the route handler.
+const MAX_ATTACHMENT_REFS = 10
+
+const attachmentRefsSchema = z
+  .array(z.string().uuid('Each attachmentRef must be a valid UUID'))
+  .max(MAX_ATTACHMENT_REFS, `Cannot attach more than ${MAX_ATTACHMENT_REFS} files per message`)
+  .optional()
+
 export const createSupportTicketSchema = z.object({
   subject: z.string().min(3).max(200),
   category: categoryEnum,
   body: z.string().min(5).max(5000),
   priority: priorityEnum.optional().default('MEDIUM'),
   contextRef: z.string().optional(),
-  attachmentRefs: z.array(z.string()).optional(),
+  attachmentRefs: attachmentRefsSchema,
 })
 
 export const replySupportTicketSchema = z.object({
   body: z.string().min(1).max(5000),
-  attachmentRefs: z.array(z.string()).optional(),
+  attachmentRefs: attachmentRefsSchema,
 })
 
 export const adminReplySupportTicketSchema = z.object({
   body: z.string().min(1).max(5000),
-  attachmentRefs: z.array(z.string()).optional(),
+  attachmentRefs: attachmentRefsSchema,
   internal: z.boolean().optional().default(false),
 })
 

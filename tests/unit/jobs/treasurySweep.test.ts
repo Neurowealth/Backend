@@ -1,12 +1,14 @@
 import {
   evaluateTreasuryBalances,
+  previewTreasurySweep,
   executeSweep,
   executeEmergencySweep,
   validateHysteresis,
 } from '../../../src/jobs/treasurySweep'
 import db from '../../../src/db'
-import { getAccount } from '../../../src/stellar/client'
+import { getNativeBalance } from '../../../src/stellar/client'
 import { enqueueOutboxOp } from '../../../src/outbox/service'
+import { alertingService } from '../../../src/services/alerting'
 
 jest.mock('../../../src/db', () => ({
   __esModule: true,
@@ -19,17 +21,20 @@ jest.mock('../../../src/db', () => ({
   },
 }))
 jest.mock('../../../src/stellar/client', () => ({
-  getAccount: jest.fn(),
+  getNativeBalance: jest.fn(),
 }))
 jest.mock('../../../src/outbox/service', () => ({
   enqueueOutboxOp: jest.fn(),
+}))
+jest.mock('../../../src/services/alerting', () => ({
+  alertingService: { emit: jest.fn().mockResolvedValue({ sent: true }) },
 }))
 jest.mock('../../../src/utils/logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }))
 
 const mockDb = db as any
-const mockGetAccount = getAccount as jest.Mock
+const mockGetNativeBalance = getNativeBalance as jest.Mock
 const mockEnqueue = enqueueOutboxOp as jest.Mock
 
 beforeEach(() => {
@@ -58,6 +63,7 @@ describe('evaluateTreasuryBalances', () => {
             minSweepAmount: '10',
             requiresApprovalAbove: null,
             isActive: true,
+            sweepsEnabled: true,
           })
         }
         return Promise.resolve(null)
@@ -69,9 +75,7 @@ describe('evaluateTreasuryBalances', () => {
       }
       return Promise.resolve([])
     })
-    mockGetAccount.mockResolvedValue({
-      balances: [{ asset_type: 'native', balance: '8000' }],
-    })
+    mockGetNativeBalance.mockResolvedValue(8000)
 
     const plans = await evaluateTreasuryBalances()
 
@@ -101,6 +105,7 @@ describe('executeSweep', () => {
       fromTier: 'HOT',
       toTier: 'WARM',
       requiresApprovalAbove: null,
+      sweepsEnabled: true,
     })
     mockDb.treasurySweep.create.mockResolvedValue({ id: 'sweep-1' })
     mockDb.treasurySweep.update.mockResolvedValue({})
@@ -129,32 +134,31 @@ describe('executeSweep', () => {
     )
   })
 
-  it('opens a MultisigEnvelope instead of enqueueing when amount exceeds requiresApprovalAbove', async () => {
+  it('refuses a sweep above requiresApprovalAbove with an operator-visible error (#655)', async () => {
     mockDb.treasurySweepPolicy.findFirst.mockResolvedValue({
       fromTier: 'HOT',
       toTier: 'WARM',
       requiresApprovalAbove: '500',
-    })
-    mockDb.treasurySweep.create.mockResolvedValue({ id: 'sweep-2' })
-    mockDb.multisigEnvelope.create.mockResolvedValue({ id: 'env-1' })
-
-    await executeSweep({
-      fromTier: 'HOT',
-      toTier: 'WARM',
-      asset: 'XLM',
-      amount: '1000',
-      reason: 'hot_over_high_band',
+      sweepsEnabled: true,
     })
 
-    expect(mockDb.multisigEnvelope.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          sweepId: 'sweep-2',
-          status: 'PENDING',
-        }),
+    await expect(
+      executeSweep({
+        fromTier: 'HOT',
+        toTier: 'WARM',
+        asset: 'XLM',
+        amount: '1000',
+        reason: 'hot_over_high_band',
       })
-    )
+    ).rejects.toThrow(/exceeds requiresApprovalAbove/)
+
+    expect(mockDb.treasurySweep.create).not.toHaveBeenCalled()
+    expect(mockDb.multisigEnvelope.create).not.toHaveBeenCalled()
     expect(mockEnqueue).not.toHaveBeenCalled()
+    expect(alertingService.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ severity: 'critical' }),
+      expect.stringContaining('treasury-sweep-failed')
+    )
   })
 })
 
@@ -199,5 +203,86 @@ describe('executeEmergencySweep', () => {
         data: expect.objectContaining({ action: 'treasury.emergency_sweep' }),
       })
     )
+  })
+})
+
+describe('previewTreasurySweep (#620)', () => {
+  const policy = {
+    id: 'p1',
+    version: 3,
+    fromTier: 'HOT',
+    toTier: 'WARM',
+    maxHotBalance: '5000',
+    minSweepAmount: '10',
+    requiresApprovalAbove: '500',
+    isActive: true,
+    sweepsEnabled: false,
+  }
+
+  beforeEach(() => {
+    mockDb.treasurySweepPolicy.findFirst.mockImplementation(({ where }: any) =>
+      Promise.resolve(where.fromTier === 'HOT' ? policy : null)
+    )
+    mockDb.treasuryAccount.findMany.mockResolvedValue([{ publicKey: 'GHOT' }])
+    mockGetNativeBalance.mockResolvedValue(6000)
+  })
+
+  it('reports plans for a disabled policy without writing anything', async () => {
+    const preview = await previewTreasurySweep()
+
+    expect(preview.plans).toHaveLength(1)
+    expect(preview.plans[0]).toMatchObject({
+      amount: '1000.0000000',
+      policyEnabled: false,
+      requiresApproval: true,
+      policyId: 'p1',
+    })
+    expect(mockEnqueue).not.toHaveBeenCalled()
+    expect(mockDb.treasurySweep.create).not.toHaveBeenCalled()
+    expect(mockDb.treasurySweep.update).not.toHaveBeenCalled()
+    expect(mockDb.multisigEnvelope.create).not.toHaveBeenCalled()
+  })
+
+  it('evaluateTreasuryBalances ignores a policy that is not enabled', async () => {
+    expect(await evaluateTreasuryBalances()).toEqual([])
+  })
+
+  it('executeSweep refuses a policy that is not enabled and alerts', async () => {
+    await expect(
+      executeSweep({
+        fromTier: 'HOT',
+        toTier: 'WARM',
+        asset: 'XLM',
+        amount: '1000',
+        reason: 'hot_over_high_band',
+      })
+    ).rejects.toThrow('not enabled')
+    expect(mockEnqueue).not.toHaveBeenCalled()
+    expect(mockDb.treasurySweep.create).not.toHaveBeenCalled()
+    expect(alertingService.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ severity: 'critical' }),
+      expect.stringContaining('treasury-sweep-failed')
+    )
+  })
+
+  it('executeSweep alerts when enqueueing fails', async () => {
+    mockDb.treasurySweepPolicy.findFirst.mockResolvedValue({
+      ...policy,
+      sweepsEnabled: true,
+      requiresApprovalAbove: null,
+    })
+    mockDb.treasurySweep.create.mockResolvedValue({ id: 'sweep-9' })
+    mockEnqueue.mockRejectedValue(new Error('outbox down'))
+
+    await expect(
+      executeSweep({
+        fromTier: 'HOT',
+        toTier: 'WARM',
+        asset: 'XLM',
+        amount: '1000',
+        reason: 'hot_over_high_band',
+      })
+    ).rejects.toThrow('outbox down')
+    expect(alertingService.emit).toHaveBeenCalledTimes(1)
   })
 })

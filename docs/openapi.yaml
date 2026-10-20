@@ -2195,6 +2195,199 @@ paths:
           description: Forbidden
         '404':
           description: Resource not found
+  /admin/referrals/fraud/queue:
+    get:
+      tags:
+        - Admin
+      operationId: adminReferralFraudQueue
+      summary: Paginated flagged referral conversions; filters score band, flag, date; requires referrals:read
+      security:
+        - adminAuth: []
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: scoreMin
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: scoreMax
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: flag
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+  /admin/referrals/fraud/bulk-review:
+    post:
+      tags:
+        - Admin
+      operationId: adminReferralFraudBulkReview
+      summary: Bulk approve or reject flagged conversions with per-item audit log; requires referrals:write
+      security:
+        - adminAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+  /admin/referrals/fraud/calibration:
+    get:
+      tags:
+        - Admin
+      operationId: adminReferralFraudCalibration
+      summary: Monthly score distribution, false-positive rate and threshold suggestion; requires referrals:read
+      security:
+        - adminAuth: []
+      parameters:
+        - name: month
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+  /admin/risk-metadata:
+    get:
+      tags:
+        - Admin
+      operationId: adminListRiskMetadata
+      summary: List protocol risk metadata with stale flag; requires risk-metadata:read
+      security:
+        - adminAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+  /admin/risk-metadata/{protocolName}:
+    put:
+      tags:
+        - Admin
+      operationId: adminUpsertRiskMetadata
+      summary: Create or update protocol risk metadata with history and audit log; requires risk-metadata:write
+      security:
+        - adminAuth: []
+      parameters:
+        - name: protocolName
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+  /admin/treasury/sweep/preview:
+    post:
+      tags:
+        - Admin
+      operationId: adminTreasurySweepPreview
+      summary: Dry run of treasury sweeps under current policies; writes nothing; requires treasury:read
+      security:
+        - adminAuth: []
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
+  /admin/treasury/policies/{id}/enable:
+    post:
+      tags:
+        - Admin
+      operationId: adminTreasuryPolicyEnable
+      summary: Enable sweeps for a policy; body confirmation must be SWEEP; requires treasury:write
+      security:
+        - adminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Successful operation
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required or verification failed
+        '403':
+          description: Forbidden
   /admin/support/tickets:
     get:
       tags:

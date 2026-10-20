@@ -8,6 +8,24 @@ const IMPERSONATION_TTL_MINUTES = 30
 const IMPERSONATION_SECRET =
   process.env.IMPERSONATION_SECRET || 'impersonation-secret'
 
+/**
+ * Routes where impersonation is never permitted regardless of admin role.
+ * Covers withdrawals, erasure, API key management, and treasury operations.
+ */
+const HIGH_RISK_PATH_PREFIXES = [
+  '/api/withdrawals',
+  '/api/wallet/withdraw',
+  '/api/users/me/erase',
+  '/api/users/delete',
+  '/api/api-keys',
+  '/api/treasury',
+  '/api/admin/treasury',
+  '/api/stellar/sign',
+  '/api/stellar/send',
+  '/api/mfa',
+  '/api/totp',
+]
+
 export interface ImpersonationContext {
   adminId: string
   adminName: string
@@ -15,6 +33,8 @@ export interface ImpersonationContext {
   sessionId: string
   createdAt: Date
   expiresAt: Date
+  ipAddress?: string
+  reason?: string
 }
 
 /**
@@ -23,7 +43,8 @@ export interface ImpersonationContext {
 export function generateImpersonationToken(
   adminId: string,
   adminName: string,
-  targetUserId: string
+  targetUserId: string,
+  options?: { ipAddress?: string; reason?: string }
 ): string {
   const sessionId = crypto.randomUUID()
   const createdAt = new Date()
@@ -38,6 +59,8 @@ export function generateImpersonationToken(
     sessionId,
     createdAt,
     expiresAt,
+    ipAddress: options?.ipAddress,
+    reason: options?.reason,
   }
 
   return jwt.sign(payload, IMPERSONATION_SECRET, {
@@ -85,12 +108,60 @@ export function requireNotImpersonation(
     const impersonationContext = verifyImpersonationToken(token)
 
     if (impersonationContext) {
+      logger.warn('[Impersonation] Write blocked during impersonation session', {
+        sessionId: impersonationContext.sessionId,
+        adminId: impersonationContext.adminId,
+        targetUserId: impersonationContext.targetUserId,
+        path: req.path,
+        method: req.method,
+      })
       res.status(403).json({
         success: false,
         error: 'Write operations are not allowed during impersonation sessions',
       })
       return
     }
+  }
+
+  next()
+}
+
+/**
+ * Middleware that blocks impersonation tokens from accessing high-risk routes
+ * (withdrawals, erasure, API key management, treasury operations).
+ * Apply before any route handler on these paths.
+ */
+export function blockHighRiskImpersonation(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void {
+  const authHeader = req.headers.authorization
+  if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
+    return next()
+  }
+
+  const token = authHeader.slice(7).trim()
+  const impersonationContext = verifyImpersonationToken(token)
+
+  if (!impersonationContext) return next()
+
+  const isHighRisk = HIGH_RISK_PATH_PREFIXES.some((prefix) =>
+    req.path.startsWith(prefix)
+  )
+
+  if (isHighRisk) {
+    logger.warn('[Impersonation] High-risk route blocked for impersonation session', {
+      sessionId: impersonationContext.sessionId,
+      adminId: impersonationContext.adminId,
+      targetUserId: impersonationContext.targetUserId,
+      path: req.path,
+    })
+    res.status(403).json({
+      success: false,
+      error: 'This operation is not permitted during an impersonation session',
+    })
+    return
   }
 
   next()

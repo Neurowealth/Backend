@@ -172,3 +172,98 @@ describe('scheduleResilientJob', () => {
     clearInterval(handle)
   })
 })
+
+describe('cross-pod tick guard (#636)', () => {
+  afterEach(() => {
+    jest.useRealTimers()
+  })
+
+  /**
+   * Shared mutex standing in for `pg_try_advisory_xact_lock(hashtext(job))`:
+   * only one holder at a time, release returns the key.
+   */
+  function createSharedLock(): {
+    guard: (jobName: string, task: () => Promise<void>) => Promise<void>
+    holders: Set<string>
+  } {
+    const holders = new Set<string>()
+    return {
+      holders,
+      guard: async (jobName, task) => {
+        if (holders.has(jobName)) return
+        holders.add(jobName)
+        try {
+          await task()
+        } finally {
+          holders.delete(jobName)
+        }
+      },
+    }
+  }
+
+  it('runs a job once per tick when two scheduler instances share one lock', async () => {
+    jest.useFakeTimers()
+    let release: () => void = () => undefined
+    let calls = 0
+    const task = () => {
+      calls += 1
+      return new Promise<void>((resolve) => {
+        release = resolve
+      })
+    }
+
+    const lock = createSharedLock()
+
+    // Two "replicas" — two schedulers for the same job name against one lock.
+    const handleA = scheduleResilientJob({
+      jobName: 'shared-tick-job',
+      task,
+      intervalMs: 1000,
+      sleep: async () => undefined,
+      guard: lock.guard,
+    })
+    const handleB = scheduleResilientJob({
+      jobName: 'shared-tick-job',
+      task,
+      intervalMs: 1000,
+      sleep: async () => undefined,
+      guard: lock.guard,
+    })
+
+    // Both schedulers fire their immediate tick; the lock lets only one through.
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+    expect(calls).toBe(1)
+
+    release()
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+
+    clearInterval(handleA)
+    clearInterval(handleB)
+  })
+
+  it('skips a tick when another replica already holds the lock', async () => {
+    let calls = 0
+    const task = async () => {
+      calls += 1
+    }
+
+    const holders = new Set<string>(['locked-job'])
+    const guard = async (jobName: string, t: () => Promise<void>) => {
+      if (holders.has(jobName)) return
+      await t()
+    }
+
+    const handle = scheduleResilientJob({
+      jobName: 'locked-job',
+      task,
+      intervalMs: 60_000,
+      sleep: async () => undefined,
+      guard,
+    })
+
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+    expect(calls).toBe(0)
+
+    clearInterval(handle)
+  })
+})

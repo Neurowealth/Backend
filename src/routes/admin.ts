@@ -2268,6 +2268,85 @@ router.get(
 )
 
 /**
+ * POST /api/admin/treasury/sweep/preview
+ * Dry run: what would move under the current policies. Writes nothing and
+ * sends nothing to the chain. Required scope: treasury:read
+ */
+router.post(
+  '/treasury/sweep/preview',
+  requireAdminScope('treasury:read'),
+  async (req: Request, res: Response) => {
+    if (!getAdminAuth(res)) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+    try {
+      const { previewTreasurySweep } = await import('../jobs/treasurySweep')
+      const preview = await previewTreasurySweep()
+      auditLog(req, res, 'TREASURY_SWEEP_PREVIEW', 'success', {
+        plans: preview.plans.length,
+      })
+      res.status(200).json({
+        success: true,
+        data: preview,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'TREASURY_SWEEP_PREVIEW', 'failure', {
+        error: message,
+      })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/treasury/policies/:id/enable
+ * Turns sweeps on for a policy. Body: { "confirmation": "SWEEP" }.
+ * Required scope: treasury:write
+ */
+router.post(
+  '/treasury/policies/:id/enable',
+  requireAdminScope('treasury:write'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+    try {
+      const { enablePolicy } = await import('../treasury/policy')
+      const policy = await enablePolicy(
+        req.params.id,
+        req.body?.confirmation,
+        adminAuth.name
+      )
+      auditLog(req, res, 'TREASURY_POLICY_ENABLE', 'success', {
+        policyId: policy.id,
+        fromTier: policy.fromTier,
+        toTier: policy.toTier,
+        version: policy.version,
+      })
+      res.status(200).json({
+        success: true,
+        data: policy,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'TREASURY_POLICY_ENABLE', 'failure', {
+        policyId: req.params.id,
+        error: message,
+      })
+      res.status(400).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
  * POST /api/admin/treasury/signer-rotations
  * Initiates a signer rotation into DUAL_ACTIVE. Required scope: treasury:write
  */

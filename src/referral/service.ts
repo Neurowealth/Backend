@@ -65,6 +65,7 @@ export async function checkReferralFraud(
   referralCodeId: string,
   database: Db = db
 ): Promise<ReferralFraudCheckResult> {
+  const fraudCfg = config.referral.fraud
   const flags: ReferralFraudFlag[] = []
   let riskScore = 0
   const details: Record<string, any> = {}
@@ -116,7 +117,7 @@ export async function checkReferralFraud(
   })
   if (duplicateWallet > 0) {
     flags.push(ReferralFraudFlag.DUPLICATE_WALLET)
-    riskScore += 100
+    riskScore += fraudCfg.weights.duplicateWallet
     details.duplicateWallet = true
   }
 
@@ -130,7 +131,7 @@ export async function checkReferralFraud(
     })
     if (duplicateEmail > 0) {
       flags.push(ReferralFraudFlag.DUPLICATE_EMAIL)
-      riskScore += 50
+      riskScore += fraudCfg.weights.duplicateEmail
       details.duplicateEmail = true
     }
   }
@@ -145,7 +146,7 @@ export async function checkReferralFraud(
     })
     if (duplicatePhone > 0) {
       flags.push(ReferralFraudFlag.DUPLICATE_PHONE)
-      riskScore += 50
+      riskScore += fraudCfg.weights.duplicatePhone
       details.duplicatePhone = true
     }
   }
@@ -160,7 +161,7 @@ export async function checkReferralFraud(
   const sharedIps = [...referredIps].filter((ip) => referrerIps.has(ip))
   if (sharedIps.length > 0) {
     flags.push(ReferralFraudFlag.SAME_IP_ADDRESS)
-    riskScore += 40
+    riskScore += fraudCfg.weights.sameIp
     details.sharedIps = sharedIps
   }
 
@@ -171,9 +172,9 @@ export async function checkReferralFraud(
       createdAt: { gt: new Date(Date.now() - 24 * 60 * 60 * 1000) }, // 24h
     },
   })
-  if (recentConversions >= 5) {
+  if (recentConversions >= fraudCfg.velocityCount) {
     flags.push(ReferralFraudFlag.SUSPICIOUS_VELOCITY)
-    riskScore += 30
+    riskScore += fraudCfg.weights.velocity
     details.recentConversions = recentConversions
   }
 
@@ -185,14 +186,14 @@ export async function checkReferralFraud(
       activatedAt: { gt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }, // 7d
     },
   })
-  if (rapidActivations >= 3) {
+  if (rapidActivations >= fraudCfg.rapidActivationCount) {
     flags.push(ReferralFraudFlag.RAPID_ACTIVATION)
-    riskScore += 40
+    riskScore += fraudCfg.weights.rapidActivation
     details.rapidActivations = rapidActivations
   }
 
-  const requiresManualReview = riskScore >= 80
-  const passed = riskScore < 100 // Block only if score is 100+
+  const requiresManualReview = riskScore >= fraudCfg.reviewScore
+  const passed = riskScore < fraudCfg.blockScore
 
   return {
     passed,

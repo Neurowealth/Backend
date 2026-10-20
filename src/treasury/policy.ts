@@ -64,6 +64,7 @@ export interface TreasurySweepPolicyRecord {
   requiresApprovalAbove: Prisma.Decimal | null
   version: number
   isActive: boolean
+  sweepsEnabled: boolean
 }
 
 export async function createPolicyVersion(
@@ -119,4 +120,40 @@ export async function getActivePolicy(
   return (database as typeof db).treasurySweepPolicy.findFirst({
     where: { fromTier, toTier, isActive: true },
   })
+}
+
+export const SWEEP_CONFIRMATION = 'SWEEP'
+
+/**
+ * Enables sweeps for a policy (#620). New policy versions start disabled; an
+ * operator must preview the sweep and type SWEEP to turn the policy on.
+ */
+export async function enablePolicy(
+  policyId: string,
+  confirmation: string,
+  enabledBy: string,
+  database: Db = db
+): Promise<TreasurySweepPolicyRecord> {
+  if (confirmation !== SWEEP_CONFIRMATION) {
+    throw new TreasuryPolicyValidationError(
+      `confirmation must be the exact text ${SWEEP_CONFIRMATION}`
+    )
+  }
+  const policy = await database.treasurySweepPolicy.findUnique({
+    where: { id: policyId },
+  })
+  if (!policy) {
+    throw new TreasuryPolicyValidationError('policy not found')
+  }
+  if (!policy.isActive) {
+    throw new TreasuryPolicyValidationError(
+      'only the active policy version can be enabled'
+    )
+  }
+  const updated = await database.treasurySweepPolicy.update({
+    where: { id: policyId },
+    data: { sweepsEnabled: true, enabledBy, enabledAt: new Date() },
+  })
+  logger.info('[TreasuryPolicy] Sweeps enabled', { policyId, enabledBy })
+  return updated
 }

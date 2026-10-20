@@ -11,6 +11,50 @@ import {
 } from '../validators/support-ticket-validators'
 
 const router = Router()
+
+const MAX_ATTACHMENT_REFS = 10
+
+/**
+ * Verify that every ref in `attachmentRefs` is owned by `userId`.
+ * Rejects if any ref is foreign or the count exceeds the cap.
+ * NOTE: When a dedicated attachment upload endpoint is added it must also
+ * enforce MIME allow-list (image/*, application/pdf) and a per-file size cap
+ * (e.g. 10 MB). Admin download paths must serve with:
+ *   Content-Disposition: attachment; filename="<name>"
+ *   X-Content-Type-Options: nosniff
+ * and route through a scan/quarantine step before delivery.
+ */
+async function validateAttachmentRefs(
+  refs: string[] | undefined,
+  userId: string
+): Promise<{ valid: boolean; error?: string }> {
+  if (!refs || refs.length === 0) return { valid: true }
+  if (refs.length > MAX_ATTACHMENT_REFS) {
+    return { valid: false, error: `Cannot attach more than ${MAX_ATTACHMENT_REFS} files per message` }
+  }
+  // Ownership check: each ref must be a TicketAttachment owned by this user.
+  // `attachmentRefs` stores UUIDs referencing pre-uploaded attachments scoped to the user.
+  const owned = await (db as any).ticketAttachment?.findMany?.({
+    where: { id: { in: refs }, userId },
+    select: { id: true },
+  }) as { id: string }[] | undefined
+
+  if (owned === undefined) {
+    // TicketAttachment model not yet deployed — skip ownership check but still
+    // accept the refs. Remove this branch once the model is in production.
+    return { valid: true }
+  }
+
+  const ownedIds = new Set(owned.map((a) => a.id))
+  const foreign = refs.filter((r) => !ownedIds.has(r))
+  if (foreign.length > 0) {
+    logger.warn('[SupportTicket] IDOR attempt: foreign attachment refs', { userId, foreign })
+    return { valid: false, error: 'One or more attachment refs are invalid or do not belong to you' }
+  }
+
+  return { valid: true }
+}
+
 const handle =
   (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>
   (req, res, next) => {
@@ -38,6 +82,12 @@ router.post(
     const { subject, category, body, priority, contextRef, attachmentRefs } =
       req.body
     const userId = req.auth!.userId
+
+    const refCheck = await validateAttachmentRefs(attachmentRefs, userId)
+    if (!refCheck.valid) {
+      res.status(400).json({ error: refCheck.error })
+      return
+    }
 
     const result = await (db as any).$transaction(async (tx: any) => {
       const ticket = await tx.supportTicket.create({
@@ -168,6 +218,12 @@ router.post(
 
     if (ticket.status === 'CLOSED') {
       res.status(409).json({ error: 'Ticket is closed' })
+      return
+    }
+
+    const refCheck = await validateAttachmentRefs(attachmentRefs, userId)
+    if (!refCheck.valid) {
+      res.status(400).json({ error: refCheck.error })
       return
     }
 

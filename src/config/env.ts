@@ -663,6 +663,14 @@ export const config = {
     // stale entries are surfaced but not silently altered.
     staleAutoDowngrade:
       process.env.PROTOCOL_RISK_STALE_AUTO_DOWNGRADE === 'true',
+    // #621 — points subtracted from a protocol's score while its metadata is
+    // past nextReviewDueAt, and how often the staleness check pages.
+    stalePenalty: parseInt(
+      process.env.PROTOCOL_RISK_STALE_SCORE_PENALTY || '20'
+    ),
+    stalenessIntervalMs: parseInt(
+      process.env.PROTOCOL_RISK_STALENESS_INTERVAL_MS || '3600000'
+    ),
   },
   portfolioRisk: {
     intervalMs: parseInt(process.env.PORTFOLIO_RISK_INTERVAL_MS || '21600000'),
@@ -708,6 +716,37 @@ export const config = {
     payoutIntervalMs: parseInt(
       process.env.REFERRAL_PAYOUT_INTERVAL_MS || '120000'
     ),
+    // #619 — fraud scoring is config-driven so thresholds can be tuned from
+    // the calibration report without a deploy.
+    fraud: {
+      blockScore: parseInt(process.env.REFERRAL_FRAUD_BLOCK_SCORE || '100'),
+      reviewScore: parseInt(process.env.REFERRAL_FRAUD_REVIEW_SCORE || '80'),
+      weights: {
+        duplicateWallet: parseInt(
+          process.env.REFERRAL_FRAUD_WEIGHT_DUPLICATE_WALLET || '100'
+        ),
+        duplicateEmail: parseInt(
+          process.env.REFERRAL_FRAUD_WEIGHT_DUPLICATE_EMAIL || '50'
+        ),
+        duplicatePhone: parseInt(
+          process.env.REFERRAL_FRAUD_WEIGHT_DUPLICATE_PHONE || '50'
+        ),
+        sameIp: parseInt(process.env.REFERRAL_FRAUD_WEIGHT_SAME_IP || '40'),
+        velocity: parseInt(process.env.REFERRAL_FRAUD_WEIGHT_VELOCITY || '30'),
+        rapidActivation: parseInt(
+          process.env.REFERRAL_FRAUD_WEIGHT_RAPID_ACTIVATION || '40'
+        ),
+      },
+      velocityCount: parseInt(process.env.REFERRAL_FRAUD_VELOCITY_COUNT || '5'),
+      rapidActivationCount: parseInt(
+        process.env.REFERRAL_FRAUD_RAPID_ACTIVATION_COUNT || '3'
+      ),
+      // Calibration report: minimum share of flagged reviews that ended in a
+      // rejection before the suggested review threshold is considered tuned.
+      targetPrecision: parseFloat(
+        process.env.REFERRAL_FRAUD_TARGET_PRECISION || '0.7'
+      ),
+    },
   },
   recurringDeposits: {
     intervalMs: parseInt(

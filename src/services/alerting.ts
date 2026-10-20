@@ -372,7 +372,8 @@ class AlertingService {
       body: JSON.stringify({
         routing_key: this.pagerdutyRoutingKey,
         event_action: 'trigger',
-        dedup_key: `dlq-alert-${Math.floor(Date.now() / 60000)}`, // Group by minute
+        dedup_key:
+          payload.dedupKey ?? `dlq-alert-${Math.floor(Date.now() / 60000)}`, // Group by minute
         payload: {
           summary: payload.title,
           severity,

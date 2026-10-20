@@ -14,20 +14,33 @@ export function supportSlaHours(priority: TicketPriority): number {
     : DEFAULT_SLA_HOURS[priority]
 }
 
+export function supportStaleHours(): number {
+  const configured = Number(process.env.SUPPORT_STALE_HOURS)
+  return Number.isFinite(configured) && configured > 0 ? configured : 24
+}
+
 export function supportSla(
-  ticket: { priority: TicketPriority; status: TicketStatus; createdAt: Date },
+  ticket: {
+    priority: TicketPriority
+    status: TicketStatus
+    createdAt: Date
+    firstResponseAt?: Date | null
+  },
   now = new Date()
 ) {
   const slaDueAt = new Date(
     ticket.createdAt.getTime() + supportSlaHours(ticket.priority) * 3600000
   )
-  return {
-    slaDueAt,
-    slaBreached:
-      ticket.status !== 'RESOLVED' &&
+  const slaBreached = ticket.firstResponseAt
+    ? ticket.firstResponseAt > slaDueAt
+    : ticket.status !== 'RESOLVED' &&
       ticket.status !== 'CLOSED' &&
-      slaDueAt < now,
-  }
+      slaDueAt < now
+  return { slaDueAt, slaBreached }
+}
+
+export function canTransition(from: TicketStatus, to: TicketStatus): boolean {
+  return from === to || SUPPORT_TRANSITIONS[from].includes(to)
 }
 
 export const SUPPORT_TRANSITIONS: Record<TicketStatus, TicketStatus[]> = {

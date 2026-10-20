@@ -77,19 +77,19 @@ New keys are **read-only by default**. Write scopes must be explicitly requested
 | `metrics:read` | read | enforced | — | Read operational metrics and dashboards. | — | `GET /api/v1/admin/jobs/dashboard`, `GET /api/v1/admin/stellar/metrics` |
 | `outbox:read` | read | enforced | — | Read the durable outbox. | — | `GET /api/v1/admin/outbox`, `GET /api/v1/admin/outbox/:id`, `GET /api/v1/admin/outbox/stats` |
 | `read` | read | enforced | — | General read access to admin resources. | — | `GET /api/v1/admin/erasure/preview/:userId`, `GET /api/v1/admin/erasure/requests`, `GET /api/v1/admin/referrals/review` |
-| `referrals:read` | read | enforced | — | Read flagged referral conversions. | — | `GET /api/v1/admin/referrals/flagged` |
+| `referrals:read` | read | enforced | — | Read flagged referral conversions. | — | `GET /api/v1/admin/referrals/flagged`, `GET /api/v1/admin/referrals/fraud/calibration`, `GET /api/v1/admin/referrals/fraud/queue` |
 | `reserves:read` | read | enforced | — | Read reserve and sponsorship state. | — | `GET /api/v1/admin/reserves` |
-| `risk-metadata:read` | read | declared-only | — | Read protocol risk metadata. | No route requires this scope today — the risk-metadata review workflow is administered from src/config/riskMetadataAdmin.ts, not through the API. Declared so a key can be provisioned ahead of a route that needs it. | — |
+| `risk-metadata:read` | read | enforced | — | Read protocol risk metadata. | `GET /api/v1/admin/risk-metadata` lists entries with a stale flag. | `GET /api/v1/admin/risk-metadata` |
 | `sessions:read` | read | enforced | — | Read user sessions. | — | `GET /api/v1/admin/users/:id/sessions` |
 | `support:read` | read | enforced | — | Read support tickets. | — | `GET /api/v1/admin/support/tickets`, `GET /api/v1/admin/support/tickets/:id` |
-| `treasury:read` | read | enforced | — | Read treasury sweep policies. | — | `GET /api/v1/admin/treasury/policies` |
+| `treasury:read` | read | enforced | — | Read treasury sweep policies. | — | `GET /api/v1/admin/treasury/policies`, `POST /api/v1/admin/treasury/sweep/preview` |
 | `approvals:write` | write | enforced | — | Cancel pending approval requests. | — | `POST /api/v1/admin/approvals/:id/cancel` |
 | `sessions:write` | write | enforced | — | Revoke user sessions. | — | `POST /api/v1/admin/users/:id/sessions/revoke-all` |
 | `support:write` | write | enforced | — | Reply to and update support tickets. | — | `PATCH /api/v1/admin/support/tickets/:id`, `POST /api/v1/admin/support/tickets/:id/reply` |
 | `write` | write | enforced | — | General write access to admin resources. | — | `POST /api/v1/admin/erasure/requests`, `POST /api/v1/admin/referrals/review/:id/approve`, `POST /api/v1/admin/referrals/review/:id/reject` |
 | `outbox:write` | money | enforced | — | Force-retry and cancel queued outbox operations. | — | `POST /api/v1/admin/outbox/:id/cancel`, `POST /api/v1/admin/outbox/:id/retry` |
-| `referrals:write` | money | enforced | — | Approve or reject flagged referral conversions. | — | `POST /api/v1/admin/referrals/:id/review` |
-| `treasury:write` | money | enforced | — | Change treasury sweep policies and run a sweep. | Sweep policies and signer rotations are written to the admin audit log. | `POST /api/v1/admin/treasury/emergency-sweep`, `POST /api/v1/admin/treasury/policies`, `POST /api/v1/admin/treasury/signer-rotations`, `POST /api/v1/admin/treasury/signer-rotations/:id/finalize` |
+| `referrals:write` | money | enforced | — | Approve or reject flagged referral conversions. | — | `POST /api/v1/admin/referrals/:id/review`, `POST /api/v1/admin/referrals/fraud/bulk-review` |
+| `treasury:write` | money | enforced | — | Change treasury sweep policies and run a sweep. | Sweep policies and signer rotations are written to the admin audit log. | `POST /api/v1/admin/treasury/emergency-sweep`, `POST /api/v1/admin/treasury/policies`, `POST /api/v1/admin/treasury/policies/:id/enable`, `POST /api/v1/admin/treasury/signer-rotations`, `POST /api/v1/admin/treasury/signer-rotations/:id/finalize` |
 | `wallet` | money | declared-only | — | Custodial wallet operations. | No route requires this scope today — the wallet rotation-status route is gated by keys:read. Declared so a key can be provisioned ahead of a route that needs it. | — |
 | `erasure:write` | destructive | enforced | — | Create, approve, reject and execute erasure requests. | Execution requires super — approval and execution are deliberately separated so one operator cannot both authorise and carry out a deletion. | `POST /api/v1/admin/erasure` |
 | `keys:write` | destructive | enforced | — | Create, rotate and revoke admin API keys. | Minting an admin key is a takeover vector — every use is written to the admin audit log. | `DELETE /api/v1/admin/keys/:id`, `POST /api/v1/admin/keys`, `POST /api/v1/admin/keys/:id/rotate` |
@@ -102,7 +102,7 @@ New keys are **read-only by default**. Write scopes must be explicitly requested
 | `fiat:write` | operational | enforced | — | Change fiat provider failover state. | — | `POST /api/v1/admin/fiat/providers/:name/failover` |
 | `flags:write` | operational | enforced | — | Manage feature flags, staged rollouts and emergency rollbacks. | — | `POST /api/v1/admin/feature-flags/:key/reset`, `POST /api/v1/admin/feature-flags/:key/rollback`, `POST /api/v1/admin/feature-flags/:key/staged-rollout`, `POST /api/v1/admin/feature-flags/emergency-disable-all`, `PUT /api/v1/admin/feature-flags/:key` |
 | `messages:write` | operational | enforced | — | Retry and recover failed message deliveries. | — | `DELETE /api/v1/admin/messages/:id`, `POST /api/v1/admin/messages/:id/retry`, `POST /api/v1/admin/messages/retry-dead-letters` |
-| `risk-metadata:write` | operational | declared-only | — | Review and publish protocol risk metadata. | No route requires this scope today — the risk-metadata review workflow is administered from src/config/riskMetadataAdmin.ts, not through the API. Declared so a key can be provisioned ahead of a route that needs it. | — |
+| `risk-metadata:write` | operational | enforced | — | Review and publish protocol risk metadata. | `PUT /api/v1/admin/risk-metadata/:protocolName` upserts an entry; each change writes a history row and an admin audit log row. | `PUT /api/v1/admin/risk-metadata/:protocolName` |
 <!-- END GENERATED: admin-scope-catalog -->
 
 ### Withdrawal guardrails

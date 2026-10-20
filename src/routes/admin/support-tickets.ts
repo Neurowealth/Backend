@@ -16,7 +16,7 @@ import db from '../../db'
 import {
   supportSla,
   supportSlaHours,
-  SUPPORT_TRANSITIONS,
+  canTransition,
 } from '../../services/support-ticket.service'
 import {
   adminUpdateSupportTicketSchema,
@@ -113,11 +113,7 @@ router.patch(
     }
     const { status, priority, assignedTo } =
       adminUpdateSupportTicketSchema.parse(req.body)
-    if (
-      status &&
-      status !== existing.status &&
-      !SUPPORT_TRANSITIONS[existing.status].includes(status)
-    ) {
+    if (status && !canTransition(existing.status, status)) {
       res.status(409).json({
         error: `Invalid transition from ${existing.status} to ${status}`,
       })
@@ -208,6 +204,9 @@ router.post(
         where: { id: ticket.id, status: ticket.status },
         data: {
           updatedAt: new Date(),
+          ...(!internal && !ticket.firstResponseAt
+            ? { firstResponseAt: new Date() }
+            : {}),
           ...(!internal && ['OPEN', 'IN_PROGRESS'].includes(ticket.status)
             ? { status: 'AWAITING_USER' }
             : {}),

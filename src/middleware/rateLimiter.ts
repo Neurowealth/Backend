@@ -1,5 +1,6 @@
 import { type Request, type Response, type NextFunction } from 'express'
 import rateLimit, { type RateLimitRequestHandler } from 'express-rate-limit'
+import { resolveRateLimitStore } from './rateLimitStore'
 import { config } from '../config/env'
 import { recordRateLimitHit, updateRateLimitViolations } from '../utils/metrics'
 import { logger } from '../utils/logger'
@@ -311,6 +312,9 @@ export function buildRateLimiter(
   const limiter: RateLimitRequestHandler = rateLimit({
     windowMs: opts.windowMs,
     max: resolveMax,
+    // #635 — shared Redis counter in multi-replica deployments; in-process
+    // MemoryStore only under NODE_ENV=test (and when Redis is unconfigured).
+    store: resolveRateLimitStore(opts.limiterType),
     ...(usePrincipal && {
       keyGenerator: (req: Request) => resolvePrincipal(req).key,
     }),
@@ -373,6 +377,7 @@ export const tieredRateLimiter = (() => {
 
   const limiter: RateLimitRequestHandler = rateLimit({
     windowMs,
+    store: resolveRateLimitStore('tiered'),
     max: async (req: Request) => {
       // An API key's own allowance always wins over both defaults.
       const token = req.header('Authorization')?.replace(/^Bearer\s+/, '')

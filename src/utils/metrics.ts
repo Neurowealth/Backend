@@ -85,6 +85,25 @@ export const dlqAlertActive = new client.Gauge({
   registers: [register],
 })
 
+export const supportTicketsSlaBreached = new client.Gauge({
+  name: 'support_tickets_sla_breached',
+  help: 'Open support tickets currently past their response SLA, by priority',
+  labelNames: ['priority'],
+  registers: [register],
+})
+
+export const supportTicketsStale = new client.Gauge({
+  name: 'support_tickets_stale',
+  help: 'Open support tickets untouched longer than the stale threshold',
+  registers: [register],
+})
+
+export const riskMetadataStaleEntries = new client.Gauge({
+  name: 'risk_metadata_stale_entries',
+  help: 'Protocol risk metadata entries past their review-due date',
+  registers: [register],
+})
+
 export const outboundNotificationAttempts = new client.Counter({
   name: 'outbound_notification_attempts_total',
   help: 'Outbound notification delivery attempts by channel and outcome',

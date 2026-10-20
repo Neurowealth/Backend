@@ -49,3 +49,23 @@ Emergency and cadence sweeps on the same signer account never race: op
 submission is claimed and serialized per `signerPublicKey` by the existing
 outbox dispatcher (`src/outbox/signerLock.ts`), the same mechanism every
 other money-moving outbox op already relies on.
+
+## Sweep preview and enablement runbook (#620)
+
+New policy versions start with `sweepsEnabled = false`: the cadence job ignores them and
+`executeSweep` refuses to run. Creating a new version therefore pauses sweeps for that tier pair
+until an operator re-enables it.
+
+1. `POST /api/admin/treasury/policies` creates the new policy version (scope `treasury:write`).
+2. `POST /api/admin/treasury/sweep/preview` (scope `treasury:read`) returns every sweep the active
+   policies would plan, with `policyEnabled` and `requiresApproval` per item. It reads balances but
+   creates no `TreasurySweep`, `MultisigEnvelope` or outbox op, so nothing is sent to the chain.
+3. Review the plans. Then `POST /api/admin/treasury/policies/:id/enable` with
+   `{ "confirmation": "SWEEP" }` (scope `treasury:write`). Any other text is rejected. The enable is
+   recorded with `enabledBy`/`enabledAt` and in the admin audit log.
+4. Only after step 3 does the cadence job plan sweeps and enqueue `TREASURY_SWEEP` outbox ops.
+5. A failed sweep emits a `critical` alert on component `treasury-sweep` (PagerDuty/Slack when
+   configured) and rethrows. Emergency sweeps are unaffected by `sweepsEnabled`.
+
+Existing active policies also default to disabled after migration `20261020090000`; enable each one
+after previewing.

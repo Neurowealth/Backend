@@ -270,6 +270,21 @@ export async function getAccount(publicKey: string): Promise<Account> {
   )
 }
 
+/**
+ * Native (XLM) balance for an account, in XLM.
+ *
+ * `rpc.Server.getAccount` returns an Account with only a sequence number, so
+ * the balance must be read from the on-chain account entry that
+ * `getAccountEntry` resolves (`balance()` is in stroops).
+ */
+export async function getNativeBalance(publicKey: string): Promise<number> {
+  const entry = await getResilientClient().execute(
+    (server) => server.getAccountEntry(publicKey),
+    'stellar.getNativeBalance'
+  )
+  return Number(entry.balance().toString()) / 1e7
+}
+
 const MAX_EXTERNAL_WALLET_RESPONSE_BYTES = 128 * 1024
 
 function horizonBaseUrl(): string {

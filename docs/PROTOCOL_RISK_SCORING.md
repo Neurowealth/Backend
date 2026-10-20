@@ -188,6 +188,26 @@ from it automatically.
 > placeholders, all marked `dataConfidence: UNVERIFIED` — honest about the
 > fact that they have never actually been reviewed against a source.
 
+## Metadata refresh, staleness alerting and admin updates (#621)
+
+Sourcing expectation: every entry needs an `auditReference`, and `dataConfidence: VERIFIED` needs a
+`sourceUrl`. `nextReviewDueAt` is the refresh deadline; re-review each protocol before it passes
+(recommended cadence: every 90 days, or immediately after an audit or incident).
+
+- Admin API: `GET /api/v1/admin/risk-metadata` (scope `risk-metadata:read`) and
+  `PUT /api/v1/admin/risk-metadata/:protocolName` (scope `risk-metadata:write`). The upsert validates
+  input, requires a future `nextReviewDueAt`, and writes the entry, an append-only
+  `ProtocolRiskMetadataHistory` row and an `AdminAuditLog` row (`RISK_METADATA_UPSERT`, with
+  before/after) in one transaction.
+- `src/jobs/riskMetadataStaleness.ts` runs every `PROTOCOL_RISK_STALENESS_INTERVAL_MS` (default 1h).
+  When any entry is past `nextReviewDueAt` it sets `risk_metadata_stale_entries` and emits a
+  `critical` alert through `src/services/alerting.ts` (PagerDuty when `PAGERDUTY_ROUTING_KEY` is set;
+  repeat alerts are rate-limited by the alerting cooldown). Prometheus rule
+  `ProtocolRiskMetadataStale` mirrors it.
+- Stale protocols are degraded visibly: `GET /api/protocols/risk` returns `riskMetadataStale: true`,
+  a `score` reduced by `PROTOCOL_RISK_STALE_SCORE_PENALTY` (default 20, floor 0) and the unmodified
+  `rawScore`. Risk-ceiling checks in the rebalancing router use the degraded score.
+
 ## Out of scope (v1)
 
 - Automated on-chain audit-status verification — `auditStatus` is curated.

@@ -2519,6 +2519,9 @@ model TreasurySweepPolicy {
   requiresApprovalAbove Decimal?     @db.Decimal(36, 18)
   version               Int          @default(1)
   isActive              Boolean      @default(true)
+  sweepsEnabled         Boolean      @default(false)
+  enabledBy             String?
+  enabledAt             DateTime?
   createdBy             String
   createdAt             DateTime     @default(now())
 
@@ -2777,6 +2780,7 @@ model SupportTicket {
   slaBreached Boolean        @default(false)
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
+  firstResponseAt DateTime?
   resolvedAt  DateTime?
 
   user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)

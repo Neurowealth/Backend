@@ -1,4 +1,5 @@
 import {
+  enablePolicy,
   validatePolicyInput,
   TreasuryPolicyValidationError,
 } from '../../../src/treasury/policy'
@@ -39,5 +40,45 @@ describe('validatePolicyInput', () => {
     expect(() =>
       validatePolicyInput({ ...base, requiresApprovalAbove: '99999' })
     ).toThrow(TreasuryPolicyValidationError)
+  })
+})
+
+describe('enablePolicy (#620)', () => {
+  const makeDb = (policy: any) =>
+    ({
+      treasurySweepPolicy: {
+        findUnique: jest.fn().mockResolvedValue(policy),
+        update: jest.fn().mockResolvedValue({ ...policy, sweepsEnabled: true }),
+      },
+    }) as any
+
+  it('rejects anything but the exact text SWEEP', async () => {
+    const database = makeDb({ id: 'p1', isActive: true })
+    for (const bad of ['sweep', 'SWEEP ', '', undefined as any]) {
+      await expect(enablePolicy('p1', bad, 'admin', database)).rejects.toThrow(
+        TreasuryPolicyValidationError
+      )
+    }
+    expect(database.treasurySweepPolicy.update).not.toHaveBeenCalled()
+  })
+
+  it('rejects an inactive (superseded) policy version', async () => {
+    const database = makeDb({ id: 'p1', isActive: false })
+    await expect(
+      enablePolicy('p1', 'SWEEP', 'admin', database)
+    ).rejects.toThrow('active policy')
+  })
+
+  it('enables the policy and records who enabled it', async () => {
+    const database = makeDb({ id: 'p1', isActive: true })
+    await enablePolicy('p1', 'SWEEP', 'admin', database)
+    expect(database.treasurySweepPolicy.update).toHaveBeenCalledWith({
+      where: { id: 'p1' },
+      data: {
+        sweepsEnabled: true,
+        enabledBy: 'admin',
+        enabledAt: expect.any(Date),
+      },
+    })
   })
 })

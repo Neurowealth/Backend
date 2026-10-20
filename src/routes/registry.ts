@@ -23,6 +23,8 @@ import agentRouter from './agent'
 import agentDecisionsRouter from './agent-decisions'
 import adminRouter from './admin'
 import adminSupportTicketsRouter from './admin/support-tickets'
+import adminRiskMetadataRouter from './admin/risk-metadata'
+import adminReferralReviewRouter from './admin/referral-review'
 import alertsRouter from './alerts'
 import analyticsRouter from './analytics'
 import approvalPoliciesRouter from './approval-policies'
@@ -121,6 +123,14 @@ export const API_ROUTES: ApiRoute[] = [
   {
     path: 'admin/support/tickets',
     handlers: [adminRateLimiter, adminSupportTicketsRouter],
+  },
+  {
+    path: 'admin/referrals/fraud',
+    handlers: [adminRateLimiter, adminReferralReviewRouter],
+  },
+  {
+    path: 'admin/risk-metadata',
+    handlers: [adminRateLimiter, adminRiskMetadataRouter],
   },
   { path: 'assistant', handlers: [assistantRouter] },
   { path: 'approvals', handlers: [approvalsRouter] },

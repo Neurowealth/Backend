@@ -66,6 +66,8 @@ import { scheduleAttribution } from './jobs/attribution'
 import { scheduleOutboxDispatcher } from './outbox/dispatcher'
 import { startFeeOracle, stopFeeOracle } from './stellar/feeOracle'
 import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
+import { scheduleSupportTicketSla } from './jobs/supportTicketSla'
+import { scheduleRiskMetadataStaleness } from './jobs/riskMetadataStaleness'
 import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { scheduleApprovalExpiry } from './jobs/approvalExpiry'
 import { scheduleReserveReconciliation } from './jobs/reserveReconciliation'
@@ -121,6 +123,8 @@ let alertRulesHandle: NodeJS.Timeout | null = null
 let strategyMetricsHandle: NodeJS.Timeout | null = null
 let allocationSuggestionsHandle: NodeJS.Timeout | null = null
 let protocolRiskScoringHandle: NodeJS.Timeout | null = null
+let supportTicketSlaHandle: NodeJS.Timeout | null = null
+let riskMetadataStalenessHandle: NodeJS.Timeout | null = null
 let attributionHandle: NodeJS.Timeout | null = null
 let outboxDispatcherHandle: NodeJS.Timeout | null = null
 let portfolioRiskJobHandle: NodeJS.Timeout | null = null
@@ -410,6 +414,16 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(strategyMetricsHandle)
     strategyMetricsHandle = null
     logger.info('[Shutdown] Strategy metrics timer cleared')
+  }
+
+  if (supportTicketSlaHandle) {
+    clearInterval(supportTicketSlaHandle)
+    supportTicketSlaHandle = null
+  }
+
+  if (riskMetadataStalenessHandle) {
+    clearInterval(riskMetadataStalenessHandle)
+    riskMetadataStalenessHandle = null
   }
 
   if (protocolRiskScoringHandle) {
@@ -742,6 +756,8 @@ async function main(): Promise<void> {
   // Ordered before the suggestion job so the first suggestion run sees freshly
   // scored protocols rather than whatever was last left in the table.
   protocolRiskScoringHandle = scheduleProtocolRiskScoring()
+  supportTicketSlaHandle = scheduleSupportTicketSla()
+  riskMetadataStalenessHandle = scheduleRiskMetadataStaleness()
   allocationSuggestionsHandle = scheduleAllocationSuggestions()
   attributionHandle = scheduleAttribution()
   portfolioRiskJobHandle = schedulePortfolioRiskJob()

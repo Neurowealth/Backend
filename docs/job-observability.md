@@ -38,6 +38,7 @@ This document covers the dedicated observability metrics for scheduled backgroun
 
 Scheduled maintenance jobs go through `scheduleResilientJob` in `src/jobs/resilientScheduler.ts`.
 
+- **Cross-pod tick lock (#636):** each tick takes a `pg_try_advisory_xact_lock` keyed by the job name before running. In a multi-replica deployment exactly one pod wins each tick; the others skip (log: `skipped; another replica holds the tick lock`). The lock is released when the wrapping transaction ends.
 - Each job runs once at process start, so work that was due while the process was down is resumed immediately.
 - A thrown failure is retried up to 3 times with full-jitter exponential backoff (1s base, 30s cap).
 - A tick that arrives while a run is still in flight does not start a second run. If that run succeeds, the skipped tick is resumed once. If retries were exhausted, the next interval is the resume point. The scheduler does not tight-loop a job that is still failing.
@@ -80,6 +81,43 @@ Scheduled maintenance jobs go through `scheduleResilientJob` in `src/jobs/resili
 | `portfolio_risk`               | Precomputes per-user portfolio risk aggregates                                   |
 | `reserve_reconciliation`       | Compares reserve sponsorship rows with on-chain sponsor state                    |
 | `pool_metrics`                 | Mirrors Prisma pool gauges into Prometheus                                       |
+
+## Concurrency classification (#636)
+
+Every scheduled job is classified for what would happen *without* the tick lock.
+Source of truth: `src/jobs/jobClassification.ts` — `tests/unit/jobs/jobClassification.test.ts`
+fails if a `jobName` in `src/jobs/` is missing a row.
+
+| Class | Meaning |
+| --- | --- |
+| `locked` | Money-moving or destructive; must never run twice. |
+| `idempotent-by-design` | Safe to run twice (upsert / recompute). |
+| `safe-to-run-concurrently` | Designed for parallel runs (read + emit only). |
+
+| Job | Class | Notes |
+| --- | --- | --- |
+| `alert_rules` | idempotent-by-design | Re-evaluates rules; alerts are deduped |
+| `allocation_suggestions` | idempotent-by-design | Recomputes suggestions |
+| `approval_expiry_sweep` | locked | Expires approvals; double-run races the expiry write |
+| `fiat_reconciliation` | locked | Settles fiat orders; money-moving |
+| `linked_external_wallet_sync` | idempotent-by-design | Refreshes wallet snapshots |
+| `loan-accrual` | idempotent-by-design | Accrual is safe to apply twice on two replicas by design |
+| `loan-liquidation-monitor` | locked | Triggers liquidations; money-moving |
+| `message_delivery_sweep` | idempotent-by-design | Re-delivers undelivered messages |
+| `performance_attribution` | idempotent-by-design | Recomputes attribution windows |
+| `pool_metrics` | safe-to-run-concurrently | Read-only gauge mirror |
+| `portfolio_risk` | idempotent-by-design | Upserts risk aggregates |
+| `protocol_risk_scoring` | idempotent-by-design | Recomputes scores |
+| `recurring_deposits` | locked | Submits deposits; money-moving |
+| `recurring_withdrawals` | locked | Submits withdrawals; money-moving |
+| `referral_payout` | locked | Pays referral rewards; money-moving |
+| `reserve_reconciliation` | idempotent-by-design | Reconciles sponsor state |
+| `retention_all_jobs` | locked | Destructive deletes |
+| `risk_metadata_staleness` | idempotent-by-design | Marks stale metadata |
+| `session_cleanup` | locked | Destructive deletes |
+| `stellar_signer_rotation` | locked | Rotates signers; must not interleave |
+| `strategy_metrics` | idempotent-by-design | Refreshes marketplace metrics |
+| `support_ticket_sla` | idempotent-by-design | Updates SLA fields |
 
 ## Accessing Metrics
 

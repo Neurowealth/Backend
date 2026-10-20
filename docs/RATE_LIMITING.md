@@ -12,6 +12,24 @@ is part of the change — not a follow-up.
 
 ---
 
+## Distributed enforcement (#635)
+
+Rate-limit counters live in **Redis** (`src/middleware/rateLimitStore.ts`), the
+same Redis already used for cache invalidation and the event bridge. Every
+replica behind the load balancer draws on one number per bucket, so the
+documented tier budgets hold at the fleet level — `n` pods do **not** mean `n x`
+the limit.
+
+- `NODE_ENV=test` keeps express-rate-limit's in-process `MemoryStore`, so unit
+  tests never need Redis.
+- If `REDIS_URL` is unset the limiter falls back to the per-pod store and logs a
+  warning. A multi-replica deployment without Redis will exceed the documented
+  limits; that is a deployment bug, not a tuning option.
+- `Retry-After` and the `RateLimit-*` headers are derived from the shared
+  counter, so a client throttled on one pod is throttled on all of them.
+
+---
+
 ## The two layers every request passes through
 
 Before a request reaches a route, it passes through the **app-wide chain**

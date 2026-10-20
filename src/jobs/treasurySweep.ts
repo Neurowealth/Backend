@@ -6,10 +6,11 @@
  * evaluateTreasuryBalances reads each active TreasuryAccount and its tier
  * pair's active TreasurySweepPolicy, planning a sweep whenever the hot-side
  * balance exceeds the policy's maxHotBalance by more than minSweepAmount.
- * executeSweep gates on requiresApprovalAbove via a MultisigEnvelope (the
- * treasury-specific multisig primitive already in schema) rather than the
- * sub-account ApprovalPolicy engine, which has no concept of a
- * non-user-owned system sweep — see docs/TREASURY.md.
+ * executeSweep refuses amounts above requiresApprovalAbove outright: the
+ * MultisigEnvelope lifecycle (sign -> assemble -> enqueue) is not implemented,
+ * so opening an envelope would strand the sweep in PLANNED forever. The
+ * refusal is loud — a thrown error and a critical alert — so an operator
+ * either lowers the amount or runs the emergency sweep path. See docs/TREASURY.md.
  */
 
 import { TreasuryTier } from '@prisma/client'
@@ -17,7 +18,8 @@ import db from '../db'
 import { logger } from '../utils/logger'
 import { getActivePolicy } from '../treasury/policy'
 import { enqueueOutboxOp } from '../outbox/service'
-import { getAccount } from '../stellar/client'
+import { getNativeBalance } from '../stellar/client'
+import { alertingService } from '../services/alerting'
 
 const TREASURY_SWEEP_INTERVAL_MS = 300_000 // 5 minutes
 const HYSTERESIS_FACTOR = 1.5 // targetHigh must be >= targetLow * 1.5
@@ -35,26 +37,29 @@ const TIER_PAIRS: Array<[TreasuryTier, TreasuryTier]> = [
   ['WARM', 'COLD'],
 ]
 
-async function getNativeBalance(publicKey: string): Promise<number> {
-  const account: any = await getAccount(publicKey).catch(() => null)
-  if (!account?.balances) return 0
-  const native = account.balances.find((b: any) => b.asset_type === 'native')
-  return native ? parseFloat(native.balance) : 0
+export interface SweepPreviewItem extends SweepPlan {
+  policyId: string
+  policyVersion: number
+  policyEnabled: boolean
+  requiresApproval: boolean
 }
 
-export async function evaluateTreasuryBalances(): Promise<SweepPlan[]> {
-  const plans: SweepPlan[] = []
+async function planSweeps(
+  includeDisabled: boolean
+): Promise<SweepPreviewItem[]> {
+  const plans: SweepPreviewItem[] = []
 
   for (const [fromTier, toTier] of TIER_PAIRS) {
     const policy = await getActivePolicy(fromTier, toTier)
     if (!policy) continue
+    if (!policy.sweepsEnabled && !includeDisabled) continue
 
     const accounts = await db.treasuryAccount.findMany({
       where: { tier: fromTier, isActive: true },
     })
 
     for (const account of accounts) {
-      const balance = await getNativeBalance(account.publicKey)
+      const balance = await getNativeBalance(account.publicKey).catch(() => 0)
       const over = balance - Number(policy.maxHotBalance)
       if (over <= Number(policy.minSweepAmount)) continue
 
@@ -64,9 +69,29 @@ export async function evaluateTreasuryBalances(): Promise<SweepPlan[]> {
         asset: 'XLM',
         amount: over.toFixed(7),
         reason: 'hot_over_high_band',
+        policyId: policy.id,
+        policyVersion: policy.version,
+        policyEnabled: policy.sweepsEnabled,
+        requiresApproval:
+          policy.requiresApprovalAbove != null &&
+          over > Number(policy.requiresApprovalAbove),
       })
     }
   }
+
+  return plans
+}
+
+export async function evaluateTreasuryBalances(): Promise<SweepPlan[]> {
+  const plans = (await planSweeps(false)).map(
+    ({ fromTier, toTier, asset, amount, reason }) => ({
+      fromTier,
+      toTier,
+      asset,
+      amount,
+      reason,
+    })
+  )
 
   logger.info('[TreasurySweep] Evaluated treasury balances', {
     plansFound: plans.length,
@@ -75,8 +100,65 @@ export async function evaluateTreasuryBalances(): Promise<SweepPlan[]> {
   return plans
 }
 
+/**
+ * Dry run (#620): computes what would move under every active policy,
+ * enabled or not. Read-only — reads balances from the network but never
+ * creates a TreasurySweep, MultisigEnvelope or outbox op.
+ */
+export async function previewTreasurySweep(): Promise<{
+  previewedAt: string
+  plans: SweepPreviewItem[]
+}> {
+  return {
+    previewedAt: new Date().toISOString(),
+    plans: await planSweeps(true),
+  }
+}
+
 export async function executeSweep(plan: SweepPlan): Promise<void> {
+  try {
+    await runSweep(plan)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error'
+    await alertingService.emit(
+      {
+        title: 'Treasury sweep failed',
+        description: `Sweep ${plan.fromTier}->${plan.toTier} of ${plan.amount} ${plan.asset} failed: ${message}`,
+        severity: 'critical',
+        component: 'treasury-sweep',
+        metadata: { ...plan, error: message },
+      },
+      `treasury-sweep-failed:${plan.fromTier}:${plan.toTier}`
+    )
+    throw error
+  }
+}
+
+async function runSweep(plan: SweepPlan): Promise<void> {
   const policy = await getActivePolicy(plan.fromTier, plan.toTier)
+  if (!policy?.sweepsEnabled) {
+    throw new Error(
+      `Sweeps are not enabled for ${plan.fromTier}->${plan.toTier}; preview and enable the policy first`
+    )
+  }
+
+  const requiresApproval =
+    policy?.requiresApprovalAbove != null &&
+    Number(plan.amount) > Number(policy.requiresApprovalAbove)
+
+  if (requiresApproval) {
+    // #655 — the MultisigEnvelope lifecycle stops at PENDING: nothing signs,
+    // assembles or enqueues it. Opening one would strand the sweep in PLANNED
+    // with funds never moved, so large sweeps are refused until that lifecycle
+    // exists. Operators see this via the thrown error and the critical alert
+    // executeSweep emits on failure.
+    throw new Error(
+      `Sweep of ${plan.amount} ${plan.asset} exceeds requiresApprovalAbove ` +
+        `(${policy.requiresApprovalAbove}) and is disabled: the multisig ` +
+        `envelope lifecycle is not implemented. Lower the amount or use the ` +
+        `emergency sweep path.`
+    )
+  }
 
   const sweep = await db.treasurySweep.create({
     data: {
@@ -88,35 +170,6 @@ export async function executeSweep(plan: SweepPlan): Promise<void> {
       reason: plan.reason,
     },
   })
-
-  const requiresApproval =
-    policy?.requiresApprovalAbove != null &&
-    Number(plan.amount) > Number(policy.requiresApprovalAbove)
-
-  if (requiresApproval) {
-    // Large sweeps are held behind the treasury's own multisig primitive
-    // rather than the sub-account ApprovalPolicy engine (which has no
-    // concept of a system-initiated, non-user-owned operation) — an admin
-    // must collect signatures via src/stellar/multisig.ts before this
-    // envelope reaches READY and a follow-up call enqueues the outbox op.
-    const envelope = await db.multisigEnvelope.create({
-      data: {
-        sweepId: sweep.id,
-        publicKey: '',
-        threshold: 1,
-        signatures: [],
-        status: 'PENDING',
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      },
-    })
-
-    logger.info('[TreasurySweep] Sweep held for multisig approval', {
-      sweepId: sweep.id,
-      envelopeId: envelope.id,
-      amount: plan.amount,
-    })
-    return
-  }
 
   const op = await enqueueOutboxOp(db, {
     idempotencyKey: `TREASURY_SWEEP:${sweep.id}`,

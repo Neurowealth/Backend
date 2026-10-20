@@ -58,7 +58,7 @@ echo "╔═══════════════════════�
 echo "║          NeuroWealth — Migration Rollback Rehearsal           ║"
 echo "╠══════════════════════════════════════════════════════════════╣"
 echo "  Database  : ${DB_TARGET}"
-echo "  Host      : ${DATABASE_URL%%\?*}"
+_db_safe="${DATABASE_URL##*@}"; echo "  Host      : ${_db_safe%%\?*}"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 
