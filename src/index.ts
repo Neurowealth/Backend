@@ -82,49 +82,6 @@ import {
   stopCacheInvalidationSubscriber,
 } from './utils/user-cache-invalidation'
 import { validateStellarNetworkReady } from './config/readiness'
-import healthRouter from './routes/health'
-import agentRouter from './routes/agent'
-import agentDecisionsRouter from './routes/agent-decisions'
-import authRouter from './routes/auth'
-import whatsappRouter from './routes/whatsapp'
-import telegramRouter from './routes/telegram'
-import portfolioRouter from './routes/portfolio'
-import transactionsRouter from './routes/transactions'
-import protocolsRouter from './routes/protocols'
-import depositRouter from './routes/deposit'
-import withdrawRouter from './routes/withdraw'
-import transferRouter from './routes/transfers'
-import loansRouter from './routes/loans'
-import protectionFundRouter from './routes/protection-fund'
-import settingsRouter from './routes/settings'
-import vaultRouter from './routes/vault'
-import analyticsRouter from './routes/analytics'
-import adminRouter from './routes/admin'
-import metricsRouter from './routes/metrics'
-import stellarRouter from './routes/stellar'
-import webhooksRouter from './routes/webhooks'
-import fiatRouter from './routes/fiat'
-import referralsRouter from './routes/referrals'
-import recurringDepositRouter from './routes/recurring-deposits'
-import recurringWithdrawalRouter from './routes/recurring-withdrawals'
-import alertsRouter from './routes/alerts'
-import strategiesRouter from './routes/strategies'
-import subAccountsRouter from './routes/sub-accounts'
-import supportTicketsRouter from './routes/support-tickets'
-import adminSupportTicketsRouter from './routes/admin/support-tickets'
-import assistantRouter from './routes/assistant'
-import approvalsRouter from './routes/approvals'
-import approvalPoliciesRouter from './routes/approval-policies'
-import keysRouter from './routes/keys'
-import sessionsRouter from './routes/sessions'
-import webAuthnRouter from './routes/webauthn'
-import streamRouter from './routes/stream'
-import notificationsRouter from './routes/notifications'
-import liquidityFloorRouter from './routes/liquidity-floor'
-import notificationDlqRouter from './routes/notification-dlq'
-import networkRouter from './routes/network'
-import netWorthRouter from './routes/net-worth'
-import recoveryRouter from './routes/recovery'
 import { API_ROUTES, EXTRA_MOUNTS } from './routes/registry'
 import {
   corsMiddleware,
@@ -358,66 +315,7 @@ function deprecatedApiWarning(
   next()
 }
 
-interface ApiRoute {
-  path: string
-  handlers: express.RequestHandler[]
-}
-
-const apiRoutes: ApiRoute[] = [
-  { path: 'network', handlers: [networkRouter] },
-  { path: 'net-worth', handlers: [netWorthRouter] },
-  { path: 'recovery', handlers: [recoveryRouter] },
-  { path: 'agent/decisions', handlers: [agentDecisionsRouter] },
-  { path: 'agent', handlers: [internalRateLimiter, agentRouter] },
-  { path: 'auth/webauthn', handlers: [authRateLimiter, webAuthnRouter] },
-  { path: 'auth', handlers: [authRateLimiter, authRouter] },
-  { path: 'webauthn', handlers: [authRateLimiter, webAuthnRouter] },
-  { path: 'whatsapp', handlers: [webhookRateLimiter, whatsappRouter] },
-  { path: 'telegram', handlers: [webhookRateLimiter, telegramRouter] },
-  { path: 'portfolio', handlers: [portfolioRouter] },
-  { path: 'transactions', handlers: [transactionsRouter] },
-  { path: 'protocols', handlers: [protocolsRouter] },
-  { path: 'deposit', handlers: [depositRouter] },
-  { path: 'withdraw', handlers: [withdrawRouter] },
-  { path: 'transfer', handlers: [transferRouter] },
-  // #532 — collateral loans. Mounted beside withdraw rather than inside
-  // portfolio: a loan is its own lifecycle with its own approval and rate
-  // limits, and it must not inherit portfolio's read-only scope set.
-  { path: 'loans', handlers: [loansRouter] },
-  // #533 — protocol-risk protection fund
-  { path: 'protection-fund', handlers: [protectionFundRouter] },
-  // #534 — user settings (display currency)
-  { path: 'settings', handlers: [settingsRouter] },
-  { path: 'vault', handlers: [vaultRouter] },
-  { path: 'analytics', handlers: [analyticsRouter] },
-  { path: 'stellar', handlers: [stellarRouter] },
-  { path: 'fiat', handlers: [fiatRouter] },
-  { path: 'referrals', handlers: [referralsRouter] },
-  { path: 'deposit/recurring', handlers: [recurringDepositRouter] },
-  { path: 'recurring-withdrawals', handlers: [recurringWithdrawalRouter] },
-  { path: 'alerts', handlers: [alertsRouter] },
-  { path: 'strategies', handlers: [strategiesRouter] },
-  { path: 'sub-accounts', handlers: [subAccountsRouter] },
-  { path: 'support/tickets', handlers: [supportTicketsRouter] },
-  {
-    path: 'admin/support/tickets',
-    handlers: [adminRateLimiter, adminSupportTicketsRouter],
-  },
-  { path: 'assistant', handlers: [assistantRouter] },
-  { path: 'approvals', handlers: [approvalsRouter] },
-  { path: 'approval-policies', handlers: [approvalPoliciesRouter] },
-  { path: 'keys', handlers: [keysRouter] },
-  { path: 'sessions', handlers: [sessionsRouter] },
-  { path: 'stream', handlers: [streamRouter] },
-  { path: 'notifications', handlers: [notificationsRouter] },
-  { path: 'liquidity-floor', handlers: [liquidityFloorRouter] },
-  {
-    path: 'admin/notifications/dlq',
-    handlers: [adminRateLimiter, notificationDlqRouter],
-  },
-  { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
-]
-const apiRoutes: ApiRoute[] = API_ROUTES
+const apiRoutes = API_ROUTES
 
 // ── Application routes ────────────────────────────────────────────────────────
 
@@ -680,8 +578,7 @@ async function initServices(): Promise<void> {
       webAuthnConfig()
       logger.info('[Startup] WebAuthn configuration validated ✓')
     } catch (error) {
-      const msg =
-        error instanceof Error ? error.message : String(error)
+      const msg = error instanceof Error ? error.message : String(error)
       logger.error(
         '[Startup] WebAuthn configuration validation failed — cannot continue',
         { error: msg }

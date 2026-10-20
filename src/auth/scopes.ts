@@ -91,6 +91,16 @@ export const USER_SCOPE_CATALOG: Record<UserScope, ScopeDefinition> = {
       'Requires allowWithdrawals on the key AND the platform kill-switch ' +
       'USER_API_KEY_WITHDRAWALS_ENABLED to be on.',
   },
+  'transfer:write': {
+    scope: 'transfer:write',
+    enforcement: 'enforced',
+    description: 'Transfer assets to another platform user.',
+    risk: 'money',
+    grants:
+      'Moves existing unlocked positions to another platform user without an on-chain transaction.',
+    requires:
+      'Transfers still pass compliance, frozen-account, balance, and sub-account permission checks.',
+  },
   'alerts:manage': {
     scope: 'alerts:manage',
     enforcement: 'enforced',
