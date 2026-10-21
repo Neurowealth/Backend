@@ -21,6 +21,7 @@ FIXED_MIGRATIONS=(
   "20260928180000_add_webhook_query_indexes"
   "20260928200000_add_totp_credentials"
   "20260929120000_add_collateral_loans"
+  "20261003_001_add_webhook_query_indexes"
 )
 
 for migration in "${FIXED_MIGRATIONS[@]}"; do
