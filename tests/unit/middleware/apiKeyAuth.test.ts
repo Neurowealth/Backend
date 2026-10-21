@@ -58,6 +58,23 @@ describe('User API Key auth (#374)', () => {
       expect(next).toHaveBeenCalled()
     })
 
+    it('denies requests with no resolved auth scopes', () => {
+      requireScope('deposit:write')(req as Request, res as Response, next)
+      expect(next).not.toHaveBeenCalled()
+      expect(res.status).toHaveBeenCalledWith(403)
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'insufficient_scope',
+        required: 'deposit:write',
+      })
+    })
+
+    it('denies requests with an empty scope list', () => {
+      req.authScopes = []
+      requireScope('portfolio:read')(req as Request, res as Response, next)
+      expect(next).not.toHaveBeenCalled()
+      expect(res.status).toHaveBeenCalledWith(403)
+    })
+
     it('allows API keys with matching scope', () => {
       req.authScopes = ['deposit:write', 'portfolio:read']
       requireScope('deposit:write')(req as Request, res as Response, next)
