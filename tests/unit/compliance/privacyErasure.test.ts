@@ -71,6 +71,7 @@ beforeEach(() => {
   mockDb.lotDisposal = { count: jest.fn(), updateMany: jest.fn() }
   mockDb.portfolioAttribution = { count: jest.fn(), updateMany: jest.fn() }
   mockDb.adminAuditLog = { count: jest.fn() }
+  mockDb.referralConversion = { count: jest.fn() }
   mockDb.$transaction = jest.fn((callback: any) =>
     callback({
       session: { count: jest.fn().mockResolvedValue(5) },
@@ -97,7 +98,8 @@ beforeEach(() => {
         count: jest.fn().mockResolvedValue(2),
         updateMany: jest.fn().mockResolvedValue({ count: 2 }),
       },
-      adminAuditLog: { count: jest.fn().mockResolvedValue(0) },
+      adminAuditLog: { count: jest.fn().mockResolvedValue(4) },
+      referralConversion: { count: jest.fn().mockResolvedValue(2) },
       user: { delete: jest.fn().mockResolvedValue({}) },
     })
   )
@@ -275,6 +277,9 @@ describe('Privacy Erasure Workflow', () => {
       expect(summary.deletedRecords.sessions).toBe(5)
       expect(summary.deletedRecords.transactions).toBe(50)
       expect(summary.anonymizedRecords.costBasisLots).toBe(10)
+      expect(summary.preservedRecords.adminAuditLogs).toBe(4)
+      expect(summary.preservedRecords.referralConversionsAsOwner).toBe(2)
+      expect(summary.preservedRecords.referralConversionsAsReferred).toBe(2)
       expect(mockDb.erasureRequest.update).toHaveBeenCalledWith({
         where: { id: requestId },
         data: {
@@ -376,12 +381,39 @@ describe('Privacy Erasure Workflow', () => {
       mockDb.webhookSubscription.count.mockResolvedValue(2)
       mockDb.fiatOrder.count.mockResolvedValue(1)
       mockDb.costBasisLot.count.mockResolvedValue(10)
+      mockDb.adminAuditLog.count.mockResolvedValue(4)
+      mockDb.referralConversion.count
+        .mockResolvedValueOnce(3) // referralConversionsAsOwner
+        .mockResolvedValueOnce(1) // referralConversionsAsReferred
 
       const preview = await previewErasure(userId)
 
       expect(preview.deletedRecords.sessions).toBe(5)
       expect(preview.deletedRecords.transactions).toBe(50)
       expect(preview.anonymizedRecords.costBasisLots).toBe(10)
+      expect(preview.preservedRecords.adminAuditLogs).toBe(4)
+      expect(preview.preservedRecords.referralConversionsAsOwner).toBe(3)
+      expect(preview.preservedRecords.referralConversionsAsReferred).toBe(1)
+      expect(mockDb.adminAuditLog.count).toHaveBeenCalledWith({
+        where: {
+          OR: [
+            { target: userId },
+            { details: { path: ['userId'], equals: userId } },
+          ],
+        },
+      })
+      expect(mockDb.referralConversion.count).toHaveBeenCalledWith({
+        where: {
+          referralCode: {
+            ownerUserId: userId,
+          },
+        },
+      })
+      expect(mockDb.referralConversion.count).toHaveBeenCalledWith({
+        where: {
+          referredUserId: userId,
+        },
+      })
     })
   })
 })

@@ -38,6 +38,7 @@ jest.mock('../../src/db', () => {
     lotDisposal: { count: count(), updateMany: jest.fn() },
     portfolioAttribution: { count: count(), updateMany: jest.fn() },
     adminAuditLog: { count: count() },
+    referralConversion: { count: count() },
     user: {
       delete: jest.fn(async () => {
         state.events.push('user.delete')
@@ -212,6 +213,36 @@ describe('privacy erasure lifecycle guardrails', () => {
   it('runs the full lifecycle, revoking sessions before deleting the user', async () => {
     const id = await createApprovedRequest()
 
+    const preservedCounts = {
+      adminAuditLogs: 4,
+      referralConversionsAsOwner: 3,
+      referralConversionsAsReferred: 2,
+    }
+    const countPreservedRecords = (name: string, count: number) =>
+      jest.fn(async () => {
+        expect(state.events).not.toContain('user.delete')
+        state.events.push(`count.${name}`)
+        return count
+      })
+
+    const auditLogCount = countPreservedRecords(
+      'adminAuditLogs',
+      preservedCounts.adminAuditLogs
+    )
+    const referralOwnerCount = countPreservedRecords(
+      'referralConversionsAsOwner',
+      preservedCounts.referralConversionsAsOwner
+    )
+    const referralReferredCount = countPreservedRecords(
+      'referralConversionsAsReferred',
+      preservedCounts.referralConversionsAsReferred
+    )
+    const prisma = jest.requireMock('../../src/db').default
+    prisma.adminAuditLog.count = auditLogCount
+    prisma.referralConversion.count
+      .mockImplementationOnce(referralOwnerCount)
+      .mockImplementationOnce(referralReferredCount)
+
     const res = await request(app)
       .post(`/admin/erasure/requests/${id}/execute`)
       .set(as('carol'))
@@ -220,8 +251,18 @@ describe('privacy erasure lifecycle guardrails', () => {
     expect(res.status).toBe(200)
     expect(res.body.dryRun).toBe(false)
     expect(res.body.data.userId).toBe(USER_ID)
+    expect(res.body.data.preservedRecords).toEqual(preservedCounts)
     expect(state.requests[0].status).toBe('COMPLETED')
-    expect(state.events).toEqual(['sessions.revoked', 'user.delete'])
+    expect(auditLogCount).toHaveBeenCalledTimes(1)
+    expect(referralOwnerCount).toHaveBeenCalledTimes(1)
+    expect(referralReferredCount).toHaveBeenCalledTimes(1)
+    expect(state.events).toEqual([
+      'sessions.revoked',
+      'count.adminAuditLogs',
+      'count.referralConversionsAsOwner',
+      'count.referralConversionsAsReferred',
+      'user.delete',
+    ])
     expect(revokeAllUserSessions).toHaveBeenCalledWith(USER_ID, 'admin')
   })
 
