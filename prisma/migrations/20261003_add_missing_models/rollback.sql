@@ -4,6 +4,9 @@
 
 -- ── Drop new tables (in reverse dependency order) ─────────────────────────────
 
+DROP INDEX IF EXISTS "user_webhook_deliveries_endpointId_createdAt_idx";
+DROP INDEX IF EXISTS "webhook_deliveries_subscriptionId_status_createdAt_idx";
+DROP INDEX IF EXISTS "webhook_dead_letters_subscriptionId_status_firstFailedAt_idx";
 DROP TABLE IF EXISTS "notification_preference_audit_logs";
 DROP TABLE IF EXISTS "notification_preferences";
 DROP TABLE IF EXISTS "signer_rotations";
