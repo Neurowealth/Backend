@@ -279,21 +279,49 @@ export interface BuildRateLimiterOptions {
  *   RateLimit-Policy                                          (IETF draft, every response)
  *   Retry-After                                               (seconds until reset, 429 only)
  */
-export function buildRateLimiter(
-  opts: BuildRateLimiterOptions
-): TaggedRateLimiter {
-  const usePrincipal = opts.keyByPrincipal !== false
+// In-memory allowlist/cache for API key rate limits to eliminate query amplification (#691)
+const keyRateLimitCache = new Map<
+  string,
+  { limit: number | null; expiresAt: number }
+>()
+const failedKeyLookupCounter = new Map<
+  string,
+  { count: number; resetAt: number }
+>()
 
-  /**
-   * Per-API-key override. Kept as the `max` callback (not the key) so the
-   * override is expressed as a quota on the key's own bucket.
-   */
-  const resolveMax = async (req: Request): Promise<number> => {
-    const token = req.header('Authorization')?.replace(/^Bearer\s+/, '')
-    if (!token?.startsWith('nwk_')) return opts.max
-    const keyId = token.split('_')[1]
-    const tokenPrefix =
-      'sha256:' + crypto.createHash('sha256').update(token).digest('hex')
+const CACHE_TTL_MS = 60_000 // 1 minute
+const MAX_FAILED_LOOKUPS = 5
+
+export async function getCachedApiKeyRateLimit(
+  token: string
+): Promise<number | null> {
+  const parts = token.split('_')
+  const keyId = parts[1]
+  // Fast validation: keyId must be alphanumeric of reasonable length
+  if (!keyId || !/^[a-zA-Z0-9_-]{8,64}$/.test(keyId) || parts.length < 3) {
+    return null
+  }
+
+  const now = Date.now()
+  const cached = keyRateLimitCache.get(keyId)
+  if (cached && cached.expiresAt > now) {
+    return cached.limit
+  }
+
+  // Rate limit failed lookups for non-existent keys (prevent amplification)
+  const lookupTracker = failedKeyLookupCounter.get(keyId)
+  if (
+    lookupTracker &&
+    lookupTracker.resetAt > now &&
+    lookupTracker.count >= MAX_FAILED_LOOKUPS
+  ) {
+    return null
+  }
+
+  const tokenPrefix =
+    'sha256:' + crypto.createHash('sha256').update(token).digest('hex')
+
+  try {
     const key = await (
       db as unknown as {
         userApiKey: {
@@ -306,7 +334,47 @@ export function buildRateLimiter(
       where: { id: keyId, tokenPrefix, revokedAt: null },
       select: { rateLimitPerMin: true },
     })
-    return key?.rateLimitPerMin ?? opts.max
+
+    const limit = key?.rateLimitPerMin ?? null
+    keyRateLimitCache.set(keyId, { limit, expiresAt: now + CACHE_TTL_MS })
+
+    if (keyRateLimitCache.size > 2000) {
+      const oldestKeys = Array.from(keyRateLimitCache.keys()).slice(0, 500)
+      for (const k of oldestKeys) keyRateLimitCache.delete(k)
+    }
+
+    if (!key) {
+      const currentFail = failedKeyLookupCounter.get(keyId)
+      if (currentFail && currentFail.resetAt > now) {
+        currentFail.count += 1
+      } else {
+        failedKeyLookupCounter.set(keyId, {
+          count: 1,
+          resetAt: now + CACHE_TTL_MS,
+        })
+      }
+    }
+
+    return limit
+  } catch {
+    return null
+  }
+}
+
+export function buildRateLimiter(
+  opts: BuildRateLimiterOptions
+): TaggedRateLimiter {
+  const usePrincipal = opts.keyByPrincipal !== false
+
+  /**
+   * Per-API-key override. Kept as the `max` callback (not the key) so the
+   * override is expressed as a quota on the key's own bucket.
+   */
+  const resolveMax = async (req: Request): Promise<number> => {
+    const token = req.header('Authorization')?.replace(/^Bearer\s+/, '')
+    if (!token?.startsWith('nwk_')) return opts.max
+    const customLimit = await getCachedApiKeyRateLimit(token)
+    return customLimit ?? opts.max
   }
 
   const limiter: RateLimitRequestHandler = rateLimit({
@@ -379,25 +447,11 @@ export const tieredRateLimiter = (() => {
     windowMs,
     store: resolveRateLimitStore('tiered'),
     max: async (req: Request) => {
-      // An API key's own allowance always wins over both defaults.
+      // An API key's own allowance always wins over both defaults (#691: cached lookup).
       const token = req.header('Authorization')?.replace(/^Bearer\s+/, '')
       if (token?.startsWith('nwk_')) {
-        const keyId = token.split('_')[1]
-        const tokenPrefix =
-          'sha256:' + crypto.createHash('sha256').update(token).digest('hex')
-        const key = await (
-          db as unknown as {
-            userApiKey: {
-              findFirst: (args: unknown) => Promise<{
-                rateLimitPerMin: number | null
-              } | null>
-            }
-          }
-        ).userApiKey.findFirst({
-          where: { id: keyId, tokenPrefix, revokedAt: null },
-          select: { rateLimitPerMin: true },
-        })
-        if (key?.rateLimitPerMin) return key.rateLimitPerMin
+        const customLimit = await getCachedApiKeyRateLimit(token)
+        if (customLimit) return customLimit
       }
 
       const principal = resolvePrincipal(req)

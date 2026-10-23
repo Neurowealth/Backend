@@ -38,8 +38,12 @@ router.post(
   // #473 — fund movement, same reasoning as withdrawals.
   sensitiveRateLimiter,
   validate({ body: depositSchema, errorMessage: 'Validation error' }),
-  async (req: Request, res: Response) => {
-    return processOnChainTransaction(req, res, 'DEPOSIT')
+  async (req: Request, res: Response, next) => {
+    try {
+      await processOnChainTransaction(req, res, 'DEPOSIT')
+    } catch (error) {
+      next(error)
+    }
   }
 )
 

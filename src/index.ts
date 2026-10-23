@@ -90,7 +90,7 @@ import {
   jsonBodyParser,
   payloadSizeErrorHandler,
   urlencodedBodyParser,
-  contentTypeRestrictionMiddleware,
+  createContentTypeRestrictionMiddleware,
   validateCorsConfig,
 } from './middleware/corsandbody'
 import { setSpanUser } from './telemetry/spans'
@@ -174,7 +174,15 @@ app.use(errorResponseMiddleware)
 app.use(securityHeaders())
 app.use(permissionsPolicy())
 app.use(corsMiddleware)
-app.use(contentTypeRestrictionMiddleware)
+app.use(
+  createContentTypeRestrictionMiddleware({
+    excludedPaths: [
+      '/whatsapp/webhook',
+      '/api/v1/fiat/webhook',
+      '/api/fiat/webhook',
+    ],
+  })
+)
 // Fiat provider webhooks are HMAC-signed over the raw request bytes. Capture the
 // raw body BEFORE the global JSON parser so signature verification sees the exact
 // payload — body-parser marks req._body here, so jsonBodyParser then skips these
@@ -591,8 +599,7 @@ async function initServices(): Promise<void> {
       webAuthnConfig()
       logger.info('[Startup] WebAuthn configuration validated ✓')
     } catch (error) {
-      const msg =
-        error instanceof Error ? error.message : String(error)
+      const msg = error instanceof Error ? error.message : String(error)
       logger.error(
         '[Startup] WebAuthn configuration validation failed — cannot continue',
         { error: msg }

@@ -300,6 +300,7 @@ enum SubAccountStatus {
 enum ErasureRequestStatus {
   PENDING
   APPROVED
+  PROCESSING
   REJECTED
   COMPLETED
   FAILED
@@ -563,6 +564,7 @@ model AdminAuditLog {
   @@index([action])
   @@index([result])
   @@index([createdAt])
+  @@index([createdAt(sort: Desc), action], map: "admin_audit_logs_created_at_action_idx")
   @@map("admin_audit_logs")
 }
 
@@ -1895,7 +1897,7 @@ model PortfolioRiskAggregate {
 /// through approval workflow. Preserved even after user deletion via cascade.
 model ErasureRequest {
   id              String               @id @default(uuid())
-  userId          String
+  userId          String?
   requestedAt     DateTime             @default(now())
   requestedBy     String
   reason          String
@@ -1909,7 +1911,7 @@ model ErasureRequest {
   errorMessage    String?
   updatedAt       DateTime             @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([status])

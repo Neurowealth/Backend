@@ -1,4 +1,6 @@
 import { logger } from '../utils/logger'
+import { createPrivateKey, createSign } from 'node:crypto'
+import http2 from 'node:http2'
 
 /**
  * A single push notification addressed to one device.
@@ -38,11 +40,11 @@ export interface PushProvider {
  */
 export class MockPushProvider implements PushProvider {
   name = 'mock'
-  // Every message passed to send(), in order, for test assertions
   sentMessages: PushMessage[] = []
 
   async send(message: PushMessage): Promise<PushSendResult> {
     this.sentMessages.push(message)
+    if (this.sentMessages.length > 1000) this.sentMessages.shift()
     // Timestamp plus a short random suffix keeps IDs unique within a run
     const messageId = `push_mock_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
     logger.info(
@@ -52,26 +54,41 @@ export class MockPushProvider implements PushProvider {
   }
 }
 
-/**
- * FCM Push Provider for Android and Web Push.
- *
- * NOTE: This is currently a stub. It checks configuration and logs, but never
- * calls FCM, so it always reports success. A real HTTP call to FCM needs to be
- * added inside the try block.
- */
 export class FcmPushProvider implements PushProvider {
   name = 'fcm'
 
   async send(message: PushMessage): Promise<PushSendResult> {
     // A missing credential is a deployment problem, not a delivery failure,
     // so it throws instead of returning success: false.
-    if (!process.env.FCM_SERVER_KEY) {
+    const serverKey = process.env.FCM_SERVER_KEY
+    if (!serverKey) {
       throw new Error('FCM provider not configured: FCM_SERVER_KEY missing')
     }
 
     try {
-      // Placeholder ID; no request is actually made to FCM yet
-      const messageId = `push_fcm_${Date.now()}`
+      const response = await fetch('https://fcm.googleapis.com/fcm/send', {
+        method: 'POST',
+        headers: {
+          Authorization: `key=${serverKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          to: message.deviceToken,
+          notification: { title: message.title, body: message.body },
+          ...(message.data ? { data: message.data } : {}),
+        }),
+      })
+      const result = (await response.json()) as {
+        message_id?: string
+        error?: string
+      }
+      if (!response.ok || !result.message_id) {
+        throw new Error(
+          result.error || `FCM returned HTTP ${response.status} without a message ID`
+        )
+      }
+
+      const messageId = result.message_id
       logger.info(
         `[FcmPushProvider] Sent push via FCM to ${message.deviceToken}`,
         {
@@ -81,8 +98,6 @@ export class FcmPushProvider implements PushProvider {
 
       return { messageId, provider: this.name, success: true }
     } catch (err) {
-      // Delivery errors are returned as a failed result so one bad send
-      // doesn't crash the caller
       logger.error('[FcmPushProvider] Failed to send push via FCM', {
         error: err instanceof Error ? err.message : String(err),
       })
@@ -96,29 +111,42 @@ export class FcmPushProvider implements PushProvider {
   }
 }
 
-/**
- * APNs Push Provider for iOS.
- *
- * NOTE: Like FcmPushProvider, this is currently a stub. It validates
- * configuration and logs but does not contact Apple, so it always reports
- * success. It also only checks APNS_KEY_ID and APNS_TEAM_ID; a real
- * implementation will need the signing key and bundle ID as well.
- */
 export class ApnsPushProvider implements PushProvider {
   name = 'apns'
 
   async send(message: PushMessage): Promise<PushSendResult> {
-    // As with FCM, missing configuration throws rather than returning a
-    // failed result
-    if (!process.env.APNS_KEY_ID || !process.env.APNS_TEAM_ID) {
+    const keyId = process.env.APNS_KEY_ID
+    const teamId = process.env.APNS_TEAM_ID
+    const privateKey = process.env.APNS_PRIVATE_KEY?.replace(/\\n/g, '\n')
+    const bundleId = process.env.APNS_BUNDLE_ID
+    if (!keyId || !teamId || !privateKey || !bundleId) {
       throw new Error(
-        'APNs provider not configured: APNS_KEY_ID or APNS_TEAM_ID missing'
+        'APNs provider not configured: APNS_KEY_ID, APNS_TEAM_ID, APNS_PRIVATE_KEY, or APNS_BUNDLE_ID missing'
       )
     }
 
     try {
-      // Placeholder ID; no request is actually made to APNs yet
-      const messageId = `push_apns_${Date.now()}`
+      const token = createApnsToken(teamId, keyId, privateKey)
+      const host =
+        process.env.APNS_USE_SANDBOX === 'true'
+          ? 'api.sandbox.push.apple.com'
+          : 'api.push.apple.com'
+      const result = await sendApnsRequest(host, message.deviceToken, {
+        authorization: `bearer ${token}`,
+        'apns-topic': bundleId,
+        'apns-push-type': 'alert',
+        'content-type': 'application/json',
+      }, {
+        aps: { alert: { title: message.title, body: message.body } },
+        ...(message.data ?? {}),
+      })
+      if (result.status < 200 || result.status >= 300 || !result.apnsId) {
+        throw new Error(
+          result.reason || `APNs returned HTTP ${result.status} without an ID`
+        )
+      }
+
+      const messageId = result.apnsId
       logger.info(
         `[ApnsPushProvider] Sent push via APNs to ${message.deviceToken}`,
         {
@@ -128,7 +156,6 @@ export class ApnsPushProvider implements PushProvider {
 
       return { messageId, provider: this.name, success: true }
     } catch (err) {
-      // Delivery errors are returned as a failed result, not thrown
       logger.error('[ApnsPushProvider] Failed to send push via APNs', {
         error: err instanceof Error ? err.message : String(err),
       })
@@ -175,10 +202,7 @@ export class PushRegistry {
   getProvider(platform: string): PushProvider {
     const provider = this.providers.get(platform.toLowerCase())
     if (!provider) {
-      logger.warn(
-        `[PushRegistry] No provider for platform "${platform}", falling back to mock`
-      )
-      return this.providers.get('mock')!
+      throw new Error(`No push provider configured for platform "${platform}"`)
     }
     return provider
   }
@@ -195,3 +219,87 @@ export class PushRegistry {
 
 // Shared singleton used across the app
 export const pushRegistry = new PushRegistry()
+
+function createApnsToken(
+  teamId: string,
+  keyId: string,
+  privateKey: string
+): string {
+  const header = Buffer.from(
+    JSON.stringify({ alg: 'ES256', kid: keyId })
+  ).toString('base64url')
+  const payload = Buffer.from(
+    JSON.stringify({ iss: teamId, iat: Math.floor(Date.now() / 1000) })
+  ).toString('base64url')
+  const signer = createSign('SHA256')
+  signer.update(`${header}.${payload}`)
+  const signature = derSignatureToJose(
+    signer.sign(createPrivateKey(privateKey))
+  ).toString('base64url')
+  return `${header}.${payload}.${signature}`
+}
+
+function derSignatureToJose(signature: Buffer): Buffer {
+  let offset = 2
+  if (signature[1] & 0x80) offset += signature[1] & 0x7f
+  if (signature[offset++] !== 0x02) throw new Error('Invalid APNs signature')
+  const rLength = signature[offset++]
+  const r = signature.subarray(offset, offset + rLength)
+  offset += rLength
+  if (signature[offset++] !== 0x02) throw new Error('Invalid APNs signature')
+  const sLength = signature[offset++]
+  const s = signature.subarray(offset, offset + sLength)
+  const normalize = (value: Buffer): Buffer => {
+    let normalized = value
+    while (normalized.length > 32 && normalized[0] === 0) {
+      normalized = normalized.subarray(1)
+    }
+    return Buffer.concat([Buffer.alloc(32 - normalized.length), normalized])
+  }
+  return Buffer.concat([normalize(r), normalize(s)])
+}
+
+function sendApnsRequest(
+  host: string,
+  deviceToken: string,
+  headers: Record<string, string>,
+  body: Record<string, unknown>
+): Promise<{ status: number; apnsId?: string; reason?: string }> {
+  return new Promise((resolve, reject) => {
+    const client = http2.connect(`https://${host}`)
+    client.once('error', reject)
+    const request = client.request({
+      ':method': 'POST',
+      ':path': `/3/device/${encodeURIComponent(deviceToken)}`,
+      ...headers,
+    })
+    let responseBody = ''
+    request.setEncoding('utf8')
+    request.on('data', (chunk: string) => {
+      responseBody += chunk
+    })
+    request.on('response', (responseHeaders) => {
+      request.on('end', () => {
+        client.close()
+        let parsed: { reason?: string } = {}
+        if (responseBody) {
+          try {
+            parsed = JSON.parse(responseBody) as { reason?: string }
+          } catch {
+            parsed = {}
+          }
+        }
+        resolve({
+          status: Number(responseHeaders[':status']),
+          apnsId: responseHeaders['apns-id']?.toString(),
+          reason: parsed.reason,
+        })
+      })
+    })
+    request.on('error', (error) => {
+      client.close()
+      reject(error)
+    })
+    request.end(JSON.stringify(body))
+  })
+}

@@ -36,20 +36,47 @@ import {
   getCurrentEnvironment,
 } from '../config/featureFlags'
 import { messageDeliveryService } from '../messaging'
+import { config } from '../config/env'
+import { buildPaginationMeta } from '../utils/pagination'
+import { adminAuditExportQuerySchema } from '../validators/admin-audit-export'
 
 const router = Router()
 const prisma = db
 
-function auditLog(
+const HIGH_RISK_ADMIN_ACTIONS = new Set([
+  'EXECUTE_ERASURE',
+  'CREATE_ERASURE_REQUEST',
+  'APPROVE_ERASURE_REQUEST',
+  'REJECT_ERASURE_REQUEST',
+  'REVOKE_ALL_USER_SESSIONS',
+  'REVOKE_USER_SESSION',
+  'REVOKE_ADMIN_KEY',
+  'ROTATE_ADMIN_KEY',
+  'CREATE_ADMIN_KEY',
+  'EMERGENCY_DISABLE_ALL_FEATURE_FLAGS',
+  'TREASURY_SIGNER_ROTATION_INITIATE',
+  'TREASURY_SIGNER_ROTATION_FINALIZE',
+  'TREASURY_POLICY_ENABLE',
+  'FIAT_PROVIDER_FAILOVER',
+  'DLQ_RESOLVE',
+  'DLQ_REPLAY',
+  'OUTBOX_CANCEL',
+  'OUTBOX_FORCE_RETRY',
+])
+
+async function auditLog(
   req: Request,
   res: Response,
   action: string,
   result: string,
   details?: Record<string, any>
-): void {
+): Promise<void> {
   const adminAuth = getAdminAuth(res)
   if (!adminAuth) {
-    logger.error('[Admin Audit] Missing valid admin identity', { action })
+    logger.error(
+      '[Admin Audit] Missing valid admin identity [SECURITY ALERT]',
+      { action }
+    )
     return
   }
   const auditPayload = {
@@ -68,8 +95,9 @@ function auditLog(
   logger.info('[Admin Audit]', auditPayload)
 
   if (adminAuth) {
-    prisma.adminAuditLog
-      .create({
+    const isHighRisk = HIGH_RISK_ADMIN_ACTIONS.has(action)
+    try {
+      const createPromise = prisma.adminAuditLog.create({
         data: {
           adminKeyId: adminAuth.id,
           adminName: adminAuth.name,
@@ -84,12 +112,30 @@ function auditLog(
           path: req.originalUrl || req.path,
         },
       })
-      .catch((error: unknown) => {
-        logger.error('[Admin Audit] Failed to persist audit entry', {
+
+      if (isHighRisk) {
+        // High-risk mutations MUST await persistence to ensure an unbroken audit trail (#690)
+        await createPromise
+      } else {
+        createPromise.catch((error: unknown) => {
+          logger.error('[Admin Audit] Failed to persist audit entry [ALERT]', {
+            error: error instanceof Error ? error.message : String(error),
+            action,
+            alert: true,
+          })
+        })
+      }
+    } catch (error: unknown) {
+      logger.error(
+        '[Admin Audit] CRITICAL: Failed to persist high-risk audit entry [SECURITY ALERT]',
+        {
           error: error instanceof Error ? error.message : String(error),
           action,
-        })
-      })
+          alert: true,
+        }
+      )
+      throw error // Fail closed for high-risk operations
+    }
   }
 }
 
@@ -251,6 +297,200 @@ router.get(
       const message = error instanceof Error ? error.message : 'Unknown error'
       logger.error('[Admin] Audit proof failed', { error: message })
       res.status(500).json({ success: false, error: 'Audit proof failed' })
+    }
+  }
+)
+
+function escapeCsv(val: unknown): string {
+  if (val === null || val === undefined) return ''
+  const raw = typeof val === 'object' ? JSON.stringify(val) : String(val)
+  const str = raw.replace(/\r\n|\r|\n/g, '\r\n')
+  if (
+    str.includes(',') ||
+    str.includes('"') ||
+    str.includes('\n') ||
+    str.includes('\r')
+  ) {
+    return `"${str.replace(/"/g, '""')}"`
+  }
+  return str
+}
+
+/**
+ * GET /api/admin/audit/export — Paginated, filterable export of AdminAuditLog records (#682)
+ *
+ * Requirements:
+ *  - Scope: `read` admin scope.
+ *  - Itself audited: records `EXPORT_ADMIN_AUDIT_LOGS` into AdminAuditLog.
+ *  - Filtering: startDate/from, endDate/to, action, adminKeyId, result.
+ *  - Pagination: page, limit (max 200).
+ *  - Format: json (default) or csv.
+ */
+router.get(
+  '/audit/export',
+  requireAdminScope('read'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+
+    try {
+      const parsedQuery = adminAuditExportQuerySchema.safeParse(req.query)
+      if (!parsedQuery.success) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid admin audit export query parameters',
+          details: parsedQuery.error.issues,
+        })
+      }
+      const {
+        page,
+        limit,
+        format,
+        from,
+        startDate,
+        to,
+        endDate,
+        action,
+        adminKeyId,
+        result: resultFilter,
+      } = parsedQuery.data
+      const skip = (page - 1) * limit
+
+      const fromRaw = from ?? startDate
+      const toRaw = to ?? endDate
+
+      const fromDate = fromRaw ? new Date(fromRaw) : undefined
+      const toDate = toRaw ? new Date(toRaw) : undefined
+
+      const where: any = {}
+      if (fromDate || toDate) {
+        where.createdAt = {}
+        if (fromDate) where.createdAt.gte = fromDate
+        if (toDate) where.createdAt.lte = toDate
+      }
+      if (action) where.action = action
+      if (adminKeyId) where.adminKeyId = adminKeyId
+      if (resultFilter) where.result = resultFilter
+
+      const [total, logs] = await Promise.all([
+        prisma.adminAuditLog.count({ where }),
+        prisma.adminAuditLog.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take: limit,
+        }),
+      ])
+      const [retentionControl] = await prisma.$queryRaw<
+        Array<{ legalHold: boolean; retentionDays: number }>
+      >`SELECT "legalHold", "retentionDays"
+        FROM public.admin_audit_retention_control
+        WHERE id = TRUE`
+
+      // Self-audit: record this export operation in AdminAuditLog (#682)
+      await prisma.adminAuditLog.create({
+        data: {
+          adminKeyId: adminAuth.id,
+          adminName: adminAuth.name,
+          adminRole: adminAuth.role,
+          action: 'EXPORT_ADMIN_AUDIT_LOGS',
+          target: req.originalUrl || req.path,
+          result: 'success',
+          details: {
+            page,
+            limit,
+            count: logs.length,
+            total,
+            format,
+            filters: {
+              from: fromDate?.toISOString() ?? null,
+              to: toDate?.toISOString() ?? null,
+              action: action ?? null,
+              adminKeyId: adminKeyId ?? null,
+              result: resultFilter ?? null,
+            },
+          },
+          ipAddress: req.ip,
+          userAgent: req.get('user-agent') || null,
+          method: req.method,
+          path: req.originalUrl || req.path,
+        },
+      })
+
+      if (format === 'csv') {
+        const headers = [
+          'id',
+          'adminKeyId',
+          'adminName',
+          'adminRole',
+          'action',
+          'target',
+          'result',
+          'ipAddress',
+          'userAgent',
+          'method',
+          'path',
+          'createdAt',
+          'details',
+        ]
+        const csvLines = [headers.join(',')]
+        for (const log of logs) {
+          const row = [
+            escapeCsv(log.id),
+            escapeCsv(log.adminKeyId),
+            escapeCsv(log.adminName),
+            escapeCsv(log.adminRole),
+            escapeCsv(log.action),
+            escapeCsv(log.target),
+            escapeCsv(log.result),
+            escapeCsv(log.ipAddress),
+            escapeCsv(log.userAgent),
+            escapeCsv(log.method),
+            escapeCsv(log.path),
+            escapeCsv(log.createdAt.toISOString()),
+            escapeCsv(log.details),
+          ]
+          csvLines.push(row.join(','))
+        }
+
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="admin-audit-export-${Date.now()}.csv"`
+        )
+        return res.status(200).send(csvLines.join('\r\n'))
+      }
+
+      return res.status(200).json({
+        success: true,
+        data: logs,
+        pagination: buildPaginationMeta(page, limit, total),
+        exportMeta: {
+          exportedAt: new Date().toISOString(),
+          exportedBy: adminAuth.id,
+          legalHoldActive:
+            config.retention.adminAuditLegalHold ||
+            retentionControl?.legalHold === true,
+          retentionPeriodDays:
+            retentionControl?.retentionDays ??
+            config.retention.adminAuditLogsDays,
+        },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      logger.error('[Admin] Audit log export failed', { error: message })
+      auditLog(req, res, 'EXPORT_ADMIN_AUDIT_LOGS', 'failure', {
+        error: message,
+      })
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to export admin audit logs',
+        message,
+      })
     }
   }
 )
@@ -583,6 +823,166 @@ router.post(
       res.status(500).json({
         success: false,
         error: 'Failed to resolve event',
+      })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/dlq/discard
+ * Permanently discard a DLQ entry (#610). Intended for garbage that will
+ * never process successfully. The deletion is audited.
+ * Required scope: dlq:write
+ *
+ * Body: { eventId: string, reason: string }
+ */
+router.post(
+  '/dlq/discard',
+  requireAdminScope('dlq:write'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+    try {
+      const { eventId, reason } = req.body as {
+        eventId?: unknown
+        reason?: unknown
+      }
+
+      if (!eventId || typeof eventId !== 'string') {
+        auditLog(req, res, 'DLQ_DISCARD', 'failure', {
+          error: 'Missing or invalid eventId',
+        })
+        return res.status(400).json({
+          success: false,
+          error: 'eventId is required and must be a string',
+        })
+      }
+      if (!reason || typeof reason !== 'string' || reason.trim().length < 3) {
+        auditLog(req, res, 'DLQ_DISCARD', 'failure', {
+          eventId,
+          error: 'reason_required',
+        })
+        return res.status(400).json({
+          success: false,
+          error: 'reason is required (min 3 chars) — discard is permanent',
+        })
+      }
+
+      const discarded = await DeadLetterQueue.discard(eventId)
+      if (!discarded) {
+        auditLog(req, res, 'DLQ_DISCARD', 'failure', {
+          eventId,
+          error: 'not_found',
+        })
+        return res.status(404).json({
+          success: false,
+          error: `Event ${eventId} not found in DLQ`,
+        })
+      }
+
+      logger.warn('[Admin] DLQ event discarded', { eventId, reason })
+      auditLog(req, res, 'DLQ_DISCARD', 'success', { eventId, reason })
+
+      res.status(200).json({
+        success: true,
+        data: { eventId, action: 'DISCARDED' },
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      logger.error('[Admin] Failed to discard DLQ event', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'DLQ_DISCARD', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error: 'Failed to discard event',
+      })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/dlq/requeue
+ * Reset a DLQ entry's retryCount to 0 and status to PENDING so the backoff
+ * schedule restarts (#610). Intended for entries whose underlying cause has
+ * been fixed outside the queue (an RPC endpoint restored, a bad migration
+ * rolled back). The requeue is audited.
+ * Required scope: dlq:write
+ *
+ * Body: { eventId: string, reason: string }
+ */
+router.post(
+  '/dlq/requeue',
+  requireAdminScope('dlq:write'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+    try {
+      const { eventId, reason } = req.body as {
+        eventId?: unknown
+        reason?: unknown
+      }
+
+      if (!eventId || typeof eventId !== 'string') {
+        auditLog(req, res, 'DLQ_REQUEUE', 'failure', {
+          error: 'Missing or invalid eventId',
+        })
+        return res.status(400).json({
+          success: false,
+          error: 'eventId is required and must be a string',
+        })
+      }
+      if (!reason || typeof reason !== 'string' || reason.trim().length < 3) {
+        auditLog(req, res, 'DLQ_REQUEUE', 'failure', {
+          eventId,
+          error: 'reason_required',
+        })
+        return res.status(400).json({
+          success: false,
+          error: 'reason is required (min 3 chars) — explain what was fixed',
+        })
+      }
+
+      const requeued = await DeadLetterQueue.requeue(eventId)
+      if (!requeued) {
+        auditLog(req, res, 'DLQ_REQUEUE', 'failure', {
+          eventId,
+          error: 'not_found',
+        })
+        return res.status(404).json({
+          success: false,
+          error: `Event ${eventId} not found in DLQ`,
+        })
+      }
+
+      logger.info('[Admin] DLQ event requeued', { eventId, reason })
+      auditLog(req, res, 'DLQ_REQUEUE', 'success', { eventId, reason })
+
+      res.status(200).json({
+        success: true,
+        data: { eventId, action: 'REQUEUED', status: 'PENDING', retryCount: 0 },
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      logger.error('[Admin] Failed to requeue DLQ event', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'DLQ_REQUEUE', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error: 'Failed to requeue event',
       })
     }
   }

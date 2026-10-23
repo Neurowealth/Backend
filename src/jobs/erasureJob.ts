@@ -1,31 +1,34 @@
 import db from '../db'
 import { logger } from '../utils/logger'
 import { config } from '../config/env'
+import { erasurePolicies, ErasurePolicyKey } from '../privacy/dataMap'
+import { eraseScalarUserRefs } from '../privacy/scalarUserRefs'
 
-export const erasurePolicies = {
-  Session: 'DELETE',
-  WebhookSubscription: 'DELETE',
-  AlertRule: 'DELETE',
-  EmailIdentity: 'DELETE',
-  UserWebhookEndpoint: 'DELETE',
-  UserApiKey: 'DELETE',
-  RecurringDepositPlan: 'DELETE',
-  Transaction: 'ANONYMIZE',
-  CostBasisLot: 'ANONYMIZE',
-  FiatOrder: 'ANONYMIZE',
-  ReferralConversion: 'ANONYMIZE',
-  User: 'ANONYMIZE',
-  AuditBlock: 'IMMUTABLE',
-  OutboxOp: 'IMMUTABLE',
-} as const
-
-export type ErasurePolicyKey = keyof typeof erasurePolicies
+export { erasurePolicies }
+export type { ErasurePolicyKey }
 
 export interface ErasureResult {
   model: string
   action: 'delete' | 'anonymize' | 'immutable' | 'unknown'
   count: number
 }
+
+const scalarModels = new Set<string>([
+  'IdempotencyRecord',
+  'CustodialWallet',
+  'AlertAck',
+  'NotificationPreferenceAuditLog',
+  'WebAuthnChallenge',
+  'MessageDelivery',
+  'UserEvent',
+  'UserEventSequence',
+  'LoanLiquidationEvent',
+  'PlatformBadDebt',
+  'CoverageClaim',
+  'UserDataAudit',
+  'TicketMessage',
+  'OutboxOp',
+])
 
 export async function erasureJob(
   userId: string,
@@ -272,7 +275,6 @@ export async function erasureJob(
       }
 
       case 'AuditBlock':
-      case 'OutboxOp':
         results.push({
           model: modelName,
           action: 'immutable' as const,
@@ -281,11 +283,27 @@ export async function erasureJob(
         break
 
       default:
-        results.push({
-          model: modelName,
-          action: 'unknown' as const,
-          count: 0,
-        })
+        if (!scalarModels.has(modelName)) {
+          results.push({
+            model: modelName,
+            action: 'unknown' as const,
+            count: 0,
+          })
+        }
+    }
+  }
+
+  if (!dryRun) {
+    const counts = await db.$transaction((tx) => eraseScalarUserRefs(tx, userId))
+    for (const [model, count] of Object.entries(counts)) {
+      results.push({
+        model,
+        action:
+          erasurePolicies[model as ErasurePolicyKey] === 'DELETE'
+            ? 'delete'
+            : 'anonymize',
+        count,
+      })
     }
   }
 

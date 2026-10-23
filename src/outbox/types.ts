@@ -141,8 +141,24 @@ export type OutboxPayload =
       borrowedAsset: string
       trigger: 'scheduled' | 'circuit_breaker'
       transactionId: string
+      /** The OutboxOp.id that carries this payload — used to link audit records (#665). */
+      outboxOpId: string
       /** Monotonic per loan, so the sale is idempotent under outbox retry. */
       sequence: number
+    }
+  /**
+   * #651 — protection fund pays out an approved coverage claim. Funds leave
+   * the protection pool and are sent to the claimant's wallet. The balance
+   * decrement must only happen after confirmed on-chain delivery.
+   */
+  | {
+      method: 'protection_fund_payout'
+      userId: string
+      userAddress: string
+      amount: number
+      assetSymbol: string
+      claimId: string
+      eventId: string
     }
 
 export interface OutboxOpRecord {

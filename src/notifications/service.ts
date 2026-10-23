@@ -4,6 +4,7 @@
  */
 
 import db from '../db'
+import { createHmac, timingSafeEqual } from 'node:crypto'
 import { logger } from '../utils/logger'
 import {
   generateCorrelationId,
@@ -240,27 +241,12 @@ export async function shouldSendNotification(
   return true
 }
 
-/**
- * Generate unsubscribe token
- * Simple hash-based token without requiring crypto or base64
- */
 export function generateUnsubscribeToken(userId: string): string {
+  const secret = getUnsubscribeSecret()
   const timestamp = Date.now()
-  const hash = simpleHash(`${userId}:${timestamp}:unsubscribe-secret`)
-  return `${hash}:${timestamp}`
-}
-
-/**
- * Simple hash function for token generation
- */
-function simpleHash(str: string): string {
-  let hash = 0
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i)
-    hash = (hash << 5) - hash + char
-    hash = hash & hash // Convert to 32bit integer
-  }
-  return Math.abs(hash).toString(36)
+  const payload = `${userId}:${timestamp}`
+  const signature = createHmac('sha256', secret).update(payload).digest('base64url')
+  return `${timestamp}.${signature}`
 }
 
 /**
@@ -268,27 +254,42 @@ function simpleHash(str: string): string {
  */
 export function verifyUnsubscribeToken(token: string, userId: string): boolean {
   try {
-    const [hash, timestamp] = token.split(':')
-
-    if (!hash || !timestamp) {
+    const [timestamp, signature] = token.split('.')
+    if (!timestamp || !signature || !/^\d+$/.test(timestamp)) {
       return false
     }
 
-    // Reconstruct the expected hash
-    const expectedHash = simpleHash(`${userId}:${timestamp}:unsubscribe-secret`)
-
-    if (hash !== expectedHash) {
+    const expectedSignature = createHmac('sha256', getUnsubscribeSecret())
+      .update(`${userId}:${timestamp}`)
+      .digest()
+    const providedSignature = Buffer.from(signature, 'base64url')
+    if (
+      providedSignature.length !== expectedSignature.length ||
+      !timingSafeEqual(providedSignature, expectedSignature)
+    ) {
       return false
     }
 
-    // Token expires after 7 days
-    const tokenAge = Date.now() - parseInt(timestamp, 10)
+    const tokenAge = Date.now() - Number(timestamp)
     const maxAge = 7 * 24 * 60 * 60 * 1000 // 7 days in milliseconds
 
-    return tokenAge < maxAge
+    return tokenAge >= 0 && tokenAge < maxAge
   } catch {
     return false
   }
+}
+
+function getUnsubscribeSecret(): string {
+  const secret =
+    process.env.UNSUBSCRIBE_TOKEN_SECRET ||
+    process.env.JWT_SECRET ||
+    process.env.JWT_SEED
+  if (!secret) {
+    throw new Error(
+      'Unsubscribe token signing is not configured: set UNSUBSCRIBE_TOKEN_SECRET'
+    )
+  }
+  return secret
 }
 
 /**
@@ -365,14 +366,133 @@ export async function processUnsubscribe(
 }
 
 /**
- * Get delivery status for a user's notifications
+ * Get delivery status for a user's notifications (#699).
+ *
+ * Aggregates per-channel delivery state from the two durable delivery
+ * stores — `message_deliveries` (Telegram/WhatsApp, user-scoped) and
+ * `outbound_notifications` (email/sms/whatsapp/telegram queue) — so callers
+ * get a real per-channel report instead of a placeholder.
  */
 export async function getDeliveryStatus(
   userId: string
 ): Promise<NotificationDeliveryStatus[]> {
-  // This would query a notification delivery tracking table
-  // For now, return empty array as placeholder
-  return []
+  const [messages, outbound] = await Promise.all([
+    db.messageDelivery.findMany({
+      where: { userId },
+      orderBy: { updatedAt: 'desc' },
+      take: 500,
+    }),
+    db.outboundNotification.findMany({
+      orderBy: { updatedAt: 'desc' },
+      take: 500,
+    }),
+  ])
+
+  const byKey = new Map<string, NotificationDeliveryStatus>()
+
+  const keyFor = (channel: string, category: string) => `${channel}::${category}`
+
+  const toChannel = (raw: string): NotificationChannel => {
+    const lower = raw.toLowerCase()
+    if (lower === 'telegram' || lower === 'whatsapp' || lower === 'email' || lower === 'sms')
+      return lower
+    return 'email'
+  }
+
+  const toCategory = (raw: unknown): NotificationCategory => {
+    const lower = String(raw ?? '').toLowerCase()
+    const known: NotificationCategory[] = [
+      'portfolio_updates',
+      'rebalance_alerts',
+      'yield_claims',
+      'risk_alerts',
+      'system_updates',
+      'marketing',
+    ]
+    return (known as string[]).includes(lower)
+      ? (lower as NotificationCategory)
+      : 'system_updates'
+  }
+
+  for (const msg of messages as Array<{
+    channel: string
+    category: string
+    status: string
+    deliveredAt: Date | null
+    updatedAt: Date
+    lastError: string | null
+    attempts: number
+  }>) {
+    const channel = toChannel(msg.channel)
+    const category = toCategory(msg.category)
+    const key = keyFor(channel, category)
+    const existing = byKey.get(key)
+    const delivered = msg.status === 'DELIVERED' && msg.deliveredAt
+    const failed =
+      msg.status === 'FAILED' || msg.status === 'DEAD_LETTER'
+    if (!existing) {
+      byKey.set(key, {
+        userId,
+        channel,
+        category,
+        lastDeliveredAt: delivered ? (msg.deliveredAt as Date) : undefined,
+        lastFailedAt: failed ? msg.updatedAt : undefined,
+        failureCount: failed ? 1 : 0,
+        lastError: failed ? (msg.lastError ?? undefined) : undefined,
+      })
+    } else {
+      if (delivered && (!existing.lastDeliveredAt || msg.deliveredAt! > existing.lastDeliveredAt)) {
+        existing.lastDeliveredAt = msg.deliveredAt as Date
+      }
+      if (failed) {
+        existing.failureCount += 1
+        if (!existing.lastFailedAt || msg.updatedAt > existing.lastFailedAt) {
+          existing.lastFailedAt = msg.updatedAt
+          existing.lastError = msg.lastError ?? undefined
+        }
+      }
+    }
+  }
+
+  // Outbound queue rows carry the recipient in `payload`, not a userId
+  // column, so they can only refine channel-level state (latest failure /
+  // delivery timestamps) — per-user attribution stays with message_deliveries.
+  for (const row of outbound as Array<{
+    channel: string
+    status: string
+    updatedAt: Date
+    lastError: string | null
+    payload: unknown
+  }>) {
+    const channel = toChannel(row.channel)
+    const payload = (row.payload ?? {}) as Record<string, unknown>
+    const category = toCategory(
+      payload['category'] ?? payload['notificationCategory'] ?? 'system_updates'
+    )
+    const key = keyFor(channel, category)
+    const existing = byKey.get(key)
+    const failed = row.status === 'DEAD'
+    const delivered = row.status === 'DELIVERED'
+    if (!existing) {
+      byKey.set(key, {
+        userId,
+        channel,
+        category,
+        lastDeliveredAt: undefined,
+        lastFailedAt: failed ? row.updatedAt : undefined,
+        failureCount: failed ? 1 : 0,
+        lastError: failed ? (row.lastError ?? undefined) : undefined,
+      })
+    } else if (failed && !delivered) {
+      existing.failureCount += 1
+      if (!existing.lastFailedAt || row.updatedAt > existing.lastFailedAt) {
+        existing.lastFailedAt = row.updatedAt
+        existing.lastError = row.lastError ?? undefined
+      }
+    }
+  }
+
+  return [...byKey.values()]
 }
 
 /**

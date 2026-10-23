@@ -16,6 +16,7 @@ This document defines the data retention, archival, and purge policies for all a
 | Agent Logs | `agent_log` | 60 days | Yes (audit chain) | Scheduled job |
 | User Events (Stream) | `user_event` | 7 days + 5000/user cap | No | Scheduled job |
 | Audit Blocks | `audit_block` | 365 days | Yes (cold storage) | Scheduled job |
+| Admin Audit Logs | `admin_audit_logs` | 365 days (configurable) | Yes (audit chain anchor) | Scheduled job (#682) |
 
 ### Analytics Data
 
@@ -228,15 +229,33 @@ Logs include per-table counts (`wouldDelete`) and retention parameters (retentio
 - Encryption: All sensitive data encrypted at rest
 - Access logs: All access logged and monitored
 
+## Admin Audit Log Lifecycle & Legal Hold (#682)
+
+### Append-Only Immutability
+`admin_audit_logs` is guaranteed append-only at the PostgreSQL layer:
+- **UPDATE**: Strictly forbidden for all roles via row-level trigger `trg_admin_audit_logs_append_only`.
+- **DELETE**: The application role has no direct `DELETE` privilege. Retention can only call the bounded `public.purge_admin_audit_logs(ids, cutoff)` security-definer function; each batch is capped at 500 rows and anchored in the same transaction before deletion.
+
+### Retention & Legal Hold
+- **Configurable Window**: Default retention is 365 days (`RETENTION_ADMIN_AUDIT_LOGS_DAYS=365`). Keep this aligned with the database enforcement floor in `admin_audit_retention_control.retentionDays`.
+- **Litigation / Legal Hold Override**: `ADMIN_AUDIT_LEGAL_HOLD=true` stops the worker. A persistent database hold in `admin_audit_retention_control.legalHold` blocks the purge function and trigger even if a caller sets the purge session flag. A transaction-local `neuro.legal_hold='true'` also blocks purging. Database operators control the persistent hold; the application role cannot change it.
+- **Cryptographic Anchoring**: Expired logs are hashed and anchored to the `AuditBlock` chain via `anchorBeforeDelete` before pruning.
+
+### Export Capability
+- `GET /api/v1/admin/audit/export`: Paginated and filterable export endpoint (JSON/CSV) for compliance responses.
+- **Self-Audited**: Every export request writes an `EXPORT_ADMIN_AUDIT_LOGS` audit row into `admin_audit_logs`.
+
 ## Implementation References
 
-- **Retention Jobs**: `src/jobs/dataRetention.ts`
+- **Retention Jobs**: `src/jobs/dataRetention.ts`, `src/jobs/adminAuditRetention.ts`
 - **Audit Chain**: `src/audit/chain.ts`
 - **Metrics**: `src/utils/metrics.ts`
 - **Configuration**: `src/config/env.ts`
+- **Admin Audit Export**: `src/routes/admin.ts` (`GET /api/v1/admin/audit/export`)
 
 ## Change Log
 
 | Date | Change | Author |
 |------|--------|--------|
 | 2024-09-28 | Initial policy definition | Backend Team |
+| 2026-10-21 | Added Admin Audit Log append-only enforcement, retention, and export (#682) | Backend Team |

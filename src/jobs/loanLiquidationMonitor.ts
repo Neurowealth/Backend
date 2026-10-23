@@ -202,6 +202,7 @@ export async function runLiquidationSweep(
             borrowedAsset: loan.borrowedAsset,
             trigger,
             transactionId: transaction.id,
+            outboxOpId: op.id,
             sequence,
           },
         })

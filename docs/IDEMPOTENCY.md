@@ -78,6 +78,96 @@ The HTTP `Idempotency-Key` serves as the **outer perimeter** defense at the clie
 
 ---
 
+## Consumer Contract (what callers can rely on)
+
+The sections above describe the mechanism. This section is the externally
+guaranteed behaviour; it does not change when the implementation does.
+
+### Retention and TTL
+
+A completed record is retained for the TTL of its route (24 h on every current
+route). A record expires `ttlSeconds` after it was last written: both tiers
+(Redis and Postgres `IdempotencyRecord`) carry the same expiry.
+
+If a retry arrives **after** the record has expired, the key is treated as new:
+the handler runs again and side effects are executed again. Clients that retry
+across long gaps are themselves responsible for using a fresh key rather than
+relying on replay — the server will not block an expired-key re-execution.
+
+The TTL is a floor, not a ceiling: a record may still be in Redis after its
+nominal TTL (eviction is lazy) but the Postgres row's `expiresAt` check is
+authoritative. A record found with `expiresAt <= now` is treated as absent.
+
+### Which status codes replay vs re-execute
+
+**Every status code is cached and replayed**, including `4xx` validation errors
+and `5xx` handler errors — a client that retries after a `400` will see the
+same `400` on an identical replay, not a second `400` produced by re-running
+validation. The only cases that re-execute are:
+
+- The key is unknown (first request).
+- The key has expired (see above).
+- The key is present but the fingerprint differs → `422` with
+  `idempotency_key_reuse`, no re-execution.
+- The key is present in `in_progress` state → `409` with
+  `idempotency_request_in_flight`, no re-execution.
+
+A request that completes without `res.json(...)` being called (plain
+`res.send`, `res.end`, or an error thrown past the response boundary) is **not
+cached**. A retry of such a request re-executes.
+
+### Same key, different body
+
+Returns `422 Unprocessable Entity` with `{ "error": "idempotency_key_reuse" }`.
+Not `409`: `409` is reserved for the concurrency case below, so clients can
+distinguish "I sent two different payloads with the same key" (a bug on their
+end) from "my earlier request is still running" (worth backing off and
+retrying).
+
+The fingerprint covers `method`, `path`, `userId`, and the canonical JSON of
+the request body. Two requests that differ **only** in header casing, query
+string ordering of unmentioned params, or whitespace inside their JSON body
+have the same fingerprint.
+
+### Concurrency: in-flight duplicate
+
+The policy is **reject with `409`, do not coalesce**. A second request with
+the same key, received while the first is still executing, returns
+`409 Conflict` with `{ "error": "idempotency_request_in_flight" }`. The second
+request does **not** wait for the first to finish, and does **not** receive
+the first request's response body when it does.
+
+Clients should back off (exponential jitter, start at ~2 s) and retry with the
+same key once the first request has completed. On the follow-up retry the
+server will either replay the cached response or — if the first request
+genuinely failed and left no record — re-execute. The in-flight lock expires
+after 30 s so a crashed first request cannot wedge the key.
+
+### Fail-closed stores
+
+On routes marked **Fail closed** (every financial route in the table above),
+if both Redis and Postgres are unreachable the request is rejected with
+`503 Service Unavailable` and `{ "error": "Idempotency store unavailable" }`.
+No handler runs; no funds move. Operational routes fail open — the handler
+runs without the dedupe guarantee.
+
+### Behavioural guarantees (tested)
+
+Each row below is pinned by a test in
+`tests/unit/middleware/idempotencyContract.test.ts`:
+
+| Behaviour                                                         | Expected                                   |
+|-------------------------------------------------------------------|--------------------------------------------|
+| First request, no key, non-required route                         | handler runs, nothing cached                |
+| First request, no key, required route                             | `400 idempotency_key_required`              |
+| Key > 255 chars                                                   | `400 idempotency_key_too_long`              |
+| Replay with identical fingerprint, cached `2xx`                   | cached body, `Idempotency-Replayed: true`   |
+| Replay with identical fingerprint, cached `4xx` or `5xx`          | cached body, `Idempotency-Replayed: true`   |
+| Same key, different body                                          | `422 idempotency_key_reuse`                 |
+| Second request while first is in-flight                           | `409 idempotency_request_in_flight`         |
+| Replay after record TTL has elapsed                               | handler re-runs                             |
+| Required route with both stores down                              | `503`                                       |
+
 ## Client Integration Guide & Best Practices
 
 ```typescript

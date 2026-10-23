@@ -19,6 +19,7 @@ import db from '../db'
 import { logger } from '../utils/logger'
 import { alertingService } from '../services/alerting'
 import { revokeAllUserSessions } from '../services/refresh-token.service'
+import { eraseScalarUserRefs } from '../privacy/scalarUserRefs'
 
 export class ErasureGuardError extends Error {
   constructor(
@@ -37,6 +38,7 @@ export function erasureConfirmationPhrase(userId: string): string {
 export enum ErasureRequestStatus {
   PENDING = 'PENDING',
   APPROVED = 'APPROVED',
+  PROCESSING = 'PROCESSING',
   REJECTED = 'REJECTED',
   COMPLETED = 'COMPLETED',
   FAILED = 'FAILED',
@@ -44,7 +46,7 @@ export enum ErasureRequestStatus {
 
 export interface ErasureRequest {
   id: string
-  userId: string
+  userId: string | null
   requestedAt: Date
   requestedBy: string
   reason: string
@@ -104,11 +106,11 @@ export async function createErasureRequest(
     throw new Error(`User ${userId} not found`)
   }
 
-  // Check for existing pending/approved requests
+  // Check for existing pending/approved/processing requests
   const existing = await db.erasureRequest.findFirst({
     where: {
       userId,
-      status: { in: ['PENDING', 'APPROVED'] },
+      status: { in: ['PENDING', 'APPROVED', 'PROCESSING'] },
     },
   })
 
@@ -118,14 +120,31 @@ export async function createErasureRequest(
     )
   }
 
-  const request = await db.erasureRequest.create({
-    data: {
-      userId,
-      requestedBy,
-      reason,
-      status: ErasureRequestStatus.PENDING,
-    },
-  })
+  let request: any
+  try {
+    request = await db.erasureRequest.create({
+      data: {
+        userId,
+        requestedBy,
+        reason,
+        status: ErasureRequestStatus.PENDING,
+      },
+    })
+  } catch (error: any) {
+    if (error?.code === 'P2002') {
+      const conflict = await db.erasureRequest.findFirst({
+        where: {
+          userId,
+          status: { in: ['PENDING', 'APPROVED', 'PROCESSING'] },
+        },
+      })
+      const statusStr = conflict?.status ?? 'PENDING'
+      throw new Error(
+        `Erasure request already exists for user ${userId} with status ${statusStr}`
+      )
+    }
+    throw error
+  }
 
   logger.info('[PrivacyErasure] Erasure request created', {
     requestId: request.id,
@@ -255,9 +274,12 @@ export async function executeErasure(
   }
 
   const userId = request.userId
+  if (!userId) {
+    throw new Error(`User for erasure request ${requestId} not found`)
+  }
   const user = request.user
 
-  if (!user) {
+  if (!user || !userId) {
     throw new Error(`User ${userId} not found`)
   }
 
@@ -272,6 +294,28 @@ export async function executeErasure(
     throw new ErasureGuardError(
       `Typed confirmation mismatch. Send confirm: "${erasureConfirmationPhrase(userId)}".`,
       422
+    )
+  }
+
+  // Claim execution atomically via Compare-And-Set (CAS) transition from APPROVED -> PROCESSING (#684)
+  const claimResult = await db.erasureRequest.updateMany({
+    where: {
+      id: requestId,
+      status: ErasureRequestStatus.APPROVED,
+    },
+    data: {
+      status: ErasureRequestStatus.PROCESSING,
+    },
+  })
+
+  if (claimResult.count === 0) {
+    const current = await db.erasureRequest.findUnique({
+      where: { id: requestId },
+      select: { status: true },
+    })
+    const currentStatus = current?.status ?? 'UNKNOWN'
+    throw new Error(
+      `Cannot execute request in status ${currentStatus}. Must be APPROVED.`
     )
   }
 
@@ -382,9 +426,40 @@ export async function executeErasure(
         // - SubAccount, PublishedStrategy, StrategyFollow, ReferralCode
         // - CustodialWallet (if exists)
 
+        await eraseScalarUserRefs(tx, userId)
+
         await (tx as any).user.delete({
           where: { id: userId },
         })
+
+        // Keep the terminal workflow state in the same transaction as deletion.
+        await tx.erasureRequest.update({
+          where: { id: requestId },
+          data: {
+            status: ErasureRequestStatus.COMPLETED,
+            completedAt: new Date(),
+          },
+        })
+
+        // 5. Count preserved records (not deleted, just anonymized or nullified)
+        const [
+          adminAuditLogsCount,
+          referralAsOwnerCount,
+          referralAsReferredCount,
+        ] = await Promise.all([
+          tx.adminAuditLog.count({
+            where: {
+              details: {
+                path: ['userId'],
+                equals: userId,
+              },
+            },
+          }),
+          // ReferralCode cascade-deleted, so conversions via that code are orphaned
+          // but still exist with referredUserId intact (unless we anonymize)
+          Promise.resolve(0),
+          Promise.resolve(0),
+        ])
 
         return {
           userId,
@@ -422,15 +497,6 @@ export async function executeErasure(
       }
     )
 
-    // Mark request as completed
-    await db.erasureRequest.update({
-      where: { id: requestId },
-      data: {
-        status: ErasureRequestStatus.COMPLETED,
-        completedAt: new Date(),
-      },
-    })
-
     logger.info('[PrivacyErasure] Erasure completed successfully', {
       requestId,
       userId,
@@ -450,8 +516,8 @@ export async function executeErasure(
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown error'
 
-    await db.erasureRequest.update({
-      where: { id: requestId },
+    await db.erasureRequest.updateMany({
+      where: { id: requestId, status: ErasureRequestStatus.PROCESSING },
       data: {
         status: ErasureRequestStatus.FAILED,
         errorMessage,
@@ -532,6 +598,10 @@ export async function previewErasureRequest(requestId: string): Promise<{
     throw new Error(
       `Cannot execute request in status ${request.status}. Must be APPROVED.`
     )
+  }
+
+  if (!request.userId) {
+    throw new Error(`User for erasure request ${requestId} no longer exists`)
   }
 
   return {

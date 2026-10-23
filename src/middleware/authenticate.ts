@@ -139,7 +139,24 @@ export async function requireAuth(
     req.userId = session.user.id
     req.stellarPubKey = session.walletAddress
     req.authKind = 'session'
-    req.authScopes = ['*']
+    req.authScopes = [
+      'session',
+      'portfolio:read',
+      'portfolio:write',
+      'transactions:read',
+      'deposit:write',
+      'withdraw:write',
+      'alerts:manage',
+      'fiat:write',
+      'recurring_deposits:write',
+      'goals:write',
+      'strategies:write',
+      'webhooks:manage',
+      'vault:read',
+      'vault:write',
+      'loans:read',
+      'loans:write',
+    ]
     req.auth = {
       userId: session.userId,
       sessionId: session.id,
@@ -149,14 +166,31 @@ export async function requireAuth(
 
     // Keep time, IP and location from the same accepted request together.
     // Await persistence so the next request cannot compare against stale location.
-    await db.session.update({
-      where: { id: session.id },
-      data: {
-        lastSeenAt: new Date(),
-        lastSeenIp: req.ip ?? null,
-        approxLocation: resolveApproxLocation(req.ip),
-      },
-    })
+    // Throttle session heartbeats (#692): only update lastSeenAt/lastSeenIp if at least
+    // 5 minutes have elapsed since lastSeenAt or if IP has changed.
+    const nowTime = Date.now()
+    const lastSeenTime = session.lastSeenAt
+      ? new Date(session.lastSeenAt).getTime()
+      : 0
+    const shouldUpdateHeartbeat =
+      !session.lastSeenAt ||
+      nowTime - lastSeenTime > 5 * 60 * 1000 ||
+      (req.ip && session.lastSeenIp !== req.ip)
+
+    if (shouldUpdateHeartbeat) {
+      db.session
+        .update({
+          where: { id: session.id },
+          data: {
+            lastSeenAt: new Date(nowTime),
+            lastSeenIp: req.ip ?? null,
+            approxLocation: resolveApproxLocation(req.ip),
+          },
+        })
+        .catch((err) =>
+          logger.warn('[Auth] Async session heartbeat update failed', { err })
+        )
+    }
 
     next()
   } catch (error) {
@@ -182,10 +216,13 @@ export function enforceUserAccess(
     return
   }
 
-  const targetUserId = req.params.userId ?? req.body?.userId
+  const targetUserId =
+    req.params.userId ??
+    req.body?.userId ??
+    (req.query?.userId as string | undefined)
 
   if (targetUserId && req.auth.userId !== targetUserId) {
-    res.status(401).json({ error: AUTH_ERRORS.UNAUTHORIZED })
+    res.status(403).json({ error: 'Forbidden: Access denied to user resource' })
     return
   }
 
