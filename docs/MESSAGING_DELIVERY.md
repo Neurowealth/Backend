@@ -56,11 +56,11 @@ When configured (`MESSAGING_FALLBACK_ENABLED=true`):
 
 ## Background Sweep Job
 
-The background sweep worker (`src/jobs/messageDeliverySweep.ts`) runs at configured intervals (default: 30 seconds):
+The background sweep worker (`src/jobs/messageDeliverySweep.ts`) runs at configured intervals (default: 60 seconds via `MESSAGING_RETRY_INTERVAL_MS`):
 - Scans for `PENDING` messages where `nextAttemptAt <= NOW()`.
-- Dispatches messages ordered by priority (`CRITICAL`, `HIGH`, `NORMAL`, `LOW`) and creation date.
+- Dispatches messages ordered by priority (`HIGH`, `NORMAL`, `LOW`) and creation date.
 - Emits queue depth metrics (`message_queue_depth`) for Prometheus monitoring.
-- Triggers alerting via `alertingService` if dead-lettered message count exceeds `MESSAGING_DLQ_ALERT_THRESHOLD`.
+- Triggers alerting via `alertingService` if dead-lettered message count reaches `MESSAGING_DLQ_ALERT_THRESHOLD` (default 5).
 
 ---
 
@@ -117,12 +117,17 @@ Authenticated administrators with `messages:read` or `messages:write` scopes can
 
 ## Configuration Variables
 
+> Canonical key names are the `MESSAGING_*` keys read in `src/config/env.ts`.
+> The older `MESSAGING_RETRY_*` / `MESSAGING_SWEEP_*` spellings below remain
+> accepted as deprecated aliases so existing deployments keep working, but new
+> configuration should use the canonical names.
+
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | String | - | Telegram Bot API token |
-| `MESSAGING_MAX_RETRIES` | Number | `5` | Maximum delivery attempts before moving to DLQ |
-| `MESSAGING_RETRY_BASE_DELAY_MS` | Number | `2000` | Initial exponential backoff delay (ms) |
-| `MESSAGING_RETRY_MAX_DELAY_MS` | Number | `300000` | Maximum backoff delay cap (5 minutes) |
-| `MESSAGING_SWEEP_INTERVAL_MS` | Number | `30000` | Background retry sweep interval (30 seconds) |
+| `MESSAGING_MAX_RETRIES` | Number | `3` | Maximum delivery attempts before moving to DLQ |
+| `MESSAGING_BASE_DELAY_MS` | Number | `1000` | Initial exponential backoff delay (ms). Deprecated alias: `MESSAGING_RETRY_BASE_DELAY_MS` |
+| `MESSAGING_MAX_DELAY_MS` | Number | `30000` | Maximum backoff delay cap (30 seconds). Deprecated alias: `MESSAGING_RETRY_MAX_DELAY_MS` |
+| `MESSAGING_RETRY_INTERVAL_MS` | Number | `60000` | Background retry sweep interval (60 seconds). Deprecated alias: `MESSAGING_SWEEP_INTERVAL_MS` |
 | `MESSAGING_FALLBACK_ENABLED` | Boolean | `true` | Enable automated cross-channel fallback (Telegram ↔ WhatsApp) |
-| `MESSAGING_DLQ_ALERT_THRESHOLD` | Number | `10` | Dead-letter threshold triggering high-priority alerts |
+| `MESSAGING_DLQ_ALERT_THRESHOLD` | Number | `5` | Dead-letter threshold triggering high-priority alerts |

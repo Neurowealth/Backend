@@ -211,6 +211,23 @@ export async function recordSubmittedTxHash(
 }
 
 /**
+ * Clear a stale txHash from a SUBMITTED op (#656): the network no longer
+ * knows the hash (expired RPC window / never propagated), so the next
+ * fee-bump retry must build a FRESH submission rather than re-polling or
+ * re-bumping the same unconfirmable envelope. Returns false when the op
+ * is no longer SUBMITTED (lost a race with another sweep path).
+ */
+export async function clearStaleSubmittedTxHash(
+  opId: string
+): Promise<boolean> {
+  const result = await db.outboxOp.updateMany({
+    where: { id: opId, status: 'SUBMITTED' as PrismaOutboxOpStatus },
+    data: { txHash: null },
+  })
+  return result.count === 1
+}
+
+/**
  * A submit attempt failed. If attempts remain, return the op to PENDING with
  * a full-jitter backoff `nextAttemptAt` so the dispatcher retries it later;
  * once attempts are exhausted, move it to the terminal FAILED state instead.

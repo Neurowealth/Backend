@@ -300,6 +300,7 @@ enum SubAccountStatus {
 enum ErasureRequestStatus {
   PENDING
   APPROVED
+  PROCESSING
   REJECTED
   COMPLETED
   FAILED
@@ -563,6 +564,7 @@ model AdminAuditLog {
   @@index([action])
   @@index([result])
   @@index([createdAt])
+  @@index([createdAt(sort: Desc), action], map: "admin_audit_logs_created_at_action_idx")
   @@map("admin_audit_logs")
 }
 

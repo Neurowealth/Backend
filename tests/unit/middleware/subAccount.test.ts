@@ -1,6 +1,10 @@
 import { Request, Response, NextFunction } from 'express'
 import { Network } from '@prisma/client'
-import { requireSubAccountPermission } from '../../../src/middleware/subAccount'
+import {
+  checkSubAccountPermission,
+  parseWithdrawAmount,
+  requireSubAccountPermission,
+} from '../../../src/middleware/subAccount'
 import db from '../../../src/db'
 import { logger } from '../../../src/utils/logger'
 
@@ -9,6 +13,9 @@ jest.mock('../../../src/db', () => ({
   default: {
     subAccount: {
       findUnique: jest.fn(),
+    },
+    transaction: {
+      aggregate: jest.fn(),
     },
   },
 }))
@@ -136,7 +143,9 @@ describe('requireSubAccountPermission Middleware', () => {
     it('should read target userId from params when body is absent', async () => {
       req.auth = makeAuth('parent1')
       req.params = { userId: 'child1' }
-      req.body = {}
+      // #648 — a delegated WITHDRAW still has to carry a usable amount, so
+      // the body holds the amount while the target userId comes from params.
+      req.body = { amount: 50 }
       ;(db.subAccount.findUnique as jest.Mock).mockResolvedValue({
         id: 'sub1',
         parentUserId: 'parent1',
@@ -330,6 +339,232 @@ describe('requireSubAccountPermission Middleware', () => {
       expect(res.status).toHaveBeenCalledWith(401)
       expect(res.json).toHaveBeenCalledWith({ error: 'Unauthorized' })
       expect(next).not.toHaveBeenCalled()
+    })
+  })
+
+  // #648 — a NaN/undefined amount made every limit comparison false, so the
+  // transaction and daily limits were silently bypassed on delegated
+  // withdrawals.
+  describe('delegated withdraw amount validation (#648)', () => {
+    function delegatedWithdraw(amount: unknown) {
+      req.auth = makeAuth('parent1')
+      req.body = { userId: 'child1', amount }
+      ;(db.subAccount.findUnique as jest.Mock).mockResolvedValue({
+        id: 'sub1',
+        parentUserId: 'parent1',
+        childUserId: 'child1',
+        permissions: ['WITHDRAW'],
+        status: 'ACTIVE',
+      })
+      return requireSubAccountPermission('WITHDRAW')
+    }
+
+    it.each([
+      ['missing', undefined],
+      ['garbage', 'not-a-number'],
+      ['empty string', ''],
+      ['negative', -100],
+      ['zero', 0],
+      ['NaN', NaN],
+      ['Infinity', Infinity],
+      ['boolean', true],
+    ])('should reject a %s amount with 400', async (_label, amount) => {
+      const middleware = delegatedWithdraw(amount)
+
+      await middleware(req as Request, res as Response, next)
+
+      expect(res.status).toHaveBeenCalledWith(400)
+      expect(res.json).toHaveBeenCalledWith({ error: 'Invalid amount' })
+      expect(next).not.toHaveBeenCalled()
+      // The grant itself is valid — only the amount was unusable.
+      expect(db.subAccount.findUnique).toHaveBeenCalled()
+    })
+
+    it('should allow a valid amount and pass the request through', async () => {
+      const middleware = delegatedWithdraw(50)
+
+      await middleware(req as Request, res as Response, next)
+
+      expect(next).toHaveBeenCalled()
+      expect(res.status).not.toHaveBeenCalled()
+      expect(req.auth?.actingAsUserId).toBe('parent1')
+    })
+
+    it('should reject a valid amount that exceeds the transaction limit', async () => {
+      const middleware = delegatedWithdraw(500)
+      ;(db.subAccount.findUnique as jest.Mock).mockResolvedValue({
+        id: 'sub1',
+        parentUserId: 'parent1',
+        childUserId: 'child1',
+        permissions: ['WITHDRAW'],
+        status: 'ACTIVE',
+        transactionLimit: 100,
+        dailyLimit: null,
+      })
+
+      await middleware(req as Request, res as Response, next)
+
+      expect(res.status).toHaveBeenCalledWith(403)
+      expect(next).not.toHaveBeenCalled()
+    })
+
+    it('should reject a valid amount that exceeds the daily limit', async () => {
+      const middleware = delegatedWithdraw(60)
+      ;(db.subAccount.findUnique as jest.Mock).mockResolvedValue({
+        id: 'sub1',
+        parentUserId: 'parent1',
+        childUserId: 'child1',
+        permissions: ['WITHDRAW'],
+        status: 'ACTIVE',
+        transactionLimit: null,
+        dailyLimit: 100,
+      })
+      ;(db.transaction.aggregate as jest.Mock).mockResolvedValue({
+        _sum: { amount: 50 },
+      })
+
+      await middleware(req as Request, res as Response, next)
+
+      expect(res.status).toHaveBeenCalledWith(403)
+      expect(next).not.toHaveBeenCalled()
+    })
+
+    it('should allow an amount within both limits', async () => {
+      const middleware = delegatedWithdraw(40)
+      ;(db.subAccount.findUnique as jest.Mock).mockResolvedValue({
+        id: 'sub1',
+        parentUserId: 'parent1',
+        childUserId: 'child1',
+        permissions: ['WITHDRAW'],
+        status: 'ACTIVE',
+        transactionLimit: 100,
+        dailyLimit: 100,
+      })
+      ;(db.transaction.aggregate as jest.Mock).mockResolvedValue({
+        _sum: { amount: 10 },
+      })
+
+      await middleware(req as Request, res as Response, next)
+
+      expect(next).toHaveBeenCalled()
+      expect(res.status).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('checkSubAccountPermission core (#648)', () => {
+    beforeEach(() => {
+      ;(db.subAccount.findUnique as jest.Mock).mockResolvedValue({
+        id: 'sub1',
+        parentUserId: 'parent1',
+        childUserId: 'child1',
+        permissions: ['WITHDRAW', 'VIEW'],
+        status: 'ACTIVE',
+        transactionLimit: 100,
+        dailyLimit: 100,
+      })
+    })
+
+    it('should deny a withdraw with no amount instead of skipping the limits', async () => {
+      const result = await checkSubAccountPermission(
+        'parent1',
+        'child1',
+        'WITHDRAW'
+      )
+
+      expect(result).toEqual({ allowed: false, reason: 'invalid_amount' })
+      expect(db.transaction.aggregate).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['NaN', NaN],
+      ['Infinity', Infinity],
+      ['negative', -1],
+      ['zero', 0],
+    ])('should deny a withdraw with a %s amount', async (_label, amount) => {
+      const result = await checkSubAccountPermission(
+        'parent1',
+        'child1',
+        'WITHDRAW',
+        amount
+      )
+
+      expect(result).toEqual({ allowed: false, reason: 'invalid_amount' })
+      expect(db.transaction.aggregate).not.toHaveBeenCalled()
+    })
+
+    it('should deny a withdraw that exceeds the transaction limit', async () => {
+      const result = await checkSubAccountPermission(
+        'parent1',
+        'child1',
+        'WITHDRAW',
+        500
+      )
+
+      expect(result).toEqual({ allowed: false, reason: 'no_permission' })
+    })
+
+    it('should deny a withdraw that exceeds the daily limit', async () => {
+      ;(db.transaction.aggregate as jest.Mock).mockResolvedValue({
+        _sum: { amount: 90 },
+      })
+
+      const result = await checkSubAccountPermission(
+        'parent1',
+        'child1',
+        'WITHDRAW',
+        50
+      )
+
+      expect(result).toEqual({ allowed: false, reason: 'no_permission' })
+    })
+
+    it('should allow a withdraw within the limits', async () => {
+      ;(db.transaction.aggregate as jest.Mock).mockResolvedValue({
+        _sum: { amount: 10 },
+      })
+
+      const result = await checkSubAccountPermission(
+        'parent1',
+        'child1',
+        'WITHDRAW',
+        50
+      )
+
+      expect(result).toEqual({ allowed: true })
+    })
+
+    it('should not require an amount for non-withdraw permissions', async () => {
+      const result = await checkSubAccountPermission(
+        'parent1',
+        'child1',
+        'VIEW'
+      )
+
+      expect(result).toEqual({ allowed: true })
+    })
+  })
+
+  describe('parseWithdrawAmount (#648)', () => {
+    it('should accept positive finite numbers', () => {
+      expect(parseWithdrawAmount(1)).toBe(1)
+      expect(parseWithdrawAmount(0.5)).toBe(0.5)
+      expect(parseWithdrawAmount('42')).toBe(42)
+    })
+
+    it('should reject everything else', () => {
+      expect(parseWithdrawAmount(undefined)).toBeNull()
+      expect(parseWithdrawAmount(null)).toBeNull()
+      expect(parseWithdrawAmount('')).toBeNull()
+      expect(parseWithdrawAmount('  ')).toBeNull()
+      expect(parseWithdrawAmount('abc')).toBeNull()
+      expect(parseWithdrawAmount(0)).toBeNull()
+      expect(parseWithdrawAmount(-1)).toBeNull()
+      expect(parseWithdrawAmount(NaN)).toBeNull()
+      expect(parseWithdrawAmount(Infinity)).toBeNull()
+      expect(parseWithdrawAmount(-Infinity)).toBeNull()
+      expect(parseWithdrawAmount(true)).toBeNull()
+      expect(parseWithdrawAmount({})).toBeNull()
+      expect(parseWithdrawAmount([5])).toBeNull()
     })
   })
 })

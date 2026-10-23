@@ -550,3 +550,47 @@ environment, resolve the failure per §6 (rolling back) instead.
 **Prevention:** run the rehearsal (§5) before pushing, and write idempotent SQL
 (`IF [NOT] EXISTS`, `DO` blocks instead of `ADD CONSTRAINT IF NOT EXISTS` for
 PostgreSQL < 12).
+
+---
+
+## 8. Database-Level Immutability and Append-Only Tables (#682)
+
+For compliance and non-repudiation, tables such as `admin_audit_logs` must be strictly append-only at the database layer rather than relying solely on application-level conventions.
+
+### Enforcement Strategy
+
+1. **Row-Level Trigger Enforcement:**
+   A `BEFORE UPDATE OR DELETE` trigger (`trg_admin_audit_logs_append_only`) intercepts all mutating operations:
+   - `UPDATE`: Unconditionally raises exception (`SQLSTATE 55000: AdminAuditLog is append-only: UPDATE operations are strictly prohibited`).
+   - `DELETE`: Direct application deletes are denied by privilege grants and the trigger. Retention batches call the restricted `purge_admin_audit_logs(ids, cutoff)` security-definer function, which enforces the 500-row cap and database-configured retention age.
+   - **Retention Window:** The `admin_audit_retention_control.retentionDays` value is the database enforcement floor (default 365). Configure it to match `RETENTION_ADMIN_AUDIT_LOGS_DAYS`; the purge function rejects cutoffs newer than this policy.
+     ```sql
+     UPDATE public.admin_audit_retention_control
+     SET "retentionDays" = 365, "updatedAt" = CURRENT_TIMESTAMP
+     WHERE id = TRUE;
+     ```
+   - **Legal Hold Override:** A database-controlled singleton row in `admin_audit_retention_control` blocks the privileged purge function and trigger. A transaction-local `neuro.legal_hold='true'` also blocks the operation. Operators activate a persistent hold with `UPDATE public.admin_audit_retention_control SET "legalHold" = TRUE, "updatedAt" = CURRENT_TIMESTAMP WHERE id = TRUE;` using the database owner role.
+   - **Restricted Purge:** The application role has no direct `UPDATE` or `DELETE` privilege. Retention uses `public.purge_admin_audit_logs(ids, cutoff)`, a security-definer function limited to at most 500 expired rows. Grant `EXECUTE` on that function to the runtime role if it is not named `neuro_app`; do not grant the role direct delete access.
+
+2. **Role-Based Privilege Hardening:**
+   In environments with distinct database roles, revoke direct mutation privileges from the application role:
+   ```sql
+   -- Production role hardening (run the app as a non-owner role)
+   REVOKE UPDATE, DELETE ON "admin_audit_logs" FROM neuro_app;
+   GRANT SELECT, INSERT ON "admin_audit_logs" TO neuro_app;
+   GRANT SELECT ON "admin_audit_retention_control" TO neuro_app;
+   GRANT EXECUTE ON FUNCTION public.purge_admin_audit_logs(TEXT[], TIMESTAMPTZ) TO neuro_app;
+   ```
+   *Note:* Run the application with a non-owner database role. Table owners and superusers are trusted administrators and can bypass ordinary grants; they must not be used as runtime credentials. For a differently named runtime role, revoke direct `UPDATE`/`DELETE` and grant `SELECT`/`INSERT` on the audit table, `SELECT` on the retention control table, and `EXECUTE` on the purge function.
+
+### Downtime Impact Assessment: `20261021140000_admin_audit_log_append_only`
+
+```markdown
+### Downtime impact
+- **Class:** A
+- **Locks taken:** ROW EXCLUSIVE (trigger and index creation)
+- **Expected lock duration:** <15ms
+- **Writes blocked during migration:** no
+- **Requires traffic drain:** no
+- **Rollback tier:** rollback.sql
+```

@@ -1,12 +1,12 @@
 import type { Request, Response, NextFunction } from 'express'
 import jwt from 'jsonwebtoken'
 import crypto from 'node:crypto'
+import { config } from '../config'
 import db from '../db'
 import { logger } from '../utils/logger'
 
 const IMPERSONATION_TTL_MINUTES = 30
-const IMPERSONATION_SECRET =
-  process.env.IMPERSONATION_SECRET || 'impersonation-secret'
+const IMPERSONATION_SECRET = config.jwt.seed
 
 /**
  * Routes where impersonation is never permitted regardless of admin role.
@@ -108,13 +108,16 @@ export function requireNotImpersonation(
     const impersonationContext = verifyImpersonationToken(token)
 
     if (impersonationContext) {
-      logger.warn('[Impersonation] Write blocked during impersonation session', {
-        sessionId: impersonationContext.sessionId,
-        adminId: impersonationContext.adminId,
-        targetUserId: impersonationContext.targetUserId,
-        path: req.path,
-        method: req.method,
-      })
+      logger.warn(
+        '[Impersonation] Write blocked during impersonation session',
+        {
+          sessionId: impersonationContext.sessionId,
+          adminId: impersonationContext.adminId,
+          targetUserId: impersonationContext.targetUserId,
+          path: req.path,
+          method: req.method,
+        }
+      )
       res.status(403).json({
         success: false,
         error: 'Write operations are not allowed during impersonation sessions',
@@ -151,12 +154,15 @@ export function blockHighRiskImpersonation(
   )
 
   if (isHighRisk) {
-    logger.warn('[Impersonation] High-risk route blocked for impersonation session', {
-      sessionId: impersonationContext.sessionId,
-      adminId: impersonationContext.adminId,
-      targetUserId: impersonationContext.targetUserId,
-      path: req.path,
-    })
+    logger.warn(
+      '[Impersonation] High-risk route blocked for impersonation session',
+      {
+        sessionId: impersonationContext.sessionId,
+        adminId: impersonationContext.adminId,
+        targetUserId: impersonationContext.targetUserId,
+        path: req.path,
+      }
+    )
     res.status(403).json({
       success: false,
       error: 'This operation is not permitted during an impersonation session',

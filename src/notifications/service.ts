@@ -368,14 +368,133 @@ export async function processUnsubscribe(
 }
 
 /**
- * Get delivery status for a user's notifications
+ * Get delivery status for a user's notifications (#699).
+ *
+ * Aggregates per-channel delivery state from the two durable delivery
+ * stores — `message_deliveries` (Telegram/WhatsApp, user-scoped) and
+ * `outbound_notifications` (email/sms/whatsapp/telegram queue) — so callers
+ * get a real per-channel report instead of a placeholder.
  */
 export async function getDeliveryStatus(
   userId: string
 ): Promise<NotificationDeliveryStatus[]> {
-  // This would query a notification delivery tracking table
-  // For now, return empty array as placeholder
-  return []
+  const [messages, outbound] = await Promise.all([
+    db.messageDelivery.findMany({
+      where: { userId },
+      orderBy: { updatedAt: 'desc' },
+      take: 500,
+    }),
+    db.outboundNotification.findMany({
+      orderBy: { updatedAt: 'desc' },
+      take: 500,
+    }),
+  ])
+
+  const byKey = new Map<string, NotificationDeliveryStatus>()
+
+  const keyFor = (channel: string, category: string) => `${channel}::${category}`
+
+  const toChannel = (raw: string): NotificationChannel => {
+    const lower = raw.toLowerCase()
+    if (lower === 'telegram' || lower === 'whatsapp' || lower === 'email' || lower === 'sms')
+      return lower
+    return 'email'
+  }
+
+  const toCategory = (raw: unknown): NotificationCategory => {
+    const lower = String(raw ?? '').toLowerCase()
+    const known: NotificationCategory[] = [
+      'portfolio_updates',
+      'rebalance_alerts',
+      'yield_claims',
+      'risk_alerts',
+      'system_updates',
+      'marketing',
+    ]
+    return (known as string[]).includes(lower)
+      ? (lower as NotificationCategory)
+      : 'system_updates'
+  }
+
+  for (const msg of messages as Array<{
+    channel: string
+    category: string
+    status: string
+    deliveredAt: Date | null
+    updatedAt: Date
+    lastError: string | null
+    attempts: number
+  }>) {
+    const channel = toChannel(msg.channel)
+    const category = toCategory(msg.category)
+    const key = keyFor(channel, category)
+    const existing = byKey.get(key)
+    const delivered = msg.status === 'DELIVERED' && msg.deliveredAt
+    const failed =
+      msg.status === 'FAILED' || msg.status === 'DEAD_LETTER'
+    if (!existing) {
+      byKey.set(key, {
+        userId,
+        channel,
+        category,
+        lastDeliveredAt: delivered ? (msg.deliveredAt as Date) : undefined,
+        lastFailedAt: failed ? msg.updatedAt : undefined,
+        failureCount: failed ? 1 : 0,
+        lastError: failed ? (msg.lastError ?? undefined) : undefined,
+      })
+    } else {
+      if (delivered && (!existing.lastDeliveredAt || msg.deliveredAt! > existing.lastDeliveredAt)) {
+        existing.lastDeliveredAt = msg.deliveredAt as Date
+      }
+      if (failed) {
+        existing.failureCount += 1
+        if (!existing.lastFailedAt || msg.updatedAt > existing.lastFailedAt) {
+          existing.lastFailedAt = msg.updatedAt
+          existing.lastError = msg.lastError ?? undefined
+        }
+      }
+    }
+  }
+
+  // Outbound queue rows carry the recipient in `payload`, not a userId
+  // column, so they can only refine channel-level state (latest failure /
+  // delivery timestamps) — per-user attribution stays with message_deliveries.
+  for (const row of outbound as Array<{
+    channel: string
+    status: string
+    updatedAt: Date
+    lastError: string | null
+    payload: unknown
+  }>) {
+    const channel = toChannel(row.channel)
+    const payload = (row.payload ?? {}) as Record<string, unknown>
+    const category = toCategory(
+      payload['category'] ?? payload['notificationCategory'] ?? 'system_updates'
+    )
+    const key = keyFor(channel, category)
+    const existing = byKey.get(key)
+    const failed = row.status === 'DEAD'
+    const delivered = row.status === 'DELIVERED'
+    if (!existing) {
+      byKey.set(key, {
+        userId,
+        channel,
+        category,
+        lastDeliveredAt: undefined,
+        lastFailedAt: failed ? row.updatedAt : undefined,
+        failureCount: failed ? 1 : 0,
+        lastError: failed ? (row.lastError ?? undefined) : undefined,
+      })
+    } else if (failed && !delivered) {
+      existing.failureCount += 1
+      if (!existing.lastFailedAt || row.updatedAt > existing.lastFailedAt) {
+        existing.lastFailedAt = row.updatedAt
+        existing.lastError = row.lastError ?? undefined
+      }
+    }
+  }
+
+  return [...byKey.values()]
 }
 
 /**

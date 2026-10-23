@@ -211,40 +211,61 @@ const DISALLOWED_CONTENT_TYPES = [
 /**
  * Middleware to reject disallowed content types (multipart/form-data, application/x-www-form-urlencoded).
  * Returns 415 Unsupported Media Type for disallowed content types.
- * Can be skipped per-route by setting req.allowUrlEncoded = true.
+ * Can be skipped for specific paths (e.g., webhooks) or per-route by setting req.allowUrlEncoded = true.
+ */
+export function createContentTypeRestrictionMiddleware(options?: {
+  excludedPaths?: string[]
+}) {
+  const excludedPaths = options?.excludedPaths ?? []
+
+  return (req: Request, res: Response, next: NextFunction): void => {
+    // Skip if route has opted out of content-type restrictions
+    if ((req as any).allowUrlEncoded) {
+      return next()
+    }
+
+    // Skip if request path is in the exclusion list
+    const path = req.path || req.url
+    if (excludedPaths.some((excluded) => path.startsWith(excluded))) {
+      return next()
+    }
+
+    const contentType = req.headers['content-type']
+    if (!contentType) {
+      return next()
+    }
+
+    // Check if content type matches any disallowed type
+    for (const disallowed of DISALLOWED_CONTENT_TYPES) {
+      if (contentType.toLowerCase().includes(disallowed)) {
+        logger.warn(
+          `[Content-Type] Rejecting disallowed content type: ${contentType}`
+        )
+        recordRejectedRequest('content_type')
+        res.status(415).json({
+          success: false,
+          error: 'Unsupported Media Type',
+          reason: `Content type "${disallowed}" is not allowed.`,
+        })
+        return
+      }
+    }
+
+    next()
+  }
+}
+
+/**
+ * Default content-type restriction middleware instance (no excluded paths).
+ * For custom path exclusions, use createContentTypeRestrictionMiddleware instead.
  */
 export function contentTypeRestrictionMiddleware(
   req: Request,
   res: Response,
   next: NextFunction
 ): void {
-  // Skip if route has opted out of content-type restrictions
-  if ((req as any).allowUrlEncoded) {
-    return next()
-  }
-
-  const contentType = req.headers['content-type']
-  if (!contentType) {
-    return next()
-  }
-
-  // Check if content type matches any disallowed type
-  for (const disallowed of DISALLOWED_CONTENT_TYPES) {
-    if (contentType.toLowerCase().includes(disallowed)) {
-      logger.warn(
-        `[Content-Type] Rejecting disallowed content type: ${contentType}`
-      )
-      recordRejectedRequest('content_type')
-      res.status(415).json({
-        success: false,
-        error: 'Unsupported Media Type',
-        reason: `Content type "${disallowed}" is not allowed.`,
-      })
-      return
-    }
-  }
-
-  next()
+  const middleware = createContentTypeRestrictionMiddleware()
+  middleware(req, res, next)
 }
 
 // ── Body size limits ──────────────────────────────────────────────────────────
