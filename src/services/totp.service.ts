@@ -59,21 +59,36 @@ interface TotpAttemptRecord {
 const totpAttempts = new Map<string, TotpAttemptRecord>()
 
 function getAttemptRecord(userId: string): TotpAttemptRecord {
-  return totpAttempts.get(userId) ?? { count: 0, lockedUntil: null, lastUsedStep: null }
+  return (
+    totpAttempts.get(userId) ?? {
+      count: 0,
+      lockedUntil: null,
+      lastUsedStep: null,
+    }
+  )
 }
 
 function recordFailedAttempt(userId: string): void {
   const record = getAttemptRecord(userId)
   const count = record.count + 1
-  const lockedUntil = count >= MAX_ATTEMPTS
-    ? new Date(Date.now() + LOCKOUT_DURATION_MS)
-    : record.lockedUntil
+  const lockedUntil =
+    count >= MAX_ATTEMPTS
+      ? new Date(Date.now() + LOCKOUT_DURATION_MS)
+      : record.lockedUntil
   totpAttempts.set(userId, { ...record, count, lockedUntil })
-  logger.warn('[TOTP] Failed verification attempt', { userId, count, locked: count >= MAX_ATTEMPTS })
+  logger.warn('[TOTP] Failed verification attempt', {
+    userId,
+    count,
+    locked: count >= MAX_ATTEMPTS,
+  })
 }
 
 function clearAttemptRecord(userId: string, usedStep: number): void {
-  totpAttempts.set(userId, { count: 0, lockedUntil: null, lastUsedStep: usedStep })
+  totpAttempts.set(userId, {
+    count: 0,
+    lockedUntil: null,
+    lastUsedStep: usedStep,
+  })
 }
 
 /** Admin-facing: clear lockout for a user so they can retry TOTP. */
@@ -133,10 +148,74 @@ export function verifyTotpCode(secret: string, code: string): number | null {
  * has no verified 2FA credential.
  */
 export async function getActiveTotpCredential(userId: string) {
-  return db.totpCredential.findUnique({
-    where: { userId },
+  return db.totpCredential.findFirst({
+    where: { userId, verifiedAt: { not: null } },
     select: { id: true, userId: true, verifiedAt: true, secretEncrypted: true },
   })
+}
+
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+
+function toBase32(buf: Buffer): string {
+  let bits = 0
+  let value = 0
+  let out = ''
+  for (const byte of buf) {
+    value = (value << 8) | byte
+    bits += 8
+    while (bits >= 5) {
+      out += BASE32_ALPHABET[(value >>> (bits - 5)) & 31]
+      bits -= 5
+    }
+  }
+  if (bits > 0) out += BASE32_ALPHABET[(value << (5 - bits)) & 31]
+  return out
+}
+
+/**
+ * Start (or restart) TOTP enrollment. Issues a fresh unverified secret; the
+ * credential only becomes active after `verifyTotpEnrollment` succeeds.
+ */
+export async function beginTotpEnrollment(
+  userId: string,
+  accountLabel: string
+): Promise<{ secret: string; otpauthUri: string }> {
+  const existing = await db.totpCredential.findUnique({ where: { userId } })
+  if (existing?.verifiedAt) {
+    throw new Error('2FA is already enabled')
+  }
+
+  const raw = randomBytes(20)
+  const secretEncrypted = raw.toString('base64')
+  await db.totpCredential.upsert({
+    where: { userId },
+    create: { userId, secretEncrypted, iv: '', authTag: '' },
+    update: { secretEncrypted, verifiedAt: null },
+  })
+
+  const secret = toBase32(raw)
+  const label = encodeURIComponent(`NeuroWealth:${accountLabel}`)
+  const otpauthUri = `otpauth://totp/${label}?secret=${secret}&issuer=NeuroWealth&algorithm=SHA1&digits=6&period=30`
+  return { secret, otpauthUri }
+}
+
+/** Confirm enrollment with a code from the authenticator app. */
+export async function verifyTotpEnrollment(
+  userId: string,
+  code: string
+): Promise<boolean> {
+  const credential = await db.totpCredential.findUnique({ where: { userId } })
+  if (!credential || credential.verifiedAt) return false
+
+  const step = verifyTotpCode(credential.secretEncrypted, code)
+  if (step === null) return false
+
+  await db.totpCredential.update({
+    where: { userId },
+    data: { verifiedAt: new Date(), lastAcceptedStep: BigInt(step) },
+  })
+  logger.info('[TOTP] Enrollment verified', { userId })
+  return true
 }
 
 /**
@@ -197,7 +276,10 @@ export async function completeTotpChallenge(
   // Check per-account lockout before touching the credential
   const attemptRecord = getAttemptRecord(userId)
   if (attemptRecord.lockedUntil && attemptRecord.lockedUntil > new Date()) {
-    logger.warn('[TOTP] Account locked out', { userId, lockedUntil: attemptRecord.lockedUntil })
+    logger.warn('[TOTP] Account locked out', {
+      userId,
+      lockedUntil: attemptRecord.lockedUntil,
+    })
     return { ok: false, reason: 'locked' }
   }
 

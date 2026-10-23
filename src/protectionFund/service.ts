@@ -294,12 +294,14 @@ function computePositionLoss(
 export async function executePayout(claimId: string) {
   const claim = await db.coverageClaim.findUnique({
     where: { id: claimId },
-    include: { event: true },
+    include: { event: true, user: { select: { walletAddress: true } } },
   })
   if (!claim) throw new Error('Claim not found')
   if (claim.status !== 'PENDING')
     throw new Error(`Claim is not pending (status: ${claim.status})`)
   if (claim.payoutAmount.lte(0)) throw new Error('Claim has zero payout')
+  if (!claim.user.walletAddress)
+    throw new Error(`User ${claim.userId} has no wallet address`)
 
   const outboxOp = await enqueueOutboxOp(db, {
     userId: claim.userId,
@@ -309,11 +311,12 @@ export async function executePayout(claimId: string) {
     payload: {
       method: 'protection_fund_payout',
       userId: claim.userId,
+      userAddress: claim.user.walletAddress,
       amount: Number(claim.payoutAmount),
       assetSymbol: 'USDC',
       claimId,
       eventId: claim.eventId,
-    } as any,
+    },
     priority: 'CRITICAL',
   })
 
@@ -322,10 +325,8 @@ export async function executePayout(claimId: string) {
     data: { outboxOpId: outboxOp.id },
   })
 
-  await db.protectionFundBalance.update({
-    where: { assetSymbol: 'USDC' },
-    data: { amount: { decrement: claim.payoutAmount } },
-  })
+  // Balance decrement happens in mirrorLinkedTransaction on confirmed delivery,
+  // not here, so the fund is never debited before the transfer actually lands.
 
   await appendAuditBlock({
     height: 0,

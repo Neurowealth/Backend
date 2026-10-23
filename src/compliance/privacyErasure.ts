@@ -19,6 +19,7 @@ import db from '../db'
 import { logger } from '../utils/logger'
 import { alertingService } from '../services/alerting'
 import { revokeAllUserSessions } from '../services/refresh-token.service'
+import { eraseScalarUserRefs } from '../privacy/scalarUserRefs'
 
 export class ErasureGuardError extends Error {
   constructor(
@@ -257,7 +258,7 @@ export async function executeErasure(
   const userId = request.userId
   const user = request.user
 
-  if (!user) {
+  if (!user || !userId) {
     throw new Error(`User ${userId} not found`)
   }
 
@@ -381,6 +382,8 @@ export async function executeErasure(
         // - FiatOrder, RecurringDepositPlan, AlertRule, SavingsGoal
         // - SubAccount, PublishedStrategy, StrategyFollow, ReferralCode
         // - CustodialWallet (if exists)
+
+        await eraseScalarUserRefs(tx, userId)
 
         await (tx as any).user.delete({
           where: { id: userId },
@@ -532,6 +535,10 @@ export async function previewErasureRequest(requestId: string): Promise<{
     throw new Error(
       `Cannot execute request in status ${request.status}. Must be APPROVED.`
     )
+  }
+
+  if (!request.userId) {
+    throw new Error(`User for erasure request ${requestId} no longer exists`)
   }
 
   return {

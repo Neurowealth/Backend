@@ -472,6 +472,21 @@ export async function mirrorLinkedTransaction(
   payload: OutboxPayload,
   outcome: { txHash?: string; status: 'CONFIRMED' | 'FAILED' }
 ): Promise<void> {
+  // Protection fund payouts have no Transaction row but need balance/claim
+  // updates on confirmed delivery (#651).
+  if (payload.method === 'protection_fund_payout') {
+    if (outcome.status === 'CONFIRMED') {
+      await db.protectionFundBalance.updateMany({
+        where: { assetSymbol: payload.assetSymbol },
+        data: { amount: { decrement: payload.amount } },
+      })
+      await db.coverageClaim.updateMany({
+        where: { id: payload.claimId },
+        data: { status: 'PAID' },
+      })
+    }
+    return
+  }
   // Some payload kinds have no linked Transaction row; nothing to mirror.
   if (!('transactionId' in payload)) return
   // updateMany (not update) so a missing row is a silent no-op, not a throw.
@@ -524,12 +539,24 @@ export async function reconcileOutboxOpByTxHash(
   })
 }
 
+// Known non-user identifiers used as outbox `userId` for system-initiated ops.
+// Treasury sweeps use 'SYSTEM'; wallet provisioning uses a CustodialWallet.id.
+// These must never be resolved against the User table (#652).
+export const SYSTEM_USER_IDS = new Set(['SYSTEM'])
+
 /** The central freeze guard the dispatcher must consult before dispatching an op (#325). */
 export async function isUserHalted(userId: string): Promise<boolean> {
+  // System-initiated ops (treasury sweeps, sponsored-reserve provisioning, …)
+  // carry ids that never resolve to a User row. Skip the lookup so they are
+  // never silently dropped as if the owner were frozen (#652).
+  if (SYSTEM_USER_IDS.has(userId)) return false
+
   const user = await db.user.findUnique({
     where: { id: userId },
     select: { isActive: true },
   })
-  // Fail closed: a missing user or a deactivated account both count as halted.
-  return !user || user.isActive === false
+  // Only an explicit deactivation counts as halted. A missing row means the
+  // userId belongs to a non-user entity (e.g. wallet id used in
+  // ACCOUNT_PROVISION) and must not block the op (#652).
+  return user?.isActive === false
 }

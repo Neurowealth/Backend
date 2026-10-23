@@ -675,3 +675,66 @@ curl -H "Authorization: Bearer $ADMIN_API_TOKEN" "http://localhost:3001/api/v1/a
      -H "Authorization: Bearer $ADMIN_API_TOKEN"
    ```
 
+## DLQ Backoff Schedule (#610)
+
+The Stellar event DLQ (`src/stellar/dlq.ts`) retries failed events with
+exponential backoff and jitter. Every retriable entry carries a `retryCount`;
+on each failed attempt the count increments and the entry becomes eligible
+again only after `BACKOFF_BASE_MS * 2^retryCount` milliseconds (capped at
+`BACKOFF_MAX_MS`) multiplied by a `uniform(0.5, 1.5)` jitter factor. After
+`MAX_RETRY_ATTEMPTS` attempts the entry transitions to the terminal `POISON`
+state and is never auto-retried again — only admin action can resurrect it.
+
+Defaults (`src/stellar/dlq.ts`):
+
+- `BACKOFF_BASE_MS = 30_000` (30 s)
+- `BACKOFF_MAX_MS = 3_600_000` (1 h)
+- `MAX_RETRY_ATTEMPTS = 10`
+
+Approximate schedule (central value; actual spread is ±50% jitter):
+
+| retryCount after failure | Next eligible after | Cumulative wall-clock |
+|-------------------------:|---------------------|-----------------------|
+| 1                        | 30 s                | ~30 s                 |
+| 2                        | 60 s                | ~1.5 min              |
+| 3                        | 2 min               | ~3.5 min              |
+| 4                        | 4 min               | ~7.5 min              |
+| 5                        | 8 min               | ~15 min               |
+| 6                        | 16 min              | ~31 min               |
+| 7                        | 32 min              | ~63 min               |
+| 8                        | 60 min (cap)        | ~2 h                  |
+| 9                        | 60 min              | ~3 h                  |
+| 10                       | → POISON            | terminal              |
+
+### Poison entries never auto-retry
+
+An entry at `status === 'POISON'` is skipped by `retryAll` forever. The
+`dlq_poison_size` Prometheus gauge tracks how many such entries exist;
+alerting on `dlq_poison_size > 0` surfaces them for triage.
+
+### Admin actions (all audited via `AdminAuditLog`)
+
+- `POST /api/admin/dlq/retry` — trigger `retryAll` now, honouring the backoff
+  gate (entries whose window has not elapsed are skipped, not forced).
+- `POST /api/admin/dlq/resolve` — mark one entry resolved by id (operator
+  verified the side effect landed by another path).
+- `POST /api/admin/dlq/requeue` — reset one entry's `retryCount` to 0 and
+  status to `PENDING`, restarting the backoff schedule. Required
+  `{ "eventId", "reason" }`. Use after the underlying cause has been fixed
+  (an RPC endpoint restored, a bad migration rolled back).
+- `POST /api/admin/dlq/discard` — delete one entry permanently. Required
+  `{ "eventId", "reason" }`. Audit log records who, what, and why.
+
+### Operator playbook
+
+1. `GET /api/admin/dlq/inspect` — see what is piling up and in which status.
+2. Group by `eventType`/`contractId`; most storms are one-cause.
+3. If the cause is fixed and the entries are RETRIED/POISON, `requeue` them
+   (not retry — retry still honours backoff and does nothing for POISON).
+4. If the entries are structural garbage that will never process (schema
+   mismatch, stale testnet events, an irrecoverable bug), `discard` with a
+   written reason naming the triage ticket.
+5. If the queue size alert keeps firing but `pending` stays flat and
+   `poison` grows: the retriers are working as designed on real failures.
+   Investigate the upstream fault, not the queue.
+

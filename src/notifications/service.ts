@@ -4,6 +4,7 @@
  */
 
 import db from '../db'
+import { createHmac, timingSafeEqual } from 'node:crypto'
 import { logger } from '../utils/logger'
 import {
   generateCorrelationId,
@@ -240,27 +241,14 @@ export async function shouldSendNotification(
   return true
 }
 
-/**
- * Generate unsubscribe token
- * Simple hash-based token without requiring crypto or base64
- */
 export function generateUnsubscribeToken(userId: string): string {
+  const secret = getUnsubscribeSecret()
   const timestamp = Date.now()
-  const hash = simpleHash(`${userId}:${timestamp}:unsubscribe-secret`)
-  return `${hash}:${timestamp}`
-}
-
-/**
- * Simple hash function for token generation
- */
-function simpleHash(str: string): string {
-  let hash = 0
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i)
-    hash = (hash << 5) - hash + char
-    hash = hash & hash // Convert to 32bit integer
-  }
-  return Math.abs(hash).toString(36)
+  const payload = `${userId}:${timestamp}`
+  const signature = createHmac('sha256', secret)
+    .update(payload)
+    .digest('base64url')
+  return `${timestamp}.${signature}`
 }
 
 /**
@@ -268,27 +256,42 @@ function simpleHash(str: string): string {
  */
 export function verifyUnsubscribeToken(token: string, userId: string): boolean {
   try {
-    const [hash, timestamp] = token.split(':')
-
-    if (!hash || !timestamp) {
+    const [timestamp, signature] = token.split('.')
+    if (!timestamp || !signature || !/^\d+$/.test(timestamp)) {
       return false
     }
 
-    // Reconstruct the expected hash
-    const expectedHash = simpleHash(`${userId}:${timestamp}:unsubscribe-secret`)
-
-    if (hash !== expectedHash) {
+    const expectedSignature = createHmac('sha256', getUnsubscribeSecret())
+      .update(`${userId}:${timestamp}`)
+      .digest()
+    const providedSignature = Buffer.from(signature, 'base64url')
+    if (
+      providedSignature.length !== expectedSignature.length ||
+      !timingSafeEqual(providedSignature, expectedSignature)
+    ) {
       return false
     }
 
-    // Token expires after 7 days
-    const tokenAge = Date.now() - parseInt(timestamp, 10)
+    const tokenAge = Date.now() - Number(timestamp)
     const maxAge = 7 * 24 * 60 * 60 * 1000 // 7 days in milliseconds
 
-    return tokenAge < maxAge
+    return tokenAge >= 0 && tokenAge < maxAge
   } catch {
     return false
   }
+}
+
+function getUnsubscribeSecret(): string {
+  const secret =
+    process.env.UNSUBSCRIBE_TOKEN_SECRET ||
+    process.env.JWT_SECRET ||
+    process.env.JWT_SEED
+  if (!secret) {
+    throw new Error(
+      'Unsubscribe token signing is not configured: set UNSUBSCRIBE_TOKEN_SECRET'
+    )
+  }
+  return secret
 }
 
 /**

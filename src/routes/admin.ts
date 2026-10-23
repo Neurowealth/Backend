@@ -589,6 +589,166 @@ router.post(
 )
 
 /**
+ * POST /api/admin/dlq/discard
+ * Permanently discard a DLQ entry (#610). Intended for garbage that will
+ * never process successfully. The deletion is audited.
+ * Required scope: dlq:write
+ *
+ * Body: { eventId: string, reason: string }
+ */
+router.post(
+  '/dlq/discard',
+  requireAdminScope('dlq:write'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+    try {
+      const { eventId, reason } = req.body as {
+        eventId?: unknown
+        reason?: unknown
+      }
+
+      if (!eventId || typeof eventId !== 'string') {
+        auditLog(req, res, 'DLQ_DISCARD', 'failure', {
+          error: 'Missing or invalid eventId',
+        })
+        return res.status(400).json({
+          success: false,
+          error: 'eventId is required and must be a string',
+        })
+      }
+      if (!reason || typeof reason !== 'string' || reason.trim().length < 3) {
+        auditLog(req, res, 'DLQ_DISCARD', 'failure', {
+          eventId,
+          error: 'reason_required',
+        })
+        return res.status(400).json({
+          success: false,
+          error: 'reason is required (min 3 chars) — discard is permanent',
+        })
+      }
+
+      const discarded = await DeadLetterQueue.discard(eventId)
+      if (!discarded) {
+        auditLog(req, res, 'DLQ_DISCARD', 'failure', {
+          eventId,
+          error: 'not_found',
+        })
+        return res.status(404).json({
+          success: false,
+          error: `Event ${eventId} not found in DLQ`,
+        })
+      }
+
+      logger.warn('[Admin] DLQ event discarded', { eventId, reason })
+      auditLog(req, res, 'DLQ_DISCARD', 'success', { eventId, reason })
+
+      res.status(200).json({
+        success: true,
+        data: { eventId, action: 'DISCARDED' },
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      logger.error('[Admin] Failed to discard DLQ event', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'DLQ_DISCARD', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error: 'Failed to discard event',
+      })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/dlq/requeue
+ * Reset a DLQ entry's retryCount to 0 and status to PENDING so the backoff
+ * schedule restarts (#610). Intended for entries whose underlying cause has
+ * been fixed outside the queue (an RPC endpoint restored, a bad migration
+ * rolled back). The requeue is audited.
+ * Required scope: dlq:write
+ *
+ * Body: { eventId: string, reason: string }
+ */
+router.post(
+  '/dlq/requeue',
+  requireAdminScope('dlq:write'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+    try {
+      const { eventId, reason } = req.body as {
+        eventId?: unknown
+        reason?: unknown
+      }
+
+      if (!eventId || typeof eventId !== 'string') {
+        auditLog(req, res, 'DLQ_REQUEUE', 'failure', {
+          error: 'Missing or invalid eventId',
+        })
+        return res.status(400).json({
+          success: false,
+          error: 'eventId is required and must be a string',
+        })
+      }
+      if (!reason || typeof reason !== 'string' || reason.trim().length < 3) {
+        auditLog(req, res, 'DLQ_REQUEUE', 'failure', {
+          eventId,
+          error: 'reason_required',
+        })
+        return res.status(400).json({
+          success: false,
+          error: 'reason is required (min 3 chars) — explain what was fixed',
+        })
+      }
+
+      const requeued = await DeadLetterQueue.requeue(eventId)
+      if (!requeued) {
+        auditLog(req, res, 'DLQ_REQUEUE', 'failure', {
+          eventId,
+          error: 'not_found',
+        })
+        return res.status(404).json({
+          success: false,
+          error: `Event ${eventId} not found in DLQ`,
+        })
+      }
+
+      logger.info('[Admin] DLQ event requeued', { eventId, reason })
+      auditLog(req, res, 'DLQ_REQUEUE', 'success', { eventId, reason })
+
+      res.status(200).json({
+        success: true,
+        data: { eventId, action: 'REQUEUED', status: 'PENDING', retryCount: 0 },
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      logger.error('[Admin] Failed to requeue DLQ event', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'DLQ_REQUEUE', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error: 'Failed to requeue event',
+      })
+    }
+  }
+)
+
+/**
  * POST /api/admin/dlq/replay
  * Safely replay selected DLQ events back into the processing pipeline.
  * Required scope: dlq:write

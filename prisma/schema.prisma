@@ -1895,7 +1895,7 @@ model PortfolioRiskAggregate {
 /// through approval workflow. Preserved even after user deletion via cascade.
 model ErasureRequest {
   id              String               @id @default(uuid())
-  userId          String
+  userId          String?
   requestedAt     DateTime             @default(now())
   requestedBy     String
   reason          String
@@ -1909,7 +1909,7 @@ model ErasureRequest {
   errorMessage    String?
   updatedAt       DateTime             @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([status])

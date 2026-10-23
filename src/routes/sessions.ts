@@ -17,7 +17,11 @@ import { logger } from '../utils/logger'
 import { requireFreshSignature } from '../middleware/requireFreshSignature'
 import { auditLog } from '../services/audit-log.service'
 import { notifySecurityEvent } from '../services/security-notification.service'
-import { totpService } from '../services/totp.service'
+import {
+  totpService,
+  beginTotpEnrollment,
+  verifyTotpEnrollment,
+} from '../services/totp.service'
 
 const router = Router()
 const prisma = db
@@ -155,6 +159,37 @@ router.delete(
     })
   }
 )
+
+/** POST /api/v1/sessions/2fa/enroll — issue a new unverified TOTP secret. */
+router.post('/2fa/enroll', async (req: Request, res: Response) => {
+  const userId = req.auth!.userId
+  const user = await db.user.findUnique({ where: { id: userId } })
+  if (!user) return res.status(404).json({ error: 'User not found' })
+  try {
+    const result = await beginTotpEnrollment(userId, user.walletAddress)
+    return res.status(200).json(result)
+  } catch {
+    return res.status(409).json({ error: '2FA is already enabled' })
+  }
+})
+
+/** POST /api/v1/sessions/2fa/verify-enrollment — activate the TOTP credential. */
+router.post('/2fa/verify-enrollment', async (req: Request, res: Response) => {
+  const userId = req.auth!.userId
+  const { code } = req.body as { code?: unknown }
+  if (typeof code !== 'string' || !/^\d{6}$/.test(code)) {
+    return res.status(400).json({ error: 'code must be a 6-digit string' })
+  }
+  const ok = await verifyTotpEnrollment(userId, code)
+  if (!ok) return res.status(401).json({ error: 'Invalid code' })
+
+  await auditLog.record({
+    userId,
+    action: '2fa.enabled',
+    metadata: { method: 'totp' },
+  })
+  return res.status(200).json({ verified: true })
+})
 
 /**
  * POST /api/v1/sessions/2fa/disable — disable TOTP 2FA.
