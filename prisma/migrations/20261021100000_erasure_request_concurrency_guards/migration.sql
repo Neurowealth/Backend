@@ -10,8 +10,3 @@ ALTER TABLE "erasure_requests"
   ADD CONSTRAINT "erasure_requests_userId_fkey"
   FOREIGN KEY ("userId") REFERENCES "users"("id")
   ON DELETE SET NULL ON UPDATE CASCADE;
-
--- Create partial unique index to guard against concurrent active requests per user (#684)
-CREATE UNIQUE INDEX "erasure_requests_user_active_key"
-ON "erasure_requests"("userId")
-WHERE "status" IN ('PENDING', 'APPROVED', 'PROCESSING');
