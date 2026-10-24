@@ -132,13 +132,10 @@ components:
 
     TotpVerifyEnrollmentResponse:
       type: object
-      required: [enabled]
+      required: [verified]
       properties:
-        enabled:
+        verified:
           type: boolean
-        verifiedAt:
-          type: string
-          format: date-time
 
     TotpLoginVerifyRequest:
       type: object
@@ -165,25 +162,18 @@ components:
 
     TotpDisableRequest:
       type: object
-      required: [challenge, signature]
+      required: [stellarPubKey, signature, nonce]
       additionalProperties: false
       properties:
-        challenge:
+        stellarPubKey:
           type: string
-          description: Fresh wallet-signature challenge issued for this disable operation.
+          description: Wallet public key bound to the authenticated user.
         signature:
           type: string
           description: Signature over the challenge proving control of the wallet.
-
-    TotpRegenerateRecoveryCodesResponse:
-      type: object
-      required: [recoveryCodes]
-      properties:
-        recoveryCodes:
-          type: array
-          items:
-            type: string
-          description: New one-time backup codes. All previous codes are invalidated.
+        nonce:
+          type: string
+          description: Fresh challenge nonce validated by the session middleware.
 
     ExternalWalletLinkRequest:
       type: object
@@ -1927,6 +1917,54 @@ paths:
           description: Forbidden
         '404':
           description: Resource not found
+  /admin/dlq/discard:
+    post:
+      tags: [Admin]
+      operationId: discardDeadLetterEvent
+      summary: Permanently discard a dead-letter event; requires dlq:write
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, reason]
+              properties:
+                eventId: { type: string }
+                reason: { type: string, minLength: 3 }
+      responses:
+        '200': { description: Event discarded and action audited }
+        '400': { description: Missing or invalid eventId or reason }
+        '401': { description: Admin authentication required }
+        '403': { description: Missing dlq:write permission }
+        '404': { description: Event not found in the dead-letter queue }
+        '500': { description: Failed to discard event }
+  /admin/dlq/requeue:
+    post:
+      tags: [Admin]
+      operationId: requeueDeadLetterEvent
+      summary: Reset a dead-letter event for another processing attempt; requires dlq:write
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, reason]
+              properties:
+                eventId: { type: string }
+                reason: { type: string, minLength: 3 }
+      responses:
+        '200': { description: Event requeued with retryCount reset to zero }
+        '400': { description: Missing or invalid eventId or reason }
+        '401': { description: Admin authentication required }
+        '403': { description: Missing dlq:write permission }
+        '404': { description: Event not found in the dead-letter queue }
+        '500': { description: Failed to requeue event }
   /admin/referrals/fraud/queue:
     get:
       tags:
@@ -2344,7 +2382,7 @@ paths:
         '404': { description: Plan not found }
   # ── TOTP two-factor authentication (#2FA) ─────────────────────────────────────
 
-  /2fa/enroll:
+  /sessions/2fa/enroll:
     post:
       operationId: enrollTotp
       summary: Begin TOTP 2FA enrollment
@@ -2364,8 +2402,12 @@ paths:
                 $ref: '#/components/schemas/TotpEnrollResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: User not found
+        '409':
+          description: 2FA is already enabled
 
-  /2fa/verify-enrollment:
+  /sessions/2fa/verify-enrollment:
     post:
       operationId: verifyTotpEnrollment
       summary: Confirm TOTP 2FA enrollment
@@ -2391,7 +2433,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /2fa/disable:
+  /sessions/2fa/disable:
     post:
       operationId: disableTotp
       summary: Disable TOTP 2FA
@@ -2408,30 +2450,21 @@ paths:
             schema:
               $ref: '#/components/schemas/TotpDisableRequest'
       responses:
-        '204':
+        '200':
           description: 2FA disabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [disabled] }
         '400':
           description: Invalid challenge or signature.
         '401':
           $ref: '#/components/responses/Unauthorized'
-
-  /2fa/recovery-codes/regenerate:
-    post:
-      operationId: regenerateTotpRecoveryCodes
-      summary: Regenerate TOTP recovery codes
-      description: Issues a new set of one-time backup codes and invalidates all previous codes.
-      tags: [TwoFactorAuth]
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: New recovery codes (returned once).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TotpRegenerateRecoveryCodesResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No active 2FA credential
 
   /auth/2fa/verify:
     post:
