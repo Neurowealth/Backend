@@ -174,6 +174,14 @@ CREATE INDEX "user_webhook_deliveries_endpointId_idx" ON "user_webhook_deliverie
 CREATE INDEX "user_webhook_deliveries_eventId_idx"    ON "user_webhook_deliveries"("eventId");
 CREATE INDEX "user_webhook_deliveries_status_idx"     ON "user_webhook_deliveries"("status");
 CREATE INDEX "user_webhook_deliveries_createdAt_idx"  ON "user_webhook_deliveries"("createdAt");
+CREATE INDEX IF NOT EXISTS "user_webhook_deliveries_endpointId_createdAt_idx"
+  ON "user_webhook_deliveries"("endpointId", "createdAt");
+
+CREATE INDEX IF NOT EXISTS "webhook_deliveries_subscriptionId_status_createdAt_idx"
+  ON "webhook_deliveries"("subscriptionId", "status", "createdAt");
+
+CREATE INDEX IF NOT EXISTS "webhook_dead_letters_subscriptionId_status_firstFailedAt_idx"
+  ON "webhook_dead_letters"("subscriptionId", "status", "firstFailedAt");
 
 -- ── UserEvent ─────────────────────────────────────────────────────────────────
 
