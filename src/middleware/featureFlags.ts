@@ -151,7 +151,10 @@ export function emergencyMaintenanceGuard(
   }
 
   // Exempt internal health and admin emergency unlock routes
-  if (req.path.startsWith('/health') || req.path.startsWith('/api/v1/admin/feature-flags')) {
+  if (
+    req.path.startsWith('/health') ||
+    req.path.startsWith('/api/v1/admin/feature-flags')
+  ) {
     next()
     return
   }
@@ -168,7 +171,8 @@ export function emergencyMaintenanceGuard(
 
     res.status(503).json({
       success: false,
-      error: 'Platform emergency maintenance mode is active. State mutations are currently halted.',
+      error:
+        'Platform emergency maintenance mode is active. State mutations are currently halted.',
       code: 'EMERGENCY_MAINTENANCE_ACTIVE',
     })
     return

@@ -55,9 +55,7 @@ describe('getDeliveryStatus (#699)', () => {
       failureCount: 1,
       lastError: 'bot blocked',
     })
-    expect(result[0].lastDeliveredAt).toEqual(
-      new Date('2026-10-01T10:00:00Z')
-    )
+    expect(result[0].lastDeliveredAt).toEqual(new Date('2026-10-01T10:00:00Z'))
   })
 
   it('returns an empty array when the user has no delivery history', async () => {

@@ -103,7 +103,6 @@ beforeEach(() => {
       },
       adminAuditLog: { count: jest.fn().mockResolvedValue(4) },
       referralConversion: { count: jest.fn().mockResolvedValue(2) },
-      adminAuditLog: { count: jest.fn().mockResolvedValue(0) },
       erasureRequest: { update: transactionErasureUpdate },
       user: { delete: jest.fn().mockResolvedValue({}) },
     })
@@ -308,7 +307,6 @@ describe('Privacy Erasure Workflow', () => {
       expect(summary.preservedRecords.adminAuditLogs).toBe(4)
       expect(summary.preservedRecords.referralConversionsAsOwner).toBe(2)
       expect(summary.preservedRecords.referralConversionsAsReferred).toBe(2)
-      expect(mockDb.erasureRequest.update).toHaveBeenCalledWith({
       expect(transactionErasureUpdate).toHaveBeenCalledWith({
         where: { id: requestId },
         data: {

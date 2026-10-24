@@ -99,6 +99,7 @@ function payload(overrides: Record<string, unknown> = {}) {
     borrowedAsset: 'USDC',
     trigger: 'scheduled' as const,
     transactionId: 'tx-1',
+    outboxOpId: 'outbox-op-1',
     sequence: SEQUENCE,
     ...overrides,
   }

@@ -309,6 +309,7 @@ describe('executeOutboxPayload — table-driven dispatch (#693)', () => {
         borrowedAsset: 'USDC',
         trigger: 'scheduled',
         transactionId: 'tx-liq',
+        outboxOpId: 'outbox-op-1',
         sequence: 1,
       },
       1,

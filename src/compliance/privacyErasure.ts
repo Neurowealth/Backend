@@ -441,26 +441,6 @@ export async function executeErasure(
           },
         })
 
-        // 5. Count preserved records (not deleted, just anonymized or nullified)
-        const [
-          adminAuditLogsCount,
-          referralAsOwnerCount,
-          referralAsReferredCount,
-        ] = await Promise.all([
-          tx.adminAuditLog.count({
-            where: {
-              details: {
-                path: ['userId'],
-                equals: userId,
-              },
-            },
-          }),
-          // ReferralCode cascade-deleted, so conversions via that code are orphaned
-          // but still exist with referredUserId intact (unless we anonymize)
-          Promise.resolve(0),
-          Promise.resolve(0),
-        ])
-
         return {
           userId,
           walletAddress: user.walletAddress,
