@@ -9,13 +9,6 @@ DROP INDEX IF EXISTS "webhook_deliveries_subscriptionId_status_createdAt_idx";
 DROP INDEX IF EXISTS "webhook_dead_letters_subscriptionId_status_firstFailedAt_idx";
 DROP TABLE IF EXISTS "notification_preference_audit_logs";
 DROP TABLE IF EXISTS "notification_preferences";
-DROP TABLE IF EXISTS "signer_rotations";
-DROP TABLE IF EXISTS "multisig_envelopes";
-DROP TABLE IF EXISTS "treasury_sweeps";
-DROP TABLE IF EXISTS "treasury_accounts";
-DROP TABLE IF EXISTS "treasury_sweep_policies";
-DROP TABLE IF EXISTS "user_event_sequences";
-DROP TABLE IF EXISTS "user_events";
 DROP TABLE IF EXISTS "user_webhook_deliveries";
 DROP TABLE IF EXISTS "user_webhook_endpoints";
 DROP TABLE IF EXISTS "alert_fires";
@@ -24,7 +17,9 @@ DROP TABLE IF EXISTS "email_identities";
 DROP TABLE IF EXISTS "travel_rule_records";
 DROP TABLE IF EXISTS "case_events";
 DROP TABLE IF EXISTS "compliance_cases";
-DROP TABLE IF EXISTS "agent_circuit_breakers";
+
+-- Agent circuit breakers, event stream, treasury, multisig, and signer tables
+-- are owned by their original migrations and remain in place on rollback.
 
 -- ── Drop new columns on existing tables ───────────────────────────────────────
 
