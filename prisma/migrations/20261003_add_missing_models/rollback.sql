@@ -33,4 +33,5 @@ ALTER TABLE "referral_conversions"
 -- ── Drop enums ────────────────────────────────────────────────────────────────
 
 DROP TYPE IF EXISTS "CaseStatus";
-DROP TYPE IF EXISTS "TreasuryTier";
+-- TreasuryTier is owned by 20260829223002_add_treasury_accounts and is shared
+-- with treasury_sweep_policies, so this migration must not drop it.

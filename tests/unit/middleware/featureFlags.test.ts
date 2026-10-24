@@ -118,7 +118,9 @@ describe('Feature Flag Middleware (#494)', () => {
 
   describe('emergencyMaintenanceGuard', () => {
     it('allows read-only GET requests even during emergency maintenance', async () => {
-      featureFlagManager.setOverride('emergency_maintenance_mode', { enabled: true })
+      featureFlagManager.setOverride('emergency_maintenance_mode', {
+        enabled: true,
+      })
 
       const app = express()
       app.use(emergencyMaintenanceGuard)
@@ -132,7 +134,9 @@ describe('Feature Flag Middleware (#494)', () => {
     })
 
     it('blocks mutating POST requests with 503 during emergency maintenance', async () => {
-      featureFlagManager.setOverride('emergency_maintenance_mode', { enabled: true })
+      featureFlagManager.setOverride('emergency_maintenance_mode', {
+        enabled: true,
+      })
 
       const app = express()
       app.use(emergencyMaintenanceGuard)
@@ -151,15 +155,22 @@ describe('Feature Flag Middleware (#494)', () => {
     })
 
     it('bypasses emergency maintenance for admin and health routes', async () => {
-      featureFlagManager.setOverride('emergency_maintenance_mode', { enabled: true })
+      featureFlagManager.setOverride('emergency_maintenance_mode', {
+        enabled: true,
+      })
 
       const app = express()
       app.use(emergencyMaintenanceGuard)
-      app.post('/api/v1/admin/feature-flags/reset', (_req: Request, res: Response) => {
-        res.json({ success: true, message: 'admin reset' })
-      })
+      app.post(
+        '/api/v1/admin/feature-flags/reset',
+        (_req: Request, res: Response) => {
+          res.json({ success: true, message: 'admin reset' })
+        }
+      )
 
-      const response = await request(app).post('/api/v1/admin/feature-flags/reset')
+      const response = await request(app).post(
+        '/api/v1/admin/feature-flags/reset'
+      )
       expect(response.status).toBe(200)
       expect(response.body.message).toBe('admin reset')
     })

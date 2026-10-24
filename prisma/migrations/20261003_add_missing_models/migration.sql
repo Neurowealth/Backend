@@ -3,7 +3,6 @@
 
 -- ── Enums ────────────────────────────────────────────────────────────────────
 
-CREATE TYPE "TreasuryTier" AS ENUM ('HOT', 'WARM', 'COLD');
 CREATE TYPE "CaseStatus"   AS ENUM (
   'OPEN', 'TRIAGE', 'INVESTIGATING', 'ESCALATED',
   'PENDING_SAR', 'SAR_FILED', 'CLEARED', 'CLOSED_NO_ACTION'

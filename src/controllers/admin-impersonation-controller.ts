@@ -13,7 +13,12 @@ export async function startImpersonation(
   adminName: string,
   targetUserId: string,
   options?: { ipAddress?: string; reason?: string; userAgent?: string }
-): Promise<{ success: boolean; token?: string; sessionId?: string; error?: string }> {
+): Promise<{
+  success: boolean
+  token?: string
+  sessionId?: string
+  error?: string
+}> {
   try {
     const targetUser = await db.user.findUnique({
       where: { id: targetUserId },

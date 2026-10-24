@@ -72,13 +72,11 @@ describe('Disaster Recovery Rehearsal & Backup Validation (#511, #681)', () => {
 
   it('exports dr_rehearsal_last_success_timestamp Prometheus gauge (#681)', async () => {
     expect(drRehearsalLastSuccessTimestamp).toBeDefined()
-    expect(drRehearsalLastSuccessTimestamp.name).toBe(
-      'dr_rehearsal_last_success_timestamp'
-    )
 
     const sampleTimestamp = 1761000000
     recordDrRehearsalSuccess(sampleTimestamp)
     const metricData = await drRehearsalLastSuccessTimestamp.get()
+    expect(metricData.name).toBe('dr_rehearsal_last_success_timestamp')
     expect(metricData.values[0]?.value).toBe(sampleTimestamp)
   })
 

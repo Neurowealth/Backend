@@ -294,7 +294,9 @@ export async function erasureJob(
   }
 
   if (!dryRun) {
-    const counts = await db.$transaction((tx) => eraseScalarUserRefs(tx, userId))
+    const counts = await db.$transaction((tx) =>
+      eraseScalarUserRefs(tx, userId)
+    )
     for (const [model, count] of Object.entries(counts)) {
       results.push({
         model,
