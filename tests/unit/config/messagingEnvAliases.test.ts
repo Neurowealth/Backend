@@ -19,9 +19,7 @@ describe('messaging env aliases (#700)', () => {
           env.MESSAGING_SWEEP_INTERVAL_MS ||
           '60000'
       ),
-      dlqAlertThreshold: parseInt(
-        env.MESSAGING_DLQ_ALERT_THRESHOLD || '5'
-      ),
+      dlqAlertThreshold: parseInt(env.MESSAGING_DLQ_ALERT_THRESHOLD || '5'),
     }
   }
 

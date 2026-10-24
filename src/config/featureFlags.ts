@@ -203,9 +203,7 @@ export const DEFAULT_FEATURE_FLAGS: Record<string, FeatureFlagDefinition> = {
   },
 }
 
-export type FeatureFlagKey =
-  | keyof typeof DEFAULT_FEATURE_FLAGS
-  | (string & {})
+export type FeatureFlagKey = keyof typeof DEFAULT_FEATURE_FLAGS | (string & {})
 
 const REDIS_OVERRIDES_KEY = 'neurowealth:feature_flags:overrides'
 const REDIS_UPDATES_CHANNEL = 'neurowealth:feature_flags:updates'
@@ -220,7 +218,9 @@ export class FeatureFlagManager {
   private rollbackHistory: RollbackEvent[] = []
   private redisSyncSubscribed = false
 
-  constructor(initialFlags: Record<string, FeatureFlagDefinition> = DEFAULT_FEATURE_FLAGS) {
+  constructor(
+    initialFlags: Record<string, FeatureFlagDefinition> = DEFAULT_FEATURE_FLAGS
+  ) {
     for (const [key, def] of Object.entries(initialFlags)) {
       this.flags.set(key, { ...def })
     }
@@ -363,7 +363,11 @@ export class FeatureFlagManager {
     }
 
     const envRule = def?.environments[env]
-    if (entityId && envRule?.blocklist && envRule.blocklist.includes(entityId)) {
+    if (
+      entityId &&
+      envRule?.blocklist &&
+      envRule.blocklist.includes(entityId)
+    ) {
       return makeDecision(
         false,
         'BLOCKLIST',
@@ -382,7 +386,11 @@ export class FeatureFlagManager {
       )
     }
 
-    if (entityId && envRule?.allowlist && envRule.allowlist.includes(entityId)) {
+    if (
+      entityId &&
+      envRule?.allowlist &&
+      envRule.allowlist.includes(entityId)
+    ) {
       return makeDecision(
         true,
         'ALLOWLIST',
@@ -403,7 +411,11 @@ export class FeatureFlagManager {
         )
       }
 
-      if (override.allowlist && entityId && override.allowlist.includes(entityId)) {
+      if (
+        override.allowlist &&
+        entityId &&
+        override.allowlist.includes(entityId)
+      ) {
         return makeDecision(
           true,
           'ALLOWLIST',
@@ -412,7 +424,11 @@ export class FeatureFlagManager {
         )
       }
 
-      if (override.blocklist && entityId && override.blocklist.includes(entityId)) {
+      if (
+        override.blocklist &&
+        entityId &&
+        override.blocklist.includes(entityId)
+      ) {
         return makeDecision(
           false,
           'BLOCKLIST',
@@ -638,7 +654,9 @@ export class FeatureFlagManager {
     const now = new Date().toISOString()
 
     const previousState = {
-      enabled: currentOverride?.enabled ?? def?.environments[getCurrentEnvironment()]?.enabled,
+      enabled:
+        currentOverride?.enabled ??
+        def?.environments[getCurrentEnvironment()]?.enabled,
       rolloutPercentage:
         currentOverride?.rolloutPercentage ??
         def?.environments[getCurrentEnvironment()]?.rolloutPercentage,
@@ -779,7 +797,9 @@ export class FeatureFlagManager {
    */
   public getAllFlags(
     context?: FlagEvaluationContext
-  ): Array<FeatureFlagDefinition & { currentEvaluation: FlagEvaluationResult }> {
+  ): Array<
+    FeatureFlagDefinition & { currentEvaluation: FlagEvaluationResult }
+  > {
     return Array.from(this.flags.values()).map((def) => ({
       ...def,
       currentEvaluation: this.evaluate(def.key, context),

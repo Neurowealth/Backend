@@ -300,7 +300,6 @@ export async function executePayout(claimId: string) {
   if (claim.status !== 'PENDING')
     throw new Error(`Claim is not pending (status: ${claim.status})`)
   if (claim.payoutAmount.lte(0)) throw new Error('Claim has zero payout')
-
   const user = await db.user.findUnique({
     where: { id: claim.userId },
     select: { walletAddress: true },

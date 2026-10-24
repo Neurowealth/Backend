@@ -59,21 +59,36 @@ interface TotpAttemptRecord {
 const totpAttempts = new Map<string, TotpAttemptRecord>()
 
 function getAttemptRecord(userId: string): TotpAttemptRecord {
-  return totpAttempts.get(userId) ?? { count: 0, lockedUntil: null, lastUsedStep: null }
+  return (
+    totpAttempts.get(userId) ?? {
+      count: 0,
+      lockedUntil: null,
+      lastUsedStep: null,
+    }
+  )
 }
 
 function recordFailedAttempt(userId: string): void {
   const record = getAttemptRecord(userId)
   const count = record.count + 1
-  const lockedUntil = count >= MAX_ATTEMPTS
-    ? new Date(Date.now() + LOCKOUT_DURATION_MS)
-    : record.lockedUntil
+  const lockedUntil =
+    count >= MAX_ATTEMPTS
+      ? new Date(Date.now() + LOCKOUT_DURATION_MS)
+      : record.lockedUntil
   totpAttempts.set(userId, { ...record, count, lockedUntil })
-  logger.warn('[TOTP] Failed verification attempt', { userId, count, locked: count >= MAX_ATTEMPTS })
+  logger.warn('[TOTP] Failed verification attempt', {
+    userId,
+    count,
+    locked: count >= MAX_ATTEMPTS,
+  })
 }
 
 function clearAttemptRecord(userId: string, usedStep: number): void {
-  totpAttempts.set(userId, { count: 0, lockedUntil: null, lastUsedStep: usedStep })
+  totpAttempts.set(userId, {
+    count: 0,
+    lockedUntil: null,
+    lastUsedStep: usedStep,
+  })
 }
 
 /** Admin-facing: clear lockout for a user so they can retry TOTP. */
@@ -261,7 +276,10 @@ export async function completeTotpChallenge(
   // Check per-account lockout before touching the credential
   const attemptRecord = getAttemptRecord(userId)
   if (attemptRecord.lockedUntil && attemptRecord.lockedUntil > new Date()) {
-    logger.warn('[TOTP] Account locked out', { userId, lockedUntil: attemptRecord.lockedUntil })
+    logger.warn('[TOTP] Account locked out', {
+      userId,
+      lockedUntil: attemptRecord.lockedUntil,
+    })
     return { ok: false, reason: 'locked' }
   }
 
