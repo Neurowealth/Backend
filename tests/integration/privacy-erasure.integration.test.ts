@@ -39,9 +39,20 @@ jest.mock('../../src/db', () => {
     portfolioAttribution: { count: count(), updateMany: jest.fn() },
     adminAuditLog: { count: count() },
     referralConversion: { count: count() },
+    erasureRequest: {
+      update: jest.fn(async ({ where, data }: any) => {
+        const row = find(where.id)
+        if (!row) throw new Error('Erasure request not found')
+        Object.assign(row, data)
+        return { ...row }
+      }),
+    },
     user: {
       delete: jest.fn(async () => {
         state.events.push('user.delete')
+        for (const row of state.requests) {
+          if (row.userId === USER_ID) row.userId = null as any
+        }
         return {}
       }),
     },
@@ -83,6 +94,15 @@ jest.mock('../../src/db', () => {
           const row = find(where.id)!
           Object.assign(row, data)
           return { ...row }
+        }),
+        updateMany: jest.fn(async ({ where, data }: any) => {
+          const row = find(where.id)
+          if (!row) return { count: 0 }
+          if (where.status && row.status !== where.status) {
+            return { count: 0 }
+          }
+          Object.assign(row, data)
+          return { count: 1 }
         }),
       },
       $transaction: jest.fn(async (cb: any) => cb(tx)),
@@ -280,5 +300,46 @@ describe('privacy erasure lifecycle guardrails', () => {
     expect(res.status).toBe(500)
     expect(res.body.error).toMatch(/Must be APPROVED/)
     expect(state.events).toEqual([])
+  })
+
+  it('prevents overlapping executions via atomic claim transition', async () => {
+    const id = await createApprovedRequest()
+    let signalStarted!: () => void
+    let releaseFirst!: () => void
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve
+    })
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    ;(revokeAllUserSessions as jest.Mock).mockImplementationOnce(async () => {
+      state.events.push('sessions.revoked')
+      signalStarted()
+      await gate
+      return 1
+    })
+
+    const firstExecution = request(app)
+      .post(`/admin/erasure/requests/${id}/execute`)
+      .set(as('carol'))
+      .send({ confirm: `DELETE ${USER_ID}` })
+
+    await started
+    expect(state.requests[0].status).toBe('PROCESSING')
+
+    const secondExecution = await request(app)
+      .post(`/admin/erasure/requests/${id}/execute`)
+      .set(as('dave'))
+      .send({ confirm: `DELETE ${USER_ID}` })
+
+    expect(secondExecution.status).toBe(500)
+    expect(secondExecution.body.error).toMatch(/status PROCESSING/)
+    expect(state.events).toEqual(['sessions.revoked'])
+
+    releaseFirst()
+    const firstResult = await firstExecution
+    expect(firstResult.status).toBe(200)
+    expect(state.requests[0].status).toBe('COMPLETED')
+    expect(state.events).toEqual(['sessions.revoked', 'user.delete'])
   })
 })

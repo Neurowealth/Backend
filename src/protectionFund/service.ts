@@ -301,6 +301,13 @@ export async function executePayout(claimId: string) {
     throw new Error(`Claim is not pending (status: ${claim.status})`)
   if (claim.payoutAmount.lte(0)) throw new Error('Claim has zero payout')
 
+  const user = await db.user.findUnique({
+    where: { id: claim.userId },
+    select: { walletAddress: true },
+  })
+  if (!user?.walletAddress)
+    throw new Error(`User ${claim.userId} has no wallet address`)
+
   const outboxOp = await enqueueOutboxOp(db, {
     userId: claim.userId,
     kind: 'WITHDRAW',
@@ -309,11 +316,12 @@ export async function executePayout(claimId: string) {
     payload: {
       method: 'protection_fund_payout',
       userId: claim.userId,
+      userAddress: user.walletAddress,
       amount: Number(claim.payoutAmount),
       assetSymbol: 'USDC',
       claimId,
       eventId: claim.eventId,
-    } as any,
+    },
     priority: 'CRITICAL',
   })
 
@@ -322,10 +330,8 @@ export async function executePayout(claimId: string) {
     data: { outboxOpId: outboxOp.id },
   })
 
-  await db.protectionFundBalance.update({
-    where: { assetSymbol: 'USDC' },
-    data: { amount: { decrement: claim.payoutAmount } },
-  })
+  // Balance decrement happens in mirrorLinkedTransaction on confirmed delivery,
+  // not here, so the fund is never debited before the transfer actually lands.
 
   await appendAuditBlock({
     height: 0,
@@ -357,7 +363,12 @@ export async function getMyCoverage(userId: string) {
   const exposure = []
 
   for (const pos of positions) {
-    const holdDuration = Date.now() - pos.openedAt.getTime()
+    const openedTime = pos.openedAt
+      ? pos.openedAt.getTime()
+      : (pos as any).createdAt
+        ? new Date((pos as any).createdAt).getTime()
+        : Date.now()
+    const holdDuration = Date.now() - openedTime
     const eligible = holdDuration >= terms.minHoldDurationMs
 
     exposure.push({

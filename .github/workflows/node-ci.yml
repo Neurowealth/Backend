@@ -68,6 +68,17 @@ jobs:
       - name: Prisma migrate deploy
         run: npx prisma migrate deploy
 
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Integration test suite
+        run: npm run test:integration -- --runInBand
       - name: Release tooling regression tests
         run: node --test scripts/tests/release.test.cjs
 

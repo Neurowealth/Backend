@@ -39,3 +39,37 @@ when the provider supports one.
 
 Timestamp checks depend on synchronized server clocks. Keep production hosts
 time-synchronized and alert on repeated signature failures.
+
+## Provider Parity (#607)
+
+Every `FiatRampProvider` passes the same adversarial battery before shipping,
+run by `tests/unit/fiat/webhookSignatureParity.test.ts`:
+
+- Correctly signed payload is accepted.
+- Secret unconfigured → rejected (no unverifiable payload is ever trusted,
+  regardless of the header's shape).
+- Tampered body with the original signature → rejected.
+- Signature made with the wrong key → rejected.
+- Missing signature header → rejected.
+- Garbage in the signature header → rejected.
+- Verifier is deterministic for identical input (no cache or clock leakage
+  between calls).
+
+Adding a provider means adding a `ProviderCase` to that harness; the test file
+reads the `signValid` function to produce a correctly signed payload and
+derives every adversarial variant from it.
+
+### MoonPay specifics
+
+MoonPay signs `${timestamp}.${rawBody}` with HMAC-SHA256 keyed by
+`MOONPAY_WEBHOOK_KEY`. The header is `Moonpay-Signature-V2: t=<unix>,s=<hex>`.
+The timestamp window is 300 seconds. The receipt table bounds replay beyond
+the window.
+
+### Transak specifics
+
+Transak signs the raw body with HMAC-SHA256. The header is
+`X-Transak-Signature: <hex>`. Transak signs with the account API secret by
+default; `TRANSAK_WEBHOOK_SECRET` overrides it so the webhook credential can
+be rotated independently. Transak carries no signed timestamp, so freshness
+is enforced only by the receipt table.

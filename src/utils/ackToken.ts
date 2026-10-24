@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
+import { config } from '../config'
 
-const ACK_TOKEN_SECRET =
-  process.env.JWT_SECRET || 'neuro-ack-token-secret-key-32b'
+const ACK_TOKEN_SECRET = config.jwt.seed
 const usedAckTokens = new Set<string>()
 
 export interface AckTokenPayload {

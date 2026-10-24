@@ -489,6 +489,40 @@ function mediaErrorReply(err: unknown): string {
   return "Voice messages aren't available right now. Please type your command."
 }
 
+const FINANCIAL_ACTIONS: ReadonlySet<Intent['action']> = new Set([
+  'deposit',
+  'withdraw',
+])
+
+function isFinancialIntent(intent: Intent): boolean {
+  return FINANCIAL_ACTIONS.has(intent.action)
+}
+
+function isAffirmative(message: string): boolean {
+  return /^\s*(yes|yep|yeah|yup|confirm|confirmed|ok|okay|sure|correct|do it|go ahead|proceed|y)\s*[.!]*\s*$/i.test(
+    message
+  )
+}
+
+function isNegative(message: string): boolean {
+  return /^\s*(no|nope|nah|cancel|stop|abort|don'?t|never mind|nevermind|n)\s*[.!]*\s*$/i.test(
+    message
+  )
+}
+
+function summarizeIntent(intent: Intent): string {
+  switch (intent.action) {
+    case 'deposit':
+      return `deposit ${intent.amount ?? ''}`.trim()
+    case 'withdraw':
+      return intent.all
+        ? 'withdraw all'
+        : `withdraw ${intent.amount ?? ''}`.trim()
+    default:
+      return intent.action
+  }
+}
+
 /**
  * Handle one inbound WhatsApp message and produce the reply to send back.
  *

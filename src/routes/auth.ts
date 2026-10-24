@@ -4,6 +4,7 @@ import {
   verify,
   refresh,
   logout,
+  verifyTotp,
 } from '../controllers/auth-controller'
 import { requireAuth } from '../middleware/authenticate'
 import { validate } from '../middleware/validate'
@@ -26,6 +27,12 @@ router.post('/challenge', validate({ body: authChallengeSchema }), challenge)
  * Verifies Stellar signature, creates/fetches user, issues JWT.
  */
 router.post('/verify', validate({ body: authVerifySchema }), verify)
+
+/**
+ * POST /api/auth/2fa/verify
+ * Completes a login paused at the TOTP step.
+ */
+router.post('/2fa/verify', verifyTotp)
 
 /**
  * POST /api/auth/refresh

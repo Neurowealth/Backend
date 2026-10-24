@@ -69,6 +69,10 @@ export interface FeatureFlagDefinition {
   rollbackReason?: string
   rollbackTimestamp?: string
   rollbackOperator?: string
+  /** Team or individual responsible for this flag's lifecycle. */
+  owner?: string
+  /** ISO-8601 date after which the flag should be reviewed or removed. */
+  reviewBy?: string
 }
 
 export interface FeatureFlagOverride {

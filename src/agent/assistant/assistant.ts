@@ -41,7 +41,10 @@ import {
   recordAssistantToolCall,
 } from '../../utils/metrics'
 import { logAgentAction } from '../router'
-import { checkSubAccountPermission } from '../../middleware/subAccount'
+import {
+  checkSubAccountPermission,
+  parseWithdrawAmount,
+} from '../../middleware/subAccount'
 
 export type AssistantChannel = 'whatsapp' | 'telegram' | 'api'
 
@@ -119,10 +122,21 @@ async function executeTool(
   // it would do either. Self-scoped calls (no actingAsUserId) skip this,
   // matching the middleware's self-access shortcut.
   if (ctx.actingAsUserId && ctx.actingAsUserId !== ctx.userId) {
+    // #648 — a delegated withdraw must carry a valid amount, otherwise the
+    // transaction/daily limit checks in checkSubAccountPermission cannot be
+    // applied. An amount that does not parse is passed through as undefined,
+    // which the permission check fails closed on.
+    const rawAmount = (args as { amount?: unknown }).amount
+    const amount =
+      tool.subAccountPermission === 'WITHDRAW'
+        ? (parseWithdrawAmount(rawAmount) ?? undefined)
+        : undefined
+
     const permissionCheck = await checkSubAccountPermission(
       ctx.actingAsUserId,
       ctx.userId,
-      tool.subAccountPermission
+      tool.subAccountPermission,
+      amount
     )
     if (!permissionCheck.allowed) {
       recordAssistantToolCall(toolName, 'rejected')

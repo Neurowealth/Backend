@@ -85,6 +85,12 @@ export const dlqAlertActive = new client.Gauge({
   registers: [register],
 })
 
+export const dlqPoisonSize = new client.Gauge({
+  name: 'dlq_poison_size',
+  help: 'Current count of DLQ entries in the POISON terminal state (never auto-retried; manual action required)',
+  registers: [register],
+})
+
 export const supportTicketsSlaBreached = new client.Gauge({
   name: 'support_tickets_sla_breached',
   help: 'Open support tickets currently past their response SLA, by priority',
@@ -627,7 +633,7 @@ export function recordAnalyticsRequest(
  */
 export function recordBackgroundJob(
   job: string,
-  status: 'success' | 'failed' | 'dry_run',
+  status: 'success' | 'failed' | 'dry_run' | 'skipped',
   durationSeconds: number
 ): void {
   backgroundJobsTotal.inc({ job, status })

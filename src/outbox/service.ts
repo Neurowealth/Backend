@@ -211,6 +211,23 @@ export async function recordSubmittedTxHash(
 }
 
 /**
+ * Clear a stale txHash from a SUBMITTED op (#656): the network no longer
+ * knows the hash (expired RPC window / never propagated), so the next
+ * fee-bump retry must build a FRESH submission rather than re-polling or
+ * re-bumping the same unconfirmable envelope. Returns false when the op
+ * is no longer SUBMITTED (lost a race with another sweep path).
+ */
+export async function clearStaleSubmittedTxHash(
+  opId: string
+): Promise<boolean> {
+  const result = await db.outboxOp.updateMany({
+    where: { id: opId, status: 'SUBMITTED' as PrismaOutboxOpStatus },
+    data: { txHash: null },
+  })
+  return result.count === 1
+}
+
+/**
  * A submit attempt failed. If attempts remain, return the op to PENDING with
  * a full-jitter backoff `nextAttemptAt` so the dispatcher retries it later;
  * once attempts are exhausted, move it to the terminal FAILED state instead.
@@ -472,6 +489,21 @@ export async function mirrorLinkedTransaction(
   payload: OutboxPayload,
   outcome: { txHash?: string; status: 'CONFIRMED' | 'FAILED' }
 ): Promise<void> {
+  // Protection fund payouts have no Transaction row but need balance/claim
+  // updates on confirmed delivery (#651).
+  if (payload.method === 'protection_fund_payout') {
+    if (outcome.status === 'CONFIRMED') {
+      await db.protectionFundBalance.updateMany({
+        where: { assetSymbol: payload.assetSymbol },
+        data: { amount: { decrement: payload.amount } },
+      })
+      await db.coverageClaim.updateMany({
+        where: { id: payload.claimId },
+        data: { status: 'PAID' },
+      })
+    }
+    return
+  }
   // Some payload kinds have no linked Transaction row; nothing to mirror.
   if (!('transactionId' in payload)) return
   // updateMany (not update) so a missing row is a silent no-op, not a throw.
@@ -524,12 +556,24 @@ export async function reconcileOutboxOpByTxHash(
   })
 }
 
+// Known non-user identifiers used as outbox `userId` for system-initiated ops.
+// Treasury sweeps use 'SYSTEM'; wallet provisioning uses a CustodialWallet.id.
+// These must never be resolved against the User table (#652).
+export const SYSTEM_USER_IDS = new Set(['SYSTEM'])
+
 /** The central freeze guard the dispatcher must consult before dispatching an op (#325). */
 export async function isUserHalted(userId: string): Promise<boolean> {
+  // System-initiated ops (treasury sweeps, sponsored-reserve provisioning, …)
+  // carry ids that never resolve to a User row. Skip the lookup so they are
+  // never silently dropped as if the owner were frozen (#652).
+  if (SYSTEM_USER_IDS.has(userId)) return false
+
   const user = await db.user.findUnique({
     where: { id: userId },
     select: { isActive: true },
   })
-  // Fail closed: a missing user or a deactivated account both count as halted.
-  return !user || user.isActive === false
+  // Only an explicit deactivation counts as halted. A missing row means the
+  // userId belongs to a non-user entity (e.g. wallet id used in
+  // ACCOUNT_PROVISION) and must not block the op (#652).
+  return user?.isActive === false
 }

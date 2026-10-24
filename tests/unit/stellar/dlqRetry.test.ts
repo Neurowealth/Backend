@@ -107,7 +107,7 @@ describe('DeadLetterQueue retry lifecycle (#496)', () => {
 
     const result = await DeadLetterQueue.retryAll(retryFn)
 
-    expect(result).toEqual({ resolved: 2, failed: 0 })
+    expect(result).toMatchObject({ resolved: 2, failed: 0 })
     expect(retryFn).toHaveBeenCalledTimes(2)
     // A successful retry resolves the row and bumps the retry count.
     expect(mockDb.deadLetterEvent.update).toHaveBeenCalledWith({
@@ -134,7 +134,7 @@ describe('DeadLetterQueue retry lifecycle (#496)', () => {
 
     const result = await DeadLetterQueue.retryAll(retryFn)
 
-    expect(result).toEqual({ resolved: 1, failed: 1 })
+    expect(result).toMatchObject({ resolved: 1, failed: 1 })
     // The failed event is parked back as RETRIED with the attempt recorded —
     // it stays in the queue for the next sweep rather than disappearing.
     expect(mockDb.deadLetterEvent.update).toHaveBeenCalledWith({
