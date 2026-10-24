@@ -19,6 +19,7 @@ describe('Regression Tests - Critical Prisma-Backed Flows', () => {
       const user = await prisma.user.create({
         data: {
           walletAddress: userId,
+          authPublicKey: userId,
           network: 'MAINNET',
         },
       })
@@ -50,6 +51,7 @@ describe('Regression Tests - Critical Prisma-Backed Flows', () => {
       const user = await prisma.user.create({
         data: {
           walletAddress: userId,
+          authPublicKey: userId,
           network: 'MAINNET',
         },
       })

@@ -30,6 +30,7 @@ type TxSummary = {
   status: string
   amount: number
   assetSymbol: string
+  counterpartyHandle?: string | null
 }
 
 // Minimal view of a protocol's current supply rate. `supplyApy` is a
@@ -119,7 +120,10 @@ export function formatTransactionsReply(input: {
     // Show a shortened hash (first 8 chars) to keep lines compact, or
     // "pending" if the transaction has no on-chain hash yet.
     const hash = tx.txHash ? `${tx.txHash.slice(0, 8)}...` : 'pending'
-    return `• ${tx.type} ${tx.amount} ${tx.assetSymbol} (${tx.status}) [${hash}]`
+    const counterparty = tx.counterpartyHandle
+      ? ` with ${tx.counterpartyHandle}`
+      : ''
+    return `• ${tx.type} ${tx.amount} ${tx.assetSymbol}${counterparty} (${tx.status}) [${hash}]`
   })
 
   return [
@@ -138,6 +142,9 @@ export function formatTransactionDetailReply(input: TxSummary): string {
     `Type: *${input.type}*`,
     `Status: *${input.status}*`,
     `Amount: *${input.amount} ${input.assetSymbol}*`,
+    ...(input.counterpartyHandle
+      ? [`Counterparty: *${input.counterpartyHandle}*`]
+      : []),
     // `||` (not `??`) so an empty-string hash also falls back to "pending".
     `Hash: _${input.txHash || 'pending'}_`,
   ].join('\n')

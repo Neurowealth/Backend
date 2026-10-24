@@ -6,6 +6,11 @@ export const mapTransactionToResponse = (tx: any) => ({
   amount: Number(tx.amount),
   assetSymbol: tx.assetSymbol,
   protocolName: tx.protocolName,
+  counterpartyHandle: tx.internalTransfer
+    ? tx.userId === tx.internalTransfer.senderUserId
+      ? tx.internalTransfer.recipientHandle
+      : tx.internalTransfer.senderHandle
+    : null,
   createdAt: tx.createdAt.toISOString(),
 })
 
@@ -273,6 +278,11 @@ const USER_EVENT_PAYLOAD_ALLOWLIST: Record<string, readonly string[]> = {
   // `error` is the user's own op failure text, already sent to their webhooks.
   'outbox.op_failed': ['opId', 'kind', 'attempts', 'error'],
   'portfolio.updated': ['protocolName', 'positionsAffected', 'reason'],
+  'security.recovery_requested': ['requestId', 'initiatedAt'],
+  'security.recovery_completed': ['requestId', 'completedAt'],
+  'security.recovery_rejected': ['requestId', 'rejectedAt'],
+  'security.recovery_guardian_invited': ['guardianId'],
+  'security.recovery_guardian_accepted': ['guardianId'],
 }
 
 /**

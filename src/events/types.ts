@@ -57,6 +57,11 @@ export const SOCKET_ONLY_EVENT_TYPES = [
   'security.session_revoked',
   /** #515 — suspicious session anomaly detected (impossible location, device change, subnet jump). */
   'security.session_anomaly',
+  'security.recovery_requested',
+  'security.recovery_completed',
+  'security.recovery_rejected',
+  'security.recovery_guardian_invited',
+  'security.recovery_guardian_accepted',
   /** #548 — admin impersonation session started. */
   'account.impersonation_started',
 ] as const
@@ -110,6 +115,11 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'security.new_session': 'alerts',
   'security.session_revoked': 'alerts',
   'security.session_anomaly': 'alerts',
+  'security.recovery_requested': 'alerts',
+  'security.recovery_completed': 'alerts',
+  'security.recovery_rejected': 'alerts',
+  'security.recovery_guardian_invited': 'alerts',
+  'security.recovery_guardian_accepted': 'alerts',
   'account.impersonation_started': 'account',
 }
 

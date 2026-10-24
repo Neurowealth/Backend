@@ -5,6 +5,7 @@
 // #2FA – adds TOTP second-factor challenge step after wallet-signature
 //        verification; enrollment/disable live in services/totp.service.ts.
 import { Request, Response } from 'express'
+import type { Session } from '@prisma/client'
 import { randomBytes } from 'crypto'
 import { Keypair } from '@stellar/stellar-sdk'
 import { JwtAdapter, config } from '../config'
@@ -54,6 +55,48 @@ const REFRESH_ERRORS: Record<
     status: 401,
     error: 'Session anomaly detected; please sign in again',
   },
+}
+
+async function createSessionForCurrentCredential(params: {
+  userId: string
+  authPublicKey: string
+  pair: Awaited<ReturnType<typeof issueTokenPair>>
+  userAgent: string | null
+  ipAddress: string | null
+  deviceType: string
+  approxLocation: string | null
+}): Promise<Session | null> {
+  return db.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${params.userId} FOR UPDATE`
+    const user = await tx.user.findUnique({
+      where: { id: params.userId },
+      select: {
+        authPublicKey: true,
+        isActive: true,
+        walletAddress: true,
+        network: true,
+      },
+    })
+    if (!user?.isActive || user.authPublicKey !== params.authPublicKey)
+      return null
+
+    return tx.session.create({
+      data: {
+        userId: params.userId,
+        token: params.pair.accessToken,
+        walletAddress: user.walletAddress,
+        network: user.network,
+        expiresAt: params.pair.expiresAt,
+        ipAddress: params.ipAddress,
+        userAgent: params.userAgent,
+        deviceType: params.deviceType,
+        approxLocation: params.approxLocation,
+        lastSeenAt: new Date(),
+        lastSeenIp: params.ipAddress,
+        ...newRefreshTokenFields(params.pair),
+      },
+    })
+  })
 }
 
 // ── Controllers ────────────────────────────────────────────────────────────
@@ -129,13 +172,23 @@ export async function verify(req: Request, res: Response): Promise<void> {
 
   try {
     let user = await db.user.findUnique({
-      where: { walletAddress: stellarPubKey },
+      where: { authPublicKey: stellarPubKey },
     })
 
     if (!user) {
+      const existingWallet = await db.user.findUnique({
+        where: { walletAddress: stellarPubKey },
+        select: { id: true },
+      })
+      if (existingWallet) {
+        res.status(401).json({ error: 'Invalid signature credential' })
+        return
+      }
+
       user = await db.user.create({
         data: {
           walletAddress: stellarPubKey,
+          authPublicKey: stellarPubKey,
           network,
           positions: {
             create: {
@@ -194,22 +247,19 @@ export async function verify(req: Request, res: Response): Promise<void> {
     const deviceType = parseDeviceType(userAgent)
     const approxLocation = resolveApproxLocation(ipAddress)
 
-    const session = await db.session.create({
-      data: {
-        userId: user.id,
-        token: pair.accessToken,
-        walletAddress: stellarPubKey,
-        network,
-        expiresAt: pair.expiresAt,
-        ipAddress,
-        userAgent,
-        deviceType,
-        approxLocation,
-        lastSeenAt: new Date(),
-        lastSeenIp: ipAddress,
-        ...newRefreshTokenFields(pair),
-      },
+    const session = await createSessionForCurrentCredential({
+      userId: user.id,
+      authPublicKey: stellarPubKey,
+      pair,
+      ipAddress,
+      userAgent,
+      deviceType,
+      approxLocation,
     })
+    if (!session) {
+      res.status(401).json({ error: 'Authentication credential changed' })
+      return
+    }
 
     logger.info(`[Auth] Session created for user ${user.id}`)
 
@@ -296,22 +346,19 @@ export async function verifyTotp(req: Request, res: Response): Promise<void> {
     const deviceType = parseDeviceType(userAgent)
     const approxLocation = resolveApproxLocation(ipAddress)
 
-    const session = await db.session.create({
-      data: {
-        userId: user.id,
-        token: pair.accessToken,
-        walletAddress: stellarPubKey,
-        network,
-        expiresAt: pair.expiresAt,
-        ipAddress,
-        userAgent,
-        deviceType,
-        approxLocation,
-        lastSeenAt: new Date(),
-        lastSeenIp: ipAddress,
-        ...newRefreshTokenFields(pair),
-      },
+    const session = await createSessionForCurrentCredential({
+      userId: user.id,
+      authPublicKey: stellarPubKey,
+      pair,
+      ipAddress,
+      userAgent,
+      deviceType,
+      approxLocation,
     })
+    if (!session) {
+      res.status(401).json({ error: 'Authentication credential changed' })
+      return
+    }
 
     logger.info(`[Auth] Session created for user ${user.id} (post-2FA)`)
 

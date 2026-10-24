@@ -48,6 +48,7 @@ import protectionFundRouter from './protection-fund'
 import recurringDepositRouter from './recurring-deposits'
 import recurringWithdrawalRouter from './recurring-withdrawals'
 import referralsRouter from './referrals'
+import recoveryRouter from './recovery'
 import sessionsRouter from './sessions'
 import settingsRouter from './settings'
 import stellarRouter from './stellar'
@@ -57,6 +58,7 @@ import subAccountsRouter from './sub-accounts'
 import supportTicketsRouter from './support-tickets'
 import telegramRouter from './telegram'
 import transactionsRouter from './transactions'
+import transferRouter from './transfers'
 import vaultRouter from './vault'
 import webAuthnRouter from './webauthn'
 import webhooksRouter from './webhooks'
@@ -94,9 +96,11 @@ export const API_ROUTES: ApiRoute[] = [
   { path: 'telegram', handlers: [webhookRateLimiter, telegramRouter] },
   { path: 'portfolio', handlers: [portfolioRouter] },
   { path: 'transactions', handlers: [transactionsRouter] },
+  { path: 'recovery', handlers: [recoveryRouter] },
   { path: 'protocols', handlers: [protocolsRouter] },
   { path: 'deposit', handlers: [depositRouter] },
   { path: 'withdraw', handlers: [withdrawRouter] },
+  { path: 'transfer', handlers: [transferRouter] },
   // #532 — collateral loans. Mounted beside withdraw rather than inside
   // portfolio: a loan is its own lifecycle with its own approval and rate
   // limits, and it must not inherit portfolio's read-only scope set.

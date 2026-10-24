@@ -122,6 +122,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run npm audit on production dependencies (HIGH and CRITICAL only)
+        # Development tooling has an independent, non-blocking full-tree report
+        # in dependency-audit.yml; production dependencies block this workflow.
+        run: npm audit --omit=dev --audit-level=high
       - name: Run blocking production dependency audit
         run: npm run audit:production
         continue-on-error: false

@@ -95,6 +95,7 @@ import {
 } from './middleware/corsandbody'
 import { setSpanUser } from './telemetry/spans'
 import { scheduleOutboundNotifications } from './services/outboundNotifications'
+import { scheduleRecoveryCompletion } from './services/account-recovery.service'
 
 // ── Readiness state ───────────────────────────────────────────────────────────
 
@@ -135,6 +136,7 @@ let outboundNotificationsHandle: NodeJS.Timeout | null = null
 let linkedExternalWalletSyncHandle: NodeJS.Timeout | null = null
 let loanAccrualHandle: NodeJS.Timeout | null = null
 let loanLiquidationHandle: NodeJS.Timeout | null = null
+let recoveryCompletionHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -325,12 +327,7 @@ function deprecatedApiWarning(
   next()
 }
 
-interface ApiRoute {
-  path: string
-  handlers: express.RequestHandler[]
-}
-
-const apiRoutes: ApiRoute[] = API_ROUTES
+const apiRoutes = API_ROUTES
 
 // ── Application routes ────────────────────────────────────────────────────────
 
@@ -375,6 +372,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
   if (outboundNotificationsHandle) {
     clearInterval(outboundNotificationsHandle)
     outboundNotificationsHandle = null
+  }
+  if (recoveryCompletionHandle) {
+    clearInterval(recoveryCompletionHandle)
+    recoveryCompletionHandle = null
   }
 
   if (dataRetentionHandle) {
@@ -773,6 +774,7 @@ async function main(): Promise<void> {
   messageDeliverySweepHandle = scheduleMessageDeliverySweep()
   signerRotationHandle = scheduleSignerRotation()
   outboundNotificationsHandle = scheduleOutboundNotifications()
+  recoveryCompletionHandle = scheduleRecoveryCompletion()
   linkedExternalWalletSyncHandle = scheduleLinkedExternalWalletSync()
   // #532 — accrual first, then the monitor: the monitor values loans, and it
   // must not value them on interest the accrual job has not yet recorded.

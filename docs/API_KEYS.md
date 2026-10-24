@@ -55,6 +55,7 @@ implies every admin scope, and the legacy `agent` implies `agent:read` and
 | `fiat:write` | money | enforced | — | Create fiat on/off-ramp orders. | — | `POST /api/v1/fiat/orders` |
 | `loans:write` | money | enforced | — | Originate and repay collateral loans. | Origination and repayment still pass the compliance freeze and sub-account permission checks. | `POST /api/v1/loans`, `POST /api/v1/loans/:loanId/repay` |
 | `recurring_deposits:write` | money | enforced | — | Manage recurring deposit plans. | — | `DELETE /api/v1/deposit/recurring/:id`, `PATCH /api/v1/deposit/recurring/:id`, `POST /api/v1/deposit/recurring` |
+| `transfer:write` | money | enforced | — | Transfer assets to another platform user. | Transfers still pass compliance, frozen-account, balance, and sub-account permission checks. | `POST /api/v1/transfer` |
 | `vault:write` | money | enforced | — | Build vault transactions. | — | `POST /api/v1/vault/build-transaction` |
 | `withdraw:write` | money | enforced | — | Create withdrawals. | Requires allowWithdrawals on the key AND the platform kill-switch USER_API_KEY_WITHDRAWALS_ENABLED to be on. | `DELETE /api/v1/recurring-withdrawals/:id`, `PATCH /api/v1/recurring-withdrawals/:id`, `POST /api/v1/recurring-withdrawals`, `POST /api/v1/withdraw` |
 <!-- END GENERATED: user-scope-catalog -->

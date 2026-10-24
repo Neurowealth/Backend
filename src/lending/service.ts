@@ -242,12 +242,38 @@ export async function originateLoan(
     }
   }
 
-  const ltvRatio = principal / collateralValue
   const liquidationLtvThreshold = config.lending.liquidationLtvThreshold
   const rate = await resolveBorrowRate(borrowedAsset, position.user.network)
 
   const created = await db
     .$transaction(async (tx) => {
+      // Serialize loan creation with internal transfers that reassign position
+      // ownership; the transfer path locks these rows before checking loan
+      // status and changing the balance.
+      await tx.$queryRaw`
+        SELECT "id" FROM "positions"
+        WHERE "id" = ${input.positionId}
+        FOR UPDATE
+      `
+      const latestPosition = await tx.position.findUnique({
+        where: { id: input.positionId },
+        select: { currentValue: true, status: true },
+      })
+      const latestCollateralValue = Number(latestPosition?.currentValue)
+      if (
+        !latestPosition ||
+        latestPosition.status !== 'ACTIVE' ||
+        !Number.isFinite(latestCollateralValue) ||
+        latestCollateralValue < config.lending.minCollateralValue ||
+        !isWithinLtvCap(principal, latestCollateralValue, cap)
+      ) {
+        throw new AppError(
+          409,
+          'Collateral changed before loan origination; refresh and retry'
+        )
+      }
+      const lockedLtvRatio = principal / latestCollateralValue
+
       // Re-check inside the transaction. Two concurrent requests can both pass
       // the check above; the partial unique index is what actually settles it,
       // and this read keeps the common case from relying on a constraint error.
@@ -273,11 +299,11 @@ export async function originateLoan(
           underlyingBorrowApy: rate.underlyingBorrowApy,
           platformSpreadApy: rate.platformSpreadApy,
           interestRateApy: rate.interestRateApy,
-          ltvRatio,
+          ltvRatio: lockedLtvRatio,
           liquidationLtvThreshold,
           status: 'ACTIVE',
           lastValuedAt: new Date(),
-          lastValuedCollateral: collateralValue,
+          lastValuedCollateral: latestCollateralValue,
         },
       })
 
@@ -343,7 +369,7 @@ export async function originateLoan(
     principal,
     borrowedAsset,
     interestRateApy: rate.interestRateApy,
-    ltvRatio,
+    ltvRatio: Number(created.loan.ltvRatio),
   })
 
   return {
@@ -353,7 +379,7 @@ export async function originateLoan(
     outboxOpId: created.op.id,
     principal,
     interestRateApy: rate.interestRateApy,
-    ltvRatio,
+    ltvRatio: Number(created.loan.ltvRatio),
     liquidationLtvThreshold,
   }
 }
