@@ -365,7 +365,7 @@ export { redactSensitiveData, SENSITIVE_PATTERNS }
  */
 export function logBackgroundJob(
   jobName: string,
-  status: 'success' | 'failed' | 'dry_run',
+  status: 'success' | 'failed' | 'dry_run' | 'skipped',
   durationSeconds: number,
   correlationId?: string,
   details?: Record<string, any>

@@ -142,6 +142,39 @@ export const stellarSignerRotationOverdueDays = new client.Gauge({
   registers: [register],
 })
 
+export const drRehearsalLastSuccessTimestamp = new client.Gauge({
+  name: 'dr_rehearsal_last_success_timestamp',
+  help: 'Unix timestamp in seconds of the last successful disaster recovery backup/restore rehearsal',
+  registers: [register],
+})
+
+/**
+ * Record a successful disaster recovery backup/restore rehearsal timestamp
+ */
+export function recordDrRehearsalSuccess(timestampSeconds?: number): void {
+  const ts = timestampSeconds ?? Math.floor(Date.now() / 1000)
+  drRehearsalLastSuccessTimestamp.set(ts)
+}
+
+/** Publish the CI rehearsal timestamp so Prometheus can scrape it after CI exits. */
+export async function publishDrRehearsalSuccess(
+  pushgatewayUrl: string,
+  timestampSeconds: number
+): Promise<void> {
+  const endpoint = `${pushgatewayUrl.replace(/\/$/, '')}/metrics/job/dr_backup_restore_validation`
+  const response = await fetch(endpoint, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'text/plain; version=0.0.4' },
+    body: `dr_rehearsal_last_success_timestamp ${timestampSeconds}\n`,
+  })
+
+  if (!response.ok) {
+    throw new Error(
+      `Pushgateway rejected DR rehearsal metric with HTTP ${response.status}`
+    )
+  }
+}
+
 // ── Cursor/Lag Metrics ──────────────────────────────────────────────────────────
 
 export const cursorLag = new client.Gauge({
@@ -600,7 +633,7 @@ export function recordAnalyticsRequest(
  */
 export function recordBackgroundJob(
   job: string,
-  status: 'success' | 'failed' | 'dry_run',
+  status: 'success' | 'failed' | 'dry_run' | 'skipped',
   durationSeconds: number
 ): void {
   backgroundJobsTotal.inc({ job, status })

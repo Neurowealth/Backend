@@ -374,3 +374,13 @@ groups:
         annotations:
           summary: 'Protocol risk metadata is past its review date'
           description: '{{ $value }} protocol risk metadata entries are stale. See docs/PROTOCOL_RISK_SCORING.md.'
+
+      - alert: DisasterRecoveryRehearsalStale
+        expr: (time() - dr_rehearsal_last_success_timestamp) > 604800
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Disaster recovery rehearsal is overdue'
+          description: 'No successful DR backup/restore rehearsal recorded in > 7 days. See docs/DISASTER_RECOVERY_REHEARSAL.md.'
+          runbook: 'docs/DISASTER_RECOVERY_REHEARSAL.md'

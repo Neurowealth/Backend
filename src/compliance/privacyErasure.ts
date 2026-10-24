@@ -326,7 +326,9 @@ export async function executeErasure(
 
     const summary: ErasureSummary = await db.$transaction(
       async (tx) => {
-        // 1. Count records before deletion (for summary)
+        // 1. Count records before deletion (for summary and preserved impact assessment)
+        // Preserved records (referrals and audit logs) must be counted prior to user deletion
+        // because ReferralCode and ReferralConversion cascade-delete with User in PostgreSQL.
         const [
           sessionsCount,
           positionsCount,
@@ -344,6 +346,9 @@ export async function executeErasure(
           costBasisLotsCount,
           lotDisposalsCount,
           portfolioAttributionsCount,
+          adminAuditLogsCount,
+          referralAsOwnerCount,
+          referralAsReferredCount,
         ] = await Promise.all([
           tx.session.count({ where: { userId } }),
           tx.position.count({ where: { userId } }),
@@ -361,6 +366,31 @@ export async function executeErasure(
           tx.costBasisLot.count({ where: { userId } }),
           tx.lotDisposal.count({ where: { userId } }),
           tx.portfolioAttribution.count({ where: { userId } }),
+          tx.adminAuditLog.count({
+            where: {
+              OR: [
+                { target: userId },
+                {
+                  details: {
+                    path: ['userId'],
+                    equals: userId,
+                  },
+                },
+              ],
+            },
+          }),
+          tx.referralConversion.count({
+            where: {
+              referralCode: {
+                ownerUserId: userId,
+              },
+            },
+          }),
+          tx.referralConversion.count({
+            where: {
+              referredUserId: userId,
+            },
+          }),
         ])
 
         // 2. Anonymize financial records (preserve for regulatory/audit)
@@ -410,27 +440,6 @@ export async function executeErasure(
             completedAt: new Date(),
           },
         })
-
-        // 5. Count preserved records (not deleted, just anonymized or nullified)
-        const [
-          adminAuditLogsCount,
-          referralAsOwnerCount,
-          referralAsReferredCount,
-        ] = await Promise.all([
-          tx.adminAuditLog.count({
-            where: {
-              details: {
-                path: ['userId'],
-                equals: userId,
-              },
-            },
-          }),
-          // ReferralCode cascade-deleted, so conversions via that code are orphaned
-          // but still exist with referredUserId intact (unless we anonymize)
-          Promise.resolve(0),
-          Promise.resolve(0),
-        ])
-
         return {
           userId,
           walletAddress: user.walletAddress,
@@ -605,6 +614,9 @@ export async function previewErasure(
     costBasisLotsCount,
     lotDisposalsCount,
     portfolioAttributionsCount,
+    adminAuditLogsCount,
+    referralAsOwnerCount,
+    referralAsReferredCount,
   ] = await Promise.all([
     db.session.count({ where: { userId } }),
     db.position.count({ where: { userId } }),
@@ -622,6 +634,31 @@ export async function previewErasure(
     db.costBasisLot.count({ where: { userId } }),
     db.lotDisposal.count({ where: { userId } }),
     db.portfolioAttribution.count({ where: { userId } }),
+    db.adminAuditLog.count({
+      where: {
+        OR: [
+          { target: userId },
+          {
+            details: {
+              path: ['userId'],
+              equals: userId,
+            },
+          },
+        ],
+      },
+    }),
+    db.referralConversion.count({
+      where: {
+        referralCode: {
+          ownerUserId: userId,
+        },
+      },
+    }),
+    db.referralConversion.count({
+      where: {
+        referredUserId: userId,
+      },
+    }),
   ])
 
   return {
@@ -646,9 +683,9 @@ export async function previewErasure(
       portfolioAttributions: portfolioAttributionsCount,
     },
     preservedRecords: {
-      adminAuditLogs: 0, // Would need complex query
-      referralConversionsAsOwner: 0,
-      referralConversionsAsReferred: 0,
+      adminAuditLogs: adminAuditLogsCount,
+      referralConversionsAsOwner: referralAsOwnerCount,
+      referralConversionsAsReferred: referralAsReferredCount,
     },
   }
 }
