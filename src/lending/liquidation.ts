@@ -71,7 +71,7 @@ export async function applyLoanLiquidationSale(
     borrowedAsset: string
     trigger: 'scheduled' | 'circuit_breaker'
     transactionId: string
-    outboxOpId: string
+    outboxOpId?: string
     sequence: number
   },
   options: { force?: boolean } = {}
@@ -223,7 +223,7 @@ export async function applyLoanLiquidationSale(
           0,
           collateralValue - plan.collateralToSell
         ),
-        liquidationOutboxOpId: payload.outboxOpId,
+        liquidationOutboxOpId: payload.outboxOpId ?? payload.transactionId,
       },
     })
 
@@ -239,7 +239,7 @@ export async function applyLoanLiquidationSale(
         collateralSold: plan.collateralToSell,
         debtRetired: plan.debtRetired,
         shortfall: plan.shortfall,
-        outboxOpId: payload.outboxOpId,
+        outboxOpId: payload.outboxOpId ?? payload.transactionId,
       },
     })
 

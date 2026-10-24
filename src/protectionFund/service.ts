@@ -294,6 +294,7 @@ function computePositionLoss(
 export async function executePayout(claimId: string) {
   const claim = await db.coverageClaim.findUnique({
     where: { id: claimId },
+    include: { event: true },
   })
   if (!claim) throw new Error('Claim not found')
   if (claim.status !== 'PENDING')
@@ -361,7 +362,12 @@ export async function getMyCoverage(userId: string) {
   const exposure = []
 
   for (const pos of positions) {
-    const holdDuration = Date.now() - pos.openedAt.getTime()
+    const openedTime = pos.openedAt
+      ? pos.openedAt.getTime()
+      : (pos as any).createdAt
+        ? new Date((pos as any).createdAt).getTime()
+        : Date.now()
+    const holdDuration = Date.now() - openedTime
     const eligible = holdDuration >= terms.minHoldDurationMs
 
     exposure.push({

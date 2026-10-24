@@ -142,7 +142,7 @@ export type OutboxPayload =
       trigger: 'scheduled' | 'circuit_breaker'
       transactionId: string
       /** The OutboxOp.id that carries this payload — used to link audit records (#665). */
-      outboxOpId: string
+      outboxOpId?: string
       /** Monotonic per loan, so the sale is idempotent under outbox retry. */
       sequence: number
     }

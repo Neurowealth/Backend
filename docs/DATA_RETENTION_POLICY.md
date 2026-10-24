@@ -8,6 +8,14 @@ This document defines the data retention, archival, and purge policies for all a
 
 ### Operational Logs
 
+| Data Type            | Table/Source        | Retention Period        | Archival           | Purge Method      |
+| -------------------- | ------------------- | ----------------------- | ------------------ | ----------------- |
+| Auth Nonces          | `auth_nonce`        | TTL-based (expiresAt)   | No                 | Automatic cleanup |
+| Processed Events     | `processed_event`   | 90 days                 | Yes (audit chain)  | Scheduled job     |
+| Dead Letter Events   | `dead_letter_event` | 30 days (RESOLVED only) | No                 | Scheduled job     |
+| Agent Logs           | `agent_log`         | 60 days                 | Yes (audit chain)  | Scheduled job     |
+| User Events (Stream) | `user_event`        | 7 days + 5000/user cap  | No                 | Scheduled job     |
+| Audit Blocks         | `audit_block`       | 365 days                | Yes (cold storage) | Scheduled job     |
 | Data Type | Table/Source | Retention Period | Archival | Purge Method |
 |-----------|--------------|------------------|-----------|--------------|
 | Auth Nonces | `auth_nonce` | TTL-based (expiresAt) | No | Automatic cleanup |
@@ -20,36 +28,37 @@ This document defines the data retention, archival, and purge policies for all a
 
 ### Analytics Data
 
-| Data Type | Table/Source | Retention Period | Archival | Purge Method |
-|-----------|--------------|------------------|-----------|--------------|
-| Protocol Rates | `protocol_rate` | 180 days | Yes (S3/Glacier) | Scheduled job |
-| Yield Snapshots | `yield_snapshot` | 90 days | Yes (S3/Glacier) | Scheduled job |
-| Performance Attribution | `attribution_snapshot` | 365 days | Yes (S3/Glacier) | Scheduled job |
-| Strategy Metrics | `strategy_metrics` | 180 days | Yes (S3/Glacier) | Scheduled job |
-| Portfolio Risk Scores | `portfolio_risk` | 90 days | No | Scheduled job |
+| Data Type               | Table/Source           | Retention Period | Archival         | Purge Method  |
+| ----------------------- | ---------------------- | ---------------- | ---------------- | ------------- |
+| Protocol Rates          | `protocol_rate`        | 180 days         | Yes (S3/Glacier) | Scheduled job |
+| Yield Snapshots         | `yield_snapshot`       | 90 days          | Yes (S3/Glacier) | Scheduled job |
+| Performance Attribution | `attribution_snapshot` | 365 days         | Yes (S3/Glacier) | Scheduled job |
+| Strategy Metrics        | `strategy_metrics`     | 180 days         | Yes (S3/Glacier) | Scheduled job |
+| Portfolio Risk Scores   | `portfolio_risk`       | 90 days          | No               | Scheduled job |
 
 ### Transaction Data
 
-| Data Type | Table/Source | Retention Period | Archival | Purge Method |
-|-----------|--------------|------------------|-----------|--------------|
-| Transactions | `transaction` | 7 years (tax compliance) | Yes (cold storage) | Never |
-| Positions | `position` | 7 years (tax compliance) | Yes (cold storage) | Never |
-| Outbox Operations | `outbox_op` | 90 days (CONFIRMED) | No | Scheduled job |
+| Data Type         | Table/Source  | Retention Period         | Archival           | Purge Method  |
+| ----------------- | ------------- | ------------------------ | ------------------ | ------------- |
+| Transactions      | `transaction` | 7 years (tax compliance) | Yes (cold storage) | Never         |
+| Positions         | `position`    | 7 years (tax compliance) | Yes (cold storage) | Never         |
+| Outbox Operations | `outbox_op`   | 90 days (CONFIRMED)      | No                 | Scheduled job |
 
 ### User Data
 
-| Data Type | Table/Source | Retention Period | Archival | Purge Method |
-|-----------|--------------|------------------|-----------|--------------|
-| User Profiles | `user` | Indefinite (active) | Yes (GDPR export) | On request |
-| API Keys | `api_key` | Indefinite (active) | No | On deletion |
-| Notification Preferences | `notification_preference` | Indefinite | No | On deletion |
-| Sessions | `session` | 24 hours | No | TTL-based |
+| Data Type                | Table/Source              | Retention Period    | Archival          | Purge Method |
+| ------------------------ | ------------------------- | ------------------- | ----------------- | ------------ |
+| User Profiles            | `user`                    | Indefinite (active) | Yes (GDPR export) | On request   |
+| API Keys                 | `api_key`                 | Indefinite (active) | No                | On deletion  |
+| Notification Preferences | `notification_preference` | Indefinite          | No                | On deletion  |
+| Sessions                 | `session`                 | 24 hours            | No                | TTL-based    |
 
 ## Archival Workflow
 
 ### Phase 1: Pre-Archival Validation
 
 Before archiving any data, the system validates:
+
 1. **Data Completeness**: All required fields are present
 2. **Audit Chain Integrity**: Hashes match the audit chain
 3. **Compliance Flags**: No legal holds or compliance flags are set
@@ -58,6 +67,7 @@ Before archiving any data, the system validates:
 ### Phase 2: Data Redaction
 
 Sensitive data is redacted before archival:
+
 - **PII**: Email addresses, phone numbers masked (e.g., `j***@example.com`)
 - **Secrets**: API keys, tokens completely removed
 - **Wallet Data**: Private keys never archived; only public addresses retained
@@ -75,6 +85,7 @@ Sensitive data is redacted before archival:
 ### Phase 4: Retrieval
 
 Archived data retrieval process:
+
 1. **Request**: Submit retrieval request with justification
 2. **Approval**: Requires admin or compliance approval
 3. **Restore**: Data restored from cold storage (3-12 hour SLA)
@@ -84,45 +95,45 @@ Archived data retrieval process:
 
 ### Data Classification
 
-| Classification | Examples | Handling |
-|----------------|----------|----------|
-| **Critical** | Private keys, seed phrases | Never logged, encrypted at rest, strict access control |
-| **Sensitive** | API keys, auth tokens | Masked in logs, encrypted at rest, need-to-know access |
-| **PII** | Email, phone, wallet addresses | Redacted in archives, GDPR-compliant deletion |
-| **Operational** | Event logs, metrics | Standard retention, no special handling |
-| **Public** | Protocol rates, public addresses | No restrictions |
+| Classification  | Examples                         | Handling                                               |
+| --------------- | -------------------------------- | ------------------------------------------------------ |
+| **Critical**    | Private keys, seed phrases       | Never logged, encrypted at rest, strict access control |
+| **Sensitive**   | API keys, auth tokens            | Masked in logs, encrypted at rest, need-to-know access |
+| **PII**         | Email, phone, wallet addresses   | Redacted in archives, GDPR-compliant deletion          |
+| **Operational** | Event logs, metrics              | Standard retention, no special handling                |
+| **Public**      | Protocol rates, public addresses | No restrictions                                        |
 
 ### Redaction Rules
 
-#### Log Redaction
-```typescript
-// Example redaction patterns
-const REDACTION_RULES = {
-  email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
-  phone: /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/g,
-  apiKey: /\b[A-Za-z0-9]{32,}\b/g,
-  privateKey: /\bS[A-Za-z0-9]{55}\b/g,
-  ip: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g,
-}
+#### Log Redaction (#666)
 
-// Redaction function
-function redactSensitiveData(log: string): string {
-  let redacted = log
-  redacted = redacted.replace(REDACTION_RULES.email, '***@***.***')
-  redacted = redacted.replace(REDACTION_RULES.phone, '***-***-****')
-  redacted = redacted.replace(REDACTION_RULES.apiKey, '[REDACTED_API_KEY]')
-  redacted = redacted.replace(REDACTION_RULES.privateKey, '[REDACTED_PRIVATE_KEY]')
-  redacted = redacted.replace(REDACTION_RULES.ip, (match) => {
-    const parts = match.split('.')
-    return `${parts[0]}.${parts[1]}.${parts[2]}.***`
-  })
-  return redacted
-}
+Log payloads and Winston message streams are transformed prior to dispatch to any transport or storage engine:
+
+```typescript
+// Field deny-list: unconditionally replaced with '[REDACTED]'
+const DENY_LIST_KEYS = [
+  'password',
+  'secret',
+  'token',
+  'authorization',
+  'cookie',
+]
+
+// Redaction rules across string messages and object values:
+// 1. Email: redact local-part, preserve domain (e.g., user@example.com -> ***@example.com)
+// 2. Phone: mask full number (e.g., +1-555-123-4567 -> ***-***-****)
+// 3. IP: mask host octet to preserve /24 subnet (e.g., 192.168.1.100 -> 192.168.1.***)
+// 4. Wallet: mask Stellar & EVM addresses (e.g., GAAZ...CWN7, 0x71...976F)
+// 5. Secret keys: redact Stellar secret keys (S...) to [REDACTED_SECRET_KEY]
+// 6. Tokens: Slack (xoxb-), Stripe (sk-), Bearer, and 64-char hex strings masked
 ```
+
+Scrubbing cannot be bypassed by debug log levels or sampling mechanisms, ensuring persistent operational logs adhere to data minimization under GDPR Article 5(1)(c) and CCPA.
 
 ### Audit Trail Requirements
 
 All data lifecycle operations must be logged:
+
 - **Creation**: Data creation timestamp and source
 - **Access**: Who accessed data and when
 - **Modification**: What changed and why
@@ -132,13 +143,13 @@ All data lifecycle operations must be logged:
 
 ## Ownership and Responsibilities
 
-| Role | Responsibilities |
-|------|------------------|
-| **Data Engineer** | Implement retention jobs, monitor storage usage |
-| **Security Engineer** | Define redaction rules, manage encryption keys |
-| **Compliance Officer** | Set retention periods, approve retrievals |
-| **DevOps Engineer** | Manage archival storage, configure alerts |
-| **Database Admin** | Execute purge operations, verify integrity |
+| Role                   | Responsibilities                                |
+| ---------------------- | ----------------------------------------------- |
+| **Data Engineer**      | Implement retention jobs, monitor storage usage |
+| **Security Engineer**  | Define redaction rules, manage encryption keys  |
+| **Compliance Officer** | Set retention periods, approve retrievals       |
+| **DevOps Engineer**    | Manage archival storage, configure alerts       |
+| **Database Admin**     | Execute purge operations, verify integrity      |
 
 ## Configuration
 
@@ -183,6 +194,7 @@ The data retention job supports a dry-run mode for safe testing and validation:
   - Generate retention reports for compliance auditing
 
 Dry-run mode applies to all retention tables:
+
 - `auth_nonce` (expired nonces)
 - `processed_event` (events older than retention window)
 - `dead_letter_event` (RESOLVED entries older than retention window)
@@ -204,27 +216,30 @@ Logs include per-table counts (`wouldDelete`) and retention parameters (retentio
 
 ### Alert Rules
 
-| Alert | Condition | Severity |
-|-------|-----------|----------|
-| Retention Job Failed | Job fails 3 consecutive times | Critical |
-| Storage Growth Anomaly | Storage grows >50% in 7 days | Warning |
-| Archival Upload Failed | Upload failure rate >10% | Critical |
-| Compliance Hold Set | Legal hold flag set on data | Critical |
+| Alert                      | Condition                      | Severity |
+| -------------------------- | ------------------------------ | -------- |
+| Retention Job Failed       | Job fails 3 consecutive times  | Critical |
+| Storage Growth Anomaly     | Storage grows >50% in 7 days   | Warning  |
+| Archival Upload Failed     | Upload failure rate >10%       | Critical |
+| Compliance Hold Set        | Legal hold flag set on data    | Critical |
 | Retrieval Without Approval | Unauthorized retrieval attempt | Critical |
 
 ## Compliance Considerations
 
 ### GDPR
+
 - Right to erasure: User data deleted within 30 days of request
 - Data portability: User can export their data
 - Consent tracking: All consent changes logged
 
 ### SOX
+
 - Audit trail: All financial data changes logged
 - Retention: Transaction data retained 7 years
 - Access control: Role-based access to sensitive data
 
 ### PCI-DSS
+
 - Card data: Never stored (not applicable for crypto)
 - Encryption: All sensitive data encrypted at rest
 - Access logs: All access logged and monitored
@@ -255,7 +270,7 @@ Logs include per-table counts (`wouldDelete`) and retention parameters (retentio
 
 ## Change Log
 
-| Date | Change | Author |
-|------|--------|--------|
+| Date       | Change                    | Author       |
+| ---------- | ------------------------- | ------------ |
 | 2024-09-28 | Initial policy definition | Backend Team |
 | 2026-10-21 | Added Admin Audit Log append-only enforcement, retention, and export (#682) | Backend Team |
