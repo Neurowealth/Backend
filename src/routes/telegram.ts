@@ -1,15 +1,15 @@
 import express, { Request, Response } from 'express'
 import { handleTelegramMessage } from '../telegram/handler'
+import { messageDeliveryService } from '../messaging'
 import { logger } from '../utils/logger'
 
 const router = express.Router()
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || ''
-const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || ''
-
 function verifyTelegramRequest(req: Request): boolean {
   const header = req.header('x-telegram-bot-api-secret-token')
-  return Boolean(BOT_TOKEN && WEBHOOK_SECRET && header === WEBHOOK_SECRET)
+  const botToken = process.env.TELEGRAM_BOT_TOKEN || ''
+  const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET || ''
+  return Boolean(botToken && webhookSecret && header === webhookSecret)
 }
 
 router.get('/health', (_req: Request, res: Response) => {
@@ -31,28 +31,20 @@ router.post('/', async (req: Request, res: Response) => {
 
   try {
     const reply = await handleTelegramMessage(chatId, text)
-    const payload = {
-      chat_id: chatId,
-      text: reply,
-      parse_mode: 'HTML',
-    }
+    const delivery = await messageDeliveryService.send({
+      channel: 'TELEGRAM',
+      recipient: String(chatId),
+      body: reply,
+      category: 'BOT_REPLY',
+    })
 
-    const response = await fetch(
-      `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      }
-    )
-
-    if (!response.ok) {
-      logger.error('[Telegram webhook] Bot API error', {
-        status: response.status,
+    if (delivery.status === 'DEAD_LETTER' || delivery.status === 'FAILED') {
+      logger.error('[Telegram webhook] Bot message delivery failed', {
+        chatId,
+        error: delivery.lastError,
       })
       return res.status(502).send('Bad Gateway')
     }
-
     return res.status(200).send('OK')
   } catch (error) {
     logger.error('[Telegram webhook] error handling message:', error)

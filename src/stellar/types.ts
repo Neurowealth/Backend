@@ -48,8 +48,24 @@ export interface EventMetrics {
 
 export interface TransactionResult {
   hash: string
-  status: 'success' | 'failed'
+  status: 'success' | 'failed' | 'pending'
   ledger?: number
+}
+
+export class TransactionConfirmationTimeoutError extends Error {
+  constructor(
+    public readonly txHash: string,
+    timeoutMs: number,
+    cause?: unknown
+  ) {
+    super(
+      `Transaction confirmation timeout after ${timeoutMs}ms (hash: ${txHash})`
+    )
+    this.name = 'TransactionConfirmationTimeoutError'
+    if (cause !== undefined) {
+      Object.defineProperty(this, 'cause', { value: cause, configurable: true })
+    }
+  }
 }
 
 export interface OnChainBalance {

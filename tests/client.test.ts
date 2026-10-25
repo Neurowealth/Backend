@@ -38,12 +38,14 @@ jest.mock('../src/config', () => ({
 // mock an open signature so every call to those helpers type-checks correctly.
 const mockSendTransaction = jest.fn<(...args: any[]) => any>()
 const mockGetAccount = jest.fn<(...args: any[]) => any>()
+const mockGetTransaction = jest.fn<(...args: any[]) => any>()
 
 jest.mock('@stellar/stellar-sdk', () => ({
   rpc: {
     Server: jest.fn().mockImplementation(() => ({
       sendTransaction: mockSendTransaction,
       getAccount: mockGetAccount,
+      getTransaction: mockGetTransaction,
     })),
   },
   Networks: { TESTNET: 'Test SDF Network ; September 2015' },
@@ -170,6 +172,65 @@ describe('ResilientRpcClient', () => {
 
       await expect(submitTransaction({} as any)).rejects.toThrow(
         'Transaction failed'
+      )
+    })
+  })
+
+  describe('waitForConfirmation', () => {
+    it('returns a confirmed hash and ledger', async () => {
+      mockGetTransaction.mockResolvedValueOnce({
+        status: 'SUCCESS',
+        ledger: 123,
+      })
+
+      setEnvUrls('https://primary.example.com')
+      jest.resetModules()
+      const { waitForConfirmation } = await import('../src/stellar/client')
+
+      await expect(waitForConfirmation('tx-confirmed', 100)).resolves.toEqual({
+        hash: 'tx-confirmed',
+        status: 'success',
+        ledger: 123,
+      })
+    })
+
+    it('returns a definitive on-chain failure', async () => {
+      mockGetTransaction.mockResolvedValueOnce({ status: 'FAILED' })
+
+      setEnvUrls('https://primary.example.com')
+      jest.resetModules()
+      const { waitForConfirmation } = await import('../src/stellar/client')
+
+      await expect(waitForConfirmation('tx-failed', 100)).resolves.toEqual({
+        hash: 'tx-failed',
+        status: 'failed',
+      })
+    })
+
+    it('throws a hash-bearing timeout for an unconfirmed transaction', async () => {
+      mockGetTransaction.mockResolvedValue({ status: 'NOT_FOUND' })
+
+      setEnvUrls('https://primary.example.com')
+      jest.resetModules()
+      const { waitForConfirmation } = await import('../src/stellar/client')
+
+      await expect(waitForConfirmation('tx-pending', 0)).rejects.toMatchObject({
+        name: 'TransactionConfirmationTimeoutError',
+        txHash: 'tx-pending',
+      })
+    })
+  })
+
+  describe('getTransactionStatus', () => {
+    it('distinguishes NOT_FOUND from a failed transaction', async () => {
+      mockGetTransaction.mockResolvedValueOnce({ status: 'NOT_FOUND' })
+
+      setEnvUrls('https://primary.example.com')
+      jest.resetModules()
+      const { getTransactionStatus } = await import('../src/stellar/client')
+
+      await expect(getTransactionStatus('tx-unknown')).resolves.toBe(
+        'not_found'
       )
     })
   })

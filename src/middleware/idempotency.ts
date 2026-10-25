@@ -4,7 +4,7 @@ import db from '../db'
 import { getRedisClient } from '../config/redis'
 import { logger } from '../utils/logger'
 
-const prisma = db as any
+const prisma = db
 
 export interface IdempotencyOptions {
   /** TTL for completed records in seconds (default 24h). */
@@ -30,7 +30,7 @@ function redisKey(userId: string, key: string): string {
   return `idem:${userId}:${key}`
 }
 
-function canonicalizeBody(body: unknown): string {
+export function canonicalizeBody(body: unknown): string {
   if (body === null || body === undefined) return ''
   if (typeof body !== 'object') return JSON.stringify(body)
   const sorted = sortKeys(body as Record<string, unknown>)
@@ -50,7 +50,7 @@ function sortKeys(obj: Record<string, unknown>): Record<string, unknown> {
   return result
 }
 
-function computeFingerprint(req: Request, userId: string): string {
+export function computeFingerprint(req: Request, userId: string): string {
   const body = canonicalizeBody(req.body)
   const raw = `${req.method}:${req.path}:${userId}:${body}`
   return createHash('sha256').update(raw).digest('hex')
@@ -94,7 +94,7 @@ async function persistDbRecord(
         fingerprint: record.fingerprint,
         status: record.status,
         statusCode: record.statusCode ?? null,
-        responseBody: record.responseBody ?? null,
+        responseBody: (record.responseBody as any) ?? null,
         completedAt: record.completedAt ? new Date(record.completedAt) : null,
         expiresAt,
       },
@@ -102,7 +102,7 @@ async function persistDbRecord(
         fingerprint: record.fingerprint,
         status: record.status,
         statusCode: record.statusCode ?? null,
-        responseBody: record.responseBody ?? null,
+        responseBody: (record.responseBody as any) ?? null,
         completedAt: record.completedAt ? new Date(record.completedAt) : null,
         expiresAt,
       },

@@ -1,4 +1,5 @@
 import db from '../db'
+import type { Prisma } from '@prisma/client'
 import { logger, logBackgroundJob } from '../utils/logger'
 import {
   generateCorrelationId,
@@ -7,6 +8,7 @@ import {
 import { config } from '../config/env'
 import { recordBackgroundJob, recordRetentionDeletes } from '../utils/metrics'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 import {
   appendAuditBlock,
   aggregatePayloadHash,
@@ -15,19 +17,18 @@ import {
 import { trimUserEventStreams } from '../events/store'
 
 function cutoffDate(retentionDays: number): Date {
-  const d = new Date()
-  d.setDate(d.getDate() - retentionDays)
-  return d
+  return new Date(Date.now() - retentionDays * 86400000)
 }
 
-async function anchorBeforeDelete(
+export async function anchorBeforeDelete(
   modelName: string,
-  rows: Array<Record<string, unknown>>
+  rows: Array<Record<string, unknown>>,
+  client: Pick<Prisma.TransactionClient, 'auditBlock'> | typeof db = db
 ): Promise<string | null> {
   if (rows.length === 0) return null
 
   const payloadHash = aggregatePayloadHash(rows)
-  const latest = await db.auditBlock.findFirst({
+  const latest = await client.auditBlock.findFirst({
     orderBy: { height: 'desc' },
     select: { hash: true, height: true },
   })
@@ -41,7 +42,7 @@ async function anchorBeforeDelete(
     payloads: rows.map((row) => ({ modelName, row })),
   })
 
-  await db.auditBlock.create({
+  await client.auditBlock.create({
     data: {
       height: block.height,
       prevHash: block.prevHash,
@@ -61,11 +62,26 @@ async function anchorBeforeDelete(
  */
 export async function cleanupAuthNonces(): Promise<void> {
   const correlationId = generateCorrelationId()
+  const dryRun = process.env.DATA_RETENTION_DRY_RUN === 'true'
   return runWithCorrelationIdAsync(correlationId, async () => {
     const start = Date.now()
     const jobName = 'retention_auth_nonces'
 
     try {
+      const count = await db.authNonce.count({
+        where: { expiresAt: { lt: new Date() } },
+      })
+
+      if (dryRun) {
+        const durationMs = Date.now() - start
+        const duration = durationMs / 1000
+        logBackgroundJob(jobName, 'dry_run', duration, correlationId, {
+          wouldDelete: count,
+        })
+        recordBackgroundJob(jobName, 'dry_run', duration)
+        return
+      }
+
       const result = await db.authNonce.deleteMany({
         where: { expiresAt: { lt: new Date() } },
       })
@@ -92,7 +108,7 @@ export async function cleanupAuthNonces(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -102,6 +118,7 @@ export async function cleanupAuthNonces(): Promise<void> {
  */
 export async function cleanupProcessedEvents(): Promise<void> {
   const correlationId = generateCorrelationId()
+  const dryRun = process.env.DATA_RETENTION_DRY_RUN === 'true'
   return runWithCorrelationIdAsync(correlationId, async () => {
     const start = Date.now()
     const jobName = 'retention_processed_events'
@@ -119,6 +136,18 @@ export async function cleanupProcessedEvents(): Promise<void> {
           processedAt: true,
         },
       })
+
+      if (dryRun) {
+        const durationMs = Date.now() - start
+        const duration = durationMs / 1000
+        logBackgroundJob(jobName, 'dry_run', duration, correlationId, {
+          wouldDelete: rows.length,
+          retentionDays: config.retention.processedEventsDays,
+        })
+        recordBackgroundJob(jobName, 'dry_run', duration)
+        return
+      }
+
       if (rows.length > 0) {
         await anchorBeforeDelete('processed_event', rows)
       }
@@ -150,7 +179,7 @@ export async function cleanupProcessedEvents(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -161,12 +190,32 @@ export async function cleanupProcessedEvents(): Promise<void> {
  */
 export async function cleanupDeadLetterEvents(): Promise<void> {
   const correlationId = generateCorrelationId()
+  const dryRun = process.env.DATA_RETENTION_DRY_RUN === 'true'
   return runWithCorrelationIdAsync(correlationId, async () => {
     const start = Date.now()
     const jobName = 'retention_dead_letter_events'
 
     try {
       const cutoff = cutoffDate(config.retention.deadLetterEventsDays)
+      const count = await db.deadLetterEvent.count({
+        where: {
+          status: 'RESOLVED',
+          createdAt: { lt: cutoff },
+        },
+      })
+
+      if (dryRun) {
+        const durationMs = Date.now() - start
+        const duration = durationMs / 1000
+        logBackgroundJob(jobName, 'dry_run', duration, correlationId, {
+          wouldDelete: count,
+          eventStatus: 'RESOLVED',
+          retentionDays: config.retention.deadLetterEventsDays,
+        })
+        recordBackgroundJob(jobName, 'dry_run', duration)
+        return
+      }
+
       const result = await db.deadLetterEvent.deleteMany({
         where: {
           status: 'RESOLVED',
@@ -200,7 +249,7 @@ export async function cleanupDeadLetterEvents(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -210,6 +259,7 @@ export async function cleanupDeadLetterEvents(): Promise<void> {
  */
 export async function cleanupAgentLogs(): Promise<void> {
   const correlationId = generateCorrelationId()
+  const dryRun = process.env.DATA_RETENTION_DRY_RUN === 'true'
   return runWithCorrelationIdAsync(correlationId, async () => {
     const start = Date.now()
     const jobName = 'retention_agent_logs'
@@ -227,6 +277,18 @@ export async function cleanupAgentLogs(): Promise<void> {
           positionId: true,
         },
       })
+
+      if (dryRun) {
+        const durationMs = Date.now() - start
+        const duration = durationMs / 1000
+        logBackgroundJob(jobName, 'dry_run', duration, correlationId, {
+          wouldDelete: rows.length,
+          retentionDays: config.retention.agentLogsDays,
+        })
+        recordBackgroundJob(jobName, 'dry_run', duration)
+        return
+      }
+
       if (rows.length > 0) {
         await anchorBeforeDelete('agent_log', rows)
       }
@@ -258,7 +320,7 @@ export async function cleanupAgentLogs(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -280,12 +342,36 @@ export async function cleanupAgentLogs(): Promise<void> {
  */
 export async function cleanupUserEvents(): Promise<void> {
   const correlationId = generateCorrelationId()
+  const dryRun = process.env.DATA_RETENTION_DRY_RUN === 'true'
   return runWithCorrelationIdAsync(correlationId, async () => {
     const start = Date.now()
     const jobName = 'retention_user_events'
 
     try {
       const cutoff = cutoffDate(config.retention.userEventsDays)
+      const expiredCount = await db.userEvent.count({
+        where: { createdAt: { lt: cutoff } },
+      })
+
+      if (dryRun) {
+        const trimmed = await trimUserEventStreams(
+          config.retention.userEventsMaxPerUser
+        )
+        const durationMs = Date.now() - start
+        const duration = durationMs / 1000
+        const wouldDelete = expiredCount + trimmed
+
+        logBackgroundJob(jobName, 'dry_run', duration, correlationId, {
+          wouldDelete,
+          wouldExpireByAge: expiredCount,
+          wouldTrimByCap: trimmed,
+          retentionDays: config.retention.userEventsDays,
+          maxPerUser: config.retention.userEventsMaxPerUser,
+        })
+        recordBackgroundJob(jobName, 'dry_run', duration)
+        return
+      }
+
       const expired = await db.userEvent.deleteMany({
         where: { createdAt: { lt: cutoff } },
       })
@@ -322,7 +408,127 @@ export async function cleanupUserEvents(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
+    }
+  })
+}
+
+/**
+ * Prune admin_audit_logs older than RETENTION_ADMIN_AUDIT_LOGS_DAYS (default 365) (#682).
+ *
+ * Guaranteed append-only at the DB layer via PostgreSQL trigger.
+ * Deletion is permitted ONLY when:
+ *   1. Legal hold is NOT active (ADMIN_AUDIT_LEGAL_HOLD !== 'true' and neuro.legal_hold !== 'true').
+ *   2. Session explicitly executes `SET LOCAL neuro.allow_audit_retention_purge = 'true'` inside a transaction.
+ *
+ * Before removal, expired rows are cryptographically anchored to the audit block chain.
+ */
+export async function cleanupAdminAuditLogs(): Promise<void> {
+  const correlationId = generateCorrelationId()
+  const dryRun = process.env.DATA_RETENTION_DRY_RUN === 'true'
+  return runWithCorrelationIdAsync(correlationId, async () => {
+    const start = Date.now()
+    const jobName = 'retention_admin_audit_logs'
+
+    try {
+      // Step 1: Check legal hold override
+      if (config.retention.adminAuditLegalHold) {
+        const durationMs = Date.now() - start
+        const duration = durationMs / 1000
+        logBackgroundJob(jobName, 'skipped', duration, correlationId, {
+          reason: 'legal_hold_active',
+          retentionDays: config.retention.adminAuditLogsDays,
+        })
+        logger.warn(
+          `[${jobName}] Legal hold is active (ADMIN_AUDIT_LEGAL_HOLD=true); skipping admin audit log retention prune`
+        )
+        recordBackgroundJob(jobName, 'skipped', duration)
+        recordJobSuccess(jobName, durationMs)
+        return
+      }
+
+      const cutoff = cutoffDate(config.retention.adminAuditLogsDays)
+
+      if (dryRun) {
+        const wouldDelete = await db.adminAuditLog.count({
+          where: { createdAt: { lt: cutoff } },
+        })
+        const durationMs = Date.now() - start
+        const duration = durationMs / 1000
+        logBackgroundJob(jobName, 'dry_run', duration, correlationId, {
+          wouldDelete,
+          retentionDays: config.retention.adminAuditLogsDays,
+        })
+        recordBackgroundJob(jobName, 'dry_run', duration)
+        return
+      }
+
+      let deletedCount = 0
+      while (true) {
+        const batchDeleted = await db.$transaction(async (tx) => {
+          // Lock one bounded batch so competing workers cannot anchor/delete
+          // the same rows. The anchor and purge share this transaction.
+          const rows = await tx.$queryRaw<
+            Array<Record<string, unknown> & { id: string }>
+          >`SELECT id, "adminKeyId", action, result, "createdAt"
+            FROM public.admin_audit_logs
+            WHERE "createdAt" < ${cutoff}
+            ORDER BY "createdAt" ASC, id ASC
+            LIMIT 500
+            FOR UPDATE SKIP LOCKED`
+
+          if (rows.length === 0) return 0
+
+          await anchorBeforeDelete('admin_audit_log', rows, tx)
+          const ids = rows.map((row) => row.id)
+          const deleted = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT public.purge_admin_audit_logs(${ids}::text[], ${cutoff}::timestamptz) AS id
+          `
+          return deleted.length
+        })
+        deletedCount += batchDeleted
+        if (batchDeleted < 500) break
+      }
+
+      const durationMs = Date.now() - start
+      const duration = durationMs / 1000
+
+      logBackgroundJob(jobName, 'success', duration, correlationId, {
+        rowsDeleted: deletedCount,
+        retentionDays: config.retention.adminAuditLogsDays,
+      })
+
+      if (deletedCount > 0) {
+        recordRetentionDeletes('admin_audit_logs', deletedCount)
+      }
+      recordBackgroundJob(jobName, 'success', duration)
+      recordJobSuccess(jobName, durationMs)
+    } catch (error) {
+      const durationMs = Date.now() - start
+      const duration = durationMs / 1000
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error'
+
+      if (/protected by legal hold/i.test(errorMessage)) {
+        logBackgroundJob(jobName, 'skipped', duration, correlationId, {
+          reason: 'database_legal_hold_active',
+          retentionDays: config.retention.adminAuditLogsDays,
+        })
+        logger.warn(
+          `[${jobName}] Database legal hold is active; skipping purge`
+        )
+        recordBackgroundJob(jobName, 'skipped', duration)
+        recordJobSuccess(jobName, durationMs)
+        return
+      }
+
+      logBackgroundJob(jobName, 'failed', duration, correlationId, {
+        error: errorMessage,
+        retentionDays: config.retention.adminAuditLogsDays,
+      })
+
+      recordBackgroundJob(jobName, 'failed', duration)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -340,24 +546,45 @@ export async function runAllRetentionJobs(): Promise<void> {
       correlationId,
     })
 
-    try {
-      await cleanupAuthNonces()
-      await cleanupProcessedEvents()
-      await cleanupDeadLetterEvents()
-      await cleanupAgentLogs()
-      await cleanupUserEvents()
+    const steps: Array<[string, () => Promise<void>]> = [
+      ['retention_auth_nonces', cleanupAuthNonces],
+      ['retention_processed_events', cleanupProcessedEvents],
+      ['retention_dead_letter_events', cleanupDeadLetterEvents],
+      ['retention_agent_logs', cleanupAgentLogs],
+      ['retention_user_events', cleanupUserEvents],
+      ['retention_admin_audit_logs', cleanupAdminAuditLogs],
+    ]
+    const failures: string[] = []
 
-      const duration = (Date.now() - startTime) / 1000
-      logBackgroundJob(jobName, 'success', duration, correlationId)
-    } catch (error) {
-      const duration = (Date.now() - startTime) / 1000
-      const errorMessage =
-        error instanceof Error ? error.message : 'Unknown error'
+    for (const [name, step] of steps) {
+      try {
+        await step()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        failures.push(`${name}: ${message}`)
+      }
+    }
 
+    const durationMs = Date.now() - startTime
+    const duration = durationMs / 1000
+
+    if (failures.length > 0) {
+      const errorMessage = failures.join('; ')
       logBackgroundJob(jobName, 'failed', duration, correlationId, {
         error: errorMessage,
+        failedJobs: failures.length,
       })
+      recordJobFailure(
+        jobName,
+        durationMs,
+        new Error(
+          `Retention sweep incomplete (${failures.length} job(s)): ${errorMessage}`
+        )
+      )
     }
+
+    logBackgroundJob(jobName, 'success', duration, correlationId)
+    recordJobSuccess(jobName, durationMs)
   })
 }
 
@@ -368,15 +595,19 @@ export async function runAllRetentionJobs(): Promise<void> {
  * @returns NodeJS.Timeout handle — pass to clearInterval() on shutdown.
  */
 export function scheduleDataRetention(): NodeJS.Timeout {
-  runAllRetentionJobs()
-  const handle = setInterval(runAllRetentionJobs, config.retention.intervalMs)
+  const handle = scheduleResilientJob({
+    jobName: 'retention_all_jobs',
+    task: runAllRetentionJobs,
+    intervalMs: config.retention.intervalMs,
+  })
   logger.info(
     `[DataRetention] Retention jobs scheduled every ${config.retention.intervalMs / 3600000}h` +
       ` (processed_events=${config.retention.processedEventsDays}d,` +
       ` dlq=${config.retention.deadLetterEventsDays}d,` +
       ` agent_logs=${config.retention.agentLogsDays}d,` +
       ` user_events=${config.retention.userEventsDays}d/` +
-      `${config.retention.userEventsMaxPerUser} per user)`
+      `${config.retention.userEventsMaxPerUser} per user,` +
+      ` admin_audit_logs=${config.retention.adminAuditLogsDays}d)`
   )
   return handle
 }

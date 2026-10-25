@@ -22,6 +22,7 @@ jest.mock('../../../src/db', () => ({
       update: jest.fn(),
     },
     custodialWallet: { findUnique: jest.fn() },
+    transaction: { findFirst: jest.fn().mockResolvedValue(null) },
   },
 }))
 jest.mock('../../../src/controllers/transaction-controller', () => ({
@@ -41,7 +42,10 @@ jest.mock('../../../src/utils/job-metrics', () => ({
 import db from '../../../src/db'
 import { executeDeposit } from '../../../src/controllers/transaction-controller'
 import { publishUserEvent } from '../../../src/events/publisher'
-import { processRecurringDeposits } from '../../../src/jobs/recurringDeposits'
+import {
+  processRecurringDeposits,
+  isExecutingClaimStale,
+} from '../../../src/jobs/recurringDeposits'
 
 const mockDb = db as any
 const mockExecuteDeposit = executeDeposit as jest.Mock
@@ -113,4 +117,78 @@ it('still executes normally when the guard allows (CONFIRMED)', async () => {
     'recurring_deposit.executed',
     expect.objectContaining({ planId: 'plan-1' })
   )
+})
+
+it('does not resume a fresh executing claim', async () => {
+  const executing = {
+    ...plan,
+    lastRunStatus: 'executing',
+    lastRunAt: new Date(),
+  }
+  mockDb.recurringDepositPlan.findMany.mockResolvedValue([executing])
+
+  await processRecurringDeposits()
+
+  expect(mockExecuteDeposit).not.toHaveBeenCalled()
+  expect(mockDb.transaction.findFirst).not.toHaveBeenCalled()
+})
+
+it('completes a stale executing plan from the deposit that already confirmed', async () => {
+  const stale = {
+    ...plan,
+    lastRunStatus: 'executing',
+    lastRunAt: new Date(Date.now() - 11 * 60 * 1000),
+  }
+  mockDb.recurringDepositPlan.findMany.mockResolvedValue([stale])
+  mockDb.transaction.findFirst.mockResolvedValue({
+    id: 'tx-confirmed',
+    status: 'CONFIRMED',
+  })
+
+  await processRecurringDeposits()
+
+  expect(mockExecuteDeposit).not.toHaveBeenCalled()
+  expect(mockDb.recurringDepositPlan.update).toHaveBeenCalledWith(
+    expect.objectContaining({
+      where: { id: 'plan-1' },
+      data: expect.objectContaining({ lastRunStatus: 'executed' }),
+    })
+  )
+})
+
+it('reclaims a stale executing plan when no deposit was persisted', async () => {
+  const stale = {
+    ...plan,
+    lastRunStatus: 'executing',
+    lastRunAt: new Date(Date.now() - 11 * 60 * 1000),
+  }
+  mockDb.recurringDepositPlan.findMany.mockResolvedValue([stale])
+  mockDb.recurringDepositPlan.findUnique.mockResolvedValue(stale)
+  mockDb.transaction.findFirst.mockResolvedValue(null)
+  mockExecuteDeposit.mockResolvedValue({
+    transaction: { id: 'tx-2', txHash: '0xdef' },
+    status: 'CONFIRMED',
+  })
+
+  await processRecurringDeposits()
+
+  expect(mockExecuteDeposit).toHaveBeenCalled()
+})
+
+it('treats a missing lastRunAt on an executing plan as stale', () => {
+  expect(
+    isExecutingClaimStale(
+      { lastRunStatus: 'executing', lastRunAt: null },
+      new Date()
+    )
+  ).toBe(true)
+  expect(
+    isExecutingClaimStale(
+      { lastRunStatus: 'executing', lastRunAt: new Date() },
+      new Date()
+    )
+  ).toBe(false)
+  expect(
+    isExecutingClaimStale({ lastRunStatus: null, lastRunAt: null }, new Date())
+  ).toBe(false)
 })

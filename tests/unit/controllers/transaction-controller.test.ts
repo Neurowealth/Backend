@@ -26,6 +26,9 @@ jest.mock('../../../src/db', () => ({
 jest.mock('../../../src/approvals/service', () => ({
   guardOperation: jest.fn(),
 }))
+jest.mock('../../../src/services/withdrawal-controls.service', () => ({
+  assessWithdrawal: jest.fn(async () => ({ held: false })),
+}))
 jest.mock('../../../src/outbox/service', () => ({
   enqueueOutboxOp: jest.fn(),
 }))
@@ -174,5 +177,81 @@ describe('executeWithdraw — approval gate', () => {
     expect(mockGuard).toHaveBeenCalledWith(
       expect.objectContaining({ permission: 'WITHDRAW' })
     )
+  })
+
+  it('rejects a balance already reserved by another withdrawal before dispatch', async () => {
+    const create = jest.fn()
+    const lock = jest.fn(async () => 1)
+    mockDb.$transaction.mockImplementation(async (fn: any) =>
+      fn({
+        $executeRaw: lock,
+        position: {
+          aggregate: jest.fn(async () => ({ _sum: { currentValue: 100 } })),
+        },
+        transaction: {
+          aggregate: jest.fn(async () => ({ _sum: { amount: 60 } })),
+          create,
+        },
+      })
+    )
+    await expect(
+      executeWithdraw({
+        userId: 'user-1',
+        walletAddress: 'G...WALLET',
+        amount: 50,
+        assetSymbol: 'USDC',
+        skipApprovalGuard: true,
+      })
+    ).rejects.toThrow(
+      'Insufficient balance after pending withdrawal reservations'
+    )
+    expect(lock).toHaveBeenCalledTimes(1)
+    expect(create).not.toHaveBeenCalled()
+    expect(mockDispatchOne).not.toHaveBeenCalled()
+  })
+
+  it('persists an available withdrawal intent while holding the reservation lock', async () => {
+    const lock = jest.fn(async () => 1)
+    const create = jest.fn(async () => ({
+      id: 'withdraw-tx',
+      status: 'PENDING',
+    }))
+    mockDb.$transaction.mockImplementation(async (fn: any) =>
+      fn({
+        $executeRaw: lock,
+        position: {
+          aggregate: jest.fn(async () => ({ _sum: { currentValue: 100 } })),
+        },
+        transaction: {
+          aggregate: jest.fn(async () => ({ _sum: { amount: 20 } })),
+          create,
+        },
+      })
+    )
+    mockEnqueue.mockResolvedValue({ id: 'outbox-withdraw' })
+    mockDispatchOne.mockResolvedValue({
+      hash: 'withdraw-hash',
+      status: 'success',
+    })
+    mockDb.transaction.update.mockResolvedValue({
+      id: 'withdraw-tx',
+      status: 'CONFIRMED',
+      txHash: 'withdraw-hash',
+    })
+    expect(
+      (
+        await executeWithdraw({
+          userId: 'user-1',
+          walletAddress: 'G...WALLET',
+          amount: 50,
+          assetSymbol: 'USDC',
+          skipApprovalGuard: true,
+        })
+      ).status
+    ).toBe('CONFIRMED')
+    expect(lock.mock.invocationCallOrder[0]).toBeLessThan(
+      create.mock.invocationCallOrder[0]
+    )
+    expect(mockDispatchOne).toHaveBeenCalledWith('outbox-withdraw')
   })
 })

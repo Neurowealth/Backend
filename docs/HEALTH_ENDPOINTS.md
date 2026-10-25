@@ -1,5 +1,12 @@
 # Health Endpoints Matrix
 
+The production-smoke GitHub Actions workflow starts the built artifact and
+requires both `GET /health` and `GET /health/ready` to return 200. The readiness
+probe covers database, Stellar network configuration, event listener, and
+agent-loop startup dependencies. Locally, run `npm run smoke` after building
+and applying migrations; set `SMOKE_READINESS_PATH` only when a deployment uses
+a different readiness path.
+
 Comprehensive reference for all health check endpoints. Use this matrix to choose the right probe for your environment (local dev, CI, production).
 
 ---

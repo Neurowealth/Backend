@@ -1,13 +1,12 @@
 import crypto from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
-import { JwtAdapter } from '../config'
+import { config, JwtAdapter } from '../config'
 import db from '../db'
 import { logger } from '../utils/logger'
 import { USER_EVENT_TOPICS, type UserEventTopic } from '../events/types'
 import { verifySessionToken } from '../ws/auth'
 
-const STREAM_TICKET_SECRET =
-  process.env.JWT_SECRET || 'neuro-stream-ticket-secret-key-32b'
+const STREAM_TICKET_SECRET = config.jwt.seed
 const usedTicketIds = new Set<string>()
 
 export interface StreamTicketPayload {

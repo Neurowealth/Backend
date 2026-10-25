@@ -5,6 +5,7 @@ import {
 } from '../utils/correlation'
 import { recordBackgroundJob } from '../utils/metrics'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 import { config } from '../config'
 import { payoutActivatedConversions } from '../referral/service'
 
@@ -50,7 +51,7 @@ export async function runReferralPayout(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -62,9 +63,11 @@ export async function runReferralPayout(): Promise<void> {
  * @returns A NodeJS.Timeout handle (call clearInterval to stop it).
  */
 export function scheduleReferralPayout(): NodeJS.Timeout {
-  runReferralPayout()
-
-  const handle = setInterval(runReferralPayout, REFERRAL_PAYOUT_INTERVAL_MS)
+  const handle = scheduleResilientJob({
+    jobName: 'referral_payout',
+    task: runReferralPayout,
+    intervalMs: REFERRAL_PAYOUT_INTERVAL_MS,
+  })
 
   logger.info('[ReferralPayout] Payout job scheduled', {
     intervalMs: REFERRAL_PAYOUT_INTERVAL_MS,

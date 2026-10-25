@@ -24,6 +24,7 @@ import {
 } from '../types'
 
 const PROVIDER_NAME = 'moonpay'
+const WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS = 300
 
 /** Map MoonPay's raw transaction statuses onto our normalized set. */
 function normalizeStatus(raw: string | undefined): NormalizedWebhookStatus {
@@ -228,6 +229,16 @@ export class MoonPayProvider implements FiatRampProvider {
       headers['x-moonpay-signature-v2']
     const parsed = parseSignatureHeader(header)
     if (!parsed) return false
+
+    if (!/^\d+$/.test(parsed.timestamp)) return false
+    const timestamp = Number(parsed.timestamp)
+    const now = Math.floor(Date.now() / 1000)
+    if (
+      !Number.isSafeInteger(timestamp) ||
+      Math.abs(now - timestamp) > WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS
+    ) {
+      return false
+    }
 
     const signedPayload = `${parsed.timestamp}.${rawBody}`
     const expected = createHmac('sha256', this.webhookKey)

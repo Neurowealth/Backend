@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - 'docs/openapi.yaml'
+      - 'docs/openapi-drift-baseline.json'
+      - 'scripts/check-openapi-drift.js'
+      - 'src/index.ts'
       - 'src/routes/**'
       - '.github/workflows/api-contract.yml'
   push:
@@ -28,6 +31,9 @@ jobs:
 
       - name: Lint OpenAPI spec
         run: redocly lint docs/openapi.yaml --format=stylish
+
+      - name: Check route inventory against spec (drift)
+        run: node scripts/check-openapi-drift.js
 
       - name: Bundle spec (verify all $refs resolve)
         run: redocly bundle docs/openapi.yaml --output /tmp/openapi-bundled.yaml

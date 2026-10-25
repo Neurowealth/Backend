@@ -146,29 +146,67 @@ Two guarantees hold, and both are covered by tests:
 
 ## Curated metadata & review process
 
-`auditStatus` and `inceptionDate` are curated by hand in
+> **Update (2026-09-28, #529):** This section originally argued for keeping
+> metadata in-code rather than a database ("the code review of a change to
+> that file IS the update process"). That design is superseded: metadata now
+> lives in the DB-backed `ProtocolRiskMetadataEntry` model, sourced
+> (`sourceUrl`), reviewed (`reviewedBy`/`reviewedAt`), and staleness-tracked
+> (`nextReviewDueAt`, `dataConfidence`). The gap the original design missed —
+> a diff shows WHAT changed, never WHETHER it was verified against a source
+> or WHEN it needs re-review — is exactly what #529 closes. See
+> `src/config/riskMetadataAdmin.ts` for the admin review workflow and
+> `src/jobs/riskMetadataStaleness.ts` for the staleness check.
+
+`auditStatus` and `inceptionDate` are now read from `ProtocolRiskMetadataEntry`
+via an in-process cache in
 [`src/config/protocolRiskMetadata.ts`](../src/config/protocolRiskMetadata.ts)
-because on-chain data cannot tell you whether a protocol was third-party audited
-or when it launched. Keeping this explicit and diffable — rather than buried in
-code or a database — is intentional: **the code review of a change to that file
-IS the update process.**
+(`getProtocolMetadata` stays synchronous — its sole caller, `computeRiskScore`,
+is a deliberately pure function — and is populated by `refreshMetadataCache()`
+at startup and after every admin write). On-chain data still cannot tell you
+whether a protocol was third-party audited or when it launched, so this
+remains a human-curated input; only its storage and review trail changed.
 
 Because this metadata goes stale (a protocol gets audited after being marked
-`UNAUDITED`, for example), it must be reviewed:
+`UNAUDITED`, for example), it is reviewed:
 
-1. **On protocol onboarding** — add an entry when a protocol is added to the
-   scanner (`src/agent/scanner.ts`). A protocol absent from the table is scored
-   with the most conservative assumption (`UNAUDITED`, unknown/0-day age).
-2. **At least quarterly** — confirm each `auditStatus` against the protocol's
-   latest published audits. `THIRD_PARTY_AUDITED` requires a completed external
-   audit whose report is publicly linkable; record the link in `auditReference`.
+1. **On protocol onboarding** — an admin adds an entry when a protocol is
+   added to the scanner (`src/agent/scanner.ts`) via the admin review
+   endpoint (`risk-metadata:write` scope). A protocol absent from the table
+   is scored with the most conservative assumption (`UNAUDITED`,
+   unknown/0-day age) — never silently treated as safe.
+2. **At or before `nextReviewDueAt`** — a scheduled job
+   (`src/jobs/riskMetadataStaleness.ts`) flags entries past their review-due
+   date; `sourceUrl` is required for any upgrade to `dataConfidence:
+   VERIFIED`, and every change writes an append-only
+   `ProtocolRiskMetadataHistory` row.
 
 `inceptionDate` is fixed at launch and should not change once set; age is derived
 from it automatically.
 
-> The audit statuses currently committed are conservative placeholders pending
-> verification against each protocol's published audits. Confirm them on the
-> first review pass before treating the scores as authoritative.
+> The seed migration (`20260928150000_add_protocol_risk_metadata`) carries
+> over the audit statuses that were previously committed as static
+> placeholders, all marked `dataConfidence: UNVERIFIED` — honest about the
+> fact that they have never actually been reviewed against a source.
+
+## Metadata refresh, staleness alerting and admin updates (#621)
+
+Sourcing expectation: every entry needs an `auditReference`, and `dataConfidence: VERIFIED` needs a
+`sourceUrl`. `nextReviewDueAt` is the refresh deadline; re-review each protocol before it passes
+(recommended cadence: every 90 days, or immediately after an audit or incident).
+
+- Admin API: `GET /api/v1/admin/risk-metadata` (scope `risk-metadata:read`) and
+  `PUT /api/v1/admin/risk-metadata/:protocolName` (scope `risk-metadata:write`). The upsert validates
+  input, requires a future `nextReviewDueAt`, and writes the entry, an append-only
+  `ProtocolRiskMetadataHistory` row and an `AdminAuditLog` row (`RISK_METADATA_UPSERT`, with
+  before/after) in one transaction.
+- `src/jobs/riskMetadataStaleness.ts` runs every `PROTOCOL_RISK_STALENESS_INTERVAL_MS` (default 1h).
+  When any entry is past `nextReviewDueAt` it sets `risk_metadata_stale_entries` and emits a
+  `critical` alert through `src/services/alerting.ts` (PagerDuty when `PAGERDUTY_ROUTING_KEY` is set;
+  repeat alerts are rate-limited by the alerting cooldown). Prometheus rule
+  `ProtocolRiskMetadataStale` mirrors it.
+- Stale protocols are degraded visibly: `GET /api/protocols/risk` returns `riskMetadataStale: true`,
+  a `score` reduced by `PROTOCOL_RISK_STALE_SCORE_PENALTY` (default 20, floor 0) and the unmodified
+  `rawScore`. Risk-ceiling checks in the rebalancing router use the degraded score.
 
 ## Out of scope (v1)
 

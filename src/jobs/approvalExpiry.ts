@@ -18,6 +18,7 @@ import {
 import { config } from '../config/env'
 import { recordBackgroundJob } from '../utils/metrics'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 import { dispatchWebhookEvent } from '../services/webhookDispatcher'
 
 export async function sweepExpiredApprovals(): Promise<void> {
@@ -70,7 +71,7 @@ export async function sweepExpiredApprovals(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -84,12 +85,11 @@ export async function sweepExpiredApprovals(): Promise<void> {
  * @returns A NodeJS.Timeout handle (call clearInterval to stop it).
  */
 export function scheduleApprovalExpiry(): NodeJS.Timeout {
-  sweepExpiredApprovals()
-
-  const handle = setInterval(
-    sweepExpiredApprovals,
-    config.approvals.expirySweepIntervalMs
-  )
+  const handle = scheduleResilientJob({
+    jobName: 'approval_expiry_sweep',
+    task: sweepExpiredApprovals,
+    intervalMs: config.approvals.expirySweepIntervalMs,
+  })
 
   logger.info(
     `[ApprovalExpiry] Scheduler started (interval: ${config.approvals.expirySweepIntervalMs}ms)`

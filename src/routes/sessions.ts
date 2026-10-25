@@ -5,13 +5,26 @@ import { requireAuth } from '../middleware/authenticate'
 import { requireSessionAuth } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import { sendNotFound } from '../utils/errors'
+import {
+  buildPaginationMeta,
+  getPaginationParams,
+  paginationSchema,
+} from '../utils/pagination'
 import { maskIpAddress } from '../utils/geoip'
-import { closeUserSockets } from '../ws/server'
+import { revokeSession } from '../services/refresh-token.service'
 import { stellarVerification } from '../utils/stellar/stellar-verification'
 import { logger } from '../utils/logger'
+import { requireFreshSignature } from '../middleware/requireFreshSignature'
+import { auditLog } from '../services/audit-log.service'
+import { notifySecurityEvent } from '../services/security-notification.service'
+import {
+  totpService,
+  beginTotpEnrollment,
+  verifyTotpEnrollment,
+} from '../services/totp.service'
 
 const router = Router()
-const prisma = db as any
+const prisma = db
 
 router.use(requireAuth)
 router.use(requireSessionAuth)
@@ -19,6 +32,12 @@ router.use(requireSessionAuth)
 const sessionIdParam = z.object({ id: z.string().uuid() })
 const labelBody = z.object({ label: z.string().min(1).max(100) })
 const revokeOthersBody = z.object({
+  stellarPubKey: z.string(),
+  signature: z.string(),
+  nonce: z.string(),
+})
+
+const disable2faBody = z.object({
   stellarPubKey: z.string(),
   signature: z.string(),
   nonce: z.string(),
@@ -44,22 +63,47 @@ function formatSession(
 }
 
 /** GET /api/v1/sessions */
-router.get('/', async (req: Request, res: Response) => {
-  const userId = req.auth!.userId
-  const currentSessionId = req.auth!.sessionId
-  const showFullIp = req.query.fullIp === 'true'
+router.get(
+  '/',
+  validate({
+    query: paginationSchema.extend({
+      fullIp: z.enum(['true', 'false']).default('false'),
+      sortBy: z
+        .enum(['lastSeenAt', 'createdAt', 'expiresAt'])
+        .default('lastSeenAt'),
+      sortOrder: z.enum(['asc', 'desc']).default('desc'),
+    }),
+  }),
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+    const currentSessionId = req.auth!.sessionId
+    const { page, limit, skip } = getPaginationParams(req.query)
+    const query = req.query as {
+      fullIp: 'true' | 'false'
+      sortBy: 'lastSeenAt' | 'createdAt' | 'expiresAt'
+      sortOrder: 'asc' | 'desc'
+    }
+    const showFullIp = query.fullIp === 'true'
+    const where = { userId, revokedAt: null, expiresAt: { gt: new Date() } }
 
-  const sessions = await prisma.session.findMany({
-    where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
-    orderBy: { lastSeenAt: 'desc' },
-  })
+    const [total, sessions] = await Promise.all([
+      prisma.session.count({ where }),
+      prisma.session.findMany({
+        where,
+        orderBy: [{ [query.sortBy]: query.sortOrder }, { id: 'desc' }],
+        skip,
+        take: limit,
+      }),
+    ])
 
-  return res.status(200).json({
-    sessions: sessions.map((s: Record<string, unknown>) =>
-      formatSession(s, currentSessionId, showFullIp)
-    ),
-  })
-})
+    return res.status(200).json({
+      ...buildPaginationMeta(page, limit, total),
+      sessions: sessions.map((s: Record<string, unknown>) =>
+        formatSession(s, currentSessionId, showFullIp)
+      ),
+    })
+  }
+)
 
 /** PATCH /api/v1/sessions/:id — set label */
 router.patch(
@@ -96,12 +140,13 @@ router.delete(
     })
     if (!existing) return sendNotFound(res, 'Session')
 
-    await prisma.session.update({
-      where: { id: req.params.id },
-      data: { revokedAt: new Date(), revokedReason: 'user' },
+    // #472: revokeSession() clears the refresh material, so a refresh token
+    // captured before this call cannot resurrect the session.
+    await revokeSession(req.params.id, 'user', {
+      userId,
+      deviceType: existing.deviceType,
+      approxLocation: existing.approxLocation,
     })
-
-    closeUserSockets(userId, 'Session revoked')
 
     const isCurrent = req.params.id === currentSessionId
     return res.status(200).json({
@@ -112,6 +157,90 @@ router.delete(
         ? 'Current session revoked; please sign in again'
         : undefined,
     })
+  }
+)
+
+/** POST /api/v1/sessions/2fa/enroll — issue a new unverified TOTP secret. */
+router.post('/2fa/enroll', async (req: Request, res: Response) => {
+  const userId = req.auth!.userId
+  const user = await db.user.findUnique({ where: { id: userId } })
+  if (!user) return res.status(404).json({ error: 'User not found' })
+  try {
+    const result = await beginTotpEnrollment(userId, user.walletAddress)
+    return res.status(200).json(result)
+  } catch {
+    return res.status(409).json({ error: '2FA is already enabled' })
+  }
+})
+
+/** POST /api/v1/sessions/2fa/verify-enrollment — activate the TOTP credential. */
+router.post('/2fa/verify-enrollment', async (req: Request, res: Response) => {
+  const userId = req.auth!.userId
+  const { code } = req.body as { code?: unknown }
+  if (typeof code !== 'string' || !/^\d{6}$/.test(code)) {
+    return res.status(400).json({ error: 'code must be a 6-digit string' })
+  }
+  const ok = await verifyTotpEnrollment(userId, code)
+  if (!ok) return res.status(401).json({ error: 'Invalid code' })
+
+  await auditLog.record({
+    userId,
+    action: '2fa.enabled',
+    metadata: { method: 'totp' },
+  })
+  return res.status(200).json({ verified: true })
+})
+
+/**
+ * POST /api/v1/sessions/2fa/disable — disable TOTP 2FA.
+ *
+ * Disabling 2FA is a security downgrade, so it requires a fresh
+ * wallet-signature challenge (proof-of-control), not merely an active
+ * session — the session itself could be the compromised asset.
+ */
+router.post(
+  '/2fa/disable',
+  validate({ body: disable2faBody }),
+  requireFreshSignature(),
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+    const { stellarPubKey, signature, nonce } = req.body
+
+    const isValid = stellarVerification.verifyStellarSignature(
+      stellarPubKey,
+      nonce,
+      signature
+    )
+    if (!isValid) {
+      return res.status(401).json({ error: 'Step-up authentication failed' })
+    }
+
+    const user = await db.user.findUnique({ where: { id: userId } })
+    if (!user || user.walletAddress !== stellarPubKey) {
+      return res.status(401).json({ error: 'Step-up authentication failed' })
+    }
+
+    const credential = await prisma.totpCredential.findUnique({
+      where: { userId },
+    })
+    if (!credential || !credential.verifiedAt) {
+      return res.status(404).json({ error: 'No active 2FA credential' })
+    }
+
+    await prisma.totpCredential.delete({ where: { userId } })
+
+    await auditLog.record({
+      userId,
+      action: '2fa.disabled',
+      metadata: { method: 'totp' },
+    })
+    await notifySecurityEvent(userId, '2fa.disabled', {
+      method: 'totp',
+    })
+
+    logger.info('[2FA] Disabled', { userId })
+
+    return res.status(200).json({ status: 'disabled' })
   }
 )
 
@@ -138,23 +267,35 @@ router.post(
       return res.status(401).json({ error: 'Step-up authentication failed' })
     }
 
-    const result = await prisma.session.updateMany({
+    // #472: revoke every other session's refresh material too, not just the
+    // row flag. updateMany cannot express the per-row column reset that
+    // revokeSession() performs, so do it in one statement and let the service's
+    // semantics (clear refresh columns, stamp revokedAt) apply to all rows.
+    const others = await prisma.session.findMany({
       where: {
         userId,
         id: { not: currentSessionId },
         revokedAt: null,
       },
-      data: { revokedAt: new Date(), revokedReason: 'logout_others' },
+      select: { id: true, deviceType: true, approxLocation: true },
     })
 
-    closeUserSockets(userId, 'Other sessions revoked')
+    await Promise.all(
+      others.map((session) =>
+        revokeSession(session.id, 'logout_others', {
+          userId,
+          deviceType: session.deviceType,
+          approxLocation: session.approxLocation,
+        })
+      )
+    )
 
     logger.info('[Sessions] Revoke-others completed', {
       userId,
-      count: result.count,
+      count: others.length,
     })
 
-    return res.status(200).json({ revokedCount: result.count })
+    return res.status(200).json({ revokedCount: others.length })
   }
 )
 

@@ -1,8 +1,10 @@
 import { NextFunction, Request, Response } from 'express'
 import { JwtAdapter } from '../config'
 import db from '../db'
+import { resolveApproxLocation } from '../utils/geoip'
 import { logger } from '../utils/logger'
 import { authenticateApiKey, isUserApiKeyToken } from './apiKeyAuth'
+import { evaluateAndHandleSessionAnomaly } from '../services/session-anomaly.service'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -30,25 +32,6 @@ function extractBearerToken(authHeader: string | undefined): string | null {
 
 function isExpired(date: Date): boolean {
   return date < new Date()
-}
-
-const lastSeenThrottle = new Map<string, number>()
-const LAST_SEEN_THROTTLE_MS = 60_000
-
-function updateLastSeenAsync(sessionId: string, ip: string | undefined): void {
-  const now = Date.now()
-  const last = lastSeenThrottle.get(sessionId) ?? 0
-  if (now - last < LAST_SEEN_THROTTLE_MS) return
-  lastSeenThrottle.set(sessionId, now)
-
-  db.session
-    .update({
-      where: { id: sessionId },
-      data: { lastSeenAt: new Date(), lastSeenIp: ip ?? null },
-    })
-    .catch((err) =>
-      logger.warn('[Auth] Failed to update lastSeenAt', { sessionId, err })
-    )
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
@@ -121,6 +104,20 @@ export async function requireAuth(
       return
     }
 
+    // #515 — Session anomaly evaluation & forced revocation check
+    const isAnomalous = await evaluateAndHandleSessionAnomaly(session, {
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    })
+
+    if (isAnomalous) {
+      res.status(401).json({
+        error: AUTH_ERRORS.SESSION_REVOKED,
+        reason: 'session_anomaly_detected',
+      })
+      return
+    }
+
     // 5. Expiry check — delete stale row in the background, don't await
     if (isExpired(session.expiresAt)) {
       db.session
@@ -142,7 +139,24 @@ export async function requireAuth(
     req.userId = session.user.id
     req.stellarPubKey = session.walletAddress
     req.authKind = 'session'
-    req.authScopes = ['*']
+    req.authScopes = [
+      'session',
+      'portfolio:read',
+      'portfolio:write',
+      'transactions:read',
+      'deposit:write',
+      'withdraw:write',
+      'alerts:manage',
+      'fiat:write',
+      'recurring_deposits:write',
+      'goals:write',
+      'strategies:write',
+      'webhooks:manage',
+      'vault:read',
+      'vault:write',
+      'loans:read',
+      'loans:write',
+    ]
     req.auth = {
       userId: session.userId,
       sessionId: session.id,
@@ -150,7 +164,33 @@ export async function requireAuth(
       network: session.network,
     }
 
-    updateLastSeenAsync(session.id, req.ip)
+    // Keep time, IP and location from the same accepted request together.
+    // Await persistence so the next request cannot compare against stale location.
+    // Throttle session heartbeats (#692): only update lastSeenAt/lastSeenIp if at least
+    // 5 minutes have elapsed since lastSeenAt or if IP has changed.
+    const nowTime = Date.now()
+    const lastSeenTime = session.lastSeenAt
+      ? new Date(session.lastSeenAt).getTime()
+      : 0
+    const shouldUpdateHeartbeat =
+      !session.lastSeenAt ||
+      nowTime - lastSeenTime > 5 * 60 * 1000 ||
+      (req.ip && session.lastSeenIp !== req.ip)
+
+    if (shouldUpdateHeartbeat) {
+      db.session
+        .update({
+          where: { id: session.id },
+          data: {
+            lastSeenAt: new Date(nowTime),
+            lastSeenIp: req.ip ?? null,
+            approxLocation: resolveApproxLocation(req.ip),
+          },
+        })
+        .catch((err) =>
+          logger.warn('[Auth] Async session heartbeat update failed', { err })
+        )
+    }
 
     next()
   } catch (error) {
@@ -176,10 +216,13 @@ export function enforceUserAccess(
     return
   }
 
-  const targetUserId = req.params.userId ?? req.body?.userId
+  const targetUserId =
+    req.params.userId ??
+    req.body?.userId ??
+    (req.query?.userId as string | undefined)
 
   if (targetUserId && req.auth.userId !== targetUserId) {
-    res.status(401).json({ error: AUTH_ERRORS.UNAUTHORIZED })
+    res.status(403).json({ error: 'Forbidden: Access denied to user resource' })
     return
   }
 

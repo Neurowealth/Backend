@@ -1,28 +1,26 @@
 /**
- * Curated protocol risk metadata.
+ * Sourced, reviewable protocol risk metadata (#529).
  *
- * This file is the single, reviewable source of truth for the two risk inputs
- * that cannot be derived from on-chain rate history: a protocol's audit status
- * and its age. On-chain data alone can't tell you whether a protocol has been
- * third-party audited or when it launched, so these are curated by hand.
+ * Source of truth is now the DB-backed ProtocolRiskMetadataEntry model
+ * (sourceUrl, reviewedBy, nextReviewDueAt, dataConfidence) — see
+ * docs/PROTOCOL_RISK_SCORING.md for the supersession of this file's
+ * previous "keep it in-code, not a database" design note. The gap that
+ * motivated the move: a code-reviewed diff shows WHAT changed, never
+ * WHETHER it was verified against a source or WHEN it needs re-review.
  *
- * ── Review process (see docs/PROTOCOL_RISK_SCORING.md) ──────────────────────
- * This metadata goes stale (a protocol gets audited after being marked
- * UNAUDITED, or simply ages). It MUST be reviewed on protocol onboarding and
- * at least quarterly:
- *   1. Confirm `auditStatus` against the protocol's latest published audits.
- *      THIRD_PARTY_AUDITED requires a completed audit by a reputable external
- *      firm whose report is publicly linkable (record it in `auditReference`).
- *   2. `inceptionDate` is fixed at launch and should not change once set.
- *      protocolAgeDays is derived from it at compute time, so age stays current
- *      automatically without edits here.
- * Changes to this file are code-reviewed like any other change — that review IS
- * the update process. Do not move this data into a database or bury it in the
- * scoring code; keeping it explicit and diffable is the point.
+ * getProtocolMetadata stays SYNCHRONOUS and reads an in-process cache
+ * rather than the DB directly: its sole caller, computeRiskScore
+ * (src/agent/riskScoring.ts), is a deliberately pure, synchronous function
+ * ("now" injected for deterministic tests) and making this async would
+ * force that purity contract to break. refreshMetadataCache() is the
+ * async entry point that populates the cache — called at startup and
+ * after every admin write (src/config/riskMetadataAdmin.ts).
  *
- * A protocol that appears in rate history but is absent here is treated as
- * UNAUDITED with unknown (0-day) age — the most conservative assumption.
+ * A protocol with no cached entry is treated as UNAUDITED with unknown
+ * (0-day) age — the most conservative assumption, matching the existing
+ * fail-closed contract for a protocol with no ProtocolRiskScore row.
  */
+import db from '../db'
 
 export type AuditStatusValue =
   'UNAUDITED' | 'SELF_REPORTED' | 'THIRD_PARTY_AUDITED'
@@ -41,13 +39,23 @@ export interface ProtocolRiskMetadata {
 }
 
 /**
- * Curated metadata for the protocols the scanner tracks today (Blend, Stellar
- * DEX, Luma — see src/agent/scanner.ts). Add an entry when a new protocol is
- * onboarded to the scanner.
- *
- * NOTE: audit statuses below are placeholders pending verification against each
- * protocol's published audits (see the review process above). They intentionally
- * default toward the conservative end until confirmed.
+ * The conservative default applied to any protocol seen in rate history but
+ * not present in the metadata table: unaudited, unknown age.
+ */
+export const DEFAULT_PROTOCOL_METADATA: Omit<
+  ProtocolRiskMetadata,
+  'protocolName'
+> = {
+  auditStatus: 'UNAUDITED',
+  inceptionDate: '', // empty => age unknown => treated as 0 days (newest/riskiest)
+}
+
+/**
+ * Historical reference only — the exact values that were live in this file
+ * before #529 moved the source of truth to the DB. Used solely by the seed
+ * regression test (tests/unit/config/protocolRiskMetadata-seed.test.ts) to
+ * prove the migration's seed rows reproduce them exactly. Never read by
+ * getProtocolMetadata or any runtime code path.
  */
 export const PROTOCOL_RISK_METADATA: readonly ProtocolRiskMetadata[] = [
   {
@@ -73,30 +81,53 @@ export const PROTOCOL_RISK_METADATA: readonly ProtocolRiskMetadata[] = [
   },
 ]
 
-const METADATA_BY_NAME: ReadonlyMap<string, ProtocolRiskMetadata> = new Map(
-  PROTOCOL_RISK_METADATA.map((m) => [m.protocolName, m])
-)
+let cache = new Map<string, ProtocolRiskMetadata>()
 
-/**
- * The conservative default applied to any protocol seen in rate history but not
- * present in the curated table: unaudited, unknown age.
- */
-export const DEFAULT_PROTOCOL_METADATA: Omit<
-  ProtocolRiskMetadata,
-  'protocolName'
-> = {
-  auditStatus: 'UNAUDITED',
-  inceptionDate: '', // empty => age unknown => treated as 0 days (newest/riskiest)
+/** Clears the in-process cache without repopulating it — test/reset use only. */
+export function invalidateMetadataCache(): void {
+  cache = new Map()
 }
 
 /**
- * Look up curated metadata for a protocol, falling back to the conservative
- * default when the protocol is not curated.
+ * Directly seeds the in-process cache without a DB round-trip — for unit
+ * tests that exercise pure consumers of getProtocolMetadata (e.g.
+ * computeRiskScore) without mocking the database. Never call from
+ * production code; use refreshMetadataCache() there.
+ */
+export function seedMetadataCache(
+  entries: readonly ProtocolRiskMetadata[]
+): void {
+  cache = new Map(entries.map((e) => [e.protocolName, e]))
+}
+
+/**
+ * Repopulates the in-process cache from the DB. Call at startup and after
+ * every admin write to ProtocolRiskMetadataEntry — this module never reads
+ * the DB on its own, so a cache never refreshed stays at its last-known
+ * (or default-conservative, if never refreshed) values.
+ */
+export async function refreshMetadataCache(): Promise<void> {
+  const entries = await db.protocolRiskMetadataEntry.findMany()
+  const next = new Map<string, ProtocolRiskMetadata>()
+  for (const entry of entries) {
+    next.set(entry.protocolName, {
+      protocolName: entry.protocolName,
+      auditStatus: entry.auditStatus,
+      inceptionDate: entry.inceptionDate.toISOString(),
+      auditReference: entry.auditReference,
+    })
+  }
+  cache = next
+}
+
+/**
+ * Look up cached metadata for a protocol, falling back to the conservative
+ * default when the protocol has no entry (or the cache was never refreshed).
  */
 export function getProtocolMetadata(
   protocolName: string
 ): ProtocolRiskMetadata {
-  const found = METADATA_BY_NAME.get(protocolName)
+  const found = cache.get(protocolName)
   if (found) return found
   return { protocolName, ...DEFAULT_PROTOCOL_METADATA }
 }

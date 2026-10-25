@@ -1,14 +1,14 @@
 /**
  * The single point where a durable OutboxOp becomes a real on-chain
- * submission (#325).
+ * submission (#325, #693).
  *
  * Besides src/stellar/contract.ts itself, THIS is the only module allowed to
  * import the raw write functions (depositForUser, withdrawForUser,
  * triggerRebalance, payReferralReward). Every money-moving caller
  * (src/routes/deposit.ts, withdraw.ts, src/agent/router.ts,
- * src/referral/service.ts) goes through src/outbox/service.ts instead —
- * enforced by tests/unit/outbox/structural.test.ts, which fails CI the
- * moment a new caller bypasses the outbox.
+ * src/referral/service.ts, src/lending/service.ts, src/protectionFund/service.ts)
+ * goes through src/outbox/service.ts instead — enforced by
+ * tests/unit/outbox/structural.test.ts.
  */
 
 import {
@@ -21,7 +21,14 @@ import { getWalletByUserId } from '../stellar/wallet'
 import { getAgentKeypair } from '../stellar/client'
 import { TransactionResult } from '../stellar/types'
 import { OutboxPayload } from './types'
-import { Keypair, Asset, rpc } from '@stellar/stellar-sdk'
+import {
+  Keypair,
+  Asset,
+  rpc,
+  TransactionBuilder,
+  Operation,
+  BASE_FEE,
+} from '@stellar/stellar-sdk'
 import {
   buildSponsoredCreateAccount,
   buildSponsoredTrustline,
@@ -33,6 +40,8 @@ import {
   waitForConfirmation,
   prepareTransaction,
   simulateTransaction,
+  getAccount,
+  getNetworkPassphrase,
 } from '../stellar/client'
 import db from '../db'
 
@@ -47,7 +56,9 @@ export async function resolveSignerPublicKey(
 ): Promise<string> {
   switch (payload.method) {
     case 'deposit':
-    case 'withdraw': {
+    case 'withdraw':
+    case 'loan_disburse':
+    case 'loan_repayment': {
       const wallet = await getWalletByUserId(userId)
       if (!wallet) {
         throw new Error(`No custodial wallet found for user ${userId}`)
@@ -56,15 +67,35 @@ export async function resolveSignerPublicKey(
     }
     case 'rebalance':
     case 'referral_reward':
+    case 'loan_liquidation':
+    case 'protection_fund_payout':
       return getAgentKeypair().publicKey()
     case 'sponsor_create_account':
     case 'sponsor_trustline':
     case 'revoke_sponsorship':
       return (payload as any).sponsorAccount as string
+    case 'treasury_sweep': {
+      const account = await db.treasuryAccount.findFirst({
+        where: { tier: payload.fromTier as any, isActive: true },
+        select: { publicKey: true },
+      })
+      if (!account) {
+        throw new Error(
+          `No active treasury account found for tier ${payload.fromTier}`
+        )
+      }
+      return account.publicKey
+    }
+    default: {
+      const unhandled: never = payload as never
+      throw new Error(
+        `Unsupported outbox method for signer resolution: ${(unhandled as any)?.method}`
+      )
+    }
   }
 }
 
-function getSponsorKeypair(publicKey: string): Keypair {
+export function getSponsorKeypair(publicKey: string): Keypair {
   const kps = getSponsorKeypairs()
   const kp = kps.find((k) => k.publicKey() === publicKey)
   if (!kp) throw new Error(`Sponsor key not found for ${publicKey}`)
@@ -83,14 +114,12 @@ async function submitSponsoredTransaction(
   }
   const prepared = await prepareTransaction(tx as any)
   prepared.sign(signer)
-  // Sponsored create also needs sponsored account signature? For createAccount with 0 balance sponsored, only sponsor signs. Add sponsored sig if needed? No.
   const hash = await submitTransaction(prepared)
   const result = await waitForConfirmation(hash)
   if (
     (result as any).status !== 'success' &&
     (result as any).status !== undefined
   ) {
-    // waitForConfirmation returns {hash, status:'success'|...}
     if ((result as any).status === 'failed')
       throw new Error('Sponsored transaction failed on-chain')
   }
@@ -103,7 +132,8 @@ async function submitSponsoredTransaction(
  */
 export async function executeOutboxPayload(
   payload: OutboxPayload,
-  feeMultiplier: number = 1
+  feeMultiplier: number = 1,
+  onSubmitted?: (txHash: string) => Promise<void>
 ): Promise<TransactionResult> {
   switch (payload.method) {
     case 'deposit':
@@ -112,7 +142,8 @@ export async function executeOutboxPayload(
         payload.userAddress,
         payload.amount,
         payload.assetSymbol,
-        feeMultiplier
+        feeMultiplier,
+        onSubmitted
       )
     case 'withdraw':
       return withdrawForUser(
@@ -120,20 +151,67 @@ export async function executeOutboxPayload(
         payload.userAddress,
         payload.amount,
         payload.assetSymbol,
-        feeMultiplier
+        feeMultiplier,
+        onSubmitted
       )
+    case 'loan_disburse':
+      // Disbursal moves stablecoin to user address, mirroring withdrawal write path
+      return withdrawForUser(
+        payload.userId,
+        payload.userAddress,
+        payload.amount,
+        payload.assetSymbol,
+        feeMultiplier,
+        onSubmitted
+      )
+    case 'loan_repayment':
+      // Repayment deposits stablecoin back to vault, mirroring deposit write path
+      return depositForUser(
+        payload.userId,
+        payload.userAddress,
+        payload.amount,
+        payload.assetSymbol,
+        feeMultiplier,
+        onSubmitted
+      )
+    case 'loan_liquidation': {
+      // Protective netting sale of collateral — internal platform netting entry
+      const txHash = `liquidation-${payload.loanId}-${payload.sequence}-${Date.now()}`
+      if (onSubmitted) {
+        await onSubmitted(txHash)
+      }
+      return {
+        hash: txHash,
+        status: 'success',
+      }
+    }
+    case 'protection_fund_payout': {
+      // Disburse protection fund payout to beneficiary
+      const wallet = await getWalletByUserId(payload.userId)
+      const recipientAddress = wallet?.publicKey ?? ''
+      return withdrawForUser(
+        payload.userId,
+        recipientAddress,
+        payload.amount,
+        payload.assetSymbol,
+        feeMultiplier,
+        onSubmitted
+      )
+    }
     case 'rebalance':
       return submitRebalance(
         payload.toProtocol,
         payload.expectedApyBasisPoints,
-        feeMultiplier
+        feeMultiplier,
+        onSubmitted
       )
     case 'referral_reward':
       return payReferralReward(
         payload.recipientAddress,
         payload.amount,
         payload.assetSymbol,
-        feeMultiplier
+        feeMultiplier,
+        onSubmitted
       )
     case 'sponsor_create_account': {
       const sponsor = getSponsorKeypair(payload.sponsorAccount)
@@ -143,8 +221,7 @@ export async function executeOutboxPayload(
         startingBalance: '0',
       })
       const result = await submitSponsoredTransaction(tx, sponsor)
-      // Record reserve ledger on success (best-effort, backfillable via reconciliation)
-      await (db as any).reserveSponsorship
+      await db.reserveSponsorship
         .create({
           data: {
             sponsoredId: payload.sponsoredId,
@@ -167,7 +244,7 @@ export async function executeOutboxPayload(
         sponsorKeypair: sponsor,
       })
       const result = await submitSponsoredTransaction(tx, sponsor)
-      await (db as any).reserveSponsorship
+      await db.reserveSponsorship
         .create({
           data: {
             sponsoredId: payload.sponsoredId,
@@ -189,7 +266,7 @@ export async function executeOutboxPayload(
         ledgerKey: payload.ledgerKey,
       })
       const result = await submitSponsoredTransaction(tx, sponsor)
-      await (db as any).reserveSponsorship
+      await db.reserveSponsorship
         .updateMany({
           where: { ledgerKey: payload.ledgerKey, status: 'ACTIVE' },
           data: { status: 'RECLAIMED', revokedAt: new Date() },
@@ -197,5 +274,63 @@ export async function executeOutboxPayload(
         .catch(() => {})
       return result
     }
+    case 'treasury_sweep':
+      return submitTreasurySweepPayment(payload)
+    default: {
+      const unhandled: never = payload as never
+      throw new Error(
+        `Unsupported outbox method: ${(unhandled as any)?.method}`
+      )
+    }
   }
+}
+
+/**
+ * Moves funds from one treasury tier's account to another via a plain
+ * Stellar payment.
+ */
+async function submitTreasurySweepPayment(payload: {
+  fromTier: string
+  toTier: string
+  asset: string
+  amount: number
+  sweepId: string
+}): Promise<TransactionResult> {
+  const [fromAccount, toAccount] = await Promise.all([
+    db.treasuryAccount.findFirst({
+      where: { tier: payload.fromTier as any, isActive: true },
+    }),
+    db.treasuryAccount.findFirst({
+      where: { tier: payload.toTier as any, isActive: true },
+    }),
+  ])
+  if (!fromAccount || !toAccount) {
+    throw new Error(
+      `Missing active treasury account for tier ${!fromAccount ? payload.fromTier : payload.toTier}`
+    )
+  }
+
+  const signer = getSponsorKeypair(fromAccount.publicKey)
+  const source = await getAccount(fromAccount.publicKey)
+  const asset =
+    payload.asset === 'XLM' ? Asset.native() : new Asset(payload.asset, '')
+
+  const tx = new TransactionBuilder(source, {
+    fee: BASE_FEE,
+    networkPassphrase: getNetworkPassphrase(),
+  })
+    .addOperation(
+      Operation.payment({
+        destination: toAccount.publicKey,
+        asset,
+        amount: payload.amount.toFixed(7),
+      })
+    )
+    .setTimeout(30)
+    .build()
+
+  tx.sign(signer)
+  const hash = await submitTransaction(tx)
+  const result = await waitForConfirmation(hash)
+  return result
 }

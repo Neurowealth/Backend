@@ -41,6 +41,15 @@ export function getCorrelationId(): string | undefined {
   return correlationStorage.getStore()
 }
 
+/**
+ * Headers to forward the current request ID to downstream services.
+ * Returns an empty object outside a request scope.
+ */
+export function correlationHeaders(): Record<string, string> {
+  const correlationId = getCorrelationId()
+  return correlationId ? { 'X-Request-ID': correlationId } : {}
+}
+
 export function runWithCorrelationId<T>(correlationId: string, fn: () => T): T {
   return correlationStorage.run(correlationId, fn)
 }

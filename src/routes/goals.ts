@@ -12,6 +12,8 @@
  */
 import { Router } from 'express'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
+import { idempotent } from '../middleware/idempotency'
 import { validate } from '../middleware/validate'
 import { userIdParamSchema } from '../validators/common-validators'
 import {
@@ -34,6 +36,8 @@ const router = Router()
 router.post(
   '/',
   requireAuth,
+  requireScope('goals:write'),
+  idempotent({ required: false, ttlSeconds: 86400 }),
   validate({ body: createGoalSchema }),
   createGoalHandler
 )
@@ -49,6 +53,7 @@ router.get(
 router.patch(
   '/:id',
   requireAuth,
+  requireScope('goals:write'),
   validate({ params: goalIdParamSchema, body: updateGoalSchema }),
   updateGoalHandler
 )
@@ -56,6 +61,7 @@ router.patch(
 router.delete(
   '/:id',
   requireAuth,
+  requireScope('goals:write'),
   validate({ params: goalIdParamSchema }),
   cancelGoalHandler
 )

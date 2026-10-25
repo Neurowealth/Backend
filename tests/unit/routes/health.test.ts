@@ -217,3 +217,20 @@ describe('GET /health/deep', () => {
     expect(res.body.checks.database.error).toContain('timed out')
   })
 })
+
+describe('GET /health/ready', () => {
+  it('returns 503 with subsystem state until startup dependencies are ready', async () => {
+    const res = await request(app).get('/health/ready')
+
+    expect(res.status).toBe(503)
+    expect(res.body.ready).toBe(false)
+    expect(res.body.subsystems).toEqual(
+      expect.objectContaining({
+        database: expect.any(Boolean),
+        stellarNetwork: expect.any(Boolean),
+        eventListener: expect.any(Boolean),
+        agentLoop: expect.any(Boolean),
+      })
+    )
+  })
+})

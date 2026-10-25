@@ -2,8 +2,13 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import db from '../db'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
-import { paginationSchema, getPaginationParams } from '../utils/pagination'
+import {
+  buildPaginationMeta,
+  getPaginationParams,
+  paginationSchema,
+} from '../utils/pagination'
 import { mapTransactionToResponse } from '../utils/api-formatters'
 import { sendNotFound } from '../utils/errors'
 import {
@@ -22,7 +27,26 @@ const listSchema = z.object({
   params: z.object({
     userId: z.string().uuid(),
   }),
-  query: paginationSchema,
+  query: paginationSchema.extend({
+    type: z
+      .enum([
+        'DEPOSIT',
+        'WITHDRAWAL',
+        'YIELD_CLAIM',
+        'REBALANCE',
+        'SWAP',
+        'REFERRAL_REWARD',
+        'INBOUND_TRANSFER',
+        'CLAIMABLE_BALANCE_CLAIM',
+      ])
+      .optional(),
+    status: z.enum(['PENDING', 'CONFIRMED', 'FAILED', 'CANCELLED']).optional(),
+    protocolName: z.string().trim().min(1).max(100).optional(),
+    from: z.string().datetime({ offset: true }).optional(),
+    to: z.string().datetime({ offset: true }).optional(),
+    sortBy: z.enum(['createdAt', 'updatedAt', 'amount']).default('createdAt'),
+    sortOrder: z.enum(['asc', 'desc']).default('desc'),
+  }),
 })
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -36,6 +60,9 @@ const router = Router()
 router.get(
   '/detail/:txHash',
   requireAuth,
+  // #615 — `transactions:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's transaction history.
+  requireScope('transactions:read'),
   validate({ params: txHashParamSchema }),
   async (req: Request, res: Response) => {
     const txHash = String(req.params.txHash)
@@ -63,11 +90,23 @@ router.get(
 router.get(
   '/:userId',
   requireAuth,
+  // #615 — `transactions:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's transaction history.
+  requireScope('transactions:read'),
   enforceUserAccess,
   validate(listSchema),
   async (req: Request, res: Response) => {
     const userId = String(req.params.userId)
     const { page, limit, skip } = getPaginationParams(req.query)
+    const query = req.query as {
+      type?: string
+      status?: string
+      protocolName?: string
+      from?: string
+      to?: string
+      sortBy: 'createdAt' | 'updatedAt' | 'amount'
+      sortOrder: 'asc' | 'desc'
+    }
 
     const user = await db.user.findUnique({
       where: { id: userId },
@@ -75,11 +114,21 @@ router.get(
     })
     if (!user) return sendNotFound(res, 'User')
 
+    const where: any = { userId }
+    if (query.type) where.type = query.type
+    if (query.status) where.status = query.status
+    if (query.protocolName) where.protocolName = query.protocolName
+    if (query.from || query.to) {
+      where.createdAt = {}
+      if (query.from) where.createdAt.gte = new Date(query.from)
+      if (query.to) where.createdAt.lte = new Date(query.to)
+    }
+
     const [total, transactions] = await Promise.all([
-      db.transaction.count({ where: { userId } }),
+      db.transaction.count({ where }),
       db.transaction.findMany({
-        where: { userId },
-        orderBy: { createdAt: 'desc' },
+        where,
+        orderBy: [{ [query.sortBy]: query.sortOrder }, { id: 'desc' }],
         skip,
         take: limit,
       }),
@@ -88,9 +137,7 @@ router.get(
     const items = transactions.map(mapTransactionToResponse)
 
     return res.status(200).json({
-      page,
-      limit,
-      total,
+      ...buildPaginationMeta(page, limit, total),
       transactions: items,
       whatsappReply: formatTransactionsReply({
         page,
@@ -105,18 +152,25 @@ router.get(
  * GET /transactions/:id/events
  * Returns the ordered event history for a transaction (admin only).
  */
-router.get('/:id/events', requireAuth, async (req: Request, res: Response) => {
-  const id = String(req.params.id) // ← String() cast fixes the string | string[] error
+router.get(
+  '/:id/events',
+  requireAuth,
+  // #615 — `transactions:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's transaction history.
+  requireScope('transactions:read'),
+  async (req: Request, res: Response) => {
+    const id = String(req.params.id) // ← String() cast fixes the string | string[] error
 
-  const tx = await db.transaction.findUnique({ where: { id } })
-  if (!tx) return sendNotFound(res, 'Transaction')
+    const tx = await db.transaction.findUnique({ where: { id } })
+    if (!tx) return sendNotFound(res, 'Transaction')
 
-  const events = await (db as any).transactionEvent.findMany({
-    where: { transactionId: id },
-    orderBy: { occurredAt: 'asc' },
-  })
+    const events = await (db as any).transactionEvent.findMany({
+      where: { transactionId: id },
+      orderBy: { occurredAt: 'asc' },
+    })
 
-  return res.status(200).json({ transactionId: id, events })
-})
+    return res.status(200).json({ transactionId: id, events })
+  }
+)
 
 export default router

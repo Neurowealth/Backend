@@ -1,0 +1,63 @@
+name: Repo Hygiene
+
+on:
+  pull_request:
+    paths:
+      - '**'
+
+jobs:
+  reject-clutter:
+    name: Reject PR clutter files at repo root
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for forbidden clutter files
+        run: |
+          # Files that must not appear at the repo root
+          FORBIDDEN_PATTERNS=(
+            'PR_*SUMMARY*.md'
+            'IMPLEMENTATION_SUMMARY.md'
+            '*FIX*.md'
+            '*GUIDE*.md'
+            'verify_*.sh'
+            'fix-*.sh'
+          )
+          # Directories that must not appear
+          FORBIDDEN_DIRS=(
+            'docs/superpowers/plans'
+          )
+
+          VIOLATIONS=""
+
+          # Check files added in this PR
+          ADDED=$(git diff --name-only --diff-filter=A origin/${{ github.base_ref }}...HEAD)
+
+          for file in $ADDED; do
+            # Only check repo root (no / in path)
+            if [[ "$file" != */* ]]; then
+              for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+                if [[ "$file" == $pattern ]]; then
+                  VIOLATIONS="$VIOLATIONS\n  FORBIDDEN FILE: $file"
+                fi
+              done
+            fi
+            # Check forbidden directories
+            for dir in "${FORBIDDEN_DIRS[@]}"; do
+              if [[ "$file" == "$dir"/* ]]; then
+                VIOLATIONS="$VIOLATIONS\n  FORBIDDEN PATH: $file"
+              fi
+            done
+          done
+
+          if [[ -n "$VIOLATIONS" ]]; then
+            echo -e "❌ Repo hygiene check failed. The following files are not allowed:$VIOLATIONS"
+            echo ""
+            echo "Durable guidance belongs in docs/ (MIGRATIONS.md, RUNBOOK.md, etc.)."
+            echo "See CONTRIBUTING.md for the full policy."
+            exit 1
+          fi
+
+          echo "✅ Repo hygiene check passed."

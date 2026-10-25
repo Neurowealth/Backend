@@ -1,0 +1,66 @@
+name: Dependency audit
+
+# Weekly report plus a blocking moderate+ production dependency gate.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC, alongside Dependabot
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit and outdated report
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Block unexcepted moderate+ production advisories
+        run: npm run audit:production
+
+      - name: npm audit (all severities)
+        run: npm audit --json > npm-audit.json || true
+
+      - name: npm audit (runtime only)
+        run: npm audit --omit=dev --json > npm-audit-runtime.json || true
+
+      - name: npm outdated
+        run: npm outdated --json > npm-outdated.json || true
+
+      - name: Summary
+        run: |
+          node -e '
+            const a = require("./npm-audit.json").metadata?.vulnerabilities ?? {};
+            const o = Object.keys(require("./npm-outdated.json"));
+            const lines = [
+              "## Dependency audit",
+              "",
+              "| Severity | Count |", "|---|---|",
+              ...["critical","high","moderate","low"].map(s => `| ${s} | ${a[s] ?? 0} |`),
+              "",
+              `**${o.length}** direct dependencies have newer versions. See docs/DEPENDENCY_AUDIT.md for the backlog.`,
+            ];
+            console.log(lines.join("\n"));
+          ' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-audit
+          path: |
+            npm-audit.json
+            npm-audit-runtime.json
+            npm-outdated.json
+          retention-days: 90

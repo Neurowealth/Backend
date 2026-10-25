@@ -33,7 +33,7 @@ import db from '../db'
 import { logger } from '../utils/logger'
 import { AppError } from '../utils/errors'
 import { dispatchWebhookEvent } from '../services/webhookDispatcher'
-import { getPaginationParams } from '../utils/pagination'
+import { buildPaginationMeta, getPaginationParams } from '../utils/pagination'
 import { runApprovedPayload, type ApprovalPayload } from './executors'
 
 type Db = typeof db | Prisma.TransactionClient
@@ -410,18 +410,29 @@ export async function cancel(
 
 export async function listApprovalRequestsForUser(
   userId: string,
-  query: { page?: unknown; limit?: unknown },
+  query: {
+    page?: unknown
+    limit?: unknown
+    status?:
+      'PENDING' | 'APPROVED' | 'EXECUTED' | 'REJECTED' | 'EXPIRED' | 'CANCELLED'
+    sortBy?: 'requestedAt' | 'executedAt'
+    sortOrder?: 'asc' | 'desc'
+  },
   database: Db = db
 ): Promise<{
   requests: ApprovalRequest[]
   page: number
   limit: number
   total: number
+  totalPages: number
+  hasNext: boolean
+  hasPrevious: boolean
 }> {
   const { page, limit, skip } = getPaginationParams(query)
   const parentIds = await canSeeRequestsForPolicyOwner(userId, database)
 
   const where: Prisma.ApprovalRequestWhereInput = {
+    ...(query.status ? { status: query.status } : {}),
     OR: [
       { policy: { principalUserId: userId } },
       ...(parentIds.length > 0
@@ -433,14 +444,17 @@ export async function listApprovalRequestsForUser(
   const [requests, total] = await Promise.all([
     database.approvalRequest.findMany({
       where,
-      orderBy: { requestedAt: 'desc' },
+      orderBy: [
+        { [query.sortBy ?? 'requestedAt']: query.sortOrder ?? 'desc' },
+        { id: 'desc' },
+      ],
       skip,
       take: limit,
     }),
     database.approvalRequest.count({ where }),
   ])
 
-  return { requests, page, limit, total }
+  return { requests, ...buildPaginationMeta(page, limit, total) }
 }
 
 export async function getVisibleRequestDetail(

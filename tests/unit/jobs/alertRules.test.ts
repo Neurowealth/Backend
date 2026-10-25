@@ -145,7 +145,7 @@ describe('runAlertRules', () => {
     await runAlertRules(NOW)
 
     expect(mockDb.alertRule.updateMany).toHaveBeenCalledWith({
-      where: { id: 'rule-1' },
+      where: { id: 'rule-1', deletedAt: null },
       data: { isActive: false },
     })
     expect(mockPublish).not.toHaveBeenCalled()

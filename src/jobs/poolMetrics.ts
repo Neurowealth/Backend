@@ -8,6 +8,8 @@ import {
   dbPoolWaitCount,
   dbPoolWaitDurationMs,
 } from '../utils/metrics'
+import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 
 /**
  * Prisma connection-pool monitoring.
@@ -50,9 +52,13 @@ function hasMetricsApi(
 
 /**
  * Poll Prisma pool metrics once and sync them to the Prometheus gauges.
- * Never throws — failures are logged and the gauges keep their last value.
+ * A collection failure is rethrown so the scheduler can resume it with backoff.
+ * The gauges keep their last value until a later attempt succeeds.
  */
 export async function collectPoolMetrics(): Promise<void> {
+  const start = Date.now()
+  const jobName = 'pool_metrics'
+
   if (!hasMetricsApi(db)) {
     return
   }
@@ -72,10 +78,12 @@ export async function collectPoolMetrics(): Promise<void> {
     dbPoolWaitDurationMs.set(
       histogramSum('prisma_client_queries_wait_histogram_ms')
     )
+    recordJobSuccess(jobName, Date.now() - start)
   } catch (error) {
     logger.warn('[PoolMetrics] Failed to collect Prisma pool metrics', {
       error: error instanceof Error ? error.message : String(error),
     })
+    recordJobFailure(jobName, Date.now() - start, error)
   }
 }
 
@@ -87,15 +95,12 @@ export async function collectPoolMetrics(): Promise<void> {
 export function schedulePoolMetrics(): NodeJS.Timeout {
   const intervalMs = config.database.poolMetricsIntervalMs
 
-  // Prime the gauges immediately so /metrics is populated before the first tick
-  void collectPoolMetrics()
-
-  const handle = setInterval(() => {
-    void collectPoolMetrics()
-  }, intervalMs)
-
-  // Don't keep the event loop alive solely for metrics polling
-  handle.unref?.()
+  const handle = scheduleResilientJob({
+    jobName: 'pool_metrics',
+    task: collectPoolMetrics,
+    intervalMs,
+    unref: true,
+  })
 
   logger.info(
     `[PoolMetrics] Prisma pool metrics polling scheduled (every ${intervalMs}ms)`

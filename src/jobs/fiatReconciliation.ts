@@ -5,6 +5,7 @@ import {
 } from '../utils/correlation'
 import { recordBackgroundJob } from '../utils/metrics'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 import { reconcileFiatOrders, ageOutStaleFiatOrders } from '../fiat/service'
 
 /** Interval between reconciliation sweeps (default: 5 minutes). */
@@ -48,7 +49,7 @@ export async function runFiatReconciliation(): Promise<void> {
       })
 
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -60,9 +61,11 @@ export async function runFiatReconciliation(): Promise<void> {
  * @returns A NodeJS.Timeout handle (call clearInterval to stop it).
  */
 export function scheduleFiatReconciliation(): NodeJS.Timeout {
-  runFiatReconciliation()
-
-  const handle = setInterval(runFiatReconciliation, FIAT_RECONCILE_INTERVAL_MS)
+  const handle = scheduleResilientJob({
+    jobName: 'fiat_reconciliation',
+    task: runFiatReconciliation,
+    intervalMs: FIAT_RECONCILE_INTERVAL_MS,
+  })
 
   logger.info('[FiatReconciliation] Reconciliation scheduled', {
     intervalMs: FIAT_RECONCILE_INTERVAL_MS,

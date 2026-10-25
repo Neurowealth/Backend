@@ -7,6 +7,7 @@ import {
 import { config } from '../config/env'
 import { recordBackgroundJob } from '../utils/metrics'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 import { suggestAllocation } from '../analytics/service'
 
 /**
@@ -109,7 +110,7 @@ export async function computeAllocationSuggestions(
         error: errorMessage,
       })
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -121,14 +122,13 @@ export async function computeAllocationSuggestions(
  * @returns NodeJS.Timeout handle — pass to clearInterval() on shutdown.
  */
 export function scheduleAllocationSuggestions(): NodeJS.Timeout {
-  void computeAllocationSuggestions()
-
   const intervalMs = config.allocationSuggestions.intervalMs
-  const handle = setInterval(() => {
-    void computeAllocationSuggestions()
-  }, intervalMs)
-
-  handle.unref?.()
+  const handle = scheduleResilientJob({
+    jobName: 'allocation_suggestions',
+    task: () => computeAllocationSuggestions(),
+    intervalMs,
+    unref: true,
+  })
 
   logger.info(
     `[AllocationSuggestions] Allocation suggestions scheduled every ${intervalMs / 3600000}h`

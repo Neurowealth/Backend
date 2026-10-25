@@ -10,6 +10,10 @@ import {
   getPersistedUserRisk,
 } from '../analytics/riskService'
 import { getPortfolioCorrelation } from '../analytics/correlationService'
+import {
+  getFactorExposure,
+  FactorExposureWeighting,
+} from '../analytics/factorExposureService'
 import { getYieldBreakdown } from '../analytics/yieldCompositionService'
 import { RiskWindow } from '../analytics/metrics'
 import {
@@ -20,6 +24,11 @@ import {
 } from '../analytics/scenarios'
 import { applyScenario } from '../analytics/stress'
 import { toCsv, CsvValue } from '../utils/csv'
+import {
+  generateSimplePdf,
+  PdfConcurrencyError,
+  PdfLimitError,
+} from '../utils/pdf'
 
 const router = Router()
 
@@ -28,7 +37,7 @@ const periodSchema = z.object({
 })
 
 const exportFormatSchema = z.object({
-  format: z.enum(['csv']).default('csv'),
+  format: z.enum(['csv', 'pdf']).default('csv'),
 })
 
 /**
@@ -323,17 +332,66 @@ router.get(
       apy: Number(s.apy),
     }))
 
-    const csv = toCsv(
-      USER_YIELD_CSV_HEADERS,
-      userYieldToCsvRows({
-        userId,
-        period: period.data.period,
-        totalYield,
-        periodYield,
-        averageApy,
-        points,
-      })
-    )
+    const rows = userYieldToCsvRows({
+      userId,
+      period: period.data.period,
+      totalYield,
+      periodYield,
+      averageApy,
+      points,
+    })
+
+    // PDF export (#538) — same data as the CSV export, rendered as a
+    // paginated plain-text report rather than a formatted table.
+    if (format.data.format === 'pdf') {
+      let pdf: Buffer
+      try {
+        // #670 — caps + concurrency semaphore. Input/PII must never be
+        // buffered without bound on a pod that is also serving traffic.
+        pdf = await generateSimplePdf(
+          `Portfolio Yield Report — ${period.data.period}`,
+          [
+            `User: ${userId}`,
+            `Total yield: ${totalYield}`,
+            `Period yield: ${periodYield}`,
+            `Average APY: ${averageApy}`,
+            '',
+            'Date        Yield Amount    APY',
+            ...points.map((p) => `${p.date}  ${p.yieldAmount}  ${p.apy}`),
+          ]
+        )
+      } catch (error) {
+        if (error instanceof PdfConcurrencyError) {
+          res.setHeader('Retry-After', String(error.retryAfter))
+          return res.status(429).json({
+            error: error.message,
+            code: error.code,
+          })
+        }
+        if (error instanceof PdfLimitError) {
+          return res.status(422).json({
+            error: error.message,
+            code: error.code,
+            details: error.details,
+          })
+        }
+        throw error
+      }
+
+      res.setHeader('Content-Type', 'application/pdf')
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="user-yield-${period.data.period}.pdf"`
+      )
+      // PII-bearing downloads must never be stored by a shared cache or
+      // browser history replay. Auth (requireAuth) already scopes the data.
+      res.setHeader('Cache-Control', 'private, no-store, max-age=0')
+      res.setHeader('Pragma', 'no-cache')
+      res.setHeader('Expires', '0')
+      return res.status(200).send(pdf)
+    }
+
+    const csv = toCsv(USER_YIELD_CSV_HEADERS, rows)
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8')
     res.setHeader(
@@ -650,6 +708,81 @@ router.get('/correlation', requireAuth, async (req: Request, res: Response) => {
     caveat: result.caveat,
   })
 })
+
+/**
+ * GET /analytics/factor-exposure
+ * Rolling beta & market-factor exposure report (#352).
+ */
+router.get(
+  '/factor-exposure',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+
+    const factorExposureQuerySchema = z
+      .object({
+        window: z.enum(['30d', '60d', '90d']).default('90d'),
+        rollingWindow: z.enum(['7d', '14d', '30d']).default('30d'),
+        weighting: z.enum(['equal', 'tvl']).default('equal'),
+      })
+      .superRefine((data, ctx) => {
+        const windowDays =
+          data.window === '30d' ? 30 : data.window === '60d' ? 60 : 90
+        const rollingDays =
+          data.rollingWindow === '7d'
+            ? 7
+            : data.rollingWindow === '14d'
+              ? 14
+              : 30
+        if (rollingDays >= windowDays) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['rollingWindow'],
+            message:
+              'rollingWindow must be shorter than window (yield snapshots are retained for 90 days).',
+          })
+        }
+      })
+
+    const parsed = factorExposureQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'Validation error', details: parsed.error.flatten() })
+    }
+
+    const windowDays =
+      parsed.data.window === '30d' ? 30 : parsed.data.window === '60d' ? 60 : 90
+    const rollingDays =
+      parsed.data.rollingWindow === '7d'
+        ? 7
+        : parsed.data.rollingWindow === '14d'
+          ? 14
+          : 30
+
+    const result = await getFactorExposure(userId, {
+      windowDays,
+      rollingWindowDays: rollingDays,
+      weighting: parsed.data.weighting as FactorExposureWeighting,
+    })
+
+    return res.status(200).json({
+      userId,
+      window: parsed.data.window,
+      rollingWindow: parsed.data.rollingWindow,
+      weighting: result.benchmark.weighting,
+      actualWindowDays: result.actualWindowDays,
+      insufficientHistory: result.insufficientHistory,
+      sampleCount: result.sampleCount,
+      rolling: result.rolling,
+      summary: result.summary,
+      benchmark: result.benchmark,
+      caveats: result.caveats,
+      inputHash: result.inputHash,
+      computedAt: result.computedAt,
+    })
+  }
+)
 
 /**
  * GET /analytics/yield-breakdown

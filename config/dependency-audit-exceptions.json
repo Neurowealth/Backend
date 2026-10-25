@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "exceptions": [
+    {
+      "advisory": "@grpc/grpc-js",
+      "owner": "@BernardOnuh",
+      "reason": "Pending patch update in dependabot PR #582; internal gRPC exposure only",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "advisory": "@opentelemetry/auto-instrumentations-node",
+      "owner": "@BernardOnuh",
+      "reason": "Transitive dependency on OpenTelemetry instrumentations; upgrade planned in P3 roadmap",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "advisory": "GHSA-qqmp-wf37-98f9",
+      "owner": "@BernardOnuh",
+      "reason": "OpenTelemetry database username span attribute exposure; tracked in P3 upgrade plan",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "advisory": "brace-expansion",
+      "owner": "@BernardOnuh",
+      "reason": "Transitive dependency via glob tooling; pending upstream release",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "advisory": "ip-address",
+      "owner": "@BernardOnuh",
+      "reason": "Transitive dependency; pending upstream patch",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "advisory": "minimatch",
+      "owner": "@BernardOnuh",
+      "reason": "Transitive dependency via gaxios; pending patch",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "advisory": "proxy-addr",
+      "owner": "@BernardOnuh",
+      "reason": "proxy-addr IPv4-mapped IPv6 trust subnet issue; pending express upgrade",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "advisory": "smol-toml",
+      "owner": "@BernardOnuh",
+      "reason": "smol-toml quadratic parse issue; non-user-facing config parser",
+      "expiresOn": "2026-11-30"
+    }
+  ]
+}

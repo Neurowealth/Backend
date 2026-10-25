@@ -6,6 +6,8 @@ import {
 import {
   isValidCorrelationId,
   generateCorrelationId,
+  correlationHeaders,
+  runWithCorrelationId,
 } from '../../../src/utils/correlation'
 
 describe('correlation utilities', () => {
@@ -30,6 +32,17 @@ describe('correlation utilities', () => {
   it('generates valid UUIDs', () => {
     const id = generateCorrelationId()
     expect(isValidCorrelationId(id)).toBe(true)
+  })
+
+  it('builds downstream X-Request-ID headers inside a request scope', () => {
+    const headers = runWithCorrelationId('req-downstream-1', () =>
+      correlationHeaders()
+    )
+    expect(headers).toEqual({ 'X-Request-ID': 'req-downstream-1' })
+  })
+
+  it('returns no downstream headers outside a request scope', () => {
+    expect(correlationHeaders()).toEqual({})
   })
 })
 

@@ -1,5 +1,9 @@
 import express, { NextFunction, Request, Response } from 'express'
-import { setupCors, validateCorsConfig } from './middleware/corsandbody'
+import {
+  setupCors,
+  validateCorsConfig,
+  getCorsOriginPolicy,
+} from './middleware/corsandbody'
 import { logger } from './utils/logger'
 import dotenv from 'dotenv'
 
@@ -111,9 +115,15 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 
 // Start server
 const server = app.listen(PORT, () => {
+  const policy = getCorsOriginPolicy()
   logger.info(`✓ Server running on http://localhost:${PORT}`)
   logger.info(
-    `✓ CORS enabled for: ${process.env.CORS_ALLOWED_ORIGINS || 'development'}`
+    `✓ CORS: ` +
+      (policy.allowAnyOrigin
+        ? 'any origin allowed'
+        : policy.strict
+          ? `allowlist enforced: ${policy.origins.join(', ') || '(none)'}`
+          : 'allowlist configured but not enforced outside production/staging')
   )
   logger.info(`✓ Environment: ${process.env.NODE_ENV || 'development'}`)
 })

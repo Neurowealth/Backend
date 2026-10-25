@@ -209,6 +209,7 @@ export const rebalanceTool = defineTool({
         rebalanceStrategy: true,
         strategyConfig: true,
         riskTolerance: true,
+        liquidityFloor: true,
       },
     })
     if (!user) return { ok: false, error: 'User not found' }
@@ -243,7 +244,9 @@ export const rebalanceTool = defineTool({
 
     const thresholds = getThresholds()
     const hasStrategyContext =
-      Boolean(effective.strategyName) || Boolean(follow)
+      Boolean(effective.strategyName) ||
+      Boolean(follow) ||
+      user.liquidityFloor !== null
     const preferences = hasStrategyContext
       ? [
           {
@@ -252,6 +255,9 @@ export const rebalanceTool = defineTool({
             targetAllocations: effective.targetAllocations,
             riskTolerance: user.riskTolerance,
             riskCeiling: effective.riskCeiling,
+            ...(user.liquidityFloor === null
+              ? {}
+              : { liquidityFloorUsd: Number(user.liquidityFloor) }),
             followedStrategyId: follow?.followedStrategyId ?? undefined,
           },
         ]

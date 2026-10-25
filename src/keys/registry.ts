@@ -3,6 +3,72 @@ import db from '../db'
 import type { KeyStatus, WalletEncryptionKey } from '@prisma/client'
 
 const HEX_64_REGEX = /^[0-9a-fA-F]{64}$/
+const AES_ALGO = 'aes-256-gcm'
+const IV_LENGTH = 12
+const AUTH_TAG_LENGTH = 16
+
+/**
+ * Resolve the active encryption key material used to encrypt sensitive
+ * secrets at rest (e.g. TOTP secrets). Reuses the same env-var pattern the
+ * wallet encryption key registry is bootstrapped from, so there is a single
+ * source of truth for the at-rest encryption key.
+ */
+export function getActiveEncryptionKeyHex(): string {
+  const keyHex =
+    process.env.WALLET_ENCRYPTION_KEY ||
+    process.env.ENCRYPTION_KEY ||
+    process.env.KEY_ENCRYPTION_KEY
+  if (!keyHex || !HEX_64_REGEX.test(keyHex)) {
+    throw new Error(
+      'getActiveEncryptionKeyHex: no valid 64-hex encryption key configured'
+    )
+  }
+  return keyHex
+}
+
+/**
+ * Encrypt a UTF-8 plaintext secret with AES-256-GCM using the active
+ * encryption key. Returns a self-describing payload of
+ * `iv:authTag:ciphertext` (all hex) so it can be stored in a single column
+ * and decrypted without any out-of-band metadata. The plaintext is never
+ * logged or returned by callers.
+ */
+export function encryptSecret(plaintext: string): string {
+  const key = Buffer.from(getActiveEncryptionKeyHex(), 'hex')
+  const iv = crypto.randomBytes(IV_LENGTH)
+  const cipher = crypto.createCipheriv(AES_ALGO, key, iv)
+  const ciphertext = Buffer.concat([
+    cipher.update(plaintext, 'utf8'),
+    cipher.final(),
+  ])
+  const authTag = cipher.getAuthTag()
+  return `${iv.toString('hex')}:${authTag.toString('hex')}:${ciphertext.toString('hex')}`
+}
+
+/**
+ * Decrypt a payload produced by `encryptSecret`. Throws on tampering or a
+ * key mismatch (GCM auth tag failure) rather than returning garbage.
+ */
+export function decryptSecret(payload: string): string {
+  const parts = payload.split(':')
+  if (parts.length !== 3) {
+    throw new Error('decryptSecret: malformed encrypted payload')
+  }
+  const [ivHex, authTagHex, ciphertextHex] = parts
+  const iv = Buffer.from(ivHex, 'hex')
+  const authTag = Buffer.from(authTagHex, 'hex')
+  if (iv.length !== IV_LENGTH || authTag.length !== AUTH_TAG_LENGTH) {
+    throw new Error('decryptSecret: malformed encrypted payload')
+  }
+  const key = Buffer.from(getActiveEncryptionKeyHex(), 'hex')
+  const decipher = crypto.createDecipheriv(AES_ALGO, key, iv)
+  decipher.setAuthTag(authTag)
+  const plaintext = Buffer.concat([
+    decipher.update(Buffer.from(ciphertextHex, 'hex')),
+    decipher.final(),
+  ])
+  return plaintext.toString('utf8')
+}
 
 /**
  * SHA-256 of the raw hex key. The registry stores this and a label only —

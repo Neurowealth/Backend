@@ -2,7 +2,9 @@ import jwt from 'jsonwebtoken'
 import { randomBytes } from 'crypto'
 import { config } from './env'
 
-const JWT_SEED = config.jwt.seed
+function getJwtSeeds(): string[] {
+  return [config.jwt.seed, ...config.jwt.previousSeeds]
+}
 
 /**
  * Access-token lifetime in minutes (default 15). Kept short so a leaked access
@@ -28,7 +30,7 @@ export class JwtAdapter {
     return new Promise((resolve) => {
       jwt.sign(
         payload,
-        JWT_SEED,
+        config.jwt.seed,
         {
           expiresIn: `${durationInHours}h`,
         },
@@ -43,11 +45,21 @@ export class JwtAdapter {
 
   static validateToken<T>(token: string): Promise<T | null> {
     return new Promise((resolve) => {
-      jwt.verify(token, JWT_SEED, (error, decoded) => {
-        if (error) return resolve(null)
-
-        resolve(decoded as T)
-      })
+      const seeds = getJwtSeeds()
+      const verifyNext = (index: number): void => {
+        if (index >= seeds.length) {
+          resolve(null)
+          return
+        }
+        jwt.verify(token, seeds[index], (error, decoded) => {
+          if (error) {
+            verifyNext(index + 1)
+            return
+          }
+          resolve(decoded as T)
+        })
+      }
+      verifyNext(0)
     })
   }
 
@@ -61,7 +73,7 @@ export class JwtAdapter {
     return new Promise((resolve) => {
       jwt.sign(
         payload,
-        JWT_SEED,
+        config.jwt.seed,
         { expiresIn: `${ACCESS_TOKEN_TTL_MIN}m` },
         (error, token) => {
           if (error) return resolve(null)

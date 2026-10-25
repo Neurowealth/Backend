@@ -7,6 +7,7 @@ import {
 import { config } from '../config/env'
 import { recordBackgroundJob } from '../utils/metrics'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 import {
   bucketByInstant,
   computeStrategyMetrics,
@@ -149,7 +150,7 @@ export async function computeStrategyMarketplaceMetrics(
         error: errorMessage,
       })
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -182,14 +183,13 @@ async function upsertMetric(
  * @returns NodeJS.Timeout handle — pass to clearInterval() on shutdown.
  */
 export function scheduleStrategyMetrics(): NodeJS.Timeout {
-  void computeStrategyMarketplaceMetrics()
-
   const intervalMs = config.strategyMarketplace.metricsIntervalMs
-  const handle = setInterval(() => {
-    void computeStrategyMarketplaceMetrics()
-  }, intervalMs)
-
-  handle.unref?.()
+  const handle = scheduleResilientJob({
+    jobName: 'strategy_metrics',
+    task: computeStrategyMarketplaceMetrics,
+    intervalMs,
+    unref: true,
+  })
 
   logger.info(
     `[StrategyMetrics] Marketplace metrics scheduled every ${intervalMs / 3600000}h`

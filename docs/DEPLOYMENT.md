@@ -115,6 +115,10 @@ CORS_ORIGINS=https://staging.neurowealth.io
 LOG_LEVEL=debug
 ```
 
+> Staging enforces the CORS allowlist exactly as production does, and refuses to
+> start if the allowlist is empty or contains `*`. Only `NODE_ENV=development`
+> and `NODE_ENV=test` permit arbitrary origins.
+
 ---
 
 ## Production (Kubernetes)
@@ -261,7 +265,8 @@ Copy `.env.example` as a checklist. Set every value via your secrets manager —
 | Variable | Notes |
 |----------|-------|
 | `ADMIN_API_TOKEN` | Strong token (≥ 8 chars) for `/api/admin/*` — inject via secrets manager |
-| `CORS_ORIGINS` or `ALLOWED_ORIGINS` | Comma-separated frontend origins (e.g. `https://app.example.com`) — **do not use `*`** |
+| `CORS_ORIGINS` or `ALLOWED_ORIGINS` | Comma-separated frontend origins (e.g. `https://app.example.com`) — **do not use `*`**. Enforced in production *and* staging; a single-label subdomain wildcard such as `https://*.example.com` is permitted. The process refuses to start if the list is empty or a wildcard is present. |
+| `CORS_REQUIRE_ORIGIN` | `true` in production, `false` elsewhere. Reject requests carrying no `Origin` header (curl, k8s probes, server-to-server). Set `false` if browser clients omit the header. |
 
 ### Recommended
 
@@ -378,13 +383,24 @@ Required keys match `src/config/env.ts` startup validation. Optional keys: `TWIL
 
 ## Database Migrations
 
+The full process — change classification, validation, backup and downtime
+assessment, and the three rollback tiers — is documented in
+[MIGRATIONS.md](./MIGRATIONS.md). This section covers the deployment mechanics
+only. Read MIGRATIONS.md before opening a migration PR.
+
 ### Pre-Deployment Checklist
 
+The authoritative checklist is in [MIGRATIONS.md §6](./MIGRATIONS.md#6-applying-a-migration).
+The short form:
+
 - [ ] Review pending Prisma migrations (`npx prisma migrate status`)
+- [ ] Classify the change (A–D) and record its downtime impact in the PR
 - [ ] Confirm migration SQL is non-destructive or has a documented data backfill
-- [ ] Take a database backup/snapshot (provider console or `pg_dump`)
+- [ ] Take a database backup/snapshot (provider console or `pg_dump`); record the
+      snapshot identifier in the PR
 - [ ] Schedule during low traffic; notify on-call
-- [ ] Staging deploy passed CI (`migration-smoke` job green)
+- [ ] Rehearse the rollback (`bash scripts/rehearse-migration-rollback.sh`)
+- [ ] Staging deploy passed CI (`migration-smoke` and `Rollback rehearsal` jobs green)
 
 ### Applying Migrations
 
@@ -454,23 +470,46 @@ kubectl rollout status deployment/neurowealth-backend -n neurowealth
 
 ### Database Rollback
 
-Prisma migrations are forward-only. If a migration introduced a breaking schema change, restore from a database backup or deploy a hotfix migration — do not rely on `migrate reset` in production.
+Prisma migrations are forward-only — there is no built-in `migrate down`. Every
+migration in `prisma/migrations/<name>/` ships a hand-written `rollback.sql`
+alongside its `migration.sql`, and CI enforces that every migration has one.
+
+There are three rollback tiers, in order of preference. The full decision matrix
+is in [MIGRATIONS.md §6.1](./MIGRATIONS.md#61-choosing-a-rollback-tier).
+
+| Tier | Use when | Mechanism |
+|------|----------|-----------|
+| 1 — Application only | The migration is correct; the code shipped with it is wrong | Redeploy the previous image. Schema unchanged. |
+| 2 — `rollback.sql` | The migration itself is the problem | `scripts/rollback-migration.sh <migration>` |
+| 3 — Snapshot restore | The migration lost or corrupted data | Restore the pre-deploy snapshot, redeploy the previous image, reconcile |
+
+```bash
+# Tier 2 — reverse one migration, then confirm the app still works
+DATABASE_URL=postgresql://... \
+HEALTHCHECK_URL=http://localhost:3001/health/ready \
+  bash scripts/rollback-migration.sh 20260901000000_add_agent_circuit_breaker
+```
 
 #### When to Rollback
 
 | Situation | Action |
 |-----------|--------|
-| Migration applied, app bug only | Roll back **application** image to previous tag; DB unchanged |
-| Bad migration, no data loss yet | Restore DB from pre-deploy snapshot; redeploy previous app + migration set |
-| Bad migration with partial writes | Restore snapshot; replay DLQ after fix; document manual reconciliation |
+| Migration applied, app bug only | Tier 1 — roll back the **application** image; DB unchanged |
+| Bad constraint / failed backfill, no data loss yet | Tier 2 — `scripts/rollback-migration.sh <migration>`; redeploy previous app |
+| Bad migration with partial writes | Tier 3 — restore snapshot; replay DLQ after fix; document manual reconciliation |
+| Migration is documented as partially irreversible | Tier 3 — its `rollback.sql` cannot restore the data it drops |
 
-#### Rollback Steps
+#### Tier 3 — Snapshot Restore Steps
 
 1. Stop traffic to new instances (drain load balancer).
 2. Restore database from the pre-deploy backup/snapshot.
 3. Deploy the **previous** application image (matching the restored schema).
 4. Run `npm run smoke` against the restored DB.
 5. Re-enable traffic; post-mortem and fix-forward migration in a new release.
+
+> **WARNING:** never rely on `migrate reset` in staging or production — it drops
+> the database. Do not use `migrate dev` against a shared environment either; it
+> may reset the database to match the schema.
 
 ---
 

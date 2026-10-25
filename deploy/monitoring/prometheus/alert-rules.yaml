@@ -8,8 +8,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Agent loop is not running"
-          description: "Agent loop has been stopped for more than 1 minute"
+          summary: 'Agent loop is not running'
+          description: 'Agent loop has been stopped for more than 1 minute'
 
       - alert: AgentLoopHeartbeatStale
         expr: time() - agent_loop_heartbeat_timestamp > 300
@@ -17,8 +17,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Agent loop heartbeat is stale"
-          description: "Agent loop heartbeat not updated for 5 minutes"
+          summary: 'Agent loop heartbeat is stale'
+          description: 'Agent loop heartbeat not updated for 5 minutes'
 
       - alert: CursorLagCritical
         expr: cursor_lag_ledgers > 100
@@ -26,8 +26,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Event cursor lag critical"
-          description: "Cursor lag is {{ $value }} ledgers (> 100)"
+          summary: 'Event cursor lag critical'
+          description: 'Cursor lag is {{ $value }} ledgers (> 100)'
 
       - alert: DLQSizeCritical
         expr: dlq_size > 50
@@ -35,8 +35,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Dead Letter Queue critically large"
-          description: "DLQ has {{ $value }} events (> 50)"
+          summary: 'Dead Letter Queue critically large'
+          description: 'DLQ has {{ $value }} events (> 50)'
 
       - alert: HighFailureRate
         expr: rate(failures_total[5m]) > 10
@@ -44,8 +44,133 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "High failure rate detected"
-          description: "Failure rate is {{ $value }}/min (> 10)"
+          summary: 'High failure rate detected'
+          description: 'Failure rate is {{ $value }}/min (> 10)'
+          runbook: 'docs/RUNBOOK.md'
+
+      - alert: OutboundNotificationDLQGrowing
+        expr: outbound_notification_dlq_size > 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Outbound notifications are accumulating in the DLQ'
+          description: '{{ $value }} email/SMS/Telegram/WhatsApp notifications require operator review.'
+          runbook: 'docs/NOTIFICATIONS.md'
+
+      - alert: OutboundNotificationRetriesElevated
+        expr: sum(rate(outbound_notification_attempts_total{status=~"retrying|dead"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Outbound notification provider failures are elevated'
+          description: 'Notification retries are above 1/sec; inspect channel labels and provider health.'
+          runbook: 'docs/NOTIFICATIONS.md'
+
+      - alert: OutboundNotificationRetriesRepeated
+        expr: increase(outbound_notification_attempts_total{status="retrying"}[15m]) > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'An outbound notification has retried repeatedly'
+          description: 'More than five retry attempts occurred in 15 minutes; inspect the affected channel.'
+          runbook: 'docs/NOTIFICATIONS.md'
+
+      - alert: OutboundNotificationDeadLettered
+        expr: increase(outbound_notification_attempts_total{status="dead"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'An outbound notification exhausted its retry policy'
+          description: 'At least one outbound notification entered the DLQ in the last 15 minutes.'
+          runbook: 'docs/NOTIFICATIONS.md'
+
+      - alert: MessageDeliveryDLQGrowing
+        expr: sum(increase(message_dead_letters_total[15m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Message delivery dead letters are growing'
+          description: '{{ $value }} messages entered DEAD_LETTER during the last 15 minutes.'
+          runbook: 'docs/MESSAGING_DELIVERY.md'
+
+      - alert: MessageDeliverySuccessRateBelowSLO
+        expr: >-
+          sum(rate(message_deliveries_total{status="DELIVERED"}[15m]))
+          /
+          clamp_min(sum(rate(message_deliveries_total[15m])), 0.000001)
+          < 0.99
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Message delivery success rate is below 99%'
+          description: 'Successful delivery ratio is {{ $value | humanizePercentage }} over 15 minutes.'
+          runbook: 'docs/MESSAGING_DELIVERY.md'
+
+      - alert: OldestPendingOutboxEntryTooOld
+        expr: queue_lag_seconds{queue_name="outbox"} > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Oldest pending outbox entry is over five minutes old'
+          description: 'The oldest pending outbox item has waited {{ $value }} seconds.'
+          runbook: 'docs/OUTBOX.md'
+
+      - alert: SecretCredentialValidationFailed
+        expr: secret_credential_validation_failures > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'A required backend credential is missing, malformed, or expired'
+          description: 'Review secret validation logs and rotate the affected credential.'
+          runbook: 'docs/SECRETS_ROTATION.md'
+
+      - alert: StellarSignerRotationOverdue
+        expr: stellar_signer_rotation_overdue_days > 30
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Stellar agent signer rotation is more than 30 days overdue'
+          description: 'Quarterly signer rotation is {{ $value }} days overdue.'
+          runbook: 'docs/SECRETS_ROTATION.md'
+
+      - alert: HttpRequestP99LatencyHigh
+        expr: histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m]))) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'HTTP request P99 latency is above 2 seconds'
+          description: 'P99 latency for {{ $labels.route }} is {{ $value }}s.'
+          runbook: 'docs/SLO_GUIDANCE.md'
+
+      - alert: DatabaseP99LatencyHigh
+        expr: histogram_quantile(0.99, sum by (le, operation) (rate(db_operation_duration_seconds_bucket[5m]))) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Database operation P99 latency is above 1 second'
+          description: 'P99 latency for {{ $labels.operation }} is {{ $value }}s.'
+          runbook: 'docs/SLO_GUIDANCE.md'
+
+      - alert: StellarRpcP99LatencyHigh
+        expr: histogram_quantile(0.99, sum by (le, endpoint) (rate(stellar_rpc_request_duration_seconds_bucket[5m]))) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Stellar RPC P99 latency is above 5 seconds'
+          description: 'P99 RPC latency for {{ $labels.endpoint }} is {{ $value }}s.'
+          runbook: 'docs/RUNBOOK.md'
 
       - alert: SponsorLowXlm
         expr: sponsor_available_xlm < 10
@@ -53,8 +178,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Sponsor account low on XLM"
-          description: "Sponsor {{ $labels.sponsorAccount }} has {{ $value }} XLM available (< 10) — top up immediately"
+          summary: 'Sponsor account low on XLM'
+          description: 'Sponsor {{ $labels.sponsorAccount }} has {{ $value }} XLM available (< 10) — top up immediately'
 
       - alert: FeeOracleStale
         expr: fee_oracle_staleness_seconds > 60
@@ -62,8 +187,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Fee oracle stale"
-          description: "Fee oracle has not updated for {{ $value }}s (> 60s)"
+          summary: 'Fee oracle stale'
+          description: 'Fee oracle has not updated for {{ $value }}s (> 60s)'
 
       - alert: SevereCongestion
         expr: fee_oracle_congestion_level == 3
@@ -71,8 +196,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Severe network congestion"
-          description: "Congestion level severe for 5 minutes — LOW ops deferring"
+          summary: 'Severe network congestion'
+          description: 'Congestion level severe for 5 minutes — LOW ops deferring'
 
       - alert: AgentBreakerGlobalOpen
         expr: agent_breaker_state{scope="GLOBAL"} == 2
@@ -80,8 +205,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Agent circuit breaker is OPEN globally"
-          description: "All agent rebalancing is halted"
+          summary: 'Agent circuit breaker is OPEN globally'
+          description: 'All agent rebalancing is halted'
 
   - name: neurowealth_warning
     interval: 30s
@@ -92,8 +217,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Agent loop in degraded state"
-          description: "Agent loop has been degraded for more than 5 minutes"
+          summary: 'Agent loop in degraded state'
+          description: 'Agent loop has been degraded for more than 5 minutes'
 
       - alert: CursorLagWarning
         expr: cursor_lag_ledgers > 50
@@ -101,8 +226,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Event cursor lag elevated"
-          description: "Cursor lag is {{ $value }} ledgers (> 50)"
+          summary: 'Event cursor lag elevated'
+          description: 'Cursor lag is {{ $value }} ledgers (> 50)'
 
       - alert: DLQSizeWarning
         expr: dlq_size > 20
@@ -110,8 +235,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Dead Letter Queue growing"
-          description: "DLQ has {{ $value }} events (> 20)"
+          summary: 'Dead Letter Queue growing'
+          description: 'DLQ has {{ $value }} events (> 20)'
 
       - alert: EventProcessingSlow
         expr: histogram_quantile(0.95, rate(events_processing_duration_seconds_bucket[5m])) > 2
@@ -119,8 +244,9 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Event processing slow"
-          description: "P95 event processing duration is {{ $value }}s (> 2s)"
+          summary: 'Event processing slow'
+          description: 'P95 event processing duration is {{ $value }}s (> 2s)'
+          runbook: 'docs/RUNBOOK.md'
 
       - alert: DatabaseOperationsSlow
         expr: histogram_quantile(0.95, rate(db_operation_duration_seconds_bucket[5m])) > 1
@@ -128,8 +254,9 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Database operations slow"
-          description: "P95 DB operation duration is {{ $value }}s (> 1s)"
+          summary: 'Database operations slow'
+          description: 'P95 DB operation duration is {{ $value }}s (> 1s)'
+          runbook: 'docs/RUNBOOK.md'
 
       - alert: DBPoolSaturation
         expr: db_pool_wait_count > 5
@@ -137,8 +264,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Database connection pool saturated"
-          description: "{{ $value }} queries are waiting for a free DB connection (> 5) for over 30s. Consider raising DATABASE_CONNECTION_LIMIT or investigating slow queries."
+          summary: 'Database connection pool saturated'
+          description: '{{ $value }} queries are waiting for a free DB connection (> 5) for over 30s. Consider raising DATABASE_CONNECTION_LIMIT or investigating slow queries.'
 
       - alert: HTTPRequestsSlow
         expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 5
@@ -146,8 +273,9 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "HTTP requests slow"
-          description: "P95 HTTP request duration is {{ $value }}s (> 5s)"
+          summary: 'HTTP requests slow'
+          description: 'P95 HTTP request duration is {{ $value }}s (> 5s)'
+          runbook: 'docs/RUNBOOK.md'
 
       - alert: AgentBreakerOpen
         expr: agent_breaker_state{scope!="GLOBAL"} == 2
@@ -155,5 +283,94 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Agent circuit breaker OPEN for a protocol or user"
-          description: "{{ $labels.scope }} {{ $labels.scopeKey }} is halted (state={{ $value }})"
+          summary: 'Agent circuit breaker OPEN for a protocol or user'
+          description: '{{ $labels.scope }} {{ $labels.scopeKey }} is halted (state={{ $value }})'
+
+      # ── Rate limiting (#473) ──────────────────────────────────────────────
+      # A 429 storm is one of the few signals that means "someone is attacking
+      # us" *or* "we shipped a client bug". The principal_type label separates
+      # the two, which is why the counter carries it.
+
+      - alert: RateLimitAnonymousFlood
+        expr: sum(rate(rate_limit_hits_total{principal_type="anonymous"}[5m])) > 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Anonymous requests are being rate limited heavily'
+          description: '{{ $value }} anonymous 429s/sec for 5 minutes. Likely scraping, enumeration or credential stuffing against the auth endpoints. Check route_group={{ $labels.route_group }} and consider tightening ANONYMOUS_RATE_LIMIT_MAX or adding TRUSTED_IPS for legitimate clients.'
+
+      - alert: RateLimitAuthSpike
+        expr: sum(rate(rate_limit_hits_total{limiter_type="auth"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Authentication endpoint brute-force / credential stuffing'
+          description: '{{ $value }} blocked auth attempts/sec. Requests are being stopped, but investigate the source; AUTH_RATE_LIMIT_MAX is doing its job, not replacing a credential audit.'
+
+      - alert: RateLimitSensitiveBlocked
+        expr: sum(rate(rate_limit_hits_total{limiter_type="sensitive"}[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Sensitive operations (withdrawals, deposits, key changes) are being throttled'
+          description: '{{ $value }} blocked sensitive requests/sec on {{ $labels.route_group }}. Either a user/client is looping, or an attacker with a valid credential is attempting many withdrawals or API-key minting. Review immediately.'
+
+      - alert: RateLimitAuthenticatedBlocked
+        expr: sum(rate(rate_limit_hits_total{principal_type=~"user|api_key"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Authenticated requests are being rate limited'
+          description: "{{ $value }} blocked requests/sec from identified principals. Usually a client bug or a leaked API key rather than an attack. Check the key's rateLimitPerMin and the caller's retry logic."
+
+      - alert: RateLimitBlockedNow
+        expr: sum(rate_limit_active_violations) > 50
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Sustained rate limiting across route groups'
+          description: '{{ $value }} route groups currently reporting blocked requests. Distinguishes an ongoing event from a historical total.'
+
+  - name: neurowealth_support
+    interval: 60s
+    rules:
+      - alert: SupportTicketSlaBreached
+        expr: sum(support_tickets_sla_breached) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Support tickets are past their response SLA'
+          description: '{{ $value }} open tickets have breached their response SLA. See docs/SUPPORT_TICKETS.md.'
+
+      - alert: SupportUrgentTicketSlaBreached
+        expr: support_tickets_sla_breached{priority=~"URGENT|HIGH"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'High-priority support ticket past response SLA'
+          description: '{{ $value }} {{ $labels.priority }} tickets have breached their response SLA.'
+
+      - alert: SupportTicketsStale
+        expr: support_tickets_stale > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Support tickets untouched beyond the stale threshold'
+          description: '{{ $value }} open tickets have had no activity for SUPPORT_STALE_HOURS.'
+
+      - alert: ProtocolRiskMetadataStale
+        expr: risk_metadata_stale_entries > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Protocol risk metadata is past its review date'
+          description: '{{ $value }} protocol risk metadata entries are stale. See docs/PROTOCOL_RISK_SCORING.md.'

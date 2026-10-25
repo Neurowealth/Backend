@@ -18,7 +18,12 @@ import {
 import { config } from '../config'
 import { HttpClientAdapter, TimeoutError } from '../utils/http-client'
 import { logger } from '../utils/logger'
-import { TransactionResult } from './types'
+import { TransactionConfirmationTimeoutError, TransactionResult } from './types'
+import { fetchWithRetry } from '../utils/fetchWithRetry'
+import {
+  ExternalWalletBalance,
+  normalizeExternalWalletBalances,
+} from './externalWalletBalances'
 import {
   rpcAttemptCounter,
   rpcFailoverCounter,
@@ -265,37 +270,115 @@ export async function getAccount(publicKey: string): Promise<Account> {
   )
 }
 
+/**
+ * Native (XLM) balance for an account, in XLM.
+ *
+ * `rpc.Server.getAccount` returns an Account with only a sequence number, so
+ * the balance must be read from the on-chain account entry that
+ * `getAccountEntry` resolves (`balance()` is in stroops).
+ */
+export async function getNativeBalance(publicKey: string): Promise<number> {
+  const entry = await getResilientClient().execute(
+    (server) => server.getAccountEntry(publicKey),
+    'stellar.getNativeBalance'
+  )
+  return Number(entry.balance().toString()) / 1e7
+}
+
+const MAX_EXTERNAL_WALLET_RESPONSE_BYTES = 128 * 1024
+
+function horizonBaseUrl(): string {
+  const configured = process.env.HORIZON_URL
+  if (configured) return configured.replace(/\/+$/, '')
+
+  switch (config.stellar.network.toLowerCase()) {
+    case 'testnet':
+      return 'https://horizon-testnet.stellar.org'
+    case 'futurenet':
+      return 'https://horizon-futurenet.stellar.org'
+    default:
+      return 'https://horizon.stellar.org'
+  }
+}
+
+/** Read-only Horizon snapshot. Oversized accounts fail closed; never truncate. */
+export async function getExternalWalletBalances(
+  publicKey: string
+): Promise<ExternalWalletBalance[]> {
+  const url = `${horizonBaseUrl()}/accounts/${encodeURIComponent(publicKey)}`
+  const account = await fetchWithRetry(url, {
+    timeout: 5_000,
+    retries: 2,
+    maxResponseBytes: MAX_EXTERNAL_WALLET_RESPONSE_BYTES,
+  })
+
+  if (!Array.isArray(account?.balances)) {
+    throw new Error('Horizon account response omitted balances')
+  }
+
+  return normalizeExternalWalletBalances(account.balances)
+}
+
 export async function waitForConfirmation(
   txHash: string,
-  timeoutMs: number = 30_000
+  timeoutMs: number = 30_000,
+  pollIntervalMs: number = 1_000
 ): Promise<TransactionResult> {
   const pollDeadline = Date.now() + timeoutMs
 
   // Polling uses the resilient client so individual poll failures also
   // benefit from per-endpoint circuit breaking.
-  const poll = async (): Promise<TransactionResult> => {
-    const response = await getResilientClient().execute(
-      (server) => server.getTransaction(txHash),
-      'stellar.waitForConfirmation'
+  let lastError: unknown
+  do {
+    try {
+      const response = await getResilientClient().execute(
+        (server) => server.getTransaction(txHash),
+        'stellar.waitForConfirmation'
+      )
+
+      if (response.status === 'SUCCESS') {
+        return { hash: txHash, status: 'success', ledger: response.ledger }
+      }
+
+      if (response.status === 'FAILED') {
+        return { hash: txHash, status: 'failed' }
+      }
+
+      lastError = undefined
+    } catch (error) {
+      lastError = error
+    }
+
+    const remainingMs = pollDeadline - Date.now()
+    if (remainingMs <= 0) break
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(pollIntervalMs, remainingMs))
     )
+  } while (Date.now() <= pollDeadline)
 
-    if (response.status === 'SUCCESS') {
-      return { hash: txHash, status: 'success', ledger: response.ledger }
-    }
+  throw new TransactionConfirmationTimeoutError(txHash, timeoutMs, lastError)
+}
 
-    if (response.status === 'FAILED') {
-      return { hash: txHash, status: 'failed' }
-    }
+export async function getTransactionStatus(
+  txHash: string
+): Promise<'success' | 'failed' | 'not_found'> {
+  const response = await getResilientClient().execute(
+    (server) => server.getTransaction(txHash),
+    'stellar.getTransactionStatus'
+  )
 
-    if (Date.now() >= pollDeadline) {
-      throw new Error(`Transaction confirmation timeout after ${timeoutMs}ms`)
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 1_000))
-    return poll()
+  switch (response.status) {
+    case 'SUCCESS':
+      return 'success'
+    case 'FAILED':
+      return 'failed'
+    case 'NOT_FOUND':
+      return 'not_found'
+    default:
+      throw new Error(
+        `Unexpected Stellar transaction status: ${response.status}`
+      )
   }
-
-  return poll()
 }
 
 /** Diagnostic helper — returns circuit-breaker state for all endpoints. */

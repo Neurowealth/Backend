@@ -25,21 +25,30 @@ import yaml from 'js-yaml'
 import { config } from './config/env'
 import { errorHandler } from './middleware/errorHandler'
 import { correlationIdMiddleware } from './middleware/correlationId'
+import {
+  errorResponseMiddleware,
+  notFoundHandler,
+} from './middleware/errorResponse'
 import { requestLogger } from './middleware/logger'
 import { requestTimeoutMiddleware } from './middleware/requestTimeout'
 import {
-  rateLimiter,
   authRateLimiter,
   adminRateLimiter,
   internalRateLimiter,
   webhookRateLimiter,
   trustedIpBypass,
 } from './middleware/rateLimiter'
+import { APP_LEVEL_LIMITERS } from './middleware/rateLimiterChain'
 import {
   configureTrustProxy,
   securityHeaders,
   permissionsPolicy,
 } from './middleware/security'
+import {
+  featureFlagMiddleware,
+  emergencyMaintenanceGuard,
+} from './middleware/featureFlags'
+import { featureFlagManager } from './config/featureFlags'
 import { logger } from './utils/logger'
 import { startAgentLoop, stopAgentLoop } from './agent/loop'
 import { connectDb } from './db'
@@ -49,6 +58,7 @@ import { schedulePoolMetrics } from './jobs/poolMetrics'
 import { scheduleFiatReconciliation } from './jobs/fiatReconciliation'
 import { scheduleReferralPayout } from './jobs/referralPayout'
 import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
+import { scheduleRecurringWithdrawals } from './jobs/recurringWithdrawals'
 import { scheduleAlertRules } from './jobs/alertRules'
 import { scheduleDigests } from './jobs/digests'
 import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
@@ -57,52 +67,35 @@ import { scheduleAttribution } from './jobs/attribution'
 import { scheduleOutboxDispatcher } from './outbox/dispatcher'
 import { startFeeOracle, stopFeeOracle } from './stellar/feeOracle'
 import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
+import { scheduleSupportTicketSla } from './jobs/supportTicketSla'
+import { scheduleRiskMetadataStaleness } from './jobs/riskMetadataStaleness'
 import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { scheduleApprovalExpiry } from './jobs/approvalExpiry'
 import { scheduleReserveReconciliation } from './jobs/reserveReconciliation'
+import { scheduleMessageDeliverySweep } from './jobs/messageDeliverySweep'
+import { scheduleSignerRotation } from './jobs/signerRotation'
+import { scheduleLoanAccrual } from './jobs/loanAccrual'
+import { scheduleLoanLiquidationMonitor } from './jobs/loanLiquidationMonitor'
+import { scheduleLinkedExternalWalletSync } from './jobs/linkedExternalWalletSync'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { startEventBridge, stopEventBridge } from './events/bridge'
 import { attachWebSocketServer, closeWebSocketServer } from './ws/server'
+import {
+  startCacheInvalidationSubscriber,
+  stopCacheInvalidationSubscriber,
+} from './utils/user-cache-invalidation'
 import { validateStellarNetworkReady } from './config/readiness'
-import healthRouter from './routes/health'
-import agentRouter from './routes/agent'
-import agentDecisionsRouter from './routes/agent-decisions'
-import authRouter from './routes/auth'
-import whatsappRouter from './routes/whatsapp'
-import telegramRouter from './routes/telegram'
-import portfolioRouter from './routes/portfolio'
-import transactionsRouter from './routes/transactions'
-import protocolsRouter from './routes/protocols'
-import depositRouter from './routes/deposit'
-import withdrawRouter from './routes/withdraw'
-import vaultRouter from './routes/vault'
-import analyticsRouter from './routes/analytics'
-import adminRouter from './routes/admin'
-import metricsRouter from './routes/metrics'
-import stellarRouter from './routes/stellar'
-import webhooksRouter from './routes/webhooks'
-import fiatRouter from './routes/fiat'
-import referralsRouter from './routes/referrals'
-import recurringDepositRouter from './routes/recurring-deposits'
-import alertsRouter from './routes/alerts'
-import strategiesRouter from './routes/strategies'
-import subAccountsRouter from './routes/sub-accounts'
-import assistantRouter from './routes/assistant'
-import approvalsRouter from './routes/approvals'
-import approvalPoliciesRouter from './routes/approval-policies'
-import keysRouter from './routes/keys'
-import sessionsRouter from './routes/sessions'
-import streamRouter from './routes/stream'
-import notificationsRouter from './routes/notifications'
-import networkRouter from './routes/network'
+import { API_ROUTES, EXTRA_MOUNTS } from './routes/registry'
 import {
   corsMiddleware,
   jsonBodyParser,
   payloadSizeErrorHandler,
   urlencodedBodyParser,
-  contentTypeRestrictionMiddleware,
+  createContentTypeRestrictionMiddleware,
+  validateCorsConfig,
 } from './middleware/corsandbody'
 import { setSpanUser } from './telemetry/spans'
+import { scheduleOutboundNotifications } from './services/outboundNotifications'
 
 // ── Readiness state ───────────────────────────────────────────────────────────
 
@@ -125,19 +118,44 @@ let poolMetricsHandle: NodeJS.Timeout | null = null
 let fiatReconciliationHandle: NodeJS.Timeout | null = null
 let referralPayoutHandle: NodeJS.Timeout | null = null
 let recurringDepositsHandle: NodeJS.Timeout | null = null
+let recurringWithdrawalsHandle: NodeJS.Timeout | null = null
 let alertRulesHandle: NodeJS.Timeout | null = null
 let digestsHandle: NodeJS.Timeout | null = null
 let strategyMetricsHandle: NodeJS.Timeout | null = null
 let allocationSuggestionsHandle: NodeJS.Timeout | null = null
 let protocolRiskScoringHandle: NodeJS.Timeout | null = null
+let supportTicketSlaHandle: NodeJS.Timeout | null = null
+let riskMetadataStalenessHandle: NodeJS.Timeout | null = null
 let attributionHandle: NodeJS.Timeout | null = null
 let outboxDispatcherHandle: NodeJS.Timeout | null = null
 let portfolioRiskJobHandle: NodeJS.Timeout | null = null
 let approvalExpiryHandle: NodeJS.Timeout | null = null
 let reserveReconciliationHandle: NodeJS.Timeout | null = null
+let messageDeliverySweepHandle: NodeJS.Timeout | null = null
+let signerRotationHandle: NodeJS.Timeout | null = null
+let outboundNotificationsHandle: NodeJS.Timeout | null = null
+let linkedExternalWalletSyncHandle: NodeJS.Timeout | null = null
+let loanAccrualHandle: NodeJS.Timeout | null = null
+let loanLiquidationHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
+}
+
+// ── Configuration validation ──────────────────────────────────────────────────
+
+// A production or staging deployment that cannot enforce a CORS allowlist must
+// not start: every browser request would 403, and shipping that as a
+// half-working service is worse than failing loudly at boot (#471).
+try {
+  validateCorsConfig()
+} catch (error) {
+  logger.error(
+    `[CORS] Fatal startup error: ${
+      error instanceof Error ? error.message : String(error)
+    }`
+  )
+  process.exit(1)
 }
 
 // ── Express app ───────────────────────────────────────────────────────────────
@@ -149,10 +167,24 @@ configureTrustProxy(app)
 // ── Security and parsing middleware ───────────────────────────────────────────
 
 app.disable('x-powered-by')
+// Correlation ID — must run first so every response, including early
+// rejections from CORS / body parsing / rate limiting, carries X-Request-ID.
+app.use(correlationIdMiddleware)
+// Standard error envelope — wraps res.json so every later 4xx/5xx response
+// (including CORS, body parsing, auth and rate limiting) shares one shape.
+app.use(errorResponseMiddleware)
 app.use(securityHeaders())
 app.use(permissionsPolicy())
 app.use(corsMiddleware)
-app.use(contentTypeRestrictionMiddleware)
+app.use(
+  createContentTypeRestrictionMiddleware({
+    excludedPaths: [
+      '/whatsapp/webhook',
+      '/api/v1/fiat/webhook',
+      '/api/fiat/webhook',
+    ],
+  })
+)
 // Fiat provider webhooks are HMAC-signed over the raw request bytes. Capture the
 // raw body BEFORE the global JSON parser so signature verification sees the exact
 // payload — body-parser marks req._body here, so jsonBodyParser then skips these
@@ -163,9 +195,6 @@ app.use(
 )
 app.use(jsonBodyParser)
 app.use(urlencodedBodyParser)
-
-// Correlation ID — must run before requestLogger
-app.use(correlationIdMiddleware)
 
 // ── User context propagation ──────────────────────────────────────────────────
 //
@@ -187,9 +216,15 @@ app.use((req: Request & { user?: { id: string } }, _res: Response, next) => {
 })
 
 app.use(requestLogger)
+app.use(featureFlagMiddleware)
 app.use(trustedIpBypass)
-app.use(rateLimiter)
+// The app-wide rate-limit chain: the flat global budget, then the identity
+// tier. Both apply to every request, so no route is ever unlimited. Kept in
+// src/middleware/rateLimiterChain.ts so the tier-matrix CI check can assert
+// that claim against the real chain.
+app.use(...APP_LEVEL_LIMITERS)
 app.use(requestTimeoutMiddleware)
+app.use(emergencyMaintenanceGuard)
 
 // Advertise the served API version on every response — must be registered
 // before the first route (including the health probes below).
@@ -236,15 +271,24 @@ app.get('/health/ready', (_req, res) => {
 // existing clients keep working; they emit RFC 8594 Deprecation/Sunset headers
 // announcing the removal date. See docs/api-versioning.md for the policy.
 
-// Unversioned routes are supported for at least 6 months from this release.
-const UNVERSIONED_SUNSET = new Date(
-  Date.now() + 182 * 24 * 60 * 60 * 1000
-).toUTCString()
+// Unversioned routes are supported until a fixed, announced date. Pinning the
+// date (instead of recomputing it on every boot) means a redeploy can never
+// silently extend the lifetime of a deprecated alias.
+const DEFAULT_UNVERSIONED_SUNSET = 'Sat, 01 May 2027 00:00:00 GMT'
+function resolveUnversionedSunset(): string {
+  const configured = process.env.API_LEGACY_SUNSET?.trim()
+  if (!configured) return DEFAULT_UNVERSIONED_SUNSET
+  const parsed = new Date(configured)
+  return Number.isNaN(parsed.getTime())
+    ? DEFAULT_UNVERSIONED_SUNSET
+    : parsed.toUTCString()
+}
+const UNVERSIONED_SUNSET = resolveUnversionedSunset()
 
 // ── OpenAPI / Swagger UI ──────────────────────────────────────────────────────
 
 let swaggerSpec: Record<string, unknown> | null = null
-const specPath = path.join(process.cwd(), 'docs', 'openapi.yaml')
+const specPath = path.join(__dirname, 'docs', 'openapi.yaml')
 
 try {
   const specFile = fs.readFileSync(specPath, 'utf8')
@@ -297,44 +341,16 @@ interface ApiRoute {
   handlers: express.RequestHandler[]
 }
 
-const apiRoutes: ApiRoute[] = [
-  { path: 'network', handlers: [networkRouter] },
-  { path: 'agent/decisions', handlers: [agentDecisionsRouter] },
-  { path: 'agent', handlers: [internalRateLimiter, agentRouter] },
-  { path: 'auth', handlers: [authRateLimiter, authRouter] },
-  { path: 'whatsapp', handlers: [webhookRateLimiter, whatsappRouter] },
-  { path: 'telegram', handlers: [webhookRateLimiter, telegramRouter] },
-  { path: 'portfolio', handlers: [portfolioRouter] },
-  { path: 'transactions', handlers: [transactionsRouter] },
-  { path: 'protocols', handlers: [protocolsRouter] },
-  { path: 'deposit', handlers: [depositRouter] },
-  { path: 'withdraw', handlers: [withdrawRouter] },
-  { path: 'vault', handlers: [vaultRouter] },
-  { path: 'analytics', handlers: [analyticsRouter] },
-  { path: 'stellar', handlers: [stellarRouter] },
-  { path: 'fiat', handlers: [fiatRouter] },
-  { path: 'referrals', handlers: [referralsRouter] },
-  { path: 'deposit/recurring', handlers: [recurringDepositRouter] },
-  { path: 'alerts', handlers: [alertsRouter] },
-  { path: 'strategies', handlers: [strategiesRouter] },
-  { path: 'sub-accounts', handlers: [subAccountsRouter] },
-  { path: 'assistant', handlers: [assistantRouter] },
-  { path: 'approvals', handlers: [approvalsRouter] },
-  { path: 'approval-policies', handlers: [approvalPoliciesRouter] },
-  { path: 'keys', handlers: [keysRouter] },
-  { path: 'sessions', handlers: [sessionsRouter] },
-  { path: 'stream', handlers: [streamRouter] },
-  { path: 'notifications', handlers: [notificationsRouter] },
-  { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
-]
+const apiRoutes: ApiRoute[] = API_ROUTES
 
 // ── Application routes ────────────────────────────────────────────────────────
 
-app.use('/health', healthRouter)
-app.use('/api/analytics', analyticsRouter)
-app.use('/api/stellar', stellarRouter)
-app.use('/api/webhooks', webhooksRouter)
-app.use('/metrics', metricsRouter)
+// Operational endpoints and the pre-version paths (health, metrics, the legacy
+// webhooks surface). Declared in src/routes/registry.ts so the tier matrix
+// can describe every route the server serves, not just the versioned ones.
+for (const mount of EXTRA_MOUNTS) {
+  app.use(mount.path, ...mount.handlers)
+}
 
 // Primary, versioned mounts: /api/v1/*
 for (const route of apiRoutes) {
@@ -345,6 +361,9 @@ for (const route of apiRoutes) {
 for (const route of apiRoutes) {
   app.use(`/api/${route.path}`, deprecatedApiWarning, ...route.handlers)
 }
+
+// 404 for unmatched routes — after all routers, before the error handlers
+app.use(notFoundHandler)
 
 // 413 handler — must be after body parsers, before generic error handler
 app.use(payloadSizeErrorHandler)
@@ -362,6 +381,11 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(sessionCleanupHandle)
     sessionCleanupHandle = null
     logger.info('[Shutdown] Session cleanup timer cleared')
+  }
+
+  if (outboundNotificationsHandle) {
+    clearInterval(outboundNotificationsHandle)
+    outboundNotificationsHandle = null
   }
 
   if (dataRetentionHandle) {
@@ -393,6 +417,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
     recurringDepositsHandle = null
     logger.info('[Shutdown] Recurring deposits timer cleared')
   }
+  if (recurringWithdrawalsHandle) {
+    clearInterval(recurringWithdrawalsHandle)
+    recurringWithdrawalsHandle = null
+  }
 
   if (alertRulesHandle) {
     clearInterval(alertRulesHandle)
@@ -410,6 +438,16 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(strategyMetricsHandle)
     strategyMetricsHandle = null
     logger.info('[Shutdown] Strategy metrics timer cleared')
+  }
+
+  if (supportTicketSlaHandle) {
+    clearInterval(supportTicketSlaHandle)
+    supportTicketSlaHandle = null
+  }
+
+  if (riskMetadataStalenessHandle) {
+    clearInterval(riskMetadataStalenessHandle)
+    riskMetadataStalenessHandle = null
   }
 
   if (protocolRiskScoringHandle) {
@@ -454,6 +492,36 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Reserve reconciliation timer cleared')
   }
 
+  if (messageDeliverySweepHandle) {
+    clearInterval(messageDeliverySweepHandle)
+    messageDeliverySweepHandle = null
+    logger.info('[Shutdown] Message delivery sweep timer cleared')
+  }
+
+  if (signerRotationHandle) {
+    clearInterval(signerRotationHandle)
+    signerRotationHandle = null
+    logger.info('[Shutdown] Signer rotation timer cleared')
+  }
+
+  if (linkedExternalWalletSyncHandle) {
+    clearInterval(linkedExternalWalletSyncHandle)
+    linkedExternalWalletSyncHandle = null
+    logger.info('[Shutdown] External wallet sync timer cleared')
+  }
+
+  if (loanAccrualHandle) {
+    clearInterval(loanAccrualHandle)
+    loanAccrualHandle = null
+    logger.info('[Shutdown] Loan accrual timer cleared')
+  }
+
+  if (loanLiquidationHandle) {
+    clearInterval(loanLiquidationHandle)
+    loanLiquidationHandle = null
+    logger.info('[Shutdown] Loan liquidation monitor cleared')
+  }
+
   try {
     stopFeeOracle()
     logger.info('[Shutdown] Fee oracle stopped')
@@ -473,6 +541,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   logger.info('[Shutdown] Draining WebSocket connections...')
   await closeWebSocketServer()
   await stopEventBridge()
+  await stopCacheInvalidationSubscriber()
 
   logger.info('[Shutdown] Closing HTTP server (no new requests accepted)')
   httpServer.close(async () => {
@@ -515,6 +584,13 @@ async function initServices(): Promise<void> {
   // 0. Bootstrap secrets (no-op when SECRET_BACKEND=env, fetches from SSM otherwise)
   const { bootstrapSecrets } = await import('./config/secrets')
   await bootstrapSecrets()
+  const { validateSecretCredentials } = await import('./config/secrets')
+  const secretErrors = validateSecretCredentials()
+  if (secretErrors.length) {
+    throw new Error(
+      `[Startup] Secret validation failed: ${secretErrors.join('; ')}`
+    )
+  }
 
   if (config.nodeEnv === 'production') {
     logger.info(
@@ -532,6 +608,22 @@ async function initServices(): Promise<void> {
     throw new Error(msg)
   }
   logger.info('[Startup] Twilio auth token configured ✓')
+
+  // 0. Validate WebAuthn configuration in production
+  if (config.nodeEnv === 'production' || config.nodeEnv === 'staging') {
+    const { webAuthnConfig } = await import('./services/webauthn.service')
+    try {
+      webAuthnConfig()
+      logger.info('[Startup] WebAuthn configuration validated ✓')
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      logger.error(
+        '[Startup] WebAuthn configuration validation failed — cannot continue',
+        { error: msg }
+      )
+      throw new Error(`WebAuthn: ${msg}`)
+    }
+  }
 
   // 0. Validate Stellar network configuration
   validateStellarNetworkReady()
@@ -585,6 +677,32 @@ async function initServices(): Promise<void> {
   } catch (error) {
     logger.error(
       '[Startup] Fee oracle failed to start — continuing with defaults',
+      {
+        error: error instanceof Error ? error.message : String(error),
+      }
+    )
+  }
+
+  // 5. Feature Flags Redis Sync (#494) — best-effort, never blocks startup
+  try {
+    await featureFlagManager.syncFromRedis()
+    logger.info('[Startup] Feature flag Redis sync initialized ✓')
+  } catch (error) {
+    logger.warn(
+      '[Startup] Feature flag Redis sync failed — continuing with local configuration',
+      {
+        error: error instanceof Error ? error.message : String(error),
+      }
+    )
+  }
+
+  // 6. Cache invalidation subscriber (#611) — best-effort, never blocks startup
+  try {
+    startCacheInvalidationSubscriber()
+    logger.info('[Startup] Cache invalidation subscriber initialized ✓')
+  } catch (error) {
+    logger.warn(
+      '[Startup] Cache invalidation subscriber failed — continuing with pod-local invalidation only',
       {
         error: error instanceof Error ? error.message : String(error),
       }
@@ -656,17 +774,28 @@ async function main(): Promise<void> {
   fiatReconciliationHandle = scheduleFiatReconciliation()
   referralPayoutHandle = scheduleReferralPayout()
   recurringDepositsHandle = scheduleRecurringDeposits()
+  recurringWithdrawalsHandle = scheduleRecurringWithdrawals()
   alertRulesHandle = scheduleAlertRules()
   digestsHandle = scheduleDigests()
   strategyMetricsHandle = scheduleStrategyMetrics()
   // Ordered before the suggestion job so the first suggestion run sees freshly
   // scored protocols rather than whatever was last left in the table.
   protocolRiskScoringHandle = scheduleProtocolRiskScoring()
+  supportTicketSlaHandle = scheduleSupportTicketSla()
+  riskMetadataStalenessHandle = scheduleRiskMetadataStaleness()
   allocationSuggestionsHandle = scheduleAllocationSuggestions()
   attributionHandle = scheduleAttribution()
   portfolioRiskJobHandle = schedulePortfolioRiskJob()
   approvalExpiryHandle = scheduleApprovalExpiry()
   reserveReconciliationHandle = scheduleReserveReconciliation()
+  messageDeliverySweepHandle = scheduleMessageDeliverySweep()
+  signerRotationHandle = scheduleSignerRotation()
+  outboundNotificationsHandle = scheduleOutboundNotifications()
+  linkedExternalWalletSyncHandle = scheduleLinkedExternalWalletSync()
+  // #532 — accrual first, then the monitor: the monitor values loans, and it
+  // must not value them on interest the accrual job has not yet recorded.
+  loanAccrualHandle = scheduleLoanAccrual()
+  loanLiquidationHandle = scheduleLoanLiquidationMonitor()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

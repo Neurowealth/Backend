@@ -10,6 +10,12 @@ The NeuroWealth backend operates with the following SLO targets:
 - **Internal Endpoint Latency (p95)**: < 1s
 - **Background Job Latency (p95)**: < 30s
 
+Operational percentile alert thresholds: HTTP P95 > 5s (warning) and P99 > 2s
+(warning); database P95 > 1s (warning) and P99 > 1s (warning); Stellar RPC P99
+> 5s (warning). The Grafana Latency dashboard plots P50/P95/P99 where the
+underlying histogram is available. Investigate sustained breaches using the
+runbooks referenced by the Prometheus alert rules.
+
 ## Endpoint Latency Budgets
 
 ### Critical Public Endpoints

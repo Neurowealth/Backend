@@ -143,7 +143,8 @@ describe('computeAllocationSuggestions', () => {
 
     expect(recordJobFailure).toHaveBeenCalledWith(
       'allocation_suggestions',
-      expect.any(Number)
+      expect.any(Number),
+      expect.any(Error)
     )
     const [name, status] = (logBackgroundJob as jest.Mock).mock.calls[0]
     expect(name).toBe('allocation_suggestions')

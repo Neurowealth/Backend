@@ -34,6 +34,176 @@ import { deriveIdempotencyKey } from '../outbox/idempotency'
 
 type Db = typeof db | Prisma.TransactionClient
 
+/**
+ * Fraud detection flags for referral conversions (#490).
+ */
+export enum ReferralFraudFlag {
+  SELF_REFERRAL_BLOCKED = 'SELF_REFERRAL_BLOCKED',
+  DUPLICATE_WALLET = 'DUPLICATE_WALLET',
+  DUPLICATE_EMAIL = 'DUPLICATE_EMAIL',
+  DUPLICATE_PHONE = 'DUPLICATE_PHONE',
+  SUSPICIOUS_VELOCITY = 'SUSPICIOUS_VELOCITY',
+  SAME_IP_ADDRESS = 'SAME_IP_ADDRESS',
+  RAPID_ACTIVATION = 'RAPID_ACTIVATION',
+  SUSPICIOUS_WITHDRAWAL_PATTERN = 'SUSPICIOUS_WITHDRAWAL_PATTERN',
+}
+
+export interface ReferralFraudCheckResult {
+  passed: boolean
+  flags: ReferralFraudFlag[]
+  riskScore: number
+  requiresManualReview: boolean
+  details: Record<string, any>
+}
+
+/**
+ * Check for referral fraud patterns before attribution.
+ * Returns fraud check result with flags and risk score.
+ */
+export async function checkReferralFraud(
+  referredUserId: string,
+  referralCodeId: string,
+  database: Db = db
+): Promise<ReferralFraudCheckResult> {
+  const fraudCfg = config.referral.fraud
+  const flags: ReferralFraudFlag[] = []
+  let riskScore = 0
+  const details: Record<string, any> = {}
+
+  const [referredUser, referralCode] = await Promise.all([
+    (database as any).user.findUnique({
+      where: { id: referredUserId },
+      select: {
+        walletAddress: true,
+        email: true,
+        phone: true,
+        createdAt: true,
+        sessions: {
+          select: { ipAddress: true },
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+        },
+      },
+    }),
+    (database as any).referralCode.findUnique({
+      where: { id: referralCodeId },
+      include: {
+        owner: {
+          select: {
+            walletAddress: true,
+            email: true,
+            phone: true,
+            sessions: {
+              select: { ipAddress: true },
+              orderBy: { createdAt: 'desc' },
+              take: 5,
+            },
+          },
+        },
+      },
+    }),
+  ])
+
+  if (!referredUser || !referralCode) {
+    throw new Error('User or referral code not found')
+  }
+
+  // Check 1: Duplicate wallet (already caught by unique constraint, but check anyway)
+  const duplicateWallet = await (database as any).user.count({
+    where: {
+      walletAddress: referredUser.walletAddress,
+      id: { not: referredUserId },
+    },
+  })
+  if (duplicateWallet > 0) {
+    flags.push(ReferralFraudFlag.DUPLICATE_WALLET)
+    riskScore += fraudCfg.weights.duplicateWallet
+    details.duplicateWallet = true
+  }
+
+  // Check 2: Duplicate email
+  if (referredUser.email) {
+    const duplicateEmail = await (database as any).user.count({
+      where: {
+        email: referredUser.email,
+        id: { not: referredUserId },
+      },
+    })
+    if (duplicateEmail > 0) {
+      flags.push(ReferralFraudFlag.DUPLICATE_EMAIL)
+      riskScore += fraudCfg.weights.duplicateEmail
+      details.duplicateEmail = true
+    }
+  }
+
+  // Check 3: Duplicate phone
+  if (referredUser.phone) {
+    const duplicatePhone = await (database as any).user.count({
+      where: {
+        phone: referredUser.phone,
+        id: { not: referredUserId },
+      },
+    })
+    if (duplicatePhone > 0) {
+      flags.push(ReferralFraudFlag.DUPLICATE_PHONE)
+      riskScore += fraudCfg.weights.duplicatePhone
+      details.duplicatePhone = true
+    }
+  }
+
+  // Check 4: Shared IP address with referrer
+  const referredIps = new Set(
+    referredUser.sessions.map((s: any) => s.ipAddress).filter(Boolean)
+  )
+  const referrerIps = new Set(
+    referralCode.owner.sessions.map((s: any) => s.ipAddress).filter(Boolean)
+  )
+  const sharedIps = [...referredIps].filter((ip) => referrerIps.has(ip))
+  if (sharedIps.length > 0) {
+    flags.push(ReferralFraudFlag.SAME_IP_ADDRESS)
+    riskScore += fraudCfg.weights.sameIp
+    details.sharedIps = sharedIps
+  }
+
+  // Check 5: Suspicious velocity - recent conversions from same referrer
+  const recentConversions = await (database as any).referralConversion.count({
+    where: {
+      referralCodeId,
+      createdAt: { gt: new Date(Date.now() - 24 * 60 * 60 * 1000) }, // 24h
+    },
+  })
+  if (recentConversions >= fraudCfg.velocityCount) {
+    flags.push(ReferralFraudFlag.SUSPICIOUS_VELOCITY)
+    riskScore += fraudCfg.weights.velocity
+    details.recentConversions = recentConversions
+  }
+
+  // Check 6: Rapid activation pattern - many conversions activated quickly
+  const rapidActivations = await (database as any).referralConversion.count({
+    where: {
+      referralCodeId,
+      status: ReferralStatus.ACTIVATED,
+      activatedAt: { gt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }, // 7d
+    },
+  })
+  if (rapidActivations >= fraudCfg.rapidActivationCount) {
+    flags.push(ReferralFraudFlag.RAPID_ACTIVATION)
+    riskScore += fraudCfg.weights.rapidActivation
+    details.rapidActivations = rapidActivations
+  }
+
+  const requiresManualReview = riskScore >= fraudCfg.reviewScore
+  const passed = riskScore < fraudCfg.blockScore
+
+  return {
+    passed,
+    flags,
+    riskScore,
+    requiresManualReview,
+    details,
+  }
+}
+
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no ambiguous 0/O/1/I
 const CODE_LENGTH = 8
 const CODE_MAX_ATTEMPTS = 5
@@ -195,11 +365,17 @@ export async function getOrCreateReferralCode(
 /**
  * Attribute a newly-created user to a referral code at signup time. Creates a
  * PENDING ReferralConversion so there is an audit trail of "referred but not yet
- * activated". Silently no-ops (returns null) on any condition that should not
- * hard-fail signup:
+ * activated". Runs fraud checks and blocks/flags suspicious referrals.
+ *
+ * Silently no-ops (returns null) on any condition that should not hard-fail signup:
  *   - unknown / malformed code
  *   - self-referral (owner referring themselves)
  *   - referred user already attributed (referredUserId is unique)
+ *
+ * Fraud checks (#490):
+ *   - Blocks if riskScore >= 100 (definite fraud)
+ *   - Creates conversion with manualReviewRequired=true if riskScore >= 80
+ *   - Logs fraud flags for monitoring
  *
  * @returns the conversion id, or null if no attribution was made.
  */
@@ -228,19 +404,60 @@ export async function attributeSignup(
     return null
   }
 
+  // Run fraud detection checks (#490)
+  const fraudCheck = await checkReferralFraud(
+    referredUserId,
+    referralCode.id,
+    database
+  )
+
+  if (!fraudCheck.passed) {
+    logger.warn('[Referral] Fraud check failed — attribution blocked', {
+      referredUserId,
+      code,
+      riskScore: fraudCheck.riskScore,
+      flags: fraudCheck.flags,
+    })
+    await alertingService.emit({
+      title: 'Referral fraud detected',
+      description: `Referral attribution blocked for user ${referredUserId}. Risk score: ${fraudCheck.riskScore}. Flags: ${fraudCheck.flags.join(', ')}`,
+      severity: 'warning',
+      component: 'referral-fraud',
+      dedupKey: `referral-fraud-${referredUserId}`,
+    })
+    return null
+  }
+
   try {
     const conversion = await (database as any).referralConversion.create({
       data: {
         referralCodeId: referralCode.id,
         referredUserId,
         status: ReferralStatus.PENDING,
+        fraudCheckScore: fraudCheck.riskScore,
+        fraudCheckFlags: fraudCheck.flags,
+        manualReviewRequired: fraudCheck.requiresManualReview,
+        fraudCheckDetails: fraudCheck.details,
       },
     })
     logger.info('[Referral] Signup attributed', {
       referredUserId,
       code,
       conversionId: conversion.id,
+      fraudCheckScore: fraudCheck.riskScore,
+      manualReviewRequired: fraudCheck.requiresManualReview,
     })
+
+    if (fraudCheck.requiresManualReview) {
+      await alertingService.emit({
+        title: 'Referral requires manual review',
+        description: `Referral conversion ${conversion.id} flagged for manual review. Risk score: ${fraudCheck.riskScore}. Flags: ${fraudCheck.flags.join(', ')}`,
+        severity: 'info',
+        component: 'referral-fraud',
+        dedupKey: `referral-review-${conversion.id}`,
+      })
+    }
+
     return conversion.id
   } catch (err) {
     // referredUserId unique violation — user already credited to a referral.
@@ -492,6 +709,7 @@ async function payOneReward(
       actor: 'SYSTEM',
       payload: {
         method: 'referral_reward',
+        transactionId: transaction.id,
         recipientAddress: address,
         amount,
         assetSymbol: asset,
@@ -506,17 +724,20 @@ async function payOneReward(
   try {
     const result = await dispatchOne(pending.opId)
     const succeeded = !result.status || result.status === 'success'
+    const stillPending = result.status === 'pending'
     await db.transaction.update({
       where: { id: pending.transaction.id },
       data: {
         txHash: result.hash,
-        status: succeeded
-          ? TransactionStatus.CONFIRMED
-          : TransactionStatus.FAILED,
+        status: stillPending
+          ? TransactionStatus.PENDING
+          : succeeded
+            ? TransactionStatus.CONFIRMED
+            : TransactionStatus.FAILED,
         confirmedAt: succeeded ? new Date() : null,
       },
     })
-    if (!succeeded) {
+    if (!succeeded && !stillPending) {
       throw new Error('On-chain reward submission returned status=failed')
     }
     return pending.transaction.id
@@ -544,7 +765,12 @@ export async function payoutActivatedConversions(): Promise<{
   rewarded: number
 }> {
   const pending = await db.referralConversion.findMany({
-    where: { status: ReferralStatus.ACTIVATED },
+    where: {
+      status: ReferralStatus.ACTIVATED,
+      // Skip conversions that require manual review or were rejected (#490)
+      manualReviewRequired: false,
+      manualReviewRejected: false,
+    },
     orderBy: { activatedAt: 'asc' },
     take: 200,
     include: { referralCode: true },
@@ -649,6 +875,25 @@ export async function payoutActivatedConversions(): Promise<{
 
     if (hadError) continue // stays ACTIVATED — retried next sweep
 
+    const rewardTransactionIds = [
+      config.referral.ownerReward > 0 ? ownerRewardTxId : null,
+      config.referral.referredReward > 0 ? referredRewardTxId : null,
+    ].filter((id): id is string => id !== null)
+    if (rewardTransactionIds.length > 0) {
+      const rewardTransactions = await db.transaction.findMany({
+        where: { id: { in: rewardTransactionIds } },
+        select: { id: true, status: true },
+      })
+      if (
+        rewardTransactions.length !== rewardTransactionIds.length ||
+        rewardTransactions.some(
+          (transaction) => transaction.status !== 'CONFIRMED'
+        )
+      ) {
+        continue
+      }
+    }
+
     // Every owed leg is now paid. Advance to REWARDED (terminal).
     await db.referralConversion.update({
       where: { id: conversion.id },
@@ -726,53 +971,161 @@ export async function listReferrals(ownerUserId: string) {
   }
 }
 
-export async function referralLeaderboard(
-  page = 1,
-  limit = 20,
-  includeDisplayName = false
-) {
-  const rows = await db.referralConversion.groupBy({
-    by: ['referralCodeId'],
-    where: { status: ReferralStatus.REWARDED },
-    _count: { id: true },
-    orderBy: { _count: { id: 'desc' } },
-    skip: (page - 1) * limit,
-    take: limit,
+/**
+ * Approve a referral conversion that was flagged for manual review (#490).
+ * Clears the manual review flag so payout can proceed.
+ */
+export async function approveReferralConversion(
+  conversionId: string,
+  reviewedBy: string
+): Promise<void> {
+  const conversion = await db.referralConversion.findUnique({
+    where: { id: conversionId },
   })
-  const codes = await db.referralCode.findMany({
-    where: { id: { in: rows.map((r) => r.referralCodeId) } },
-    select: { id: true, ownerUserId: true },
+
+  if (!conversion) {
+    throw new Error(`Referral conversion ${conversionId} not found`)
+  }
+
+  if (!conversion.manualReviewRequired) {
+    throw new Error(`Conversion ${conversionId} does not require manual review`)
+  }
+
+  await db.referralConversion.update({
+    where: { id: conversionId },
+    data: {
+      manualReviewRequired: false,
+      reviewedBy,
+      reviewedAt: new Date(),
+    },
   })
-  const users = includeDisplayName
-    ? await db.user.findMany({
-        where: { id: { in: codes.map((c) => c.ownerUserId) } },
-        select: { id: true, displayName: true },
-      })
-    : []
-  return rows.map((row) => {
-    const ownerId = codes.find((c) => c.id === row.referralCodeId)?.ownerUserId
-    return {
-      userId: ownerId,
-      activatedConversions: row._count.id,
-      ...(includeDisplayName
-        ? {
-            displayName:
-              users.find((u) => u.id === ownerId)?.displayName ?? null,
-          }
-        : {}),
-    }
+
+  logger.info('[Referral] Conversion approved after manual review', {
+    conversionId,
+    reviewedBy,
   })
 }
 
 /**
- * List FLAGGED conversions awaiting manual review (#397), oldest first so a
- * reviewer works the backlog in order. Used by the admin review route.
+ * Reject a referral conversion that was flagged for manual review (#490).
+ * Blocks payout permanently.
  */
-export async function listFlaggedConversions(limit = 100) {
-  return db.referralConversion.findMany({
-    where: { status: ReferralStatus.FLAGGED },
-    orderBy: { flaggedAt: 'asc' },
-    take: limit,
-    include: { referralCode: true },
+export async function rejectReferralConversion(
+  conversionId: string,
+  reviewedBy: string,
+  rejectionReason: string
+): Promise<void> {
+  const conversion = await db.referralConversion.findUnique({
+    where: { id: conversionId },
   })
+
+  if (!conversion) {
+    throw new Error(`Referral conversion ${conversionId} not found`)
+  }
+
+  await db.referralConversion.update({
+    where: { id: conversionId },
+    data: {
+      manualReviewRequired: false,
+      manualReviewRejected: true,
+      reviewedBy,
+      reviewedAt: new Date(),
+      rejectionReason,
+    },
+  })
+
+  logger.warn('[Referral] Conversion rejected after manual review', {
+    conversionId,
+    reviewedBy,
+    reason: rejectionReason,
+  })
+}
+
+/**
+ * List referral conversions requiring manual review (#490).
+ */
+export async function listConversionsForReview(): Promise<any[]> {
+  return db.referralConversion.findMany({
+    where: {
+      manualReviewRequired: true,
+      manualReviewRejected: false,
+    },
+    include: {
+      referralCode: {
+        include: {
+          owner: {
+            select: {
+              id: true,
+              walletAddress: true,
+              email: true,
+              createdAt: true,
+            },
+          },
+        },
+      },
+      referredUser: {
+        select: {
+          id: true,
+          walletAddress: true,
+          email: true,
+          createdAt: true,
+        },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  })
+}
+
+/**
+ * Alias of listConversionsForReview — exported under the name expected by
+ * the admin routes that were added alongside fraud-detection (#490).
+ */
+export const listFlaggedConversions = listConversionsForReview
+
+/**
+ * Referral leaderboard: top referrers by confirmed conversion count.
+ * Returns users sorted by number of accepted referrals, paginated.
+ */
+export async function referralLeaderboard(
+  page: number = 1,
+  limit: number = 20,
+  includeDisplayName: boolean = false
+): Promise<
+  {
+    ownerId: string
+    code: string
+    conversions: number
+    displayName?: string | null
+  }[]
+> {
+  const codes = await db.referralCode.findMany({
+    include: {
+      owner: includeDisplayName
+        ? {
+            select: {
+              displayName: true,
+            },
+          }
+        : false,
+      _count: {
+        select: {
+          conversions: {
+            where: { status: 'ACTIVATED' },
+          },
+        },
+      },
+    },
+    orderBy: { conversions: { _count: 'desc' } },
+    skip: (page - 1) * limit,
+    take: limit,
+  })
+
+  return codes.map((c) => ({
+    ownerId: c.ownerUserId,
+    code: c.code,
+    conversions: c._count.conversions,
+    ...(includeDisplayName
+      ? { displayName: (c as any).owner?.displayName ?? null }
+      : {}),
+  }))
 }

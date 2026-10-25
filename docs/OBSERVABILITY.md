@@ -3,12 +3,17 @@
 This document provides production-grade observability guidance including alert thresholds, Grafana dashboard recommendations, and deployment best practices for the NeuroWealth backend.
 
 **Related Documentation**:
+
 - **SLO Guidance**: See `docs/SLO_GUIDANCE.md` for latency budgets and performance targets
 - **Runbook**: See `docs/RUNBOOK.md` for incident response procedures
+- **Incident response**: See `docs/INCIDENT_RESPONSE.md` for alert runbooks, escalation timers, and the postmortem workflow
+- **Notification delivery**: See `docs/NOTIFICATIONS.md` for retry/DLQ operations and replay controls
+- **Secret rotation**: See `docs/SECRETS_ROTATION.md` for the required/optional secret inventory and rotation procedure
 
 ## Overview
 
 The backend exposes Prometheus-compatible metrics through the `/metrics` endpoint, providing comprehensive visibility into:
+
 - Event processing (deposits, withdrawals, rebalances)
 - Dead Letter Queue (DLQ) size and retry status
 - Cursor lag and ledger processing
@@ -16,6 +21,44 @@ The backend exposes Prometheus-compatible metrics through the `/metrics` endpoin
 - Database operation performance
 - HTTP request metrics
 - Analytics API performance
+
+## Request Correlation IDs
+
+Every HTTP request is assigned a request ID by `correlationIdMiddleware`
+(`src/middleware/correlationId.ts`), which is registered **first** in the
+middleware chain so that early rejections (CORS, body parsing, rate limiting)
+are also correlated.
+
+| Where      | How the ID appears                                                                                                                                       |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Inbound    | A valid client-supplied `X-Request-ID` (or `X-Correlation-ID`) is reused; otherwise a UUID v4 is generated. IDs must match `^[A-Za-z0-9_-]{1,128}$`.     |
+| Response   | `X-Request-ID` header on every response (exposed via CORS), plus `requestId` in every error body.                                                        |
+| Logs       | Winston injects `correlationId` from AsyncLocalStorage, and `traceId` / `spanId` from the active OpenTelemetry span.                                     |
+| Traces     | The active HTTP span gets the `http.request_id` attribute; failed requests also get `correlation.id`.                                                    |
+| Sentry     | 5xx events are tagged `correlation_id`.                                                                                                                  |
+| Downstream | Call `correlationHeaders()` from `src/utils/correlation.ts` to forward `X-Request-ID` on outbound HTTP calls (`fetchWithRetry` does this automatically). |
+
+To debug a failed request, take the `requestId` from the error body and search
+logs for `correlationId`, or search traces for `http.request_id`. The log line's
+`traceId` links directly to the full trace.
+
+## Log PII Scrubbing Policy (#666)
+
+The logging subsystem (`src/utils/logger.ts`) enforces automated field-level and pattern-level data scrubbing across all Winston log transports (Console, File, JSON) to ensure GDPR/CCPA compliance and prevent log aggregation systems from storing raw personal identifiers.
+
+### Scrubbing Rules
+
+1. **Email Addresses**: Local parts are redacted while preserving the domain (e.g. `user@example.com` → `***@example.com`) to allow troubleshooting domain-specific delivery while protecting user privacy.
+2. **Phone Numbers**: Scrubbed across delimiter and international formats (e.g. `+1-555-123-4567` → `***-***-****`).
+3. **IP Addresses**: IPv4 addresses preserve the `/24` subnet while redacting the host octet (`192.168.1.***`) for network diagnostics; IPv6 host segments are masked.
+4. **Wallet Addresses**: Full Stellar public keys and EVM addresses preserve only the first and last 4 characters (`GAAZ...CWN7`, `0x12...abcd`). Stellar secret keys are completely redacted (`[REDACTED_SECRET_KEY]`).
+5. **Deny-List Field Keys**: Keys matching `password`, `secret`, `token`, `authorization`, or `cookie` (case-insensitively anywhere in the key name) have their values unconditionally replaced with `[REDACTED]`.
+6. **Tokens & Secrets**: Slack tokens (`xoxb-`), Stripe keys (`sk-`), Bearer tokens, and 64-character encryption hex strings in message bodies are redacted with asterisks.
+
+### Architecture & Non-Bypassability
+
+- **Pipeline Position**: `scrubFormat()` is applied at the root logger level before formatting and transport dispatch.
+- **Transports & Modes**: Debug level (`LOG_LEVEL=debug`), log sampling, JSON file outputs, and child loggers (`createCorrelatedLogger`) cannot bypass scrubbing. All structured metadata objects and errors are scrubbed recursively before serialization.
 
 ## Prometheus Metrics
 
@@ -34,6 +77,9 @@ The backend exposes Prometheus-compatible metrics through the `/metrics` endpoin
 
 - `dlq_size` - Gauge (current number of failed events)
 - `dlq_retry_total` - Counter with label: `status`
+- `outbound_notification_attempts_total` - Counter with labels: `channel`, `status`
+- `outbound_notification_dlq_size` - Gauge (dead-lettered outbound notifications)
+- `secret_credential_validation_failures` - Gauge (missing, malformed, or expired required secrets)
 
 ### Cursor/Lag Metrics
 
@@ -76,6 +122,11 @@ sum(rate(agent_breaker_trips_total[15m])) by (rule)
 - `http_requests_total` - Counter with labels: `method`, `route`, `status_code`
 - `http_request_duration_seconds` - Histogram with labels: `method`, `route`, `status_code`
 
+The Grafana Latency dashboard displays HTTP P50/P95/P99, DB P95/P99, and Stellar
+RPC P95/P99. Alert thresholds are HTTP P95 > 5s / P99 > 2s, DB P95 > 1s / P99 >
+1s, and Stellar RPC P99 > 5s. See `docs/SLO_GUIDANCE.md` for endpoint-level
+budgets and the Prometheus rules for runbook links.
+
 ### Analytics API Metrics
 
 - `analytics_requests_total` - Counter with labels: `endpoint`, `status`
@@ -85,34 +136,36 @@ sum(rate(agent_breaker_trips_total[15m])) by (rule)
 
 ### Critical Alerts (Page Immediately)
 
-| Metric | Condition | Severity | Description |
-|--------|-----------|----------|-------------|
-| `agent_loop_status` | `== 0` (stopped) | Critical | Agent loop is not running |
-| `agent_loop_heartbeat_timestamp` | `> 5 minutes ago` | Critical | Agent loop heartbeat stale |
-| `cursor_lag_ledgers` | `> 100` | Critical | Event processing lagging significantly |
-| `dlq_size` | `> 50` | Critical | Dead Letter Queue critically large |
-| `failures_total` (rate) | `> 10 per minute` for 5m | Critical | High failure rate |
-| `agent_breaker_state{scope="GLOBAL"}` | `== 2` for 1m | Critical | Global circuit breaker OPEN — all rebalancing halted |
+| Metric                                | Condition                | Severity | Description                                          |
+| ------------------------------------- | ------------------------ | -------- | ---------------------------------------------------- |
+| `agent_loop_status`                   | `== 0` (stopped)         | Critical | Agent loop is not running                            |
+| `agent_loop_heartbeat_timestamp`      | `> 5 minutes ago`        | Critical | Agent loop heartbeat stale                           |
+| `cursor_lag_ledgers`                  | `> 100`                  | Critical | Event processing lagging significantly               |
+| `dlq_size`                            | `> 50`                   | Critical | Dead Letter Queue critically large                   |
+| `failures_total` (rate)               | `> 10 per minute` for 5m | Critical | High failure rate                                    |
+| `agent_breaker_state{scope="GLOBAL"}` | `== 2` for 1m            | Critical | Global circuit breaker OPEN — all rebalancing halted |
 
 ### Warning Alerts (Investigate Within 1 Hour)
 
-| Metric | Condition | Severity | Description |
-|--------|-----------|----------|-------------|
-| `agent_loop_status` | `== 2` (degraded) | Warning | Agent loop in degraded state |
-| `cursor_lag_ledgers` | `> 50` | Warning | Event processing lagging |
-| `dlq_size` | `> 20` | Warning | Dead Letter Queue growing |
-| `events_processing_duration_seconds` (p95) | `> 2 seconds` | Warning | Event processing slow |
-| `db_operation_duration_seconds` (p95) | `> 1 second` | Warning | Database operations slow |
-| `http_request_duration_seconds` (p95) | `> 5 seconds` | Warning | HTTP requests slow |
-| `agent_breaker_state{scope!="GLOBAL"}` | `== 2` for 2m | Warning | Protocol or user breaker OPEN — affected rebalancing halted |
+| Metric                                     | Condition         | Severity | Description                                                 |
+| ------------------------------------------ | ----------------- | -------- | ----------------------------------------------------------- |
+| `agent_loop_status`                        | `== 2` (degraded) | Warning  | Agent loop in degraded state                                |
+| `cursor_lag_ledgers`                       | `> 50`            | Warning  | Event processing lagging                                    |
+| `dlq_size`                                 | `> 20`            | Warning  | Dead Letter Queue growing                                   |
+| `events_processing_duration_seconds` (p95) | `> 2 seconds`     | Warning  | Event processing slow                                       |
+| `db_operation_duration_seconds` (p95)      | `> 1 second`      | Warning  | Database operations slow                                    |
+| `http_request_duration_seconds` (p95)      | `> 5 seconds`     | Warning  | HTTP requests slow                                          |
+| `outbound_notification_dlq_size`           | `> 10` for 5m     | Critical | Outbound notification DLQ needs operator review             |
+| `secret_credential_validation_failures`    | `> 0` for 1m      | Critical | A required credential is missing, malformed, or expired     |
+| `agent_breaker_state{scope!="GLOBAL"}`     | `== 2` for 2m     | Warning  | Protocol or user breaker OPEN — affected rebalancing halted |
 
 ### Info Alerts (Monitor Trend)
 
-| Metric | Condition | Severity | Description |
-|--------|-----------|----------|-------------|
-| `dlq_size` | `> 5` | Info | DLQ has events (normal during issues) |
-| `failure_rate` | `> 1%` | Info | Elevated failure rate |
-| `events_processing_rate_per_minute` | `< 1` for 10m | Info | Low event processing rate |
+| Metric                              | Condition     | Severity | Description                           |
+| ----------------------------------- | ------------- | -------- | ------------------------------------- |
+| `dlq_size`                          | `> 5`         | Info     | DLQ has events (normal during issues) |
+| `failure_rate`                      | `> 1%`        | Info     | Elevated failure rate                 |
+| `events_processing_rate_per_minute` | `< 1` for 10m | Info     | Low event processing rate             |
 
 ## Prometheus Alert Rules Example
 
@@ -127,8 +180,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Agent loop is not running"
-          description: "Agent loop has been stopped for more than 1 minute"
+          summary: 'Agent loop is not running'
+          description: 'Agent loop has been stopped for more than 1 minute'
 
       - alert: AgentLoopHeartbeatStale
         expr: time() - agent_loop_heartbeat_timestamp > 300
@@ -136,8 +189,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Agent loop heartbeat is stale"
-          description: "Agent loop heartbeat not updated for 5 minutes"
+          summary: 'Agent loop heartbeat is stale'
+          description: 'Agent loop heartbeat not updated for 5 minutes'
 
       - alert: CursorLagCritical
         expr: cursor_lag_ledgers > 100
@@ -145,8 +198,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Event cursor lag critical"
-          description: "Cursor lag is {{ $value }} ledgers (> 100)"
+          summary: 'Event cursor lag critical'
+          description: 'Cursor lag is {{ $value }} ledgers (> 100)'
 
       - alert: DLQSizeCritical
         expr: dlq_size > 50
@@ -154,8 +207,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Dead Letter Queue critically large"
-          description: "DLQ has {{ $value }} events (> 50)"
+          summary: 'Dead Letter Queue critically large'
+          description: 'DLQ has {{ $value }} events (> 50)'
 
       - alert: HighFailureRate
         expr: rate(failures_total[5m]) > 10
@@ -163,8 +216,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "High failure rate detected"
-          description: "Failure rate is {{ $value }} per minute (> 10)"
+          summary: 'High failure rate detected'
+          description: 'Failure rate is {{ $value }} per minute (> 10)'
 
   - name: neurowealth_warning
     interval: 30s
@@ -175,8 +228,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Agent loop in degraded state"
-          description: "Agent loop has been degraded for more than 5 minutes"
+          summary: 'Agent loop in degraded state'
+          description: 'Agent loop has been degraded for more than 5 minutes'
 
       - alert: CursorLagWarning
         expr: cursor_lag_ledgers > 50
@@ -184,8 +237,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Event cursor lag elevated"
-          description: "Cursor lag is {{ $value }} ledgers (> 50)"
+          summary: 'Event cursor lag elevated'
+          description: 'Cursor lag is {{ $value }} ledgers (> 50)'
 
       - alert: DLQSizeWarning
         expr: dlq_size > 20
@@ -193,8 +246,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Dead Letter Queue growing"
-          description: "DLQ has {{ $value }} events (> 20)"
+          summary: 'Dead Letter Queue growing'
+          description: 'DLQ has {{ $value }} events (> 20)'
 
       - alert: EventProcessingSlow
         expr: histogram_quantile(0.95, events_processing_duration_seconds) > 2
@@ -202,8 +255,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Event processing slow"
-          description: "P95 event processing duration is {{ $value }}s (> 2s)"
+          summary: 'Event processing slow'
+          description: 'P95 event processing duration is {{ $value }}s (> 2s)'
 
       - alert: DatabaseOperationsSlow
         expr: histogram_quantile(0.95, db_operation_duration_seconds) > 1
@@ -211,8 +264,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Database operations slow"
-          description: "P95 DB operation duration is {{ $value }}s (> 1s)"
+          summary: 'Database operations slow'
+          description: 'P95 DB operation duration is {{ $value }}s (> 1s)'
 
       - alert: HTTPRequestsSlow
         expr: histogram_quantile(0.95, http_request_duration_seconds) > 5
@@ -220,8 +273,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "HTTP requests slow"
-          description: "P95 HTTP request duration is {{ $value }}s (> 5s)"
+          summary: 'HTTP requests slow'
+          description: 'P95 HTTP request duration is {{ $value }}s (> 5s)'
 ```
 
 ## Grafana Dashboard Recommendations
@@ -229,35 +282,41 @@ groups:
 ### Dashboard: NeuroWealth System Overview
 
 **Row 1: System Health**
+
 - Agent Loop Status (stat panel)
 - Agent Loop Heartbeat (gauge panel, time since last heartbeat)
 - Cursor Lag (graph panel)
 - DLQ Size (stat panel with threshold colors)
 
 **Row 2: Event Processing**
+
 - Events Processed Total (graph panel, rate)
 - Events Processing Rate (graph panel)
 - Event Processing Duration (heatmap panel, by event type)
 - Event Processing P95 Duration (graph panel)
 
 **Row 3: Failures & DLQ**
+
 - Failures Total (graph panel, rate)
 - Failure Rate (graph panel)
 - DLQ Size Over Time (graph panel)
 - DLQ Retry Attempts (graph panel)
 
 **Row 4: Database Performance**
+
 - DB Operation Duration (heatmap panel, by operation type)
 - DB Operation P95 Duration (graph panel)
 - Active DB Connections (stat panel)
 
 **Row 5: HTTP Performance**
+
 - HTTP Request Rate (graph panel)
 - HTTP Request Duration (heatmap panel, by route)
 - HTTP Request P95 Duration (graph panel)
 - HTTP Error Rate (graph panel)
 
 **Row 6: Analytics API**
+
 - Analytics Request Rate (graph panel)
 - Analytics Request Duration (heatmap panel, by endpoint)
 - Analytics Error Rate (graph panel)
@@ -265,80 +324,98 @@ groups:
 ### Dashboard: Agent Loop Details
 
 **Row 1: Agent Status**
+
 - Agent Loop Status (stat panel)
 - Last Heartbeat (stat panel)
 - Time Since Last Rebalance (stat panel)
 
 **Row 2: Rebalance Operations**
+
 - Rebalance Checks Total (graph panel, rate)
 - Rebalance Checks Success Rate (stat panel)
 - Rebalances Triggered Total (graph panel, rate)
 - Rebalance Check Duration (graph panel)
 
 **Row 3: Snapshot Operations**
+
 - Snapshot Duration (graph panel)
 - Snapshot P95 Duration (graph panel)
 
 ### Dashboard: Event Processing Details
 
 **Row 1: Event Throughput**
+
 - Events Processed by Type (graph panel, stacked)
 - Events Processing Rate (graph panel)
 
 **Row 2: Event Latency**
+
 - Event Processing Duration by Type (heatmap panel)
 - Event Processing P95 Duration by Type (graph panel)
 
 **Row 3: Event Errors**
+
 - Events Failed by Type (graph panel, stacked)
 - Event Failure Rate by Type (graph panel)
 
 ## Grafana Panel Queries
 
 ### Agent Loop Status
+
 ```
 agent_loop_status
 ```
+
 Transform: Value mapping to text (0=Stopped, 1=Running, 2=Degraded)
 
 ### Agent Loop Heartbeat
+
 ```
 time() - agent_loop_heartbeat_timestamp
 ```
+
 Unit: seconds
 
 ### Cursor Lag
+
 ```
 cursor_lag_ledgers
 ```
 
 ### DLQ Size
+
 ```
 dlq_size
 ```
+
 Thresholds: 0-5 (green), 5-20 (yellow), 20-50 (orange), 50+ (red)
 
 ### Events Processing Rate
+
 ```
 rate(events_processed_total[5m])
 ```
 
 ### Event Processing P95 Duration
+
 ```
 histogram_quantile(0.95, rate(events_processing_duration_seconds_bucket[5m]))
 ```
 
 ### Failure Rate
+
 ```
 rate(failures_total[5m])
 ```
 
 ### DB Operation P95 Duration
+
 ```
 histogram_quantile(0.95, rate(db_operation_duration_seconds_bucket[5m]))
 ```
 
 ### HTTP Request P95 Duration
+
 ```
 histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
 ```
@@ -378,6 +455,7 @@ NODE_ENV=production               # Enables JSON logging
 For production deployments, consider adding cloud logging adapters:
 
 #### AWS CloudWatch
+
 ```typescript
 import { CloudWatchTransport } from 'winston-cloudwatch'
 import { addCloudLoggingAdapter } from './utils/logger'
@@ -390,13 +468,14 @@ const cloudWatchTransport = new CloudWatchTransport({
   awsRegion: process.env.AWS_REGION || 'us-east-1',
   messageFormatter: ({ level, message, meta }) => {
     return `${level}: ${message} ${JSON.stringify(meta)}`
-  }
+  },
 })
 
 addCloudLoggingAdapter(cloudWatchTransport)
 ```
 
 #### Google Cloud Logging
+
 ```typescript
 import { LoggingWinston } from '@google-cloud/logging-winston'
 import { addCloudLoggingAdapter } from './utils/logger'
@@ -404,13 +483,14 @@ import { addCloudLoggingAdapter } from './utils/logger'
 const gcloudLogging = new LoggingWinston({
   projectId: process.env.GOOGLE_CLOUD_PROJECT,
   keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS,
-  logName: 'neurowealth-backend'
+  logName: 'neurowealth-backend',
 })
 
 addCloudLoggingAdapter(gcloudLogging)
 ```
 
 #### Datadog
+
 ```typescript
 import { DatadogTransport } from 'winston-datadog-logs-transport'
 import { addCloudLoggingAdapter } from './utils/logger'
@@ -419,7 +499,7 @@ const datadogTransport = new DatadogTransport({
   apiKey: process.env.DATADOG_API_KEY,
   hostname: process.env.HOSTNAME,
   service: 'neurowealth-backend',
-  ddsource: 'nodejs'
+  ddsource: 'nodejs',
 })
 
 addCloudLoggingAdapter(datadogTransport)
@@ -428,6 +508,7 @@ addCloudLoggingAdapter(datadogTransport)
 ### Log Rotation Configuration
 
 The logger is configured with automatic log rotation:
+
 - **Max file size**: 10MB per log file
 - **Max files**: 5 files per log type (error.log, combined.log)
 - **Total storage**: ~100MB per log type
@@ -437,6 +518,7 @@ Adjust these values in `src/utils/logger.ts` if needed.
 ### Sensitive Data Redaction
 
 The logger automatically redacts sensitive data including:
+
 - Passwords
 - Secret keys
 - API keys
@@ -460,30 +542,35 @@ Review and extend `SENSITIVE_PATTERNS` in `src/utils/logger.ts` for additional p
 ## Troubleshooting
 
 ### High Cursor Lag
+
 - Check Stellar RPC server connectivity
 - Verify network congestion
 - Review event processing logs for errors
 - Check database performance
 
 ### Growing DLQ
+
 - Review DLQ events for common error patterns
 - Check if events are malformed or missing data
 - Verify contract event schema matches expectations
 - Consider increasing retry logic or fixing root cause
 
 ### Agent Loop Degraded/Stopped
+
 - Check agent loop logs for errors
 - Verify database connectivity
 - Check for uncaught exceptions
 - Review graceful shutdown logs
 
 ### Slow Database Operations
+
 - Check database connection pool size
 - Review slow query logs
 - Verify database indexing
 - Consider read replicas for analytics queries
 
 ### High HTTP Latency
+
 - Check external API dependencies (Stellar RPC, Anthropic AI)
 - Review rate limiting configuration
 - Check network latency

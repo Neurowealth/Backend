@@ -175,36 +175,68 @@ export function buildSponsoredTrustline(params: {
   return tx
 }
 
+export class InvalidLedgerKeyError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'InvalidLedgerKeyError'
+  }
+}
+
 export function buildRevokeSponsorship(params: {
   sponsorKeypair: Keypair
   accountId: string
   ledgerKey: string
 }): ReturnType<typeof TransactionBuilder.prototype.build> {
-  const { sponsorKeypair, ledgerKey } = params
+  const { sponsorKeypair, ledgerKey, accountId } = params
   const sponsorAccount = new Account(sponsorKeypair.publicKey(), '0')
 
-  // ledgerKey is opaque; for Stellar revoke we need the ledger entry's key.
-  // We encode it as sponsorship ledger key — the caller supplies the raw
-  // ledger entry XDR key. For MVP we use revokeSponsorship with accountId
-  // sponsorship (type 0) and ledgerKey as data. If ledgerKey is accountId:ACCOUNT
-  // we revoke account sponsorship; if trustline, we revoke trustline ledger.
-  // The SDK's Operation.revokeSponsorship takes {accountId, ledgerKey?}
-  // We map ledgerKey string to appropriate operation.
-  // SDK version may expose revoke as revokeSponsorship or separate
-  // revokeAccountSponsorship / revokeTrustlineSponsorship. Use whichever exists.
-  const revokeOp: any =
-    (Operation as any).revokeSponsorship?.({
-      account: params.accountId,
-    } as any) ??
-    (Operation as any).revokeAccountSponsorship?.({
-      account: params.accountId,
-    } as any) ??
-    // Fallback: generic manageData as placeholder (keeps unit test balanced)
-    Operation.manageData({
-      name: `revoke:${params.ledgerKey.slice(0, 32)}`,
-      value: null,
-      source: params.accountId,
-    })
+  let revokeOp: any
+
+  if (ledgerKey.includes(':TRUSTLINE:')) {
+    const parts = ledgerKey.split(':')
+    if (parts.length < 4) {
+      throw new InvalidLedgerKeyError(
+        `Invalid trustline ledger key format: ${ledgerKey}`
+      )
+    }
+    const assetCode = parts[2]
+    const assetIssuer = parts[3]
+    const asset = new Asset(assetCode, assetIssuer)
+
+    if (typeof (Operation as any).revokeTrustlineSponsorship === 'function') {
+      revokeOp = (Operation as any).revokeTrustlineSponsorship({
+        account: accountId,
+        asset,
+      })
+    } else if (typeof (Operation as any).revokeSponsorship === 'function') {
+      revokeOp = (Operation as any).revokeSponsorship({
+        account: accountId,
+        trustline: asset,
+      })
+    } else {
+      throw new InvalidLedgerKeyError(
+        'SDK does not expose revokeSponsorship for trustlines'
+      )
+    }
+  } else if (ledgerKey.includes(':ACCOUNT')) {
+    if (typeof (Operation as any).revokeAccountSponsorship === 'function') {
+      revokeOp = (Operation as any).revokeAccountSponsorship({
+        account: accountId,
+      })
+    } else if (typeof (Operation as any).revokeSponsorship === 'function') {
+      revokeOp = (Operation as any).revokeSponsorship({
+        account: accountId,
+      })
+    } else {
+      throw new InvalidLedgerKeyError(
+        'SDK does not expose revokeSponsorship for accounts'
+      )
+    }
+  } else {
+    throw new InvalidLedgerKeyError(
+      `Cannot map ledger key to revoke operation: ${ledgerKey}`
+    )
+  }
 
   const tx = new TransactionBuilder(sponsorAccount, {
     fee: BASE_FEE,

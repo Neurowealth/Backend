@@ -95,8 +95,11 @@ synchronous request handler and the background sweep to race for the same op
   this change.
 - **Unconfirmed too long** (`SUBMITTED` past `OUTBOX_SUBMITTED_TIMEOUT_MS`,
   typically because the dispatcher process crashed between submitting and
-  observing its own confirmation, or the network is congested): escalated
-  back to `PENDING` for reclaim; the next submission uses a bumped fee
+  observing its own confirmation, or the network is congested): the submitted
+  transaction hash is retained and polled before any rebuild. `SUCCESS` and
+  `FAILED` resolve the existing op; RPC errors leave it `SUBMITTED` for a later
+  check. Only a definitive Stellar `NOT_FOUND` allows escalation back to
+  `PENDING` for reclaim. That replacement submission uses a bumped fee
   (`feeBumpMultiplier ^ attempts`, via `src/stellar/contract.ts`'s
   `feeMultiplier` parameter on every write call). After
   `OUTBOX_FEE_BUMP_MAX_ATTEMPTS` bumps, the op is escalated straight to
@@ -118,6 +121,14 @@ Two paths close an op out to `CONFIRMED`:
    behind by a dispatcher crash between submission and its own confirmation
    — the event listener remains the durable source of truth, matching the
    existing `ProcessedEvent`/`DeadLetterEvent` design.
+
+If synchronous confirmation polling times out, the original hash is stored on
+the outbox and linked `Transaction` row remains `PENDING`. The API returns
+`202 Accepted` with that pending transaction rather than marking it failed.
+The hash is persisted immediately after Stellar accepts the submission, before
+confirmation polling starts. The scheduled dispatcher checks the stored hash
+before rebuilding anything; RPC unavailability never counts as `NOT_FOUND` and
+never triggers a duplicate submission.
 
 For a synchronous caller (deposit, withdraw, referral payout), the linked
 `Transaction` row is updated directly after `dispatchOne` resolves. For the

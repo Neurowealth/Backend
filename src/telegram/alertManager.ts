@@ -1,5 +1,6 @@
 import db from '../db'
 import { logger } from '../utils/logger'
+import { softDeleteAlertRule } from '../services/alertRuleLifecycle'
 import {
   createAlertRuleSchema,
   type DeliveryChannel,
@@ -135,7 +136,7 @@ export async function listAlertRulesForWallet(
   if (!userId) return []
 
   const rules = await db.alertRule.findMany({
-    where: { userId },
+    where: { userId, deletedAt: null },
     select: viewSelect,
     orderBy: { createdAt: 'desc' },
   })
@@ -154,12 +155,10 @@ export async function deleteAlertRuleForWallet(
   const userId = await resolveUserId(walletAddress)
   if (!userId) return false
 
-  const result = await db.alertRule.deleteMany({
-    where: { id: alertId, userId },
-  })
+  const deleted = await softDeleteAlertRule(userId, alertId)
 
-  if (result.count > 0) {
+  if (deleted) {
     logger.info(`[AlertManager] Deleted alert ${alertId} for user ${userId}`)
   }
-  return result.count > 0
+  return deleted
 }

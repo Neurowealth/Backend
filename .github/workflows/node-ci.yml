@@ -68,24 +68,37 @@ jobs:
       - name: Prisma migrate deploy
         run: npx prisma migrate deploy
 
-      # Run TypeScript lint check
-      - name: Run lint
+      - name: Lint
         run: npm run lint
 
-      - name: Run format check
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Format check
         run: npm run format:check
 
-      # Build the project
-      - name: Build project
-        run: npm run build
+      - name: Integration test suite
+        run: npm run test:integration -- --runInBand
+      - name: Release tooling regression tests
+        run: node --test scripts/tests/release.test.cjs
 
-      # Run tests
-      - name: Run tests
-        run: npm test
+      - name: Enforce and publish coverage thresholds
+        run: npm run test:coverage -- --runInBand --coverageReporters=text-summary --coverageReporters=lcov
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jest-coverage
+          path: coverage/
+          retention-days: 30
+
+      - name: Release preflight gate
+        run: npm run release:preflight
 
   # ── Security scanning ─────────────────────────────────────────────────────
   # Issue #114: npm audit for known vulnerabilities
-  # Fails on high or critical CVEs to prevent merging vulnerable dependencies
+  # Production dependencies block at moderate+ through audit:production.
   #
   # Policy: Builds fail on HIGH or CRITICAL vulnerabilities
   # - HIGH/CRITICAL: Must be fixed before merge (blocking)
@@ -109,8 +122,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run npm audit (HIGH and CRITICAL only)
-        run: npm audit --audit-level=high
+      - name: Run blocking production dependency audit
+        run: npm run audit:production
         continue-on-error: false
 
       - name: License check (block GPL/AGPL/LGPL)

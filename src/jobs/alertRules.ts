@@ -5,11 +5,14 @@ import {
   runWithCorrelationIdAsync,
 } from '../utils/correlation'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 import { config } from '../config/env'
 import { publishUserEvent } from '../events/publisher'
 import { EVENT_TYPE_TOPIC } from '../events/types'
 import { sendWhatsAppMessage } from '../utils/twilio-client'
+import { messageDeliveryService } from '../messaging'
 import { formatAlertTriggeredReply } from '../whatsapp/formatters'
+import { sendPushNotification } from '../controllers/push-controller'
 import {
   compare,
   cooldownCutoff,
@@ -171,6 +174,7 @@ async function claimFire(rule: AlertRuleRow, now: Date): Promise<boolean> {
     where: {
       id: rule.id,
       isActive: true,
+      deletedAt: null,
       OR: [{ lastFiredAt: null }, { lastFiredAt: { lte: cutoff } }],
     },
     data: { lastFiredAt: now },
@@ -198,10 +202,10 @@ async function deliverAlert(
     triggeredAt: new Date().toISOString(),
   }
 
-  const wantsWebhook =
-    rule.deliveryChannel === 'WEBHOOK' || rule.deliveryChannel === 'BOTH'
-  const wantsWhatsApp =
-    rule.deliveryChannel === 'WHATSAPP' || rule.deliveryChannel === 'BOTH'
+  const ch = rule.deliveryChannel as string
+  const wantsWebhook = ch === 'WEBHOOK' || ch === 'BOTH' || ch === 'ALL'
+  const wantsWhatsApp = ch === 'WHATSAPP' || ch === 'BOTH' || ch === 'ALL'
+  const wantsPush = ch === 'PUSH' || ch === 'ALL'
 
   // #316: the alert always reaches the user's real-time stream — that is the
   // channel they did not have to configure. The webhook leg stays opt-in via
@@ -232,8 +236,27 @@ async function deliverAlert(
         threshold,
         observedValue,
       })
-      await sendWhatsAppMessage({ to: `whatsapp:${user.phone}`, body })
+      await messageDeliveryService.send({
+        channel: 'WHATSAPP',
+        recipient: user.phone,
+        userId: rule.userId,
+        category: 'ALERT',
+        body,
+      })
     }
+  }
+
+  if (wantsPush) {
+    const title = `Alert: ${rule.metric}`
+    const body = `${rule.metric} is ${observedValue} (threshold: ${threshold})`
+    await sendPushNotification(rule.userId, title, body, data).catch((err) => {
+      logger.warn(
+        `[AlertRules] Failed to send push notification for rule ${rule.id}`,
+        {
+          error: err instanceof Error ? err.message : String(err),
+        }
+      )
+    })
   }
 }
 
@@ -249,7 +272,7 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
 
     try {
       const rules = (await db.alertRule.findMany({
-        where: { isActive: true },
+        where: { isActive: true, deletedAt: null },
         select: {
           id: true,
           userId: true,
@@ -270,7 +293,7 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
 
           if (delisted) {
             await db.alertRule.updateMany({
-              where: { id: rule.id },
+              where: { id: rule.id, deletedAt: null },
               data: { isActive: false },
             })
             deactivated++
@@ -342,7 +365,7 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
       logBackgroundJob(jobName, 'failed', durationMs / 1000, correlationId, {
         error: errorMessage,
       })
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -354,17 +377,15 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
  * @returns NodeJS.Timeout handle — pass to clearInterval() on shutdown.
  */
 export function scheduleAlertRules(): NodeJS.Timeout {
-  void runAlertRules()
-
-  const intervalMs = config.alertRules.intervalMs
-  const handle = setInterval(() => {
-    void runAlertRules()
-  }, intervalMs)
-
-  handle.unref?.()
+  const handle = scheduleResilientJob({
+    jobName: 'alert_rules',
+    task: runAlertRules,
+    intervalMs: config.alertRules.intervalMs,
+    unref: true,
+  })
 
   logger.info(
-    `[AlertRules] Alert-rule evaluation scheduled every ${intervalMs}ms`
+    `[AlertRules] Alert-rule evaluation scheduled every ${config.alertRules.intervalMs}ms`
   )
   return handle
 }

@@ -37,6 +37,7 @@
  *     webhook. Over-delivery (a better-than-quoted settlement) is credited to
  *     the user, not capped — it's still reported for audit visibility.
  */
+import { createHash } from 'crypto'
 import db from '../db'
 import { logger } from '../utils/logger'
 import { publishUserEvent } from '../events/publisher'
@@ -580,6 +581,37 @@ export async function processProviderWebhook(
   }
 
   return { handled: true, orderId: updated.id, status: updated.status }
+}
+
+/** Check whether this provider has already delivered the exact signed body. */
+export async function hasProviderWebhookReplay(
+  providerName: string,
+  rawBody: string,
+  database: Db = db
+): Promise<boolean> {
+  const nonce = createHash('sha256').update(rawBody).digest('hex')
+  const receipt = await (database as any).fiatWebhookReceipt.findUnique({
+    where: { provider_nonce: { provider: providerName, nonce } },
+    select: { id: true },
+  })
+  return receipt !== null
+}
+
+/** Persist the body hash after processing succeeds; duplicate races are benign. */
+export async function recordProviderWebhookDelivery(
+  providerName: string,
+  rawBody: string,
+  database: Db = db
+): Promise<void> {
+  const nonce = createHash('sha256').update(rawBody).digest('hex')
+  try {
+    await (database as any).fiatWebhookReceipt.create({
+      data: { provider: providerName, nonce },
+    })
+  } catch (error) {
+    if ((error as { code?: string })?.code === 'P2002') return
+    throw error
+  }
 }
 
 // ── Reconciliation against on-chain settlement ──────────────────────────────

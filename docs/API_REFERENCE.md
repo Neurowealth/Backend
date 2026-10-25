@@ -15,6 +15,35 @@ Comprehensive reference for all backend endpoints defined in src/routes.
 - Every response includes an `X-API-Version: 1` header.
 - Breaking changes introduce a new major version (`/api/v2`); deprecated versions are supported for a minimum of 6 months before the announced `Sunset` date. The full policy lives in [`docs/api-versioning.md`](api-versioning.md).
 
+## List Queries
+
+Collection endpoints use bounded page-based pagination. `page` is 1-based and
+defaults to `1`; `limit` defaults to `20` and is capped at `50`. The equivalent
+SQL offset is `(page - 1) * limit`. List responses include `page`, `limit`,
+`total`, `totalPages`, `hasNext`, and `hasPrevious`; an empty result has
+`totalPages: 0` and both navigation flags set to `false`.
+
+Where supported, `sortBy` is restricted to the fields documented for that
+resource and `sortOrder` is `asc` or `desc` (default `desc`). The server applies
+a stable ID tie-breaker. Filters are resource-specific and are applied before
+both counting and fetching. Invalid page, limit, sort, or filter values return
+`400` rather than being silently ignored.
+
+This contract is used by transactions, portfolio positions, recurring deposit
+plans, alert rules, webhooks, API keys, sessions, approvals, and agent decisions.
+
+Supported list controls:
+
+- Transactions: filter by `type`, `status`, `protocolName`, and inclusive `from`/`to` creation dates; sort by `createdAt`, `updatedAt`, or `amount`.
+- Portfolio positions: filter by `status`, `protocolName`, and `assetSymbol`; sort by `openedAt`, `updatedAt`, `currentValue`, or `yieldEarned`. Portfolio summary totals remain account-wide.
+- Recurring deposits: filter by `status`, `cadence`, and `assetSymbol`; sort by `createdAt`, `nextRunAt`, or `amount`.
+- Alert rules: filter by `isActive`, `metric`, and `protocolName`; sort by `createdAt`, `updatedAt`, or `threshold`.
+- Webhooks: filter by `isActive` and `event`; sort by `createdAt` or `updatedAt`.
+- API keys: filter by `revoked`; sort by `createdAt`, `lastUsedAt`, or `expiresAt`.
+- Sessions: sort by `lastSeenAt`, `createdAt`, or `expiresAt`.
+- Approvals: filter by `status`; sort by `requestedAt` or `executedAt`.
+- Agent decisions: filter by `outcome`, `fromProtocol`, and inclusive `from`/`to` creation dates; sort by `createdAt`, `outcome`, or `fromProtocol`.
+
 ## Authentication and Authorization
 
 - Public endpoints: GET /health, POST /api/auth/challenge, POST /api/auth/verify, GET /api/whatsapp/webhook, POST /api/whatsapp/webhook, GET /api/vault/state, GET /api/protocols/rates, GET /api/protocols/agent/status, GET /api/agent/status
@@ -23,26 +52,38 @@ Comprehensive reference for all backend endpoints defined in src/routes.
 - JWT middleware endpoint: POST /api/auth/logout uses AuthMiddleware.validateJwt and may return 401 with specific JWT/session errors.
 - Twilio webhook auth: POST /api/whatsapp/webhook requires x-twilio-signature and TWILIO_AUTH_TOKEN; in production, invalid signatures are rejected with 403 Forbidden.
 
-## Common Error Response Shapes
+## Error Responses
 
-- Validation errors (zod):
-  {
-  "error": "Validation error",
-  "details": {
-  "formErrors": [],
-  "fieldErrors": {
-  "fieldName": ["error message"]
-  }
-  }
-  }
-- Unauthorized:
-  {
-  "error": "Unauthorized"
-  }
-- Not found:
-  {
-  "error": "<resource-specific message>"
-  }
+Every 4xx/5xx response uses one JSON envelope, enforced centrally by
+`errorResponseMiddleware` (`src/middleware/errorResponse.ts`) and the generic
+`errorHandler`:
+
+```json
+{
+  "status": 400,
+  "code": "VALIDATION_ERROR",
+  "message": "Validation failed",
+  "error": "Validation failed",
+  "details": [{ "field": "amount", "path": "amount", "message": "Number must be greater than 0" }],
+  "requestId": "550e8400-e29b-41d4-a716-446655440000",
+  "timestamp": "2026-09-27T12:00:00.000Z"
+}
+```
+
+| Field | Notes |
+|---|---|
+| `status` | HTTP status code, repeated in the body |
+| `code` | Machine-readable code. Defaults by status (`BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `PAYLOAD_TOO_LARGE`, `RATE_LIMITED`, `VALIDATION_ERROR`, `INTERNAL_ERROR`, `SERVICE_UNAVAILABLE`, `TIMEOUT`, …); routes may return a more specific domain code |
+| `message` | Human-readable message. **Always `Internal server error` for 500s** outside development; no stack traces or internal error text are ever returned |
+| `error` | Deprecated alias of `message` for clients written against the old `{ "error": "..." }` shape |
+| `details` | Optional. For validation failures from the `validate()` middleware it is an array of `{ field, message }` |
+| `requestId` | Same value as the `X-Request-ID` response header — quote it when reporting issues |
+| `timestamp` | ISO-8601 time the error was produced |
+
+Additional route-specific fields (for example `success: false` or `retryAfter`)
+are preserved alongside the envelope. Unknown routes return `404 NOT_FOUND`;
+malformed JSON bodies return `400 BAD_REQUEST`. Health probes (`/health/*`) and
+`/metrics` keep their own status payloads.
 
 ---
 
@@ -286,6 +327,31 @@ Notes:
 
 ## Portfolio
 
+### GET /api/v1/liquidity-floor
+
+- Auth: required; returns only the authenticated caller's status.
+- Returns the configured USD floor, active USDC balance, amount exitable within
+  the 0.5% slippage target, yield-eligible amount, shortfall, estimated
+  restoration time, and liquidity-data availability.
+- Only fresh (24-hour) snapshots with explicit zero withdrawal delay and queue
+  depth count as instantly liquid. Locked positions, pending transactions,
+  unsupported assets, and missing or stale data do not count.
+- `dataAvailable: false` means the agent blocks rebalancing until liquidity data
+  is available. A floor above total balance is reported as a shortfall.
+
+### PATCH /api/v1/liquidity-floor
+
+- Auth: required; updates only the authenticated caller's floor.
+- Request body: `{ "floorUsd": 500 }` sets a $500 minimum; `null` clears it;
+  zero disables reserve sizing.
+- The floor takes precedence over goals and strategy allocation. Restoration
+  uses shortest known exits first and retains existing cost/payback gates; it is
+  a target, not an instantaneous guarantee.
+
+The Stellar DEX collector derives conservative depth from Horizon reserves.
+Blend and Luma are counted only when their API responses explicitly include
+valid depth, queue, and withdrawal-delay metadata.
+
 ### GET /api/portfolio/:userId
 
 - Auth: required (requireAuth + enforceUserAccess)
@@ -496,17 +562,26 @@ Response 404:
   - userId: uuid string
 - Query params:
   - page: int >= 1, default 1
-  - limit: int between 1 and 50, default 5
+  - limit: int between 1 and 50, default 20
+  - type: optional transaction type
+  - status: optional transaction status
+  - protocolName: optional exact protocol match
+  - from, to: optional inclusive ISO-8601 bounds on createdAt
+  - sortBy: createdAt, updatedAt, or amount (default createdAt)
+  - sortOrder: asc or desc (default desc)
 - Request body: none
 
 Example request:
-GET /api/transactions/550e8400-e29b-41d4-a716-446655440002?page=2&limit=10
+GET /api/transactions/550e8400-e29b-41d4-a716-446655440002?page=2&limit=10&status=CONFIRMED&sortBy=amount&sortOrder=desc
 
 Response 200:
 {
 "page": 2,
 "limit": 10,
 "total": 20,
+"totalPages": 2,
+"hasNext": false,
+"hasPrevious": true,
 "transactions": [
 {
 "id": "tx-id-1",

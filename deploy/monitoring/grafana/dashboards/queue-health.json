@@ -1,0 +1,118 @@
+{
+  "title": "NeuroWealth — Queue Health & Message Delivery",
+  "uid": "nw-queue-health",
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "tags": ["neurowealth", "queues", "messaging"],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Outbox depth",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "outbox_queue_depth", "legendFormat": "outbox" }]
+    },
+    {
+      "id": 2,
+      "title": "Oldest outbox entry age",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "queue_lag_seconds{queue_name=\"outbox\"}",
+          "legendFormat": "seconds"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 3,
+      "title": "Message DLQ size",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(message_queue_depth{status=\"DEAD_LETTER\"})",
+          "legendFormat": "dead letters"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Message sweep status",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "job_completion_status{job_name=\"message_delivery_sweep\"}",
+          "legendFormat": "last run"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Outbox depth and age",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 7 },
+      "targets": [
+        { "expr": "outbox_queue_depth", "legendFormat": "depth" },
+        {
+          "expr": "queue_lag_seconds{queue_name=\"outbox\"}",
+          "legendFormat": "oldest age (s)"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Delivery outcomes by channel",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 7 },
+      "targets": [
+        {
+          "expr": "sum by (channel, status) (rate(message_deliveries_total[5m]))",
+          "legendFormat": "message {{channel}} {{status}}"
+        },
+        {
+          "expr": "sum by (channel, status) (rate(outbound_notification_attempts_total[5m]))",
+          "legendFormat": "outbound {{channel}} {{status}}"
+        }
+      ],
+      "description": "Telegram/WhatsApp use message_deliveries_total; email/push and other outbound providers use outbound_notification_attempts_total.",
+      "transformations": [],
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "id": 7,
+      "title": "Retry and drop rates",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 11, "w": 12, "h": 7 },
+      "targets": [
+        {
+          "expr": "sum by (channel) (rate(message_retries_total[5m]))",
+          "legendFormat": "retry {{channel}}"
+        },
+        {
+          "expr": "sum by (channel) (rate(message_dead_letters_total[5m]))",
+          "legendFormat": "drop {{channel}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Message sweep lag and duration",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 11, "w": 12, "h": 7 },
+      "targets": [
+        {
+          "expr": "queue_lag_seconds{queue_name=\"message_delivery\"}",
+          "legendFormat": "oldest pending (s)"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(job_duration_ms_bucket{job_name=\"message_delivery_sweep\"}[5m]))) / 1000",
+          "legendFormat": "sweep p95 (s)"
+        }
+      ]
+    }
+  ]
+}

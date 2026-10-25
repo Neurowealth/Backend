@@ -2,8 +2,13 @@
  * Router - Compares APYs and triggers rebalancing when conditions are met
  */
 
+import {
+  getStaleProtocolNames,
+  applyStalenessPenalty,
+} from '../jobs/riskMetadataStaleness'
 import { logger } from '../utils/logger'
 import { getCorrelationId } from '../utils/correlation'
+import { hasWashSaleRisk, isSameAssetRebuyLikely } from '../tax/washSale'
 import {
   ProtocolComparison,
   RebalanceDetails,
@@ -34,6 +39,8 @@ import { enqueueOutboxOp } from '../outbox/service'
 import { dispatchInBackground } from '../outbox/dispatcher'
 import { deriveIdempotencyKey } from '../outbox/idempotency'
 import { persistRebalanceDecision } from './rebalanceDecision'
+import { getLiquidityFloorStatus } from '../analytics/liquidityFloor'
+import { STROOPS_PER_TOKEN } from '../config/financial-limits'
 
 const DEFAULT_THRESHOLDS: RebalanceThresholds = {
   minimumImprovement: 0.5, // Must improve by at least 0.5%
@@ -52,9 +59,13 @@ async function loadProtocolRiskScores(): Promise<Record<string, number>> {
   const rows = await db.protocolRiskScore.findMany({
     select: { protocolName: true, score: true },
   })
+  const stale = await getStaleProtocolNames()
   const map: Record<string, number> = {}
   for (const row of rows as Array<{ protocolName: string; score: number }>) {
-    map[row.protocolName] = row.score
+    map[row.protocolName] = applyStalenessPenalty(
+      row.score,
+      stale.has(row.protocolName)
+    )
   }
   return map
 }
@@ -71,7 +82,7 @@ async function loadActiveGoal(userId: string): Promise<{
   riskCeiling: number | null
 } | null> {
   const goal = await db.savingsGoal.findFirst({
-    where: { userId, status: 'ACTIVE' },
+    where: { userId, status: 'ACTIVE', includeExternalHoldings: false },
   })
   if (!goal) return null
   return {
@@ -524,9 +535,11 @@ export async function executeRebalanceIfNeeded(
   batchContext?: RebalanceBatchContext
 ): Promise<RebalanceDetails | null> {
   try {
-    const totalAmount = userPositions
+    let totalAmount = userPositions
       .reduce((sum, pos) => sum + BigInt(pos.amount), BigInt(0))
       .toString()
+    let positionsToMove = userPositions
+    let liquidityRestoreTargets: Set<string> | null = null
 
     const effectiveThresholds = thresholds ?? getThresholds()
     const affectedUserIds = Array.from(
@@ -680,25 +693,171 @@ export async function executeRebalanceIfNeeded(
         return null
       }
 
+      const floorUsd = userStrategyPreferences[0]?.liquidityFloorUsd
+      if (floorUsd !== undefined && floorUsd > 0) {
+        const floorUserId = userStrategyPreferences[0].userId
+        const floorStatus = await getLiquidityFloorStatus(floorUserId)
+        if (!floorStatus.dataAvailable) {
+          await recordDecision({
+            outcome: 'BLOCKED',
+            blockedReason: 'liquidity_data_unavailable',
+            rationale:
+              'Liquidity floor is configured, but fresh exit and lock data is unavailable; no rebalance was made.',
+            trace: {
+              currentApy,
+              chosenProtocol: null,
+              chosenApy: null,
+              rawImprovement: null,
+              netImprovement: null,
+              estCostPercent: null,
+              costBreakdown: null,
+              thresholds: effectiveThresholds,
+              candidates: [],
+            },
+          })
+          return null
+        }
+
+        if (floorStatus.shortfallUsd > 0) {
+          const targetCapacities = Object.entries(
+            floorStatus.instantProtocolCapacityUsd
+          ).filter(([protocol]) => protocol !== currentProtocol)
+          const restoreLimit = Math.min(
+            floorStatus.shortfallUsd,
+            Math.max(0, ...targetCapacities.map(([, capacity]) => capacity))
+          )
+          const plannedByPosition = new Map<string, number>()
+          let remainingRestore = restoreLimit
+          for (const item of floorStatus.restorationPlan) {
+            if (remainingRestore <= 0) break
+            const amount = Math.min(item.amountUsd, remainingRestore)
+            plannedByPosition.set(item.positionId, amount)
+            remainingRestore -= amount
+          }
+          positionsToMove = userPositions.filter((position) =>
+            plannedByPosition.has(position.id)
+          )
+          const restoreUsd = Array.from(plannedByPosition.values()).reduce(
+            (sum, amount) => sum + amount,
+            0
+          )
+          liquidityRestoreTargets = new Set(
+            targetCapacities
+              .filter(([, capacity]) => capacity >= restoreUsd)
+              .map(([protocol]) => protocol)
+          )
+
+          if (
+            positionsToMove.length === 0 ||
+            liquidityRestoreTargets.size === 0
+          ) {
+            await recordDecision({
+              outcome: 'BLOCKED',
+              blockedReason: 'liquidity_floor_shortfall',
+              rationale:
+                'The liquidity floor is below target, but no unlocked exit source and verified liquid target are available.',
+              trace: {
+                currentApy,
+                chosenProtocol: null,
+                chosenApy: null,
+                rawImprovement: null,
+                netImprovement: null,
+                estCostPercent: null,
+                costBreakdown: null,
+                thresholds: effectiveThresholds,
+                candidates: [],
+              },
+            })
+            return null
+          }
+
+          const restoreAmount = BigInt(
+            Math.floor(restoreUsd * STROOPS_PER_TOKEN)
+          )
+          const positionAmount = positionsToMove.reduce(
+            (sum, position) => sum + BigInt(position.amount),
+            BigInt(0)
+          )
+          totalAmount = (
+            restoreAmount < positionAmount ? restoreAmount : positionAmount
+          ).toString()
+          allProtocols = allProtocols.filter((protocol) =>
+            liquidityRestoreTargets!.has(protocol.name)
+          )
+        } else {
+          const instantLiquidIds = new Set(floorStatus.instantLiquidPositionIds)
+          const lockedIds = new Set(floorStatus.lockedPositionIds)
+          positionsToMove = userPositions.filter(
+            (position) =>
+              !instantLiquidIds.has(position.id) && !lockedIds.has(position.id)
+          )
+          const yieldAmount = BigInt(
+            Math.floor(floorStatus.availableForYieldUsd * STROOPS_PER_TOKEN)
+          )
+          const portfolioAmount = BigInt(totalAmount)
+          const movableAmount = positionsToMove.reduce(
+            (sum, position) => sum + BigInt(position.amount),
+            BigInt(0)
+          )
+          const yieldLimit =
+            yieldAmount < portfolioAmount ? yieldAmount : portfolioAmount
+          totalAmount = (
+            yieldLimit < movableAmount ? yieldLimit : movableAmount
+          ).toString()
+          if (totalAmount === '0' || positionsToMove.length === 0) {
+            await recordDecision({
+              outcome: 'HELD',
+              rationale:
+                'The configured liquidity floor leaves no balance available for yield allocation.',
+              trace: {
+                currentApy,
+                chosenProtocol: null,
+                chosenApy: null,
+                rawImprovement: null,
+                netImprovement: null,
+                estCostPercent: null,
+                costBreakdown: null,
+                thresholds: effectiveThresholds,
+                candidates: [],
+              },
+            })
+            return null
+          }
+        }
+      }
+
       // An ACTIVE savings goal (#281) takes priority over the stored strategy
       // preference — a user working toward a stated target/date should have
       // the agent chase whatever rate that goal actually needs, not a static
       // preference that predates the goal. Users with no goal fall through to
       // the existing preference logic completely unchanged.
-      const goalUserId = userStrategyPreferences[0]?.userId
-      const activeGoal = goalUserId ? await loadActiveGoal(goalUserId) : null
+      //
+      // Load goals for all users in the batch. Since batches are keyed by
+      // (hasActiveGoal) in loop.ts (#446), all users here are either all-goal
+      // or all-no-goal, so we only need to check the first.
+      let activeGoal: Awaited<ReturnType<typeof loadActiveGoal>> = null
+      if (userStrategyPreferences.length > 0) {
+        const firstUserId = userStrategyPreferences[0].userId
+        activeGoal = firstUserId ? await loadActiveGoal(firstUserId) : null
+      }
 
       const preferredStrategy = userStrategyPreferences[0]?.strategyName
-      const strategy: RebalanceStrategy = activeGoal
-        ? new GoalTrackingStrategy()
-        : preferredStrategy === 'TARGET_ALLOCATION'
-          ? new TargetAllocationStrategy()
-          : new MaxYieldStrategy()
+      const strategy: RebalanceStrategy = liquidityRestoreTargets
+        ? new MaxYieldStrategy()
+        : activeGoal
+          ? new GoalTrackingStrategy()
+          : preferredStrategy === 'TARGET_ALLOCATION'
+            ? new TargetAllocationStrategy()
+            : new MaxYieldStrategy()
 
       // Risk ceiling is opt-in per user (or per goal). Only when a ceiling is
       // set do we load the current ProtocolRiskScore rows and pass them to the
       // strategy — the no-ceiling path issues no extra query and behaves
       // exactly as before.
+      //
+      // Since batches are keyed by riskCeiling in loop.ts (#446), all users
+      // in this batch have the same ceiling (or all none), so we can safely
+      // use index 0.
       const riskCeiling =
         activeGoal?.riskCeiling ??
         userStrategyPreferences[0]?.riskCeiling ??
@@ -736,6 +895,59 @@ export async function executeRebalanceIfNeeded(
         exposure: exposureContext?.exposure,
       })
 
+      // #550 - Wash-sale-aware rebalancing check (informational + opt-in soft deprioritization)
+      let washSaleRisk = false
+      const taxAwareRebalancing =
+        userStrategyPreferences[0]?.taxAwareRebalancing ?? false
+      if (decision.shouldRebalance) {
+        const likelyRebuy = isSameAssetRebuyLikely(
+          userStrategyPreferences[0]?.strategyName ?? null,
+          decision.targetProtocol,
+          currentProtocol
+        )
+
+        if (likelyRebuy) {
+          const userJurisdiction = await db.user.findFirst({
+            where: { id: userStrategyPreferences[0]?.userId },
+            select: { taxJurisdiction: true },
+          })
+
+          if (userJurisdiction) {
+            washSaleRisk = hasWashSaleRisk(
+              'USDC',
+              new Date(),
+              userJurisdiction.taxJurisdiction,
+              likelyRebuy
+            )
+
+            if (washSaleRisk) {
+              logger.info('Wash-sale risk detected for rebalance', {
+                currentProtocol,
+                targetProtocol: decision.targetProtocol,
+                userId: userStrategyPreferences[0]?.userId,
+                taxAwareRebalancing,
+              })
+
+              if (taxAwareRebalancing) {
+                const higherThreshold =
+                  effectiveThresholds.minimumImprovement * 2
+                const targetProtocolData = allProtocols.find(
+                  (p) => p.name === decision.targetProtocol
+                )
+                if (targetProtocolData) {
+                  const netImprovement = targetProtocolData.apy - currentApy
+                  if (netImprovement < higherThreshold) {
+                    decision.shouldRebalance = false
+                    decision.reasoning =
+                      'Wash-sale risk: improvement below elevated threshold'
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
       if (
         decision.shouldRebalance &&
         decision.targetProtocol !== currentProtocol
@@ -767,7 +979,13 @@ export async function executeRebalanceIfNeeded(
         // If the preferred target itself had zero headroom, still try a real
         // move into the next allocation; otherwise nothing can move.
         const moves = plan.allocations
-          .filter((a) => a.fraction > 0 && a.protocol !== currentProtocol)
+          .filter(
+            (a) =>
+              a.fraction > 0 &&
+              a.protocol !== currentProtocol &&
+              (!liquidityRestoreTargets ||
+                liquidityRestoreTargets.has(a.protocol))
+          )
           .map((a) => ({
             toProtocol: a.protocol,
             fraction: a.fraction,
@@ -824,7 +1042,7 @@ export async function executeRebalanceIfNeeded(
           currentProtocol,
           first.toProtocol,
           amountToMove.toString(),
-          userPositions.map((pos) => pos.id),
+          positionsToMove.map((pos) => pos.id),
           {
             name: strategy.name,
             reasoning: decision.reasoning,

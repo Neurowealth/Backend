@@ -340,6 +340,10 @@ in `prisma/migrations/<name>/` therefore ships a hand-written `rollback.sql`
 alongside its `migration.sql`. CI enforces this via
 `scripts/check-migration-rollback.sh`.
 
+For a migration that failed mid-apply (`P3009`, `CONCURRENTLY` in a
+transaction, duplicate column, stuck rehearsal), follow
+[MIGRATIONS.md Appendix A: Common failure modes](./MIGRATIONS.md#appendix-a-common-failure-modes).
+
 ### When to roll back
 
 Roll back when a freshly deployed migration is itself the problem (broken schema,
@@ -383,41 +387,38 @@ steps as comments. The `Migration rollback check` workflow blocks merge otherwis
 
 ## 7. Incident Contacts
 
+Alert-by-alert steps, ack timers, and the postmortem workflow are in [INCIDENT_RESPONSE.md](./INCIDENT_RESPONSE.md). This section is the contact list those steps use.
+
 ### Escalation tiers
 
 | Tier | Role | Responsibility | Contact |
 |---|---|---|---|
-| T1 | On-call engineer | Triage, restart, DLQ retry, RPC rotation | PagerDuty / Opsgenie |
-| T2 | Backend lead | Code fix, data reconciliation, migration rollback | Slack @backend-lead |
-| T3 | Engineering manager | Stakeholder comms, post-mortem, priority decisions | Slack @eng-mgr |
-| T4 | Security officer | Key compromise, wallet recovery, audit | Slack @sec-officer |
+| T1 | On-call engineer | Ack, triage, restart, DLQ retry, RPC rotation, sponsor top-up | PagerDuty (`PAGERDUTY_ROUTING_KEY`) |
+| T2 | Backend lead | Code fix, data reconciliation, migration rollback | Slack `@backend-lead`. Page if they have not answered inside the severity window |
+| T3 | Engineering manager | Stakeholder updates, priority, SEV1 postmortem acceptance | Slack `@eng-mgr` |
+| T4 | Security officer | Key compromise, wallet recovery, audit | Slack `@sec-officer`. Page immediately for SEV1 security incidents, do not wait for T2 |
 
 ### Communication channels
 
 | Channel | Purpose |
 |---|---|
 | `#neurowealth-alerts` | Prometheus alert notifications |
-| `#neurowealth-incidents` | Incident coordination thread |
-| PagerDuty | T1 on-call escalation |
-| Email: `ops@neurowealth.io` | Backup contact for critical outages |
+| `#neurowealth-incidents` | Incident coordination thread. The acknowledging engineer is the lead until they hand off in the thread |
+| PagerDuty | T1 page, then T2 at 15 min (SEV1) or 1 hour (SEV2) if still unacked or unmitigated |
+| Email: `ops@neurowealth.io` | Backup when PagerDuty or Slack is unreachable |
 
 ### Incident severity definitions
 
 | Severity | Definition | Response time | Escalation |
 |---|---|---|---|
-| **SEV1** | Event processing halted, funds at risk, data loss | < 15 min | T1 → T2 → T3 |
-| **SEV2** | Lag > 100 ledgers, DLQ > 50, agent loop degraded | < 1 hour | T1 → T2 |
-| **SEV3** | Lag > 50 ledgers, DLQ > 20, elevated error rate | < 8 hours | T1 |
+| **SEV1** | Event processing halted, global agent breaker open, funds at risk, data loss, sponsor XLM exhausted while deposits fail | < 15 min | T1 → T2 at 15 min → T3 at 30 min. T4 immediately for key compromise |
+| **SEV2** | Lag > 100 ledgers, DLQ > 50, agent loop degraded, readiness failing | < 1 hour | T1 → T2 if not mitigated in 1 hour |
+| **SEV3** | Lag > 50 ledgers, DLQ > 20, elevated latency | < 8 hours | T1 |
 | **SEV4** | Minor anomalies, informational alerts | Next business day | None |
 
-### Post-incident checklist
+### After the incident
 
-- [ ] Root cause identified and documented
-- [ ] Fix deployed (or rollback executed)
-- [ ] DLQ resolved and lag cleared
-- [ ] Alert thresholds adjusted if needed
-- [ ] Post-mortem filed in `docs/post-mortems/`
-- [ ] Runbook updated with lessons learned
+SEV1 and SEV2 are not closed until the postmortem in [INCIDENT_RESPONSE.md](./INCIDENT_RESPONSE.md) is merged. That workflow covers the timeline, the root cause, and the action items. Update this runbook in the same follow-up when a step here was wrong or missing.
 
 ---
 
@@ -564,3 +565,176 @@ tick rather than trading blind.
 curl -s http://localhost:3001/metrics | grep -E "agent_breaker_(state|trips_total)"
 psql "$DATABASE_URL" -c "SELECT scope, \"scopeKey\", state, \"trippedRule\" FROM agent_circuit_breakers ORDER BY \"updatedAt\" DESC;"
 ```
+
+---
+
+## 10. Feature Flags & Emergency Rollback Runbook (#494)
+
+Detailed reference and architectural specifications are documented in [docs/FEATURE_FLAGS.md](FEATURE_FLAGS.md).
+
+### Inspect Active Feature Flags
+
+```bash
+# List all feature flags and runtime evaluation for the current environment
+curl -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  http://localhost:3001/api/v1/admin/feature-flags | jq
+
+# Inspect single flag
+curl -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  http://localhost:3001/api/v1/admin/feature-flags/smart_dca_engine | jq
+```
+
+### Staged Rollout Adjustment
+
+```bash
+# Advance rollout percentage (0 to 100)
+curl -X POST http://localhost:3001/api/v1/admin/feature-flags/smart_dca_engine/staged-rollout \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"percentage": 25}'
+```
+
+### Fast Emergency Rollback (< 1s)
+
+When an anomaly or regression is detected, trigger an immediate rollback. This clamps the rollout to 0%, engages the rollback lock, increments the Prometheus rollback metric, logs structured SRE audit events, and broadcasts the event across Redis:
+
+```bash
+# Fast rollback with mandatory reason
+curl -X POST http://localhost:3001/api/v1/admin/feature-flags/smart_dca_engine/rollback \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "High slippage observed in Horizon liquidity pools"}'
+```
+
+### Platform-Wide Emergency Maintenance Mode
+
+To halt all state-mutating requests platform-wide during an active exploit or catastrophic dependency failure:
+
+```bash
+curl -X POST http://localhost:3001/api/v1/admin/feature-flags/emergency-disable-all \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "Halting mutating requests due to protocol exploit"}'
+```
+
+### Environment Variable Emergency Disable
+
+If the admin endpoint is unreachable, override in the environment without deploying new code:
+
+```bash
+# Disable specific flags via rollback
+FEATURE_FLAGS_ROLLBACK=smart_dca_engine,fast_fiat_onramp
+
+# Or engage individual kill switch
+FEATURE_FLAG_SMART_DCA_ENGINE_KILL_SWITCH=true
+```
+
+### Reset to Default Environment Configuration
+
+```bash
+curl -X POST http://localhost:3001/api/v1/admin/feature-flags/smart_dca_engine/reset \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN"
+```
+
+---
+
+## 13. Telegram & WhatsApp Message Delivery Recovery (#493)
+
+### Alert: `telegram_dlq_high` / `whatsapp_dlq_high`
+Triggered when dead-lettered message count exceeds `MESSAGING_DLQ_ALERT_THRESHOLD` (default: 10).
+
+### Diagnostic commands
+```bash
+# Check queue metrics and dead-letter count
+curl -H "Authorization: Bearer $ADMIN_API_TOKEN" http://localhost:3001/api/v1/admin/messages/stats | jq
+
+# List failed / dead-lettered messages
+curl -H "Authorization: Bearer $ADMIN_API_TOKEN" "http://localhost:3001/api/v1/admin/messages?status=DEAD_LETTER&limit=20" | jq
+```
+
+### Recovery actions
+1. **Investigate Root Cause**: Inspect `lastError` on failed deliveries:
+   - 429 Rate Limits: Verify rate-limit configuration and exponential backoff settings.
+   - 403 Forbidden (Telegram): User blocked the bot; cancel message or re-route.
+   - 21211 (WhatsApp/Twilio): Invalid phone number format.
+2. **Bulk Retry Dead Letters**: Once downstream connectivity is restored:
+   ```bash
+   curl -X POST http://localhost:3001/api/v1/admin/messages/retry-dead-letters \
+     -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"channel": "TELEGRAM"}'
+   ```
+3. **Single Message Manual Retry**:
+   ```bash
+   curl -X POST http://localhost:3001/api/v1/admin/messages/<message-id>/retry \
+     -H "Authorization: Bearer $ADMIN_API_TOKEN"
+   ```
+4. **Cancel Poison Messages**:
+   ```bash
+   curl -X DELETE http://localhost:3001/api/v1/admin/messages/<message-id> \
+     -H "Authorization: Bearer $ADMIN_API_TOKEN"
+   ```
+
+## DLQ Backoff Schedule (#610)
+
+The Stellar event DLQ (`src/stellar/dlq.ts`) retries failed events with
+exponential backoff and jitter. Every retriable entry carries a `retryCount`;
+on each failed attempt the count increments and the entry becomes eligible
+again only after `BACKOFF_BASE_MS * 2^retryCount` milliseconds (capped at
+`BACKOFF_MAX_MS`) multiplied by a `uniform(0.5, 1.5)` jitter factor. After
+`MAX_RETRY_ATTEMPTS` attempts the entry transitions to the terminal `POISON`
+state and is never auto-retried again — only admin action can resurrect it.
+
+Defaults (`src/stellar/dlq.ts`):
+
+- `BACKOFF_BASE_MS = 30_000` (30 s)
+- `BACKOFF_MAX_MS = 3_600_000` (1 h)
+- `MAX_RETRY_ATTEMPTS = 10`
+
+Approximate schedule (central value; actual spread is ±50% jitter):
+
+| retryCount after failure | Next eligible after | Cumulative wall-clock |
+|-------------------------:|---------------------|-----------------------|
+| 1                        | 30 s                | ~30 s                 |
+| 2                        | 60 s                | ~1.5 min              |
+| 3                        | 2 min               | ~3.5 min              |
+| 4                        | 4 min               | ~7.5 min              |
+| 5                        | 8 min               | ~15 min               |
+| 6                        | 16 min              | ~31 min               |
+| 7                        | 32 min              | ~63 min               |
+| 8                        | 60 min (cap)        | ~2 h                  |
+| 9                        | 60 min              | ~3 h                  |
+| 10                       | → POISON            | terminal              |
+
+### Poison entries never auto-retry
+
+An entry at `status === 'POISON'` is skipped by `retryAll` forever. The
+`dlq_poison_size` Prometheus gauge tracks how many such entries exist;
+alerting on `dlq_poison_size > 0` surfaces them for triage.
+
+### Admin actions (all audited via `AdminAuditLog`)
+
+- `POST /api/admin/dlq/retry` — trigger `retryAll` now, honouring the backoff
+  gate (entries whose window has not elapsed are skipped, not forced).
+- `POST /api/admin/dlq/resolve` — mark one entry resolved by id (operator
+  verified the side effect landed by another path).
+- `POST /api/admin/dlq/requeue` — reset one entry's `retryCount` to 0 and
+  status to `PENDING`, restarting the backoff schedule. Required
+  `{ "eventId", "reason" }`. Use after the underlying cause has been fixed
+  (an RPC endpoint restored, a bad migration rolled back).
+- `POST /api/admin/dlq/discard` — delete one entry permanently. Required
+  `{ "eventId", "reason" }`. Audit log records who, what, and why.
+
+### Operator playbook
+
+1. `GET /api/admin/dlq/inspect` — see what is piling up and in which status.
+2. Group by `eventType`/`contractId`; most storms are one-cause.
+3. If the cause is fixed and the entries are RETRIED/POISON, `requeue` them
+   (not retry — retry still honours backoff and does nothing for POISON).
+4. If the entries are structural garbage that will never process (schema
+   mismatch, stale testnet events, an irrecoverable bug), `discard` with a
+   written reason naming the triage ticket.
+5. If the queue size alert keeps firing but `pending` stays flat and
+   `poison` grows: the retriers are working as designed on real failures.
+   Investigate the upstream fault, not the queue.
+

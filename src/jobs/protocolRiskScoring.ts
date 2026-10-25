@@ -6,8 +6,8 @@ import {
 } from '../utils/correlation'
 import { config } from '../config/env'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 import { computeRiskScore, RateSample } from '../agent/riskScoring'
-import { PROTOCOL_RISK_METADATA } from '../config/protocolRiskMetadata'
 
 /**
  * Protocol risk scoring job.
@@ -31,15 +31,24 @@ export async function computeProtocolRiskScores(
     const jobName = 'protocol_risk_scoring'
 
     try {
-      // Distinct protocol names from rate history…
-      const rateProtocols = await db.protocolRate.findMany({
-        distinct: ['protocolName'],
-        select: { protocolName: true },
-      })
+      // Distinct protocol names from rate history, unioned with everything
+      // curated in ProtocolRiskMetadataEntry (#529) — so a curated-but-not-
+      // yet-scanned protocol still gets a (conservative) score, and a
+      // scanned-but-uncurated one is scored with the conservative
+      // UNAUDITED/unknown-age default.
+      const [rateProtocols, metadataEntries] = await Promise.all([
+        db.protocolRate.findMany({
+          distinct: ['protocolName'],
+          select: { protocolName: true },
+        }),
+        db.protocolRiskMetadataEntry.findMany({
+          select: { protocolName: true },
+        }),
+      ])
 
       const protocolNames = new Set<string>([
         ...rateProtocols.map((r: { protocolName: string }) => r.protocolName),
-        ...PROTOCOL_RISK_METADATA.map((m) => m.protocolName),
+        ...metadataEntries.map((m: { protocolName: string }) => m.protocolName),
       ])
 
       let scored = 0
@@ -100,7 +109,7 @@ export async function computeProtocolRiskScores(
       logBackgroundJob(jobName, 'failed', durationMs / 1000, correlationId, {
         error: errorMessage,
       })
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -112,14 +121,13 @@ export async function computeProtocolRiskScores(
  * @returns NodeJS.Timeout handle — pass to clearInterval() on shutdown.
  */
 export function scheduleProtocolRiskScoring(): NodeJS.Timeout {
-  void computeProtocolRiskScores()
-
   const intervalMs = config.protocolRisk.intervalMs
-  const handle = setInterval(() => {
-    void computeProtocolRiskScores()
-  }, intervalMs)
-
-  handle.unref?.()
+  const handle = scheduleResilientJob({
+    jobName: 'protocol_risk_scoring',
+    task: computeProtocolRiskScores,
+    intervalMs,
+    unref: true,
+  })
 
   logger.info(
     `[ProtocolRiskScoring] Risk scoring scheduled every ${intervalMs / 3600000}h`

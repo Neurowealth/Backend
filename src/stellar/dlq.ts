@@ -17,7 +17,16 @@ import { config } from '../config'
 import { alertingService, type DLQAlertPayload } from '../services/alerting'
 import { getCorrelationId } from '../utils/correlation'
 
-export type DeadLetterEventStatus = 'PENDING' | 'RETRIED' | 'RESOLVED'
+export type DeadLetterEventStatus =
+  | 'PENDING'
+  | 'RETRIED'
+  | 'RESOLVED'
+  /**
+   * Terminal state (#610): the entry has exceeded MAX_RETRY_ATTEMPTS and is
+   * never retried automatically. An admin can requeue it after fixing the
+   * underlying cause, or discard it.
+   */
+  | 'POISON'
 
 export interface DeadLetterEvent {
   id: string
@@ -31,6 +40,35 @@ export interface DeadLetterEvent {
   retryCount: number
   createdAt: string
   updatedAt: string
+}
+
+/**
+ * Retry policy (#610).
+ *
+ * Backoff is exponential with jitter so a thundering herd never retries at the
+ * same instant: on attempt N, the entry becomes eligible for its next retry
+ * `backoffBaseMs * 2^N * uniform(0.5, 1.5)` milliseconds after its last
+ * attempt, capped at `backoffMaxMs`. After `maxAttempts` failed attempts the
+ * entry transitions to POISON and never auto-retries. Admins can requeue a
+ * poisoned entry after fixing the underlying cause (see
+ * `docs/RUNBOOK.md#dlq-backoff-schedule`).
+ */
+export const MAX_RETRY_ATTEMPTS = 10
+export const BACKOFF_BASE_MS = 30_000 // 30 s
+export const BACKOFF_MAX_MS = 3_600_000 // 1 h
+
+/**
+ * Milliseconds to wait before the next retry of an entry on its
+ * `retryCount`-th attempt (0-indexed). Deterministic for a fixed `rng`, so
+ * tests can pin the schedule.
+ */
+export function computeBackoffMs(
+  retryCount: number,
+  rng: () => number = Math.random
+): number {
+  const exp = Math.min(BACKOFF_BASE_MS * 2 ** retryCount, BACKOFF_MAX_MS)
+  const jitter = 0.5 + rng() // uniform(0.5, 1.5)
+  return Math.round(exp * jitter)
 }
 
 const LEGACY_DLQ_FILE = path.join(
@@ -158,9 +196,26 @@ export class DeadLetterQueue {
     return (db as any).deadLetterEvent.count()
   }
 
+  /**
+   * Walk the retriable entries (PENDING + RETRIED), skipping any whose
+   * exponential-backoff window has not elapsed yet. On a failed retry, bump
+   * `retryCount` and either go back to RETRIED or — if the next attempt would
+   * exceed `MAX_RETRY_ATTEMPTS` — transition to POISON so the entry never
+   * auto-retries again. `now` and `rng` are overrideable so tests can pin the
+   * schedule.
+   */
   static async retryAll(
-    retryFn: (event: any) => Promise<void>
-  ): Promise<{ resolved: number; failed: number }> {
+    retryFn: (event: any) => Promise<void>,
+    opts: { now?: () => Date; rng?: () => number } = {}
+  ): Promise<{
+    resolved: number
+    failed: number
+    skipped: number
+    poisoned: number
+  }> {
+    const now = opts.now ?? (() => new Date())
+    const rng = opts.rng ?? Math.random
+
     const rows: PrismaDeadLetterRow[] = await (
       db as any
     ).deadLetterEvent.findMany({
@@ -170,8 +225,22 @@ export class DeadLetterQueue {
 
     let resolved = 0
     let failed = 0
+    let skipped = 0
+    let poisoned = 0
 
     for (const row of rows) {
+      // Backoff gate: skip entries whose window has not elapsed yet. The
+      // first attempt (retryCount === 0) is always eligible — the window
+      // starts after the first failure.
+      if (row.retryCount > 0) {
+        const dueAfter =
+          row.updatedAt.getTime() + computeBackoffMs(row.retryCount, rng)
+        if (now().getTime() < dueAfter) {
+          skipped++
+          continue
+        }
+      }
+
       try {
         await retryFn(deserializePayload(row.payload))
         await (db as any).deadLetterEvent.update({
@@ -181,25 +250,83 @@ export class DeadLetterQueue {
         resolved++
         logger.info(`[DLQ Retry] Successfully retried event ${row.id}`)
       } catch (error) {
+        const nextCount = row.retryCount + 1
+        const terminal = nextCount >= MAX_RETRY_ATTEMPTS
         await (db as any).deadLetterEvent.update({
           where: { id: row.id },
-          data: { status: 'RETRIED', retryCount: row.retryCount + 1 },
+          data: {
+            status: terminal ? 'POISON' : 'RETRIED',
+            retryCount: nextCount,
+          },
         })
-        failed++
-        logger.error(
-          `[DLQ Retry] Failed to retry event ${row.id}:`,
-          error instanceof Error ? error.message : 'Unknown error'
-        )
+        if (terminal) {
+          poisoned++
+          logger.error(
+            `[DLQ Retry] Event ${row.id} exceeded ${MAX_RETRY_ATTEMPTS} attempts, moved to POISON`,
+            error instanceof Error ? error.message : 'Unknown error'
+          )
+        } else {
+          failed++
+          logger.error(
+            `[DLQ Retry] Failed to retry event ${row.id}:`,
+            error instanceof Error ? error.message : 'Unknown error'
+          )
+        }
       }
     }
 
     logger.info(
-      `[DLQ Retry] Finished. Resolved: ${resolved}, Failed: ${failed}`
+      `[DLQ Retry] Finished. Resolved: ${resolved}, Failed: ${failed}, Skipped (backoff): ${skipped}, Poisoned: ${poisoned}`
     )
     // Update Prometheus metrics after retry
     const newSize = await this.getSize()
     updateDlqSize(newSize)
-    return { resolved, failed }
+    const poisonCount = await this.getPoisonCount()
+    try {
+      const metrics = require('../utils/metrics')
+      metrics.dlqPoisonSize?.set(poisonCount)
+    } catch {
+      // metric not loaded in this environment; non-fatal
+    }
+    return { resolved, failed, skipped, poisoned }
+  }
+
+  /**
+   * Admin action: discard an entry permanently (#610). Removes from the DB
+   * entirely — intended for garbage that will never process successfully. The
+   * caller is responsible for recording the admin audit log entry; this
+   * method only touches the row.
+   */
+  static async discard(id: string): Promise<boolean> {
+    try {
+      await (db as any).deadLetterEvent.delete({ where: { id } })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Admin action: requeue an entry (#610). Resets `retryCount` to 0 and
+   * `status` to PENDING so the backoff schedule restarts. Intended for
+   * entries whose underlying cause has been fixed outside the queue (an RPC
+   * endpoint restored, a bad migration rolled back).
+   */
+  static async requeue(id: string): Promise<boolean> {
+    try {
+      await (db as any).deadLetterEvent.update({
+        where: { id },
+        data: { status: 'PENDING', retryCount: 0 },
+      })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** Count of entries in POISON terminal state. */
+  static async getPoisonCount(): Promise<number> {
+    return (db as any).deadLetterEvent.count({ where: { status: 'POISON' } })
   }
 
   static async resolve(id: string): Promise<boolean> {
@@ -347,10 +474,11 @@ export class DeadLetterQueue {
   /**
    * Get DLQ status breakdown (pending, retried, resolved counts)
    */
-  private static async getStatusBreakdown(): Promise<{
+  static async getStatusBreakdown(): Promise<{
     pending: number
     retried: number
     resolved: number
+    poison: number
   }> {
     const pending = await (db as any).deadLetterEvent.count({
       where: { status: 'PENDING' },
@@ -361,8 +489,11 @@ export class DeadLetterQueue {
     const resolved = await (db as any).deadLetterEvent.count({
       where: { status: 'RESOLVED' },
     })
+    const poison = await (db as any).deadLetterEvent.count({
+      where: { status: 'POISON' },
+    })
 
-    return { pending, retried, resolved }
+    return { pending, retried, resolved, poison }
   }
 
   /**

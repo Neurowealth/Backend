@@ -8,6 +8,7 @@ import {
 import { config } from '../config/env'
 import { recordBackgroundJob } from '../utils/metrics'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { scheduleResilientJob } from './resilientScheduler'
 import { RawProtocolRatePoint } from '../agent/backtest'
 import {
   AttributionResult,
@@ -229,7 +230,7 @@ export async function computePerformanceAttribution(
         error: errorMessage,
       })
       recordBackgroundJob(jobName, 'failed', duration)
-      recordJobFailure(jobName, durationMs)
+      recordJobFailure(jobName, durationMs, error)
     }
   })
 }
@@ -241,14 +242,13 @@ export async function computePerformanceAttribution(
  * @returns NodeJS.Timeout handle — pass to clearInterval() on shutdown.
  */
 export function scheduleAttribution(): NodeJS.Timeout {
-  void computePerformanceAttribution()
-
   const intervalMs = config.attribution.intervalMs
-  const handle = setInterval(() => {
-    void computePerformanceAttribution()
-  }, intervalMs)
-
-  handle.unref?.()
+  const handle = scheduleResilientJob({
+    jobName: 'performance_attribution',
+    task: computePerformanceAttribution,
+    intervalMs,
+    unref: true,
+  })
 
   logger.info(
     `[Attribution] Performance attribution scheduled every ${intervalMs / 3600000}h`

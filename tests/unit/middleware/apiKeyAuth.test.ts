@@ -1,4 +1,8 @@
-import { validateUserScopes, USER_SCOPES } from '../../../src/auth/scopes'
+import {
+  validateUserScopes,
+  USER_SCOPES,
+  type UserScope,
+} from '../../../src/auth/scopes'
 import {
   parseUserApiKeyToken,
   isUserApiKeyToken,
@@ -68,6 +72,190 @@ describe('User API Key auth (#374)', () => {
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ error: 'insufficient_scope' })
       )
+    })
+
+    describe('deposit:write', () => {
+      it('allows API keys with deposit:write scope', () => {
+        req.authScopes = ['deposit:write'] as UserScope[]
+        requireScope('deposit:write')(req as Request, res as Response, next)
+        expect(next).toHaveBeenCalled()
+      })
+
+      it('denies API keys without deposit:write scope', () => {
+        req.authScopes = ['portfolio:read', 'transactions:read'] as UserScope[]
+        requireScope('deposit:write')(req as Request, res as Response, next)
+        expect(res.status).toHaveBeenCalledWith(403)
+        expect(res.json).toHaveBeenCalledWith(
+          expect.objectContaining({ error: 'insufficient_scope' })
+        )
+      })
+    })
+
+    describe('goals:write', () => {
+      it('allows API keys with goals:write scope', () => {
+        req.authScopes = ['goals:write'] as UserScope[]
+        requireScope('goals:write')(req as Request, res as Response, next)
+        expect(next).toHaveBeenCalled()
+      })
+
+      it('denies API keys without goals:write scope', () => {
+        req.authScopes = ['portfolio:read'] as UserScope[]
+        requireScope('goals:write')(req as Request, res as Response, next)
+        expect(res.status).toHaveBeenCalledWith(403)
+        expect(res.json).toHaveBeenCalledWith(
+          expect.objectContaining({ error: 'insufficient_scope' })
+        )
+      })
+    })
+
+    describe('recurring_deposits:write', () => {
+      it('allows API keys with recurring_deposits:write scope', () => {
+        req.authScopes = ['recurring_deposits:write'] as UserScope[]
+        requireScope('recurring_deposits:write')(
+          req as Request,
+          res as Response,
+          next
+        )
+        expect(next).toHaveBeenCalled()
+      })
+
+      it('denies API keys without recurring_deposits:write scope', () => {
+        req.authScopes = ['portfolio:read'] as UserScope[]
+        requireScope('recurring_deposits:write')(
+          req as Request,
+          res as Response,
+          next
+        )
+        expect(res.status).toHaveBeenCalledWith(403)
+        expect(res.json).toHaveBeenCalledWith(
+          expect.objectContaining({ error: 'insufficient_scope' })
+        )
+      })
+    })
+
+    describe('strategies:write', () => {
+      it('allows API keys with strategies:write scope', () => {
+        req.authScopes = ['strategies:write'] as UserScope[]
+        requireScope('strategies:write')(req as Request, res as Response, next)
+        expect(next).toHaveBeenCalled()
+      })
+
+      it('denies API keys without strategies:write scope', () => {
+        req.authScopes = ['portfolio:read'] as UserScope[]
+        requireScope('strategies:write')(req as Request, res as Response, next)
+        expect(res.status).toHaveBeenCalledWith(403)
+        expect(res.json).toHaveBeenCalledWith(
+          expect.objectContaining({ error: 'insufficient_scope' })
+        )
+      })
+    })
+
+    describe('webhooks:manage', () => {
+      it('allows API keys with webhooks:manage scope', () => {
+        req.authScopes = ['webhooks:manage'] as UserScope[]
+        requireScope('webhooks:manage')(req as Request, res as Response, next)
+        expect(next).toHaveBeenCalled()
+      })
+
+      it('denies API keys without webhooks:manage scope', () => {
+        req.authScopes = ['portfolio:read'] as UserScope[]
+        requireScope('webhooks:manage')(req as Request, res as Response, next)
+        expect(res.status).toHaveBeenCalledWith(403)
+        expect(res.json).toHaveBeenCalledWith(
+          expect.objectContaining({ error: 'insufficient_scope' })
+        )
+      })
+    })
+
+    describe('vault:write', () => {
+      it('allows API keys with vault:write scope', () => {
+        req.authScopes = ['vault:write'] as UserScope[]
+        requireScope('vault:write')(req as Request, res as Response, next)
+        expect(next).toHaveBeenCalled()
+      })
+
+      it('denies API keys without vault:write scope', () => {
+        req.authScopes = ['portfolio:read', 'vault:read'] as UserScope[]
+        requireScope('vault:write')(req as Request, res as Response, next)
+        expect(res.status).toHaveBeenCalledWith(403)
+        expect(res.json).toHaveBeenCalledWith(
+          expect.objectContaining({ error: 'insufficient_scope' })
+        )
+      })
+    })
+
+    describe('alerts:manage', () => {
+      it('allows API keys with alerts:manage scope', () => {
+        req.authScopes = ['alerts:manage'] as UserScope[]
+        requireScope('alerts:manage')(req as Request, res as Response, next)
+        expect(next).toHaveBeenCalled()
+      })
+
+      it('denies API keys without alerts:manage scope', () => {
+        req.authScopes = ['portfolio:read'] as UserScope[]
+        requireScope('alerts:manage')(req as Request, res as Response, next)
+        expect(res.status).toHaveBeenCalledWith(403)
+        expect(res.json).toHaveBeenCalledWith(
+          expect.objectContaining({ error: 'insufficient_scope' })
+        )
+      })
+    })
+
+    describe('fiat:write', () => {
+      it('allows API keys with fiat:write scope', () => {
+        req.authScopes = ['fiat:write'] as UserScope[]
+        requireScope('fiat:write')(req as Request, res as Response, next)
+        expect(next).toHaveBeenCalled()
+      })
+
+      it('denies API keys without fiat:write scope', () => {
+        req.authScopes = ['portfolio:read'] as UserScope[]
+        requireScope('fiat:write')(req as Request, res as Response, next)
+        expect(res.status).toHaveBeenCalledWith(403)
+        expect(res.json).toHaveBeenCalledWith(
+          expect.objectContaining({ error: 'insufficient_scope' })
+        )
+      })
+    })
+
+    // #615 — the read scopes were declared but never enforced, so a key
+    // scoped only to (say) alerts:manage could read the user's whole
+    // portfolio, transaction history and vault balance. These are the
+    // guards that close that hole.
+    describe('read scopes', () => {
+      const readScopes: UserScope[] = [
+        'portfolio:read',
+        'transactions:read',
+        'vault:read',
+      ]
+
+      it.each(readScopes)('allows a key holding %s', (scope) => {
+        req.authScopes = [scope]
+        requireScope(scope)(req as Request, res as Response, next)
+        expect(next).toHaveBeenCalled()
+      })
+
+      it.each(readScopes)(
+        'denies a key scoped only to alerts:manage for %s',
+        (scope) => {
+          req.authScopes = ['alerts:manage']
+          req.apiKeyId = 'key-1'
+          requireScope(scope)(req as Request, res as Response, next)
+          expect(res.status).toHaveBeenCalledWith(403)
+          expect(res.json).toHaveBeenCalledWith(
+            expect.objectContaining({
+              error: 'insufficient_scope',
+              required: scope,
+            })
+          )
+        }
+      )
+
+      it('lets a session through regardless', () => {
+        req.authScopes = ['*']
+        requireScope('portfolio:read')(req as Request, res as Response, next)
+        expect(next).toHaveBeenCalled()
+      })
     })
   })
 })

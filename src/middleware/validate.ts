@@ -1,6 +1,11 @@
 import { Request, Response, NextFunction } from 'express'
 import { ZodSchema, ZodError, ZodTypeAny } from 'zod'
 import { logger } from '../utils/logger'
+import {
+  ErrorResponses,
+  FieldError,
+  INTERNAL_ERROR_MESSAGE,
+} from '../utils/errorResponse'
 
 export interface ValidationSchemas {
   body?: ZodTypeAny
@@ -15,11 +20,27 @@ function isZodSchema(val: any): val is ZodSchema<any> | ZodTypeAny {
   return val && typeof val.safeParseAsync === 'function'
 }
 
-function formatZodErrors(err: ZodError) {
-  return err.issues.map((e) => ({
-    path: e.path.join('.'),
-    message: e.message.includes('received undefined') ? 'Required' : e.message,
-  }))
+/**
+ * Field-level validation details. `path` is kept as an alias of `field` for
+ * clients written against the previous response shape.
+ */
+export function formatZodErrors(
+  err: ZodError
+): Array<FieldError & { path: string }> {
+  return err.issues.map((e) => {
+    const field = e.path.join('.')
+    return {
+      field,
+      path: field,
+      message: e.message.includes('received undefined')
+        ? 'Required'
+        : e.message,
+    }
+  })
+}
+
+function requestIdOf(req: Request): string {
+  return req.correlationId ?? 'unknown'
 }
 
 /**
@@ -37,10 +58,15 @@ export const validate = (schemasOrSchema: SchemasOrSchema) => {
           params: req.params,
         })
         if (!parsed.success) {
-          return res.status(400).json({
-            error: 'Validation failed',
-            details: formatZodErrors(parsed.error),
-          })
+          return res
+            .status(400)
+            .json(
+              ErrorResponses.validationError(
+                'Validation failed',
+                requestIdOf(req),
+                formatZodErrors(parsed.error)
+              )
+            )
         }
 
         // Merge parsed results back into req if present
@@ -87,13 +113,17 @@ export const validate = (schemasOrSchema: SchemasOrSchema) => {
         const msg =
           (schemasOrSchema as ValidationSchemas).errorMessage ??
           'Validation failed'
-        return res.status(400).json({ error: msg, details })
+        return res
+          .status(400)
+          .json(ErrorResponses.validationError(msg, requestIdOf(req), details))
       }
 
       logger.error('[Validation] Unexpected error:', error)
       return res
         .status(500)
-        .json({ error: 'Internal server error during validation' })
+        .json(
+          ErrorResponses.internalError(INTERNAL_ERROR_MESSAGE, requestIdOf(req))
+        )
     }
   }
 }

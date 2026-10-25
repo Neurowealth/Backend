@@ -4,6 +4,7 @@ import { rateLimiter, buildRateLimiter } from '../../src/middleware/rateLimiter'
 
 jest.mock('../../src/utils/metrics', () => ({
   recordRateLimitHit: jest.fn(),
+  updateRateLimitViolations: jest.fn(),
 }))
 
 jest.mock('../../src/utils/logger', () => ({
@@ -23,6 +24,10 @@ jest.mock('../../src/config/env', () => ({
       optimizerRateLimit: { windowMs: 60000, max: 5 },
       // #344 — strategy simulate replay limiter (CPU-bound).
       simulateRateLimit: { windowMs: 60000, max: 6 },
+      // #473 — identity tiers and the sensitive-operation budget.
+      anonymousRateLimit: { windowMs: 900000, max: 60 },
+      authenticatedRateLimit: { windowMs: 900000, max: 600 },
+      sensitiveRateLimit: { windowMs: 900000, max: 10 },
       trustedIps: [],
       internalServiceToken: '',
     },
@@ -61,6 +66,7 @@ describe('rate limiter – IETF rate-limit headers', () => {
         windowMs: 60000,
         max: 30,
         limiterType: 'test',
+        tier: 'global',
       })
       const app = buildTestApp(limiter)
       const res = await request(app).get('/test')
@@ -75,6 +81,7 @@ describe('rate limiter – IETF rate-limit headers', () => {
         windowMs: 60000,
         max: 1,
         limiterType: 'test',
+        tier: 'global',
       })
       const app = buildTestApp(limiter)
 
@@ -90,6 +97,7 @@ describe('rate limiter – IETF rate-limit headers', () => {
         windowMs: 60000,
         max: 1,
         limiterType: 'test',
+        tier: 'global',
       })
       const app = buildTestApp(limiter)
 
@@ -108,6 +116,7 @@ describe('rate limiter – IETF rate-limit headers', () => {
         windowMs: 60000,
         max: 1,
         limiterType: 'test',
+        tier: 'global',
       })
       const app = buildTestApp(limiter)
 

@@ -6,7 +6,6 @@ jest.mock('../../../src/config/env', () => ({
     nodeEnv: 'test',
     security: {
       bodySizeLimit: '64kb',
-      allowedOrigins: [],
     },
   },
 }))

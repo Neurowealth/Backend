@@ -13,11 +13,23 @@ import {
   INSUFFICIENT_HISTORY_SCORE,
   WEIGHTS,
 } from '../../../src/agent/riskScoring'
+import {
+  seedMetadataCache,
+  PROTOCOL_RISK_METADATA,
+} from '../../../src/config/protocolRiskMetadata'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
 // Fixed reference "now" so every fixture is deterministic.
 const NOW = new Date('2026-07-16T00:00:00.000Z')
+
+// getProtocolMetadata now reads an in-process cache (#529) rather than a
+// module-level static array — seed it once so 'Blend' (THIRD_PARTY_AUDITED,
+// 2024 inception, per the fixtures below) resolves the same way it always
+// has for this pure risk-scoring math test.
+beforeAll(() => {
+  seedMetadataCache(PROTOCOL_RISK_METADATA)
+})
 
 /** Build a sample `daysAgo` before NOW. */
 function sample(

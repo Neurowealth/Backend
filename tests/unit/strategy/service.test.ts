@@ -84,6 +84,9 @@ beforeEach(() => {
   mockDb.strategyAttribution = {
     findMany: jest.fn().mockResolvedValue([]),
   }
+  mockDb.marketplaceTag = {
+    findMany: jest.fn().mockResolvedValue([]),
+  }
   mockDispatch.mockResolvedValue(undefined)
   mockWhatsApp.mockResolvedValue('SM123')
 })
@@ -259,6 +262,51 @@ describe('publishStrategy', () => {
 
     await expect(publishStrategy(PUBLISHER, { label: 'Mine' })).rejects.toThrow(
       StrategyValidationError
+    )
+  })
+
+  it('rejects a tag slug that is not in the curated vocabulary', async () => {
+    mockDb.publishedStrategy.findUnique.mockResolvedValue(null)
+    mockDb.marketplaceTag.findMany.mockResolvedValue([{ slug: 'conservative' }])
+
+    await expect(
+      publishStrategy(PUBLISHER, {
+        label: 'Steady yield',
+        strategyConfig: config,
+        tags: ['not-a-real-tag'],
+      })
+    ).rejects.toThrow(StrategyValidationError)
+  })
+
+  it('accepts curated tags and stores description', async () => {
+    mockDb.publishedStrategy.findUnique.mockResolvedValue(null)
+    mockDb.marketplaceTag.findMany.mockResolvedValue([{ slug: 'conservative' }])
+    mockDb.publishedStrategy.upsert.mockResolvedValue({
+      id: STRATEGY_ID,
+      label: 'Steady yield',
+      description: 'A steady one',
+      tags: ['conservative'],
+      strategyConfig: config,
+      configVersion: 1,
+      isPublished: true,
+      publishedAt: new Date(),
+    })
+
+    const { strategy } = await publishStrategy(PUBLISHER, {
+      label: 'Steady yield',
+      strategyConfig: config,
+      description: 'A steady one',
+      tags: ['conservative'],
+    })
+
+    expect(strategy.tags).toEqual(['conservative'])
+    expect(mockDb.publishedStrategy.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          description: 'A steady one',
+          tags: ['conservative'],
+        }),
+      })
     )
   })
 })
@@ -506,6 +554,91 @@ describe('getMarketplace', () => {
       })
     )
     expect(result.entries[0].vsBenchmark).toBeCloseTo(0.03, 12)
+  })
+
+  it('returns facet counts alongside results', async () => {
+    mockDb.publishedStrategyMetric.findMany.mockResolvedValue([
+      {
+        apy: 12,
+        sharpe: 1.2,
+        sampleCount: 40,
+        trackRecordDays: 45,
+        windowDays: 30,
+        computedAt: new Date(),
+        publishedStrategy: {
+          id: STRATEGY_ID,
+          strategyConfig: { strategyName: 'MAX_YIELD', riskCeiling: 20 },
+        },
+      },
+    ])
+
+    const result = await getMarketplace({
+      sortBy: 'apy',
+      window: '30d',
+      page: 1,
+      limit: 10,
+    })
+
+    expect(result.facets.riskBands).toEqual({ conservative: 1 })
+    expect(result.facets.types).toEqual({ MAX_YIELD: 1 })
+  })
+
+  it('returns facet counts for the unfiltered set even when riskMax excludes every entry', async () => {
+    mockDb.publishedStrategyMetric.findMany
+      .mockResolvedValueOnce([
+        {
+          apy: 12,
+          sharpe: 1.2,
+          sampleCount: 40,
+          trackRecordDays: 45,
+          windowDays: 30,
+          computedAt: new Date(),
+          publishedStrategy: {
+            id: STRATEGY_ID,
+            strategyConfig: { strategyName: 'MAX_YIELD', riskCeiling: 80 },
+          },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          publishedStrategy: {
+            id: STRATEGY_ID,
+            strategyConfig: { strategyName: 'MAX_YIELD', riskCeiling: 80 },
+          },
+        },
+      ])
+
+    const result = await getMarketplace({
+      sortBy: 'apy',
+      window: '30d',
+      page: 1,
+      limit: 10,
+      riskMax: 10,
+    })
+
+    expect(result.entries).toEqual([])
+    expect(result.facets.riskBands).toEqual({ aggressive: 1 })
+  })
+
+  it('filters by tags via publishedStrategy.tags hasSome', async () => {
+    await getMarketplace({
+      sortBy: 'apy',
+      window: '30d',
+      page: 1,
+      limit: 10,
+      tags: ['conservative'],
+    })
+
+    expect(mockDb.publishedStrategyMetric.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          publishedStrategy: expect.objectContaining({
+            isPublished: true,
+            tags: { hasSome: ['conservative'] },
+          }),
+        }),
+      })
+    )
   })
 
   it('reports vsBenchmark as null when attribution has not been computed for a strategy yet', async () => {

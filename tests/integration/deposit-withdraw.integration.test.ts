@@ -210,6 +210,7 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
     const res = await request(app)
       .post('/api/deposit/')
       .set(authHeaders(sessionToken))
+      .set('Idempotency-Key', 'test-deposit-key')
       .send({
         userId,
         amount: depositAmount,
@@ -320,6 +321,7 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
     const res = await request(app)
       .post('/api/withdraw/')
       .set(authHeaders(sessionToken))
+      .set('Idempotency-Key', 'test-withdraw-key')
       .send({
         userId,
         amount: withdrawAmount,

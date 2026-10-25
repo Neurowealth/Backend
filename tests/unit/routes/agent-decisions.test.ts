@@ -120,6 +120,38 @@ describe('GET /decisions', () => {
       })
     )
   })
+
+  it('returns pagination metadata and applies a whitelisted sort', async () => {
+    mockCount.mockResolvedValue(0)
+    mockFindMany.mockResolvedValue([])
+
+    const res = await request(app)
+      .get('/decisions?page=2&limit=10&sortBy=outcome&sortOrder=asc')
+      .set(authHeader())
+
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({
+      page: 2,
+      limit: 10,
+      total: 0,
+      totalPages: 0,
+      hasNext: false,
+      hasPrevious: false,
+      decisions: [],
+    })
+    expect(mockFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ outcome: 'asc' }, { id: 'desc' }],
+      })
+    )
+  })
+
+  it('rejects invalid pagination before querying', async () => {
+    const res = await request(app).get('/decisions?page=0').set(authHeader())
+
+    expect(res.status).toBe(400)
+    expect(mockFindMany).not.toHaveBeenCalled()
+  })
 })
 
 describe('GET /decisions/:id', () => {

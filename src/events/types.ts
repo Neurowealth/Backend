@@ -16,6 +16,7 @@ export const USER_EVENT_TOPICS = [
   'agent',
   'alerts',
   'strategies',
+  'account',
 ] as const
 
 export type UserEventTopic = (typeof USER_EVENT_TOPICS)[number]
@@ -35,6 +36,11 @@ export function isUserEventTopic(value: unknown): value is UserEventTopic {
  * change what an operator's configured webhook receives.
  */
 export const SOCKET_ONLY_EVENT_TYPES = [
+  'security.passkey_changed',
+  'security.passkey_anomaly',
+  'recurring_withdrawal.executed',
+  'recurring_withdrawal.held',
+  'recurring_withdrawal.skipped',
   /** Emitted alongside agent.rebalanced: this user's positions moved. */
   'portfolio.updated',
   /** #343 — a rebalance decision was recorded; deep-linkable explanation. */
@@ -47,6 +53,12 @@ export const SOCKET_ONLY_EVENT_TYPES = [
   'security.api_key_changed',
   /** #376 — new session sign-in alert. */
   'security.new_session',
+  /** #472 — a session was revoked (logout, admin, or refresh-token reuse). */
+  'security.session_revoked',
+  /** #515 — suspicious session anomaly detected (impossible location, device change, subnet jump). */
+  'security.session_anomaly',
+  /** #548 — admin impersonation session started. */
+  'account.impersonation_started',
   /** #365 — a scheduled portfolio digest was generated. Stream + user's own
    *  webhook endpoint only; never an operator webhook (see docs/NOTIFICATIONS.md). */
   'digest.generated',
@@ -64,6 +76,11 @@ export type UserEventType = WebhookEvent | SocketOnlyEventType
  * emit site by hand.
  */
 export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
+  'security.passkey_changed': 'alerts',
+  'security.passkey_anomaly': 'alerts',
+  'recurring_withdrawal.executed': 'transactions',
+  'recurring_withdrawal.held': 'alerts',
+  'recurring_withdrawal.skipped': 'alerts',
   'transaction.confirmed': 'transactions',
   'deposit.received': 'transactions',
   'withdraw.completed': 'transactions',
@@ -82,6 +99,8 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'approval.executed': 'transactions',
   'approval.expired': 'transactions',
   'approval.cancelled': 'transactions',
+  'loan.liquidation_executed': 'transactions',
+  'loan.charged_off': 'transactions',
   'agent.rebalanced': 'agent',
   'agent.decision_recorded': 'agent',
   'agent.circuit_breaker_tripped': 'agent',
@@ -92,6 +111,9 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'portfolio.updated': 'portfolio',
   'security.api_key_changed': 'alerts',
   'security.new_session': 'alerts',
+  'security.session_revoked': 'alerts',
+  'security.session_anomaly': 'alerts',
+  'account.impersonation_started': 'account',
   'digest.generated': 'alerts',
 }
 

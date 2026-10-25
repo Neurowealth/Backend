@@ -31,6 +31,7 @@ import {
   type ActiveFollowConfig,
 } from '../strategy/service'
 import type { StrategyName } from './types'
+import { isPortfolioRebalanceAllowed } from './volatilityCircuitBreaker'
 import db from '../db'
 import {
   updateAgentHeartbeat as metricsUpdateAgentHeartbeat,
@@ -136,6 +137,29 @@ async function rebalanceCheckJob(): Promise<void> {
       )
       const followsByUser = await loadActiveFollowsForUsers(userIds)
 
+      const volatilityAllowedByUser = new Map<string, boolean>()
+      for (const userId of userIds) {
+        volatilityAllowedByUser.set(
+          userId,
+          await isPortfolioRebalanceAllowed(userId)
+        )
+      }
+
+      // Load active goals for all users in one query (#446). Returns empty when
+      // no users have active goals.
+      const goalsByUser = new Map<string, boolean>()
+      const userGoals = await db.savingsGoal.findMany({
+        where: {
+          userId: { in: userIds },
+          status: 'ACTIVE',
+          includeExternalHoldings: false,
+        },
+        select: { userId: true },
+      })
+      for (const goal of userGoals as Array<{ userId: string }>) {
+        goalsByUser.set(goal.userId, true)
+      }
+
       // Resolve each user's effective config once. With no follow this is the
       // user's own values read exactly as they were before #285 — the raw
       // strategyConfig fields, uncoerced — so the no-follow path stays a
@@ -166,29 +190,33 @@ async function rebalanceCheckJob(): Promise<void> {
         })
       }
 
-      // Group by (protocol, effective strategy, follow) so users with different
-      // strategies are evaluated independently.
+      // Group by (protocol, strategy, riskCeiling, followId, hasActiveGoal) so
+      // users with different risk ceilings, follows, or active goals are
+      // evaluated independently. Prevents router.ts from applying user[0]'s
+      // settings to the entire batch (#446).
       //
-      // HAZARD: router.ts reads only userStrategyPreferences[0]. Without the
-      // follow component in this key, two followers of DIFFERENT published
-      // strategies sharing a protocol would collapse into one batch and both be
-      // rebalanced on index 0's config — including index 0's risk ceiling.
       // Keying on the per-user follow id (not the followed strategy id) is
       // deliberate: two followers of the SAME strategy can still have different
       // effective ceilings, because a follow clamps to the stricter of publisher
       // and follower. It costs some batching; it buys risk correctness.
       //
-      // For users without a follow the component is the constant 'none', so
-      // grouping is identical to before this feature.
+      // For users without a follow the component is the constant 'none'; without
+      // an active goal it is 'false', so grouping is unchanged for the no-follow,
+      // no-goal path.
       const byProtocolAndStrategy = new Map<
         string,
         { protocol: string; positions: PositionWithUser[]; batchKey: string }
       >()
       for (const pos of positions) {
         const { config, follow } = effectiveByUser.get(pos.userId)!
+        const hasGoal = goalsByUser.has(pos.userId)
+        const liquidityFloorConfigured =
+          (pos.user as any).liquidityFloor !== null &&
+          (pos.user as any).liquidityFloor !== undefined
+        const floorUserKey = liquidityFloorConfigured ? pos.userId : 'shared'
         const key = `${pos.protocolName}:${config.strategyName || 'DEFAULT'}:${
-          follow?.followId ?? 'none'
-        }`
+          config.riskCeiling ?? 'none'
+        }:${follow?.followId ?? 'none'}:${hasGoal ? 'goal' : 'nogoal'}:${floorUserKey}`
         if (!byProtocolAndStrategy.has(key)) {
           byProtocolAndStrategy.set(key, {
             protocol: pos.protocolName,
@@ -279,7 +307,11 @@ async function rebalanceCheckJob(): Promise<void> {
       }
 
       for (const batch of byProtocolAndStrategy.values()) {
-        const { protocol, positions: protocolPositions } = batch
+        const { protocol } = batch
+        const protocolPositions = batch.positions.filter((position) =>
+          volatilityAllowedByUser.get(position.userId)
+        )
+        if (protocolPositions.length === 0) continue
         const lead = effectiveByUser.get(protocolPositions[0].userId)!
 
         // #345 — skip batches affected by an OPEN breaker. Precedence:
@@ -316,7 +348,10 @@ async function rebalanceCheckJob(): Promise<void> {
         // null — the common case for a new user, and exactly who this feature
         // targets — would have had their followed config silently ignored.
         const hasStrategyContext =
-          Boolean(lead.config.strategyName) || Boolean(lead.follow)
+          Boolean(lead.config.strategyName) ||
+          Boolean(lead.follow) ||
+          ((protocolPositions[0].user as any).liquidityFloor !== null &&
+            (protocolPositions[0].user as any).liquidityFloor !== undefined)
 
         const userStrategyPreferences = hasStrategyContext
           ? protocolPositions.map((p: PositionWithUser) => {
@@ -337,6 +372,12 @@ async function rebalanceCheckJob(): Promise<void> {
                 // them.
                 exposureCaps: config.exposureCaps,
                 defaultMaxFraction: config.defaultMaxFraction,
+                ...((p.user as any).liquidityFloor === null ||
+                (p.user as any).liquidityFloor === undefined
+                  ? {}
+                  : {
+                      liquidityFloorUsd: Number((p.user as any).liquidityFloor),
+                    }),
                 followedStrategyId: follow?.followedStrategyId ?? undefined,
               }
             })

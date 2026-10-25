@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import db from '../db'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import {
   mapAllocationSuggestionToResponse,
@@ -34,6 +35,11 @@ import {
 } from '../tax/report'
 import { AccountingMethod } from '@prisma/client'
 import { toCsv } from '../utils/csv'
+import {
+  buildPaginationMeta,
+  getPaginationParams,
+  paginationSchema,
+} from '../utils/pagination'
 import goalsRouter from './goals'
 
 const router = Router()
@@ -42,9 +48,21 @@ const router = Router()
 // is never captured as a userId.
 router.use('/goals', goalsRouter)
 
-const portfolioSchema = z.object({
+const portfolioParamsSchema = z.object({
   params: z.object({
     userId: z.string().uuid(),
+  }),
+})
+
+const portfolioSchema = portfolioParamsSchema.extend({
+  query: paginationSchema.extend({
+    status: z.enum(['ACTIVE', 'CLOSED', 'LIQUIDATED']).optional(),
+    protocolName: z.string().trim().min(1).max(100).optional(),
+    assetSymbol: z.string().trim().min(1).max(20).optional(),
+    sortBy: z
+      .enum(['openedAt', 'updatedAt', 'currentValue', 'yieldEarned'])
+      .default('openedAt'),
+    sortOrder: z.enum(['asc', 'desc']).default('desc'),
   }),
 })
 
@@ -151,6 +169,9 @@ router.post(
 router.get(
   '/:userId/suggestions',
   requireAuth,
+  // #615 — `portfolio:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's whole portfolio.
+  requireScope('portfolio:read'),
   enforceUserAccess,
   validate(listSuggestionsSchema),
   async (req: Request, res: Response) => {
@@ -190,6 +211,9 @@ router.get(
 router.get(
   '/:userId',
   requireAuth,
+  // #615 — `portfolio:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's whole portfolio.
+  requireScope('portfolio:read'),
   enforceUserAccess,
   validate(portfolioSchema),
   async (req: Request, res: Response) => {
@@ -202,26 +226,59 @@ router.get(
       return sendNotFound(res, 'User')
     }
 
-    const userPositions = await db.position.findMany({
-      where: { userId },
-    })
+    const { page, limit, skip } = getPaginationParams(req.query)
+    const query = req.query as {
+      status?: 'ACTIVE' | 'CLOSED' | 'LIQUIDATED'
+      protocolName?: string
+      assetSymbol?: string
+      sortBy: 'openedAt' | 'updatedAt' | 'currentValue' | 'yieldEarned'
+      sortOrder: 'asc' | 'desc'
+    }
+    const where: any = { userId }
+    if (query.status) where.status = query.status
+    if (query.protocolName) where.protocolName = query.protocolName
+    if (query.assetSymbol) where.assetSymbol = query.assetSymbol
 
-    const totalBalance = userPositions.reduce((sum: number, position: any) => {
-      return sum + Number(position.currentValue)
-    }, 0)
-    const totalEarnings = userPositions.reduce((sum: number, position: any) => {
-      return sum + Number(position.yieldEarned)
-    }, 0)
-    const activePositions = userPositions.filter(
-      (p: any) => p.status === 'ACTIVE'
-    ).length
+    const [userPositions, total, portfolioTotals, activePositions] =
+      await Promise.all([
+        db.position.findMany({
+          where,
+          orderBy: [{ [query.sortBy]: query.sortOrder }, { id: 'desc' }],
+          skip,
+          take: limit,
+        }),
+        db.position.count({ where }),
+        db.position.aggregate({
+          where: { userId },
+          _sum: { currentValue: true, yieldEarned: true },
+        }),
+        db.position.count({ where: { userId, status: 'ACTIVE' } }),
+      ])
+
+    const totalBalance = Number(portfolioTotals._sum.currentValue ?? 0)
+    const totalEarnings = Number(portfolioTotals._sum.yieldEarned ?? 0)
 
     const positions = userPositions.map(mapPositionToResponse)
 
+    const displayCurrency = user.displayCurrency || 'USD'
+    const { convertUsdToCurrency } = await import('../utils/fxConvert')
+    const displayTotalBalance = convertUsdToCurrency(
+      totalBalance,
+      displayCurrency
+    )
+    const displayTotalEarnings = convertUsdToCurrency(
+      totalEarnings,
+      displayCurrency
+    )
+
     return res.status(200).json({
       userId: user.id,
+      ...buildPaginationMeta(page, limit, total),
       totalBalance,
       totalEarnings,
+      displayTotalBalance,
+      displayTotalEarnings,
+      displayCurrency,
       activePositions,
       positions,
       whatsappReply: formatPortfolioReply({
@@ -237,6 +294,9 @@ router.get(
 router.get(
   '/:userId/history',
   requireAuth,
+  // #615 — `portfolio:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's whole portfolio.
+  requireScope('portfolio:read'),
   enforceUserAccess,
   validate(historySchema),
   async (req: Request, res: Response) => {
@@ -282,8 +342,11 @@ router.get(
 router.get(
   '/:userId/earnings',
   requireAuth,
+  // #615 — `portfolio:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's whole portfolio.
+  requireScope('portfolio:read'),
   enforceUserAccess,
-  validate(portfolioSchema),
+  validate(portfolioParamsSchema),
   async (req: Request, res: Response) => {
     const userId = req.params.userId as string
     const user = await db.user.findUnique({
@@ -335,6 +398,9 @@ router.get(
 router.get(
   '/:userId/tax-report',
   requireAuth,
+  // #615 — `portfolio:read` was declared but never enforced, so ANY
+  // authenticated API key could read the user's tax report.
+  requireScope('portfolio:read'),
   enforceUserAccess,
   validate(taxReportSchema),
   async (req: Request, res: Response) => {

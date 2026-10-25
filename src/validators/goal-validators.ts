@@ -13,6 +13,7 @@ export const createGoalSchema = z
     startingAmount: z.number().nonnegative().optional(),
     positionId: z.string().uuid().optional(),
     riskCeiling: z.number().min(0).max(100).optional(),
+    includeExternalHoldings: z.boolean().default(false),
   })
   .refine(
     (data) =>
@@ -32,12 +33,14 @@ export const updateGoalSchema = z
       .optional(),
     targetDate: z.coerce.date().optional(),
     riskCeiling: z.number().min(0).max(100).optional(),
+    includeExternalHoldings: z.boolean().optional(),
   })
   .refine(
     (data) =>
       data.targetAmount !== undefined ||
       data.targetDate !== undefined ||
-      data.riskCeiling !== undefined,
+      data.riskCeiling !== undefined ||
+      data.includeExternalHoldings !== undefined,
     {
       message:
         'At least one of targetAmount, targetDate, riskCeiling must be provided',

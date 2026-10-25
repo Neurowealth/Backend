@@ -93,6 +93,9 @@ jest.mock('../../../src/db', () => {
     position: {
       findMany: (...args: unknown[]) => mockPositionFindMany(...args),
     },
+    savingsGoal: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     yieldSnapshot: {
       findMany: jest.fn().mockResolvedValue([]),
     },
@@ -196,10 +199,10 @@ describe('Agent circuit breaker (#345)', () => {
     it('writes a BLOCKED decision and never submits a rebalance', async () => {
       await rebalanceCheckJob()
 
-      // One batch (protocol-a:DEFAULT:none), one BLOCKED decision.
+      // One no-goal batch (protocol-a:DEFAULT:none:none:nogoal), one BLOCKED decision.
       expect(decisionRows).toHaveLength(1)
       expect(decisionRows[0]).toMatchObject({
-        batchKey: 'protocol-a:DEFAULT:none',
+        batchKey: 'protocol-a:DEFAULT:none:none:nogoal',
         fromProtocol: 'protocol-a',
         outcome: 'BLOCKED',
         blockedReason: 'circuit_breaker_open',

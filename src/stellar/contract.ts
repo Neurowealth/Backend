@@ -22,9 +22,12 @@ import {
 import { getKeypairForUser } from './wallet'
 import { config } from '../config'
 import { OnChainBalance, TransactionResult } from './types'
+import {
+  MAX_CONTRACT_AMOUNT,
+  STROOPS_PER_TOKEN,
+} from '../config/financial-limits'
 
 const VAULT_CONTRACT_ID = config.stellar.vaultContractId
-const STROOPS_PER_TOKEN = 10_000_000n
 
 export type VaultWriteMethod = 'deposit' | 'withdraw'
 
@@ -72,18 +75,27 @@ async function buildContractCall(
 }
 
 function toContractAmount(amount: number): bigint {
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error('Amount must be a positive number')
+  const stroops = amount * STROOPS_PER_TOKEN
+  if (
+    !Number.isFinite(amount) ||
+    amount <= 0 ||
+    amount > MAX_CONTRACT_AMOUNT ||
+    !Number.isSafeInteger(stroops)
+  ) {
+    throw new Error(
+      `Amount must be finite, positive, and no greater than ${MAX_CONTRACT_AMOUNT}`
+    )
   }
 
-  return BigInt(Math.round(amount * Number(STROOPS_PER_TOKEN)))
+  return BigInt(stroops)
 }
 
 async function executeWriteContractCall(
   method: string,
   args: xdr.ScVal[],
   signer: Keypair,
-  feeMultiplier: number = 1
+  feeMultiplier: number = 1,
+  onSubmitted?: (txHash: string) => Promise<void>
 ): Promise<TransactionResult> {
   const tx = await buildContractCall(
     method,
@@ -109,6 +121,7 @@ async function executeWriteContractCall(
   prepared.sign(signer)
 
   const txHash = await submitTransaction(prepared)
+  await onSubmitted?.(txHash)
   const result = await waitForConfirmation(txHash)
 
   if (result.status !== 'success') {
@@ -132,7 +145,8 @@ async function executeCustodialVaultOperation(
   userAddress: string,
   amount: number,
   assetSymbol: string,
-  feeMultiplier: number = 1
+  feeMultiplier: number = 1,
+  onSubmitted?: (txHash: string) => Promise<void>
 ): Promise<TransactionResult> {
   const signer = await getKeypairForUser(userId)
   const userScVal = nativeToScVal(userAddress, { type: 'address' })
@@ -143,7 +157,8 @@ async function executeCustodialVaultOperation(
     method,
     [userScVal, amountScVal, assetScVal],
     signer,
-    feeMultiplier
+    feeMultiplier,
+    onSubmitted
   )
 }
 
@@ -205,7 +220,8 @@ export async function getActiveProtocol(): Promise<string> {
 export async function triggerRebalance(
   protocol: string,
   expectedApyBasisPoints: number,
-  feeMultiplier: number = 1
+  feeMultiplier: number = 1,
+  onSubmitted?: (txHash: string) => Promise<void>
 ): Promise<TransactionResult> {
   const protocolScVal = nativeToScVal(protocol, { type: 'string' })
   const apyScVal = nativeToScVal(expectedApyBasisPoints, { type: 'u32' })
@@ -215,7 +231,8 @@ export async function triggerRebalance(
     'rebalance',
     [protocolScVal, apyScVal],
     keypair,
-    feeMultiplier
+    feeMultiplier,
+    onSubmitted
   )
 }
 
@@ -251,7 +268,8 @@ export async function payReferralReward(
   recipientAddress: string,
   amount: number,
   assetSymbol: string,
-  feeMultiplier: number = 1
+  feeMultiplier: number = 1,
+  onSubmitted?: (txHash: string) => Promise<void>
 ): Promise<TransactionResult> {
   const recipientScVal = nativeToScVal(recipientAddress, { type: 'address' })
   const amountScVal = nativeToScVal(toContractAmount(amount), { type: 'i128' })
@@ -262,7 +280,8 @@ export async function payReferralReward(
     config.referral.rewardContractMethod,
     [recipientScVal, amountScVal, assetScVal],
     keypair,
-    feeMultiplier
+    feeMultiplier,
+    onSubmitted
   )
 }
 
@@ -283,7 +302,8 @@ export async function depositForUser(
   userAddress: string,
   amount: number,
   assetSymbol: string,
-  feeMultiplier: number = 1
+  feeMultiplier: number = 1,
+  onSubmitted?: (txHash: string) => Promise<void>
 ): Promise<TransactionResult> {
   return executeCustodialVaultOperation(
     'deposit',
@@ -291,7 +311,8 @@ export async function depositForUser(
     userAddress,
     amount,
     assetSymbol,
-    feeMultiplier
+    feeMultiplier,
+    onSubmitted
   )
 }
 
@@ -312,7 +333,8 @@ export async function withdrawForUser(
   userAddress: string,
   amount: number,
   assetSymbol: string,
-  feeMultiplier: number = 1
+  feeMultiplier: number = 1,
+  onSubmitted?: (txHash: string) => Promise<void>
 ): Promise<TransactionResult> {
   return executeCustodialVaultOperation(
     'withdraw',
@@ -320,7 +342,8 @@ export async function withdrawForUser(
     userAddress,
     amount,
     assetSymbol,
-    feeMultiplier
+    feeMultiplier,
+    onSubmitted
   )
 }
 

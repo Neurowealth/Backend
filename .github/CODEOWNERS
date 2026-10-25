@@ -1,0 +1,21 @@
+# Code Owners - defines code owners for automatic PR reviews
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything
+* @BernardOnuh
+
+# Backend API
+/src/ @BernardOnuh
+
+# Database & Migrations
+/prisma/ @BernardOnuh
+
+# CI/CD & DevOps
+/.github/ @BernardOnuh
+/deploy/ @BernardOnuh
+/Dockerfile @BernardOnuh
+/docker-compose.yml @BernardOnuh
+
+# Documentation
+/docs/ @BernardOnuh
+*.md @BernardOnuh

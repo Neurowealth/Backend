@@ -99,7 +99,15 @@ beforeEach(() => {
     update: jest.fn(),
   }
   mockDb.user = { findUnique: jest.fn() }
-  mockDb.transaction = { create: jest.fn(), update: jest.fn() }
+  mockDb.transaction = {
+    create: jest.fn(),
+    update: jest.fn(),
+    findMany: jest
+      .fn()
+      .mockImplementation(({ where }: any) =>
+        where.id.in.map((id: string) => ({ id, status: 'CONFIRMED' }))
+      ),
+  }
   mockDb.$transaction = jest.fn((fn: (tx: any) => unknown) => fn(mockDb))
   // #397 — fraud heuristic reads Session rows for both parties. Empty by
   // default so existing activation tests (no fraud signal) are unaffected;
@@ -491,6 +499,36 @@ describe('payoutActivatedConversions', () => {
     const updateArg = mockDb.transaction.update.mock.calls[0][0]
     expect(updateArg.data.status).toBe('CONFIRMED')
     expect(updateArg.data.txHash).toBe('onchainhash')
+  })
+
+  it('keeps a conversion ACTIVATED until every reward transaction is confirmed', async () => {
+    mockDb.referralConversion.findMany.mockResolvedValue([
+      activatedConversion(),
+    ])
+    mockDispatchOne
+      .mockResolvedValueOnce({ hash: 'owner-hash', status: 'pending' })
+      .mockResolvedValueOnce({ hash: 'referred-hash', status: 'success' })
+    mockDb.transaction.findMany.mockImplementation(({ where }: any) =>
+      Promise.resolve(
+        where.id.in.map((id: string) => ({
+          id,
+          status: id === 'tx-owner-1' ? 'PENDING' : 'CONFIRMED',
+        }))
+      )
+    )
+
+    const res = await payoutActivatedConversions()
+
+    expect(res.rewarded).toBe(0)
+    expect(mockDb.transaction.update.mock.calls[0][0].data).toMatchObject({
+      status: 'PENDING',
+      txHash: 'owner-hash',
+    })
+    expect(
+      mockDb.referralConversion.update.mock.calls.some(
+        (call: any) => call[0].data.status === 'REWARDED'
+      )
+    ).toBe(false)
   })
 
   it('is idempotent — skips a leg already paid', async () => {

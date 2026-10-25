@@ -6,6 +6,26 @@ import { logger } from '../utils/logger'
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
 /**
+ * Parses a client-supplied withdraw amount into a positive finite number.
+ *
+ * #648 — the middleware used to coerce the amount with `Number(...)`, which
+ * yields NaN for a missing or garbage value. Every comparison against NaN is
+ * false, so the transaction/daily limit checks silently passed. This helper
+ * returns null for anything that is not strictly a positive finite amount so
+ * callers can fail closed.
+ *
+ * Only `number` and `string` inputs are considered: `Number(true) === 1` and
+ * `Number([5]) === 5` would otherwise let a non-numeric body slip through.
+ */
+export function parseWithdrawAmount(value: unknown): number | null {
+  if (typeof value !== 'number' && typeof value !== 'string') return null
+  if (typeof value === 'string' && value.trim() === '') return null
+  const amount = Number(value)
+  if (!Number.isFinite(amount) || amount <= 0) return null
+  return amount
+}
+
+/**
  * Factory that returns middleware enforcing a specific sub-account permission.
  *
  * When the authenticated user (req.auth.userId) differs from the target user
@@ -33,15 +53,38 @@ export function requireSubAccountPermission(permission: SubAccountPermission) {
       return next()
     }
 
+    // #648 — a delegated WITHDRAW must carry a valid amount, otherwise the
+    // transaction/daily limit checks cannot be applied: NaN compares false
+    // against every limit and an absent amount skips them entirely. The check
+    // lives here (not only in the route schema) so the guarantee does not
+    // depend on where the middleware is mounted. An unusable amount is passed
+    // down as `undefined`, which the permission check fails closed on.
+    const amount =
+      permission === 'WITHDRAW'
+        ? (parseWithdrawAmount(req.body?.amount) ?? undefined)
+        : undefined
+
     try {
       const result = await checkSubAccountPermission(
         req.auth.userId,
         targetUserId,
         permission,
-        permission === 'WITHDRAW' ? Number(req.body?.amount) : undefined
+        amount
       )
 
       if (!result.allowed) {
+        if (result.reason === 'invalid_amount') {
+          logger.warn(
+            '[SubAccount] Rejected delegated withdraw with bad amount',
+            {
+              parentUserId: req.auth.userId,
+              childUserId: targetUserId,
+            }
+          )
+          res.status(400).json({ error: 'Invalid amount' })
+          return
+        }
+
         res
           .status(403)
           .json(
@@ -71,7 +114,10 @@ export function requireSubAccountPermission(permission: SubAccountPermission) {
 
 export type SubAccountPermissionCheck =
   | { allowed: true }
-  | { allowed: false; reason: 'no_active_link' | 'no_permission' }
+  | {
+      allowed: false
+      reason: 'no_active_link' | 'no_permission' | 'invalid_amount'
+    }
 
 /**
  * The non-HTTP core of requireSubAccountPermission above, so a caller with no
@@ -83,6 +129,12 @@ export type SubAccountPermissionCheck =
  * assistant orchestrator) check that before calling this, since "am I acting
  * on my own account" is a decision that belongs to the caller, not this
  * lookup.
+ *
+ * #648 — for a WITHDRAW the amount is mandatory: a missing or invalid amount
+ * fails closed instead of skipping the limit checks, since NaN compares false
+ * against every limit and an undefined amount skips them entirely. The
+ * permission itself is still checked first, so a caller without the grant
+ * gets "no_permission" rather than a hint about the amount.
  */
 export async function checkSubAccountPermission(
   parentUserId: string,
@@ -104,7 +156,11 @@ export async function checkSubAccountPermission(
     return { allowed: false, reason: 'no_permission' }
   }
 
-  if (permission === 'WITHDRAW' && amount !== undefined) {
+  if (permission === 'WITHDRAW') {
+    if (amount === undefined || !Number.isFinite(amount) || amount <= 0) {
+      return { allowed: false, reason: 'invalid_amount' }
+    }
+
     if (
       subAccount.transactionLimit != null &&
       amount > Number(subAccount.transactionLimit)

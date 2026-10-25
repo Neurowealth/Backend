@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { MAX_FIAT_AMOUNT, MIN_FIAT_AMOUNT } from '../config/financial-limits'
 
 /** Fiat on-ramp / off-ramp request validators (#290). */
 
@@ -9,14 +10,20 @@ export const fiatDirectionSchema = z.enum(['ON_RAMP', 'OFF_RAMP'])
 const fiatCurrencySchema = z
   .string()
   .trim()
-  .length(3, 'fiatCurrency must be a 3-letter ISO code')
+  .regex(/^[A-Za-z]{3}$/, 'fiatCurrency must be a 3-letter ISO code')
   .transform((s) => s.toUpperCase())
+
+const fiatAmountSchema = z
+  .number()
+  .finite('fiatAmount must be a finite number')
+  .min(MIN_FIAT_AMOUNT, `fiatAmount must be at least ${MIN_FIAT_AMOUNT}`)
+  .max(MAX_FIAT_AMOUNT, `fiatAmount must not exceed ${MAX_FIAT_AMOUNT}`)
 
 const assetSymbolSchema = z.string().trim().min(1).max(20)
 
 export const fiatQuoteSchema = z.object({
   direction: fiatDirectionSchema,
-  fiatAmount: z.number().positive(),
+  fiatAmount: fiatAmountSchema,
   fiatCurrency: fiatCurrencySchema,
   assetSymbol: assetSymbolSchema,
 })
@@ -24,7 +31,7 @@ export const fiatQuoteSchema = z.object({
 /** GET /api/v1/fiat/quotes — same shape, read as query params (#313). */
 export const bestExecutionQuoteQuerySchema = z.object({
   direction: fiatDirectionSchema,
-  fiatAmount: z.coerce.number().positive(),
+  fiatAmount: z.coerce.number().pipe(fiatAmountSchema),
   fiatCurrency: fiatCurrencySchema,
   assetSymbol: assetSymbolSchema,
 })
@@ -32,7 +39,7 @@ export const bestExecutionQuoteQuerySchema = z.object({
 export const createFiatOrderSchema = z.object({
   userId: z.string().uuid(),
   direction: fiatDirectionSchema,
-  fiatAmount: z.number().positive(),
+  fiatAmount: fiatAmountSchema,
   fiatCurrency: fiatCurrencySchema,
   assetSymbol: assetSymbolSchema,
   // Best-execution (#313): either pin a specific provider, reference a

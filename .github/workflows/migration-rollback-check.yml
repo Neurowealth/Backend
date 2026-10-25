@@ -1,18 +1,26 @@
 name: Migration rollback check
 
 # Ensures every Prisma migration ships a rollback.sql so production always has a
-# documented recovery path. See scripts/check-migration-rollback.sh.
+# documented recovery path (scripts/check-migration-rollback.sh), and that the
+# recovery path actually works: the rehearsal job applies, rolls back and
+# re-applies the newest migration against a real PostgreSQL
+# (scripts/rehearse-migration-rollback.sh). See docs/MIGRATIONS.md.
 
 on:
   pull_request:
     paths:
       - 'prisma/migrations/**'
       - 'scripts/check-migration-rollback.sh'
+      - 'scripts/rehearse-migration-rollback.sh'
+      - 'scripts/rollback-migration.sh'
+      - 'docs/MIGRATIONS.md'
       - '.github/workflows/migration-rollback-check.yml'
   push:
     branches: [main]
     paths:
       - 'prisma/migrations/**'
+      - 'scripts/rehearse-migration-rollback.sh'
+      - 'docs/MIGRATIONS.md'
 
 jobs:
   rollback-check:
@@ -24,3 +32,55 @@ jobs:
 
       - name: Check every migration has a rollback.sql
         run: bash scripts/check-migration-rollback.sh
+
+  rollback-rehearsal:
+    name: Rollback rehearsal
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:14.4
+        env:
+          POSTGRES_USER: rehearsal_user
+          POSTGRES_PASSWORD: rehearsal_pass
+          POSTGRES_DB: rehearsal_db
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U rehearsal_user"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # The rehearsal script refuses to run in CI against a database whose name
+      # looks like production; "rehearsal_db" is the disposable service above.
+      CI: '1'
+      DATABASE_URL: postgresql://rehearsal_user:rehearsal_pass@localhost:5434/rehearsal_db
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Check every migration has a rollback.sql
+        run: bash scripts/check-migration-rollback.sh
+
+      - name: Rehearse apply -> rollback -> re-apply
+        run: bash scripts/rehearse-migration-rollback.sh
+
+      - name: Upload rehearsal log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-rollback-rehearsal
+          path: prisma/migrations/
+          retention-days: 7

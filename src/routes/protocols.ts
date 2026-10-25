@@ -1,5 +1,9 @@
 import { Router, Request, Response } from 'express'
 import db from '../db'
+import {
+  getStaleProtocolNames,
+  applyStalenessPenalty,
+} from '../jobs/riskMetadataStaleness'
 import { getAgentStatus } from '../agent/loop'
 import {
   formatAgentStatusReply,
@@ -51,9 +55,13 @@ router.get('/risk', async (_req: Request, res: Response) => {
       orderBy: { score: 'desc' },
     })
 
+    const stale = await getStaleProtocolNames()
+
     const items = scores.map((s: any) => ({
       protocolName: s.protocolName,
-      score: s.score,
+      score: applyStalenessPenalty(s.score, stale.has(s.protocolName)),
+      rawScore: s.score,
+      riskMetadataStale: stale.has(s.protocolName),
       // Contributing factors — exposed so the score is transparent, not opaque.
       factors: {
         auditStatus: s.auditStatus,

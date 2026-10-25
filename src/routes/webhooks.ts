@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express'
+import { z } from 'zod'
 import db from '../db'
 import { requireAuth } from '../middleware/authenticate'
+import { requireScope } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import { sendNotFound } from '../utils/errors'
 import { generateWebhookSecret } from '../utils/webhookSignature'
@@ -8,10 +10,18 @@ import {
   createWebhookSchema,
   updateWebhookSchema,
   webhookIdParamSchema,
+  createUserWebhookEndpointSchema,
+  updateUserWebhookEndpointSchema,
+  userWebhookEndpointIdParamSchema,
 } from '../validators/webhook-validators'
 import { getSubscriptionHealth } from '../services/webhookCircuitBreaker'
 import { replayDeadLetter } from '../services/webhookDispatcher'
 import { logger } from '../utils/logger'
+import {
+  buildPaginationMeta,
+  getPaginationParams,
+  paginationSchema,
+} from '../utils/pagination'
 
 const router = Router()
 const prisma = db as any
@@ -44,6 +54,8 @@ router.use(requireAuth)
  */
 router.post(
   '/',
+  requireAuth,
+  requireScope('webhooks:manage'),
   validate({ body: createWebhookSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -74,24 +86,53 @@ router.post(
 )
 
 /** GET /api/webhooks */
-router.get('/', async (req: Request, res: Response) => {
-  const userId = req.auth!.userId
-  const subscriptions = await prisma.webhookSubscription.findMany({
-    where: { userId },
-    select: {
-      id: true,
-      url: true,
-      events: true,
-      isActive: true,
-      autoReplay: true,
-      secretNextActiveAt: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-    orderBy: { createdAt: 'desc' },
-  })
-  return res.status(200).json({ subscriptions })
-})
+router.get(
+  '/',
+  validate({
+    query: paginationSchema.extend({
+      isActive: z.enum(['true', 'false']).optional(),
+      event: z.string().trim().min(1).max(100).optional(),
+      sortBy: z.enum(['createdAt', 'updatedAt']).default('createdAt'),
+      sortOrder: z.enum(['asc', 'desc']).default('desc'),
+    }),
+  }),
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+    const { page, limit, skip } = getPaginationParams(req.query)
+    const query = req.query as {
+      isActive?: 'true' | 'false'
+      event?: string
+      sortBy: 'createdAt' | 'updatedAt'
+      sortOrder: 'asc' | 'desc'
+    }
+    const where: any = { userId }
+    if (query.isActive !== undefined) where.isActive = query.isActive === 'true'
+    if (query.event) where.events = { has: query.event }
+
+    const [total, subscriptions] = await Promise.all([
+      prisma.webhookSubscription.count({ where }),
+      prisma.webhookSubscription.findMany({
+        where,
+        select: {
+          id: true,
+          url: true,
+          events: true,
+          isActive: true,
+          autoReplay: true,
+          secretNextActiveAt: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+        orderBy: [{ [query.sortBy]: query.sortOrder }, { id: 'desc' }],
+        skip,
+        take: limit,
+      }),
+    ])
+    return res
+      .status(200)
+      .json({ ...buildPaginationMeta(page, limit, total), subscriptions })
+  }
+)
 
 router.get(
   '/:id',
@@ -118,6 +159,8 @@ router.get(
 
 router.patch(
   '/:id',
+  requireAuth,
+  requireScope('webhooks:manage'),
   validate({ params: webhookIdParamSchema, body: updateWebhookSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -149,6 +192,8 @@ router.patch(
 
 router.delete(
   '/:id',
+  requireAuth,
+  requireScope('webhooks:manage'),
   validate({ params: webhookIdParamSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -328,14 +373,57 @@ import { handleMailWebhook } from '../controllers/email-identity-controller'
 router.post('/mail', handleMailWebhook)
 
 // User-scoped outbound webhook management endpoints (#368)
-router.post('/endpoints', createEndpoint)
-router.get('/endpoints', listEndpoints)
-router.get('/endpoints/:id', getEndpoint)
-router.patch('/endpoints/:id', updateEndpoint)
-router.delete('/endpoints/:id', deleteEndpoint)
-router.post('/endpoints/:id/rotate-secret', rotateSecret)
-router.post('/endpoints/:id/test', sendTestPing)
-router.post('/endpoints/:id/replay', replayEvents)
-router.get('/endpoints/:id/deliveries', listDeliveries)
+router.post(
+  '/endpoints',
+  requireAuth,
+  validate({ body: createUserWebhookEndpointSchema }),
+  createEndpoint
+)
+router.get('/endpoints', requireAuth, listEndpoints)
+router.get(
+  '/endpoints/:id',
+  requireAuth,
+  validate({ params: userWebhookEndpointIdParamSchema }),
+  getEndpoint
+)
+router.patch(
+  '/endpoints/:id',
+  requireAuth,
+  validate({
+    params: userWebhookEndpointIdParamSchema,
+    body: updateUserWebhookEndpointSchema,
+  }),
+  updateEndpoint
+)
+router.delete(
+  '/endpoints/:id',
+  requireAuth,
+  validate({ params: userWebhookEndpointIdParamSchema }),
+  deleteEndpoint
+)
+router.post(
+  '/endpoints/:id/rotate-secret',
+  requireAuth,
+  validate({ params: userWebhookEndpointIdParamSchema }),
+  rotateSecret
+)
+router.post(
+  '/endpoints/:id/test',
+  requireAuth,
+  validate({ params: userWebhookEndpointIdParamSchema }),
+  sendTestPing
+)
+router.post(
+  '/endpoints/:id/replay',
+  requireAuth,
+  validate({ params: userWebhookEndpointIdParamSchema }),
+  replayEvents
+)
+router.get(
+  '/endpoints/:id/deliveries',
+  requireAuth,
+  validate({ params: userWebhookEndpointIdParamSchema }),
+  listDeliveries
+)
 
 export default router

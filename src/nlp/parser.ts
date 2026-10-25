@@ -101,9 +101,17 @@ export type Intent =
  * ANTHROPIC_API_KEY isn't configured. Actual requests with the dummy key will
  * fail authentication, which is handled by parseWithClaude().
  */
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY || 'dummy_key',
-})
+let anthropicClient: Anthropic | null = null
+let anthropicCredential = ''
+
+function getAnthropicClient(): Anthropic {
+  const credential = process.env.ANTHROPIC_API_KEY || config.ai.anthropicApiKey
+  if (!anthropicClient || credential !== anthropicCredential) {
+    anthropicClient = new Anthropic({ apiKey: credential || 'dummy_key' })
+    anthropicCredential = credential
+  }
+  return anthropicClient
+}
 
 /**
  * Resilient HTTP wrapper around outbound Anthropic calls.
@@ -673,7 +681,7 @@ export function parseWithRegex(message: string): Intent | null {
 export async function parseWithClaude(message: string): Promise<Intent> {
   try {
     const response = await anthropicHttpClient.execute(async () => {
-      return anthropic.messages.create({
+      return getAnthropicClient().messages.create({
         model: 'claude-3-haiku-20240307',
         max_tokens: 250,
 

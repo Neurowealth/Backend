@@ -29,6 +29,8 @@ export type MarketplaceWindow = (typeof MARKETPLACE_WINDOWS)[number]
 export type MarketplaceSortField = (typeof MARKETPLACE_SORT_FIELDS)[number]
 
 export const MAX_LABEL_LENGTH = 60
+export const MAX_DESCRIPTION_LENGTH = 280
+export const MAX_TAGS = 5
 
 /** Stellar account (G…) or contract (C…) address: prefix + 55 base32 chars. */
 const STELLAR_ADDRESS_PATTERN = /[GC][A-Z2-7]{55}/
@@ -139,9 +141,35 @@ export const publishableConfigSchema = z
  * only way to publish anything today, since nothing in src/ writes those User
  * columns yet.
  */
+/** Short free-text summary shown alongside a listing (#527). Same self-doxx
+ * screening as label: it is publisher-authored text shown to strangers. */
+export const strategyDescriptionSchema = z
+  .string()
+  .trim()
+  .max(
+    MAX_DESCRIPTION_LENGTH,
+    `description must be at most ${MAX_DESCRIPTION_LENGTH} characters`
+  )
+  .refine((v) => !STELLAR_ADDRESS_PATTERN.test(v), {
+    message:
+      'description must not contain a Stellar address — published strategies are anonymous',
+  })
+  .refine((v) => !LONG_HEX_PATTERN.test(v), {
+    message:
+      'description must not contain long hexadecimal strings — published strategies are anonymous',
+  })
+
+/** Tag slugs, checked against the curated MarketplaceTag vocabulary in
+ * src/strategy/service.ts — this layer only bounds shape/count. */
+export const strategyTagsSchema = z
+  .array(z.string().trim().min(1).max(40))
+  .max(MAX_TAGS, `at most ${MAX_TAGS} tags are allowed`)
+
 export const publishStrategySchema = z.object({
   label: strategyLabelSchema,
   strategyConfig: publishableConfigSchema.optional(),
+  description: strategyDescriptionSchema.optional(),
+  tags: strategyTagsSchema.optional(),
 })
 
 /**
@@ -164,6 +192,19 @@ export const marketplaceQuerySchema = z.object({
   // those are tuned for WhatsApp transaction lists, not a leaderboard page.
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(20),
+  // Discovery filters (#527) — riskMax/protocols/type/q are additive; an
+  // empty match still returns unfiltered facet counts (see getMarketplace).
+  riskMax: z.coerce.number().int().min(0).max(100).optional(),
+  protocols: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v.split(',').filter(Boolean) : undefined)),
+  type: z.enum(PUBLISHABLE_STRATEGIES).optional(),
+  tags: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v.split(',').filter(Boolean) : undefined)),
+  q: z.string().trim().max(100).optional(),
 })
 
 /**

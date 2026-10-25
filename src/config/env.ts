@@ -4,6 +4,9 @@ dotenv.config()
 
 function requireEnv(key: string): string {
   const value = process.env[key]
+  if (!value && process.env.SECRET_BACKEND === 'aws-ssm') {
+    return `__SSM_PENDING_${key}__`
+  }
   if (!value) throw new Error(`Missing required environment variable: ${key}`)
   return value
 }
@@ -65,10 +68,38 @@ function validateAllRequiredEnvVars(): void {
   ]
 
   const errors: string[] = []
+  const ssmManagedSecrets = new Set([
+    'STELLAR_AGENT_SECRET_KEY',
+    'ANTHROPIC_API_KEY',
+    'DATABASE_URL',
+    'JWT_SEED',
+    'WALLET_ENCRYPTION_KEY',
+    'TWILIO_AUTH_TOKEN',
+  ])
+
+  for (const key of [
+    'JWT_SEED',
+    'WALLET_ENCRYPTION_KEY',
+    'STELLAR_AGENT_SECRET_KEY',
+    'ANTHROPIC_API_KEY',
+    'TWILIO_AUTH_TOKEN',
+    'DATABASE_URL',
+  ]) {
+    const expiresAt = process.env[`SECRET_EXPIRY_${key}`]
+    if (expiresAt) {
+      const expiry = Date.parse(expiresAt)
+      if (!Number.isFinite(expiry) || expiry <= Date.now()) {
+        errors.push(`${key} is expired or has an invalid SECRET_EXPIRY_${key}`)
+      }
+    }
+  }
 
   // ── 1. Missing vars ──────────────────────────────────────────────────────
   for (const key of requiredVars) {
-    if (!process.env[key]) {
+    if (
+      !process.env[key] &&
+      !(process.env.SECRET_BACKEND === 'aws-ssm' && ssmManagedSecrets.has(key))
+    ) {
       errors.push(`Missing required environment variable: ${key}`)
     }
   }
@@ -246,17 +277,6 @@ function validateKeypairNetworkMatch(
   }
 }
 
-/** Parse `CORS_ORIGINS` / `ALLOWED_ORIGINS` (comma-separated or `*`). */
-
-function parseCorsOrigins(): string[] | '*' {
-  const raw = (process.env.CORS_ORIGINS ?? process.env.ALLOWED_ORIGINS)?.trim()
-  if (!raw || raw === '*') return '*'
-  return raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-}
-
 function parseByteLimit(value: string | undefined, fallback: string): string {
   return value && /^\d+(kb|mb|b)?$/i.test(value) ? value : fallback
 }
@@ -304,7 +324,6 @@ logger.info(`🌐 Active Stellar network: ${stellarNetwork.toUpperCase()}`)
 logger.info(`   RPC URL: ${stellarRpcUrl}`)
 logger.info(`   Explorer: ${STELLAR_EXPLORER_URLS[stellarNetwork]}`)
 
-const corsOrigins = parseCorsOrigins()
 const bodySizeLimit = parseByteLimit(
   process.env.BODY_SIZE_LIMIT ?? process.env.BODY_LIMIT_JSON,
   '64kb'
@@ -313,6 +332,22 @@ const bodySizeLimit = parseByteLimit(
 // ── Typed NODE_ENV ─────────────────────────────────────────────────────────
 type NodeEnv = 'development' | 'staging' | 'production' | 'test'
 const nodeEnv = process.env.NODE_ENV as NodeEnv
+
+const marketVolatilityCircuitBreaker = {
+  enabled: process.env.MARKET_VOLATILITY_BREAKER_ENABLED !== 'false',
+  thresholdPct: Number(
+    process.env.MARKET_VOLATILITY_BREAKER_THRESHOLD_PCT ?? '75'
+  ),
+}
+
+if (
+  !Number.isFinite(marketVolatilityCircuitBreaker.thresholdPct) ||
+  marketVolatilityCircuitBreaker.thresholdPct <= 0
+) {
+  throw new Error(
+    'MARKET_VOLATILITY_BREAKER_THRESHOLD_PCT must be a finite number greater than 0'
+  )
+}
 
 export const config = {
   port: parseInt(process.env.PORT || '3001'),
@@ -349,6 +384,10 @@ export const config = {
      * or GitHub Actions secrets — never commit the raw value.
      */
     seed: requireEnv('JWT_SEED'),
+    previousSeeds: (process.env.JWT_PREVIOUS_SEEDS || '')
+      .split(',')
+      .map((seed) => seed.trim())
+      .filter(Boolean),
     session_ttl_hours: parseInt(process.env.JWT_SESSION_TTL_HOURS || '24'),
     nonce_ttl_ms: parseInt(process.env.JWT_NONCE_TTL_MS || '300000'),
     interval_ms: parseInt(process.env.JWT_CLEANUP_INTERVAL_MS || '86400000'),
@@ -360,11 +399,13 @@ export const config = {
      * HashiCorp Vault — never commit the raw value.
      */
     walletEncryptionKey: process.env.WALLET_ENCRYPTION_KEY || '',
-    cors: {
-      origins: corsOrigins,
-    },
-    /** Used by `corsandbody` — empty when wildcard (non-production allows all origins). */
-    allowedOrigins: corsOrigins === '*' ? [] : corsOrigins,
+    /**
+     * CORS origin allowlist is deliberately NOT parsed here. It is owned by
+     * `src/config/cors.ts` (#471), which normalises origins, handles subdomain
+     * wildcards, and decides environment strictness. Two parsers for one setting
+     * is how the previous implementation ended up enforcing a variable the env
+     * files never set.
+     */
     bodySizeLimit,
     bodyLimits: {
       json: parseByteLimit(process.env.BODY_LIMIT_JSON, bodySizeLimit),
@@ -392,6 +433,45 @@ export const config = {
     internalRateLimit: {
       windowMs: parseInt(process.env.INTERNAL_RATE_LIMIT_WINDOW_MS || '60000'),
       max: parseInt(process.env.INTERNAL_RATE_LIMIT_MAX || '500'),
+    },
+    /**
+     * Anonymous traffic (#473) — unauthenticated callers to the public API.
+     * Deliberately far stricter than the authenticated tier: an anonymous
+     * request has no proven identity, so the budget exists to slow enumeration
+     * and scraping rather than to accommodate legitimate use. The split only
+     * works if it is enforced on *both* sides — if the authenticated tier were
+     * as tight, every user behind one corporate NAT would exhaust the shared
+     * per-IP budget, and the limiter would push load onto the login endpoint.
+     */
+    anonymousRateLimit: {
+      windowMs: parseInt(
+        process.env.ANONYMOUS_RATE_LIMIT_WINDOW_MS || '900000'
+      ),
+      max: parseInt(process.env.ANONYMOUS_RATE_LIMIT_MAX || '60'),
+    },
+    /**
+     * Authenticated traffic (#473) — keyed per principal (see principalKey in
+     * src/middleware/rateLimiter.ts), so this is a per-user or per-API-key
+     * allowance rather than a per-IP one.
+     */
+    authenticatedRateLimit: {
+      windowMs: parseInt(
+        process.env.AUTHENTICATED_RATE_LIMIT_WINDOW_MS || '900000'
+      ),
+      max: parseInt(process.env.AUTHENTICATED_RATE_LIMIT_MAX || '600'),
+    },
+    /**
+     * Sensitive operations (#473) — money movement, credential changes and
+     * anything else where one request has irreversible consequences. Applied
+     * per-endpoint on top of the caller's normal budget, not instead of it:
+     * a tight limit here should throttle the risky action, not the reads the
+     * user does around it.
+     */
+    sensitiveRateLimit: {
+      windowMs: parseInt(
+        process.env.SENSITIVE_RATE_LIMIT_WINDOW_MS || '900000'
+      ),
+      max: parseInt(process.env.SENSITIVE_RATE_LIMIT_MAX || '10'),
     },
     /**
      * Portfolio optimizer (#322) — the only genuinely CPU-bound endpoint in the
@@ -441,6 +521,33 @@ export const config = {
     twilioSid: process.env.TWILIO_ACCOUNT_SID || '',
     twilioToken: process.env.TWILIO_AUTH_TOKEN || '',
     fromNumber: process.env.WHATSAPP_FROM || '',
+  },
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+    webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
+    apiUrl: process.env.TELEGRAM_API_URL || 'https://api.telegram.org',
+  },
+  messaging: {
+    maxRetries: parseInt(process.env.MESSAGING_MAX_RETRIES || '3'),
+    baseDelayMs: parseInt(
+      process.env.MESSAGING_BASE_DELAY_MS ||
+        process.env.MESSAGING_RETRY_BASE_DELAY_MS ||
+        '1000'
+    ),
+    maxDelayMs: parseInt(
+      process.env.MESSAGING_MAX_DELAY_MS ||
+        process.env.MESSAGING_RETRY_MAX_DELAY_MS ||
+        '30000'
+    ),
+    retryIntervalMs: parseInt(
+      process.env.MESSAGING_RETRY_INTERVAL_MS ||
+        process.env.MESSAGING_SWEEP_INTERVAL_MS ||
+        '60000'
+    ),
+    fallbackEnabled: process.env.MESSAGING_FALLBACK_ENABLED !== 'false',
+    dlqAlertThreshold: parseInt(
+      process.env.MESSAGING_DLQ_ALERT_THRESHOLD || '5'
+    ),
   },
   transcription: {
     provider: process.env.TRANSCRIPTION_PROVIDER || 'openai',
@@ -557,14 +664,41 @@ export const config = {
     userEventsMaxPerUser: parseInt(
       process.env.USER_EVENT_STREAM_MAX_PER_USER || '5000'
     ),
+    /**
+     * Admin audit log retention (#682). Preserved during user-level data erasure,
+     * but bound to a maximum lifecycle under data-minimization policies.
+     * Default: 365 days.
+     */
+    adminAuditLogsDays: parseInt(
+      process.env.RETENTION_ADMIN_AUDIT_LOGS_DAYS || '365'
+    ),
+    /**
+     * Legal hold override (#682). When true, all admin audit log retention purges
+     * are completely frozen to preserve evidence during regulatory reviews or litigation.
+     */
+    adminAuditLegalHold: process.env.ADMIN_AUDIT_LEGAL_HOLD === 'true',
     intervalMs: parseInt(process.env.RETENTION_INTERVAL_MS || '86400000'),
   },
   protocolRisk: {
     intervalMs: parseInt(process.env.PROTOCOL_RISK_INTERVAL_MS || '21600000'),
+    // #529 — when true, a ProtocolRiskMetadataEntry past nextReviewDueAt is
+    // auto-downgraded to dataConfidence: UNVERIFIED. Default off (flag-only):
+    // stale entries are surfaced but not silently altered.
+    staleAutoDowngrade:
+      process.env.PROTOCOL_RISK_STALE_AUTO_DOWNGRADE === 'true',
+    // #621 — points subtracted from a protocol's score while its metadata is
+    // past nextReviewDueAt, and how often the staleness check pages.
+    stalePenalty: parseInt(
+      process.env.PROTOCOL_RISK_STALE_SCORE_PENALTY || '20'
+    ),
+    stalenessIntervalMs: parseInt(
+      process.env.PROTOCOL_RISK_STALENESS_INTERVAL_MS || '3600000'
+    ),
   },
   portfolioRisk: {
     intervalMs: parseInt(process.env.PORTFOLIO_RISK_INTERVAL_MS || '21600000'),
   },
+  marketVolatilityCircuitBreaker,
   alertRules: {
     intervalMs: parseInt(process.env.ALERT_RULES_INTERVAL_MS || '60000'),
   },
@@ -608,6 +742,37 @@ export const config = {
     payoutIntervalMs: parseInt(
       process.env.REFERRAL_PAYOUT_INTERVAL_MS || '120000'
     ),
+    // #619 — fraud scoring is config-driven so thresholds can be tuned from
+    // the calibration report without a deploy.
+    fraud: {
+      blockScore: parseInt(process.env.REFERRAL_FRAUD_BLOCK_SCORE || '100'),
+      reviewScore: parseInt(process.env.REFERRAL_FRAUD_REVIEW_SCORE || '80'),
+      weights: {
+        duplicateWallet: parseInt(
+          process.env.REFERRAL_FRAUD_WEIGHT_DUPLICATE_WALLET || '100'
+        ),
+        duplicateEmail: parseInt(
+          process.env.REFERRAL_FRAUD_WEIGHT_DUPLICATE_EMAIL || '50'
+        ),
+        duplicatePhone: parseInt(
+          process.env.REFERRAL_FRAUD_WEIGHT_DUPLICATE_PHONE || '50'
+        ),
+        sameIp: parseInt(process.env.REFERRAL_FRAUD_WEIGHT_SAME_IP || '40'),
+        velocity: parseInt(process.env.REFERRAL_FRAUD_WEIGHT_VELOCITY || '30'),
+        rapidActivation: parseInt(
+          process.env.REFERRAL_FRAUD_WEIGHT_RAPID_ACTIVATION || '40'
+        ),
+      },
+      velocityCount: parseInt(process.env.REFERRAL_FRAUD_VELOCITY_COUNT || '5'),
+      rapidActivationCount: parseInt(
+        process.env.REFERRAL_FRAUD_RAPID_ACTIVATION_COUNT || '3'
+      ),
+      // Calibration report: minimum share of flagged reviews that ended in a
+      // rejection before the suggested review threshold is considered tuned.
+      targetPrecision: parseFloat(
+        process.env.REFERRAL_FRAUD_TARGET_PRECISION || '0.7'
+      ),
+    },
   },
   recurringDeposits: {
     intervalMs: parseInt(
@@ -662,6 +827,114 @@ export const config = {
     expirySweepIntervalMs: parseInt(
       process.env.APPROVAL_EXPIRY_SWEEP_INTERVAL_MS || '60000'
     ),
+  },
+  /**
+   * Borrow-against-collateral credit line (#532) — the platform's lending book.
+   *
+   * The controlling relationship is:
+   *
+   *     maxLtv  <  liquidationLtvThreshold  <  underlyingProtocolLtv
+   *
+   * `maxLtv` is the hard ceiling at origination. `liquidationLtvThreshold` is
+   * the line at which the protective sale fires, and it must sit BELOW the
+   * underlying protocol's own liquidation threshold so a forced sale happens
+   * while the platform still holds unimpaired collateral. The gap between the
+   * two is the platform's own risk buffer — if the underlying market seizes
+   * collateral first, the loan is already underwater and the shortfall becomes
+   * platform bad debt. That buffer is why `maxLtv` is deliberately well under
+   * the threshold rather than just under it.
+   *
+   * Defaults are the *conservative* end of every range. Raising any of them is
+   * a risk decision that has to be re-derived against the underlying protocol's
+   * live parameters, not a config tweak; see docs/LENDING.md.
+   */
+  lending: {
+    /** Fraction of collateral value a user may borrow at origination, in (0,1). */
+    maxLtv: parseFloat(process.env.LENDING_MAX_LTV || '0.5'),
+    /** Live LTV at/above which the protective sale fires, in (0,1]. */
+    liquidationLtvThreshold: parseFloat(
+      process.env.LENDING_LIQUIDATION_LTV || '0.75'
+    ),
+    /**
+     * LTV the partial liquidation restores. Below the threshold with room for
+     * the next accrual cycle, so a healthy-but-close loan is corrected once
+     * rather than every tick.
+     */
+    liquidationTargetLtv: parseFloat(
+      process.env.LENDING_LIQUIDATION_TARGET_LTV || '0.6'
+    ),
+    /**
+     * Hard ceiling on the liquidation threshold, expressed as a fraction of
+     * the underlying protocol's own liquidation threshold. Enforced at load:
+     * no configuration can talk the platform past the point where the
+     * underlying market liquidates before we do.
+     */
+    maxUnderlyingThresholdFraction: parseFloat(
+      process.env.LENDING_MAX_UNDERLYING_THRESHOLD_FRACTION || '0.8'
+    ),
+    /**
+     * Fallback when the underlying protocol publishes no borrowApy. Fail-safe
+     * in the conservative direction: a higher fallback rate means the borrower
+     * is charged more, never that the platform lends more.
+     */
+    fallbackBorrowApy: parseFloat(
+      process.env.LENDING_FALLBACK_BORROW_APY || '8'
+    ),
+    /** Platform margin added on top of the underlying borrowApy, in percent. */
+    platformSpreadApy: parseFloat(
+      process.env.LENDING_PLATFORM_SPREAD_APY || '3'
+    ),
+    /** Smallest collateral value worth lending against, in stablecoin units. */
+    minCollateralValue: parseFloat(
+      process.env.LENDING_MIN_COLLATERAL_VALUE || '100'
+    ),
+    /** Smallest principal that may be originated, in stablecoin units. */
+    minPrincipal: parseFloat(process.env.LENDING_MIN_PRINCIPAL || '10'),
+    /** Ceiling on a single loan, in stablecoin units. */
+    maxPrincipal: parseFloat(process.env.LENDING_MAX_PRINCIPAL || '50000'),
+    /**
+     * Origination above this principal is routed through the approval-workflow
+     * co-signer gate (a BORROW-policy approval request) before any collateral
+     * is locked or any stablecoin moves. Independent of the per-user
+     * ApprovalPolicy threshold, which is a user-configured control.
+     */
+    approvalThreshold: parseFloat(
+      process.env.LENDING_APPROVAL_THRESHOLD || '10000'
+    ),
+    /** How often interest is accrued onto outstanding loans. */
+    accrualIntervalMs: parseInt(
+      process.env.LENDING_ACCRUAL_INTERVAL_MS || '3600000'
+    ),
+    /** How often the scheduled liquidation monitor runs. */
+    liquidationCheckIntervalMs: parseInt(
+      process.env.LENDING_LIQUIDATION_CHECK_INTERVAL_MS || '3600000'
+    ),
+    /**
+     * Ceiling on the share of a position's collateral a single liquidation
+     * may sell. Below 1 the sale is necessarily partial; at 1 a sale that
+     * cannot restore a safe LTV is free to exhaust the position and record the
+     * remainder as bad debt rather than nibbling at it forever.
+     */
+    maxCollateralFractionSold: parseFloat(
+      process.env.LENDING_MAX_COLLATERAL_FRACTION_SOLD || '1'
+    ),
+  },
+  protectionFund: {
+    /** Fraction of platform revenue skimmed into the fund, in [0,1]. Off by default. */
+    revenueSkimFraction: parseFloat(
+      process.env.PROTECTION_FUND_REVENUE_SKIM_FRACTION || '0'
+    ),
+    /** Per-user coverage cap in stablecoin units. */
+    perUserCoverageCap: parseFloat(
+      process.env.PROTECTION_FUND_PER_USER_CAP || '10000'
+    ),
+    /** Minimum hold duration (ms) before a position is eligible for coverage. */
+    minHoldDurationMs: parseInt(
+      process.env.PROTECTION_FUND_MIN_HOLD_DURATION_MS ||
+        String(7 * 24 * 60 * 60 * 1000)
+    ),
+    /** Default asset symbol for the fund. */
+    defaultAssetSymbol: process.env.PROTECTION_FUND_DEFAULT_ASSET || 'USDC',
   },
   outbox: {
     dispatchIntervalMs: parseInt(

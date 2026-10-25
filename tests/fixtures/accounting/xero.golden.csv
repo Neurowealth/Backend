@@ -1,0 +1,6 @@
+Date,Amount,Payee,Description,Reference,Category
+2026-01-02,999.25,NeuroWealth,"DEPOSIT - Aave, V3",USDC,Transfer In
+2026-01-03,-250.50,NeuroWealth,WITHDRAWAL,USDC,Transfer Out
+2026-01-04,12.35,NeuroWealth,"YIELD_CLAIM - Yield ""bonus""",USDC,Interest Income
+2026-02-01,0.50,NeuroWealth,DEPOSIT,BTC,Transfer In
+2026-02-02,0.00,NeuroWealth,REBALANCE,USDC,Transfer
