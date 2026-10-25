@@ -168,6 +168,52 @@ describe('Logger PII and Sensitive Data Scrubbing (#666)', () => {
       const scrubbedCircular = scrubPayload(circular)
       expect(scrubbedCircular.self).toBe('[Circular]')
     })
+
+    it('handles circular arrays without overflowing the stack', () => {
+      const arr: any[] = ['alice@domain.org']
+      arr.push(arr)
+      const scrubbed = scrubPayload(arr)
+      expect(scrubbed[0]).toBe('***@domain.org')
+      expect(scrubbed[1]).toBe('[Circular]')
+    })
+
+    it('scrubs shared (non-circular) references instead of marking them circular', () => {
+      const headers = { authorization: 'Bearer shared-token', host: 'api' }
+      const scrubbed = scrubPayload({ first: headers, second: headers })
+      expect(scrubbed.first).toEqual({
+        authorization: '[REDACTED]',
+        host: 'api',
+      })
+      expect(scrubbed.second).toEqual({
+        authorization: '[REDACTED]',
+        host: 'api',
+      })
+    })
+
+    it('redacts API-key and private-key style keys at any depth', () => {
+      const scrubbed = scrubPayload({
+        req: {
+          headers: {
+            'x-api-key': 'live-api-key-123',
+            'X-Api-Key': 'live-api-key-456',
+          },
+          body: {
+            apiKey: 'k1',
+            api_key: 'k2',
+            privateKey: 'pk',
+            passphrase: 'p',
+          },
+        },
+      })
+      expect(scrubbed.req.headers['x-api-key']).toBe('[REDACTED]')
+      expect(scrubbed.req.headers['X-Api-Key']).toBe('[REDACTED]')
+      expect(scrubbed.req.body).toEqual({
+        apiKey: '[REDACTED]',
+        api_key: '[REDACTED]',
+        privateKey: '[REDACTED]',
+        passphrase: '[REDACTED]',
+      })
+    })
   })
 
   describe('Winston logger scrubbing pipeline and acceptance criteria', () => {
@@ -252,6 +298,37 @@ describe('Logger PII and Sensitive Data Scrubbing (#666)', () => {
       expect(capturedLogs[0].secret).toBe('[REDACTED]')
       expect(capturedLogs[0].message).toContain('***@sample.org')
       expect(capturedLogs[0].message).toContain('***-***-****')
+    })
+
+    it('redacts a nested authorization header and cookies in request metadata (#649)', () => {
+      const bearer = 'Bearer eyJhbGciOiJIUzI1NiJ9.nested-secret-jwt'
+      testLogger.info('GET /api/portfolio', {
+        request: {
+          method: 'GET',
+          headers: {
+            Authorization: bearer,
+            Cookie: 'sid=nested-session-cookie',
+            'user-agent': 'jest',
+          },
+          user: { profile: { settings: { token: 'deep-user-token' } } },
+        },
+        responses: [{ headers: { 'set-cookie': ['sid=array-cookie'] } }],
+      })
+
+      expect(capturedLogs).toHaveLength(1)
+      const logString = JSON.stringify(capturedLogs[0])
+
+      expect(logString).not.toContain('nested-secret-jwt')
+      expect(logString).not.toContain('nested-session-cookie')
+      expect(logString).not.toContain('deep-user-token')
+      expect(logString).not.toContain('array-cookie')
+
+      const { request, responses } = capturedLogs[0]
+      expect(request.headers.Authorization).toBe('[REDACTED]')
+      expect(request.headers.Cookie).toBe('[REDACTED]')
+      expect(request.headers['user-agent']).toBe('jest')
+      expect(request.user.profile.settings.token).toBe('[REDACTED]')
+      expect(responses[0].headers['set-cookie']).toBe('[REDACTED]')
     })
 
     it('scrubs PII when using child loggers and background job logger', () => {

@@ -25,6 +25,12 @@ export const DENY_LIST_KEYS = [
   'token',
   'authorization',
   'cookie',
+  'apikey',
+  'api_key',
+  'api-key',
+  'privatekey',
+  'private_key',
+  'passphrase',
 ]
 
 // PII & sensitive patterns to redact in string payloads
@@ -125,6 +131,8 @@ function redactSensitiveData(message: string): string {
 
 /**
  * Deep recursive scrubbing for nested metadata objects and payloads.
+ * `seen` tracks only the current ancestor path, so shared (non-circular)
+ * references are scrubbed normally and only true cycles become '[Circular]'.
  */
 export function scrubPayload<T>(value: T, seen = new WeakSet()): T {
   if (value === null || value === undefined) {
@@ -156,14 +164,18 @@ export function scrubPayload<T>(value: T, seen = new WeakSet()): T {
     return scrubbedErr
   }
 
+  if (typeof value === 'object' && seen.has(value as object)) {
+    return '[Circular]' as unknown as T
+  }
+
   if (Array.isArray(value)) {
-    return value.map((item) => scrubPayload(item, seen)) as unknown as T
+    seen.add(value)
+    const scrubbedArr = value.map((item) => scrubPayload(item, seen))
+    seen.delete(value)
+    return scrubbedArr as unknown as T
   }
 
   if (typeof value === 'object') {
-    if (seen.has(value as object)) {
-      return '[Circular]' as unknown as T
-    }
     seen.add(value as object)
 
     const scrubbedObj: Record<string, any> = {}
@@ -196,6 +208,7 @@ export function scrubPayload<T>(value: T, seen = new WeakSet()): T {
         scrubbedObj[k] = scrubPayload(v, seen)
       }
     }
+    seen.delete(value as object)
     return scrubbedObj as unknown as T
   }
 
