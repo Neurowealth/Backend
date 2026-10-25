@@ -16,6 +16,8 @@ import {
   MS_PER_YEAR,
   accruedInterest,
   applyRepayment,
+  outstandingBalanceExact,
+  MoneyDecimal,
   currentLtv,
   isLiquidationTriggered,
   isWithinLtvCap,
@@ -26,6 +28,7 @@ import {
   resolveInterestRateApy,
   worstCaseShortfall,
 } from '../../../src/lending/risk'
+import { Prisma } from '@prisma/client'
 
 const NOW = new Date('2026-06-01T00:00:00.000Z')
 const YEAR_AGO = new Date(NOW.getTime() - MS_PER_YEAR)
@@ -314,10 +317,10 @@ describe('src/lending/risk — applyRepayment', () => {
       interestAccrued: 50,
       amount: 30,
     })
-    expect(split.toInterest).toBe(30)
-    expect(split.toPrincipal).toBe(0)
-    expect(split.remainingInterest).toBe(20)
-    expect(split.remainingPrincipal).toBe(1_000)
+    expect(split.toInterest.toString()).toBe('30')
+    expect(split.toPrincipal.toString()).toBe('0')
+    expect(split.remainingInterest.toString()).toBe('20')
+    expect(split.remainingPrincipal.toString()).toBe('1000')
     expect(split.settled).toBe(false)
   })
 
@@ -327,9 +330,9 @@ describe('src/lending/risk — applyRepayment', () => {
       interestAccrued: 20,
       amount: 320,
     })
-    expect(split.toInterest).toBe(20)
-    expect(split.toPrincipal).toBe(300)
-    expect(split.remainingPrincipal).toBe(700)
+    expect(split.toInterest.toString()).toBe('20')
+    expect(split.toPrincipal.toString()).toBe('300')
+    expect(split.remainingPrincipal.toString()).toBe('700')
   })
 
   it('settles on an exact payoff', () => {
@@ -339,8 +342,8 @@ describe('src/lending/risk — applyRepayment', () => {
       amount: 1_020,
     })
     expect(split.settled).toBe(true)
-    expect(split.remainingPrincipal).toBe(0)
-    expect(split.remainingInterest).toBe(0)
+    expect(split.remainingPrincipal.isZero()).toBe(true)
+    expect(split.remainingInterest.isZero()).toBe(true)
   })
 
   it('never credits more than is owed on an overpayment', () => {
@@ -351,9 +354,9 @@ describe('src/lending/risk — applyRepayment', () => {
       interestAccrued: 20,
       amount: 5_000,
     })
-    expect(split.applied).toBe(1_020)
-    expect(split.remainingPrincipal).toBe(0)
-    expect(split.remainingInterest).toBe(0)
+    expect(split.applied.toString()).toBe('1020')
+    expect(split.remainingPrincipal.isZero()).toBe(true)
+    expect(split.remainingInterest.isZero()).toBe(true)
   })
 
   it('treats a zero or negative amount as a no-op', () => {
@@ -362,8 +365,117 @@ describe('src/lending/risk — applyRepayment', () => {
       interestAccrued: 20,
       amount: -5,
     })
-    expect(split.applied).toBe(0)
-    expect(split.remainingPrincipal).toBe(1_000)
+    expect(split.applied.isZero()).toBe(true)
+    expect(split.remainingPrincipal.toString()).toBe('1000')
+  })
+
+  // #662 — feed each split's remainders into the next repayment, the way
+  // applyConfirmedRepayment persists and re-reads them.
+  function repayInParts(
+    start: { principal: string; interestAccrued: string },
+    amounts: string[]
+  ) {
+    let principal: Prisma.Decimal.Value = start.principal
+    let interestAccrued: Prisma.Decimal.Value = start.interestAccrued
+    let split = applyRepayment({ principal, interestAccrued, amount: 0 })
+    for (const amount of amounts) {
+      split = applyRepayment({ principal, interestAccrued, amount })
+      principal = split.remainingPrincipal
+      interestAccrued = split.remainingInterest
+    }
+    return split
+  }
+
+  it('settles exactly after ten 0.1 repayments on a 1.0 loan (float leaves 1.4e-16 dust)', () => {
+    // Float arithmetic: 1 - 0.1 x 10 = 1.3877787807814457e-16, which kept
+    // the loan ACTIVE with dust under the previous implementation.
+    let floatRemaining = 1
+    for (let i = 0; i < 10; i++) floatRemaining -= 0.1
+    expect(floatRemaining).toBeGreaterThan(0)
+
+    const split = repayInParts(
+      { principal: '1', interestAccrued: '0' },
+      Array(10).fill('0.1')
+    )
+    expect(split.settled).toBe(true)
+    expect(split.remainingPrincipal.toString()).toBe('0')
+  })
+
+  it('does not settle when a single base unit (1e-18) is still owed', () => {
+    const split = repayInParts(
+      { principal: '1', interestAccrued: '0.000000000000000001' },
+      Array(10).fill('0.1')
+    )
+    // Under the old 1e-9 epsilon this read as settled while debt remained.
+    // Interest is paid first, so the last base unit is left on principal.
+    expect(split.settled).toBe(false)
+    expect(split.remainingInterest.isZero()).toBe(true)
+    expect(split.remainingPrincipal.toString()).toBe('1e-18')
+  })
+
+  it('keeps full 18dp precision on large balances across partial repayments', () => {
+    const split = repayInParts(
+      {
+        principal: '123456789.123456789123456789',
+        interestAccrued: '0.333333333333333333',
+      },
+      ['0.333333333333333333', '23456789.123456789123456789', '0.1']
+    )
+    expect(split.remainingInterest.isZero()).toBe(true)
+    expect(split.remainingPrincipal.toFixed(18)).toBe(
+      '99999999.900000000000000000'
+    )
+    expect(split.settled).toBe(false)
+
+    const final = repayInParts(
+      {
+        principal: split.remainingPrincipal.toString(),
+        interestAccrued: '0',
+      },
+      ['99999999.9']
+    )
+    expect(final.settled).toBe(true)
+  })
+
+  it('conserves value: every repayment lands in exactly one bucket', () => {
+    const start = {
+      principal: '1000.123456789012345678',
+      interestAccrued: '7.777777777777777777',
+    }
+    const amounts = ['3.3', '0.000000000000000007', '250.25', '0.1', '0.2']
+    let principal: Prisma.Decimal.Value = start.principal
+    let interestAccrued: Prisma.Decimal.Value = start.interestAccrued
+    let paid = new MoneyDecimal(0)
+    for (const amount of amounts) {
+      const split = applyRepayment({ principal, interestAccrued, amount })
+      expect(split.toInterest.plus(split.toPrincipal).eq(split.applied)).toBe(
+        true
+      )
+      paid = paid.plus(split.applied)
+      principal = split.remainingPrincipal
+      interestAccrued = split.remainingInterest
+    }
+    const owedBefore = new MoneyDecimal(start.principal).plus(
+      start.interestAccrued
+    )
+    const owedAfter = new MoneyDecimal(principal).plus(interestAccrued)
+    expect(owedBefore.minus(owedAfter).eq(paid)).toBe(true)
+  })
+})
+
+describe('src/lending/risk — outstandingBalanceExact', () => {
+  it('matches the float form and settles a payoff of exactly that amount', () => {
+    const exact = outstandingBalanceExact('1000', '20', '10', YEAR_AGO, NOW)
+    expect(exact.toNumber()).toBeCloseTo(
+      outstandingBalance(1_000, 20, 10, YEAR_AGO, NOW),
+      9
+    )
+    const split = applyRepayment({
+      principal: '1000',
+      interestAccrued: exact.minus(1000),
+      amount: exact,
+    })
+    expect(split.settled).toBe(true)
   })
 })
 

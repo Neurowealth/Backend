@@ -32,7 +32,7 @@
 import { Prisma } from '@prisma/client'
 import { db } from '../db'
 import { logger } from '../utils/logger'
-import { accruedInterest } from './risk'
+import { accruedInterestExact, toMoney } from './risk'
 
 type Db = typeof db | Prisma.TransactionClient
 
@@ -43,6 +43,9 @@ export interface AccrualResult {
   interestAccruedTo: Date
   /** Interest actually written by THIS call (0 when another writer won). */
   applied: number
+  /** Exact column-scale values; use these for repayment and settlement math. */
+  principalAmountExact: Prisma.Decimal
+  interestAccruedExact: Prisma.Decimal
 }
 
 /**
@@ -75,34 +78,27 @@ export async function accrueInterest(
 
   if (!loan) throw new Error(`Loan ${loanId} not found`)
 
-  const principal = Number(loan.principalAmount)
-  const interestAccrued = Number(loan.interestAccrued)
-  const rate = Number(loan.interestRateApy)
+  const principal = toMoney(loan.principalAmount as Prisma.Decimal.Value)
+  const interestAccrued = toMoney(loan.interestAccrued as Prisma.Decimal.Value)
+  const rate = loan.interestRateApy as Prisma.Decimal.Value
   const from = loan.interestAccruedTo
 
-  const delta = accruedInterest(principal, rate, from, now)
+  const delta = accruedInterestExact(principal, rate, from, now)
+  const unchanged = {
+    loanId,
+    principalAmount: principal.toNumber(),
+    interestAccrued: interestAccrued.toNumber(),
+    interestAccruedTo: from,
+    applied: 0,
+    principalAmountExact: principal,
+    interestAccruedExact: interestAccrued,
+  }
 
   // A settled loan keeps its final figures; re-accruing it would quietly add
   // interest to a debt the user has already cleared.
-  if (loan.status !== 'ACTIVE') {
-    return {
-      loanId,
-      principalAmount: principal,
-      interestAccrued,
-      interestAccruedTo: from,
-      applied: 0,
-    }
-  }
+  if (loan.status !== 'ACTIVE') return unchanged
 
-  if (delta <= 0) {
-    return {
-      loanId,
-      principalAmount: principal,
-      interestAccrued,
-      interestAccruedTo: from,
-      applied: 0,
-    }
-  }
+  if (delta.lte(0)) return unchanged
 
   const claimed = await database.collateralLoan.updateMany({
     where: { id: loanId, status: 'ACTIVE', interestAccruedTo: from },
@@ -113,12 +109,15 @@ export async function accrueInterest(
   })
 
   if (claimed.count === 1) {
+    const newInterest = interestAccrued.plus(delta)
     return {
       loanId,
-      principalAmount: principal,
-      interestAccrued: interestAccrued + delta,
+      principalAmount: principal.toNumber(),
+      interestAccrued: newInterest.toNumber(),
       interestAccruedTo: now,
-      applied: delta,
+      applied: delta.toNumber(),
+      principalAmountExact: principal,
+      interestAccruedExact: newInterest,
     }
   }
 
@@ -137,12 +136,18 @@ export async function accrueInterest(
     interestAccruedTo: Date
   }
 
+  const winnerPrincipal = toMoney(
+    winner.principalAmount as Prisma.Decimal.Value
+  )
+  const winnerInterest = toMoney(winner.interestAccrued as Prisma.Decimal.Value)
   return {
     loanId,
-    principalAmount: Number(winner.principalAmount),
-    interestAccrued: Number(winner.interestAccrued),
+    principalAmount: winnerPrincipal.toNumber(),
+    interestAccrued: winnerInterest.toNumber(),
     interestAccruedTo: winner.interestAccruedTo,
     applied: 0,
+    principalAmountExact: winnerPrincipal,
+    interestAccruedExact: winnerInterest,
   }
 }
 
