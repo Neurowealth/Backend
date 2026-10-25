@@ -78,6 +78,10 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 3
+          # Liveness has no dependency checks; readiness follows the
+          # Liveness / Readiness Matrix in docs/DEPLOYMENT.md#health-probes.
+          # Per-check budget is HEALTH_CHECK_TIMEOUT_MS (default 1000ms),
+          # which must stay below timeoutSeconds.
           readinessProbe:
             exec:
               command:
