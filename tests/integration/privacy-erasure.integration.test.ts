@@ -21,6 +21,8 @@ const state: { requests: FakeRequest[]; events: string[] } = {
 
 jest.mock('../../src/db', () => {
   const count = () => jest.fn(async () => 0)
+  const mutate = () => jest.fn(async () => ({ count: 0 }))
+  const adminAuditLog = { count: count() }
   const tx = {
     session: { count: count() },
     position: { count: count() },
@@ -37,8 +39,22 @@ jest.mock('../../src/db', () => {
     costBasisLot: { count: count(), updateMany: jest.fn() },
     lotDisposal: { count: count(), updateMany: jest.fn() },
     portfolioAttribution: { count: count(), updateMany: jest.fn() },
-    adminAuditLog: { count: count() },
+    adminAuditLog,
     referralConversion: { count: count() },
+    idempotencyRecord: { deleteMany: mutate() },
+    custodialWallet: { deleteMany: mutate() },
+    alertAck: { deleteMany: mutate() },
+    notificationPreferenceAuditLog: { deleteMany: mutate() },
+    webAuthnChallenge: { deleteMany: mutate() },
+    messageDelivery: { deleteMany: mutate() },
+    userEvent: { deleteMany: mutate() },
+    userEventSequence: { deleteMany: mutate() },
+    loanLiquidationEvent: { updateMany: mutate() },
+    platformBadDebt: { updateMany: mutate() },
+    coverageClaim: { updateMany: mutate() },
+    outboxOp: { updateMany: mutate() },
+    userDataAudit: { updateMany: mutate() },
+    ticketMessage: { updateMany: mutate() },
     erasureRequest: {
       update: jest.fn(async ({ where, data }: any) => {
         const row = find(where.id)
@@ -70,7 +86,15 @@ jest.mock('../../src/db', () => {
         })),
         delete: tx.user.delete,
       },
-      adminAuditLog: { create: jest.fn(async () => ({})), count: count() },
+      adminAuditLog: {
+        create: jest.fn(async () => ({})),
+        get count() {
+          return tx.adminAuditLog.count
+        },
+        set count(value: jest.Mock) {
+          tx.adminAuditLog.count = value
+        },
+      },
       erasureRequest: {
         findFirst: jest.fn(
           async ({ where }: any) =>
@@ -169,6 +193,9 @@ describe('privacy erasure lifecycle guardrails', () => {
     state.requests = []
     state.events = []
     jest.clearAllMocks()
+    jest.requireMock('../../src/db').default.adminAuditLog.count = jest.fn(
+      async () => 0
+    )
   })
 
   it('rejects approval by the admin who requested the erasure', async () => {
@@ -323,6 +350,7 @@ describe('privacy erasure lifecycle guardrails', () => {
       .post(`/admin/erasure/requests/${id}/execute`)
       .set(as('carol'))
       .send({ confirm: `DELETE ${USER_ID}` })
+      .then((result) => result)
 
     await started
     expect(state.requests[0].status).toBe('PROCESSING')

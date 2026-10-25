@@ -1,5 +1,3 @@
-DROP INDEX IF EXISTS "erasure_requests_user_active_key";
-
 -- Restore the original required cascading user relation.
 ALTER TABLE "erasure_requests"
   DROP CONSTRAINT "erasure_requests_userId_fkey";
