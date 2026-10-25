@@ -1,6 +1,3 @@
--- AlterEnum
-ALTER TYPE "ErasureRequestStatus" ADD VALUE IF NOT EXISTS 'PROCESSING';
-
 -- Preserve the compliance request record when its user is erased.
 ALTER TABLE "erasure_requests"
   DROP CONSTRAINT "erasure_requests_userId_fkey";

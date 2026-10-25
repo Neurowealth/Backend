@@ -101,6 +101,7 @@ function toRecord(row: {
 export async function enqueueOutboxOp(
   tx: DbClient,
   params: {
+    id?: string
     idempotencyKey: string
     userId: string
     kind: OutboxOpKind
@@ -121,6 +122,7 @@ export async function enqueueOutboxOp(
 
   const created = await tx.outboxOp.create({
     data: {
+      ...(params.id ? { id: params.id } : {}),
       idempotencyKey: params.idempotencyKey,
       userId: params.userId,
       kind: params.kind,

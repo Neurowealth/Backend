@@ -440,6 +440,7 @@ export async function executeErasure(
             completedAt: new Date(),
           },
         })
+
         return {
           userId,
           walletAddress: user.walletAddress,
