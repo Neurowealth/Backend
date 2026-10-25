@@ -104,6 +104,7 @@ jobs:
           exit 1
         env:
           NODE_ENV: test
+          DATABASE_URL: postgresql://user:pass@localhost:5432/db
           # This job boots the real server, and startEventListener() calls
           # getLatestLedger() with no client timeout before app.listen(). Point
           # it at a reachable RPC (as production-smoke.yml does) so an

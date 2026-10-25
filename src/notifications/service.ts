@@ -245,7 +245,9 @@ export function generateUnsubscribeToken(userId: string): string {
   const secret = getUnsubscribeSecret()
   const timestamp = Date.now()
   const payload = `${userId}:${timestamp}`
-  const signature = createHmac('sha256', secret).update(payload).digest('base64url')
+  const signature = createHmac('sha256', secret)
+    .update(payload)
+    .digest('base64url')
   return `${timestamp}.${signature}`
 }
 
@@ -390,11 +392,17 @@ export async function getDeliveryStatus(
 
   const byKey = new Map<string, NotificationDeliveryStatus>()
 
-  const keyFor = (channel: string, category: string) => `${channel}::${category}`
+  const keyFor = (channel: string, category: string) =>
+    `${channel}::${category}`
 
   const toChannel = (raw: string): NotificationChannel => {
     const lower = raw.toLowerCase()
-    if (lower === 'telegram' || lower === 'whatsapp' || lower === 'email' || lower === 'sms')
+    if (
+      lower === 'telegram' ||
+      lower === 'whatsapp' ||
+      lower === 'email' ||
+      lower === 'sms'
+    )
       return lower
     return 'email'
   }
@@ -428,8 +436,7 @@ export async function getDeliveryStatus(
     const key = keyFor(channel, category)
     const existing = byKey.get(key)
     const delivered = msg.status === 'DELIVERED' && msg.deliveredAt
-    const failed =
-      msg.status === 'FAILED' || msg.status === 'DEAD_LETTER'
+    const failed = msg.status === 'FAILED' || msg.status === 'DEAD_LETTER'
     if (!existing) {
       byKey.set(key, {
         userId,
@@ -441,7 +448,11 @@ export async function getDeliveryStatus(
         lastError: failed ? (msg.lastError ?? undefined) : undefined,
       })
     } else {
-      if (delivered && (!existing.lastDeliveredAt || msg.deliveredAt! > existing.lastDeliveredAt)) {
+      if (
+        delivered &&
+        (!existing.lastDeliveredAt ||
+          msg.deliveredAt! > existing.lastDeliveredAt)
+      ) {
         existing.lastDeliveredAt = msg.deliveredAt as Date
       }
       if (failed) {

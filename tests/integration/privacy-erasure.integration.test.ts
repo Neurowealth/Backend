@@ -21,6 +21,8 @@ const state: { requests: FakeRequest[]; events: string[] } = {
 
 jest.mock('../../src/db', () => {
   const count = () => jest.fn(async () => 0)
+  const mutate = () => jest.fn(async () => ({ count: 0 }))
+  const adminAuditLog = { count: count() }
   const tx = {
     session: { count: count() },
     position: { count: count() },
@@ -37,7 +39,22 @@ jest.mock('../../src/db', () => {
     costBasisLot: { count: count(), updateMany: jest.fn() },
     lotDisposal: { count: count(), updateMany: jest.fn() },
     portfolioAttribution: { count: count(), updateMany: jest.fn() },
-    adminAuditLog: { count: count() },
+    adminAuditLog,
+    referralConversion: { count: count() },
+    idempotencyRecord: { deleteMany: mutate() },
+    custodialWallet: { deleteMany: mutate() },
+    alertAck: { deleteMany: mutate() },
+    notificationPreferenceAuditLog: { deleteMany: mutate() },
+    webAuthnChallenge: { deleteMany: mutate() },
+    messageDelivery: { deleteMany: mutate() },
+    userEvent: { deleteMany: mutate() },
+    userEventSequence: { deleteMany: mutate() },
+    loanLiquidationEvent: { updateMany: mutate() },
+    platformBadDebt: { updateMany: mutate() },
+    coverageClaim: { updateMany: mutate() },
+    outboxOp: { updateMany: mutate() },
+    userDataAudit: { updateMany: mutate() },
+    ticketMessage: { updateMany: mutate() },
     erasureRequest: {
       update: jest.fn(async ({ where, data }: any) => {
         const row = find(where.id)
@@ -69,7 +86,15 @@ jest.mock('../../src/db', () => {
         })),
         delete: tx.user.delete,
       },
-      adminAuditLog: { create: jest.fn(async () => ({})), count: count() },
+      adminAuditLog: {
+        create: jest.fn(async () => ({})),
+        get count() {
+          return tx.adminAuditLog.count
+        },
+        set count(value: jest.Mock) {
+          tx.adminAuditLog.count = value
+        },
+      },
       erasureRequest: {
         findFirst: jest.fn(
           async ({ where }: any) =>
@@ -168,6 +193,9 @@ describe('privacy erasure lifecycle guardrails', () => {
     state.requests = []
     state.events = []
     jest.clearAllMocks()
+    jest.requireMock('../../src/db').default.adminAuditLog.count = jest.fn(
+      async () => 0
+    )
   })
 
   it('rejects approval by the admin who requested the erasure', async () => {
@@ -232,6 +260,36 @@ describe('privacy erasure lifecycle guardrails', () => {
   it('runs the full lifecycle, revoking sessions before deleting the user', async () => {
     const id = await createApprovedRequest()
 
+    const preservedCounts = {
+      adminAuditLogs: 4,
+      referralConversionsAsOwner: 3,
+      referralConversionsAsReferred: 2,
+    }
+    const countPreservedRecords = (name: string, count: number) =>
+      jest.fn(async () => {
+        expect(state.events).not.toContain('user.delete')
+        state.events.push(`count.${name}`)
+        return count
+      })
+
+    const auditLogCount = countPreservedRecords(
+      'adminAuditLogs',
+      preservedCounts.adminAuditLogs
+    )
+    const referralOwnerCount = countPreservedRecords(
+      'referralConversionsAsOwner',
+      preservedCounts.referralConversionsAsOwner
+    )
+    const referralReferredCount = countPreservedRecords(
+      'referralConversionsAsReferred',
+      preservedCounts.referralConversionsAsReferred
+    )
+    const prisma = jest.requireMock('../../src/db').default
+    prisma.adminAuditLog.count = auditLogCount
+    prisma.referralConversion.count
+      .mockImplementationOnce(referralOwnerCount)
+      .mockImplementationOnce(referralReferredCount)
+
     const res = await request(app)
       .post(`/admin/erasure/requests/${id}/execute`)
       .set(as('carol'))
@@ -240,8 +298,18 @@ describe('privacy erasure lifecycle guardrails', () => {
     expect(res.status).toBe(200)
     expect(res.body.dryRun).toBe(false)
     expect(res.body.data.userId).toBe(USER_ID)
+    expect(res.body.data.preservedRecords).toEqual(preservedCounts)
     expect(state.requests[0].status).toBe('COMPLETED')
-    expect(state.events).toEqual(['sessions.revoked', 'user.delete'])
+    expect(auditLogCount).toHaveBeenCalledTimes(1)
+    expect(referralOwnerCount).toHaveBeenCalledTimes(1)
+    expect(referralReferredCount).toHaveBeenCalledTimes(1)
+    expect(state.events).toEqual([
+      'sessions.revoked',
+      'count.adminAuditLogs',
+      'count.referralConversionsAsOwner',
+      'count.referralConversionsAsReferred',
+      'user.delete',
+    ])
     expect(revokeAllUserSessions).toHaveBeenCalledWith(USER_ID, 'admin')
   })
 
@@ -282,6 +350,7 @@ describe('privacy erasure lifecycle guardrails', () => {
       .post(`/admin/erasure/requests/${id}/execute`)
       .set(as('carol'))
       .send({ confirm: `DELETE ${USER_ID}` })
+      .then((result) => result)
 
     await started
     expect(state.requests[0].status).toBe('PROCESSING')

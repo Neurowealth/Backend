@@ -134,13 +134,10 @@ components:
 
     TotpVerifyEnrollmentResponse:
       type: object
-      required: [enabled]
+      required: [verified]
       properties:
-        enabled:
+        verified:
           type: boolean
-        verifiedAt:
-          type: string
-          format: date-time
 
     TotpLoginVerifyRequest:
       type: object
@@ -167,25 +164,18 @@ components:
 
     TotpDisableRequest:
       type: object
-      required: [challenge, signature]
+      required: [stellarPubKey, signature, nonce]
       additionalProperties: false
       properties:
-        challenge:
+        stellarPubKey:
           type: string
-          description: Fresh wallet-signature challenge issued for this disable operation.
+          description: Wallet public key bound to the authenticated user.
         signature:
           type: string
           description: Signature over the challenge proving control of the wallet.
-
-    TotpRegenerateRecoveryCodesResponse:
-      type: object
-      required: [recoveryCodes]
-      properties:
-        recoveryCodes:
-          type: array
-          items:
-            type: string
-          description: New one-time backup codes. All previous codes are invalidated.
+        nonce:
+          type: string
+          description: Fresh challenge nonce validated by the session middleware.
 
     ExternalWalletLinkRequest:
       type: object
@@ -2199,6 +2189,54 @@ paths:
           description: Forbidden
         '404':
           description: Resource not found
+  /admin/dlq/discard:
+    post:
+      tags: [Admin]
+      operationId: discardDeadLetterEvent
+      summary: Permanently discard a dead-letter event; requires dlq:write
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, reason]
+              properties:
+                eventId: { type: string }
+                reason: { type: string, minLength: 3 }
+      responses:
+        '200': { description: Event discarded and action audited }
+        '400': { description: Missing or invalid eventId or reason }
+        '401': { description: Admin authentication required }
+        '403': { description: Missing dlq:write permission }
+        '404': { description: Event not found in the dead-letter queue }
+        '500': { description: Failed to discard event }
+  /admin/dlq/requeue:
+    post:
+      tags: [Admin]
+      operationId: requeueDeadLetterEvent
+      summary: Reset a dead-letter event for another processing attempt; requires dlq:write
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, reason]
+              properties:
+                eventId: { type: string }
+                reason: { type: string, minLength: 3 }
+      responses:
+        '200': { description: Event requeued with retryCount reset to zero }
+        '400': { description: Missing or invalid eventId or reason }
+        '401': { description: Admin authentication required }
+        '403': { description: Missing dlq:write permission }
+        '404': { description: Event not found in the dead-letter queue }
+        '500': { description: Failed to requeue event }
   /admin/referrals/fraud/queue:
     get:
       tags:
@@ -2636,6 +2674,10 @@ paths:
                 $ref: '#/components/schemas/TotpEnrollResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: User not found
+        '409':
+          description: 2FA is already enabled
 
   /sessions/2fa/verify-enrollment:
     post:
@@ -2680,30 +2722,21 @@ paths:
             schema:
               $ref: '#/components/schemas/TotpDisableRequest'
       responses:
-        '204':
+        '200':
           description: 2FA disabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [disabled] }
         '400':
           description: Invalid challenge or signature.
         '401':
           $ref: '#/components/responses/Unauthorized'
-
-  /2fa/recovery-codes/regenerate:
-    post:
-      operationId: regenerateTotpRecoveryCodes
-      summary: Regenerate TOTP recovery codes
-      description: Issues a new set of one-time backup codes and invalidates all previous codes.
-      tags: [TwoFactorAuth]
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: New recovery codes (returned once).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TotpRegenerateRecoveryCodesResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No active 2FA credential
 
   /auth/2fa/verify:
     post:
@@ -4864,81 +4897,6 @@ paths:
           description: All services ready.
         '503':
           description: One or more services not ready.
-  /admin/dlq/discard:
-    post:
-      operationId: discardDlqEvent
-      summary: Admin — permanently discard a dead-letter event
-      description: |
-        Permanently removes a DLQ entry that will never process successfully.
-        Requires `dlq:write`; the discard and reason are audited.
-      tags: [Admin]
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [eventId, reason]
-              properties:
-                eventId:
-                  type: string
-                reason:
-                  type: string
-                  minLength: 3
-      responses:
-        '200':
-          description: Event discarded.
-        '400':
-          description: Missing eventId or reason.
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          description: Missing or insufficient admin scope.
-        '404':
-          description: Event is not in the DLQ.
-        '500':
-          description: Discard failed.
-
-  /admin/dlq/requeue:
-    post:
-      operationId: requeueDlqEvent
-      summary: Admin — requeue a dead-letter event
-      description: |
-        Resets a DLQ entry to PENDING with retryCount 0 so the backoff schedule
-        restarts after the underlying cause has been fixed. Requires
-        `dlq:write`; the requeue and reason are audited.
-      tags: [Admin]
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [eventId, reason]
-              properties:
-                eventId:
-                  type: string
-                reason:
-                  type: string
-                  minLength: 3
-      responses:
-        '200':
-          description: Event requeued.
-        '400':
-          description: Missing eventId or reason.
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          description: Missing or insufficient admin scope.
-        '404':
-          description: Event is not in the DLQ.
-        '500':
-          description: Requeue failed.
-
   /admin/erasure/requests:
     get:
       tags:

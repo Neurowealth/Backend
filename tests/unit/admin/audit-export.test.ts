@@ -44,7 +44,11 @@ describe('GET /api/admin/audit/export (#682)', () => {
     res: Response,
     next: NextFunction
   ) => Promise<void>
-  let exportHandler: (req: Request, res: Response) => Promise<Response | void>
+  let exportHandler: (
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ) => unknown
 
   beforeAll(() => {
     // Find the /audit/export route layer from the router stack
@@ -169,7 +173,7 @@ describe('GET /api/admin/audit/export (#682)', () => {
     mockFindMany.mockResolvedValue(sampleLogs)
     req.query = { page: '1', limit: '10' }
 
-    await exportHandler(req as Request, res as Response)
+    await exportHandler(req as Request, res as Response, next)
 
     expect(res.status).toHaveBeenCalledWith(200)
     expect(res.json).toHaveBeenCalledWith(
@@ -225,7 +229,7 @@ describe('GET /api/admin/audit/export (#682)', () => {
       result: 'success',
     }
 
-    await exportHandler(req as Request, res as Response)
+    await exportHandler(req as Request, res as Response, next)
 
     expect(res.status).toHaveBeenCalledWith(200)
     expect(mockFindMany).toHaveBeenCalledWith(
@@ -255,7 +259,7 @@ describe('GET /api/admin/audit/export (#682)', () => {
 
     req.query = { from: 'not-a-valid-date' }
 
-    await exportHandler(req as Request, res as Response)
+    await exportHandler(req as Request, res as Response, next)
 
     expect(res.status).toHaveBeenCalledWith(400)
     expect(res.json).toHaveBeenCalledWith(
@@ -298,7 +302,7 @@ describe('GET /api/admin/audit/export (#682)', () => {
     mockFindMany.mockResolvedValue(sampleLogs)
     req.query = { format: 'csv' }
 
-    await exportHandler(req as Request, res as Response)
+    await exportHandler(req as Request, res as Response, next)
 
     expect(res.status).toHaveBeenCalledWith(200)
     expect(res.setHeader).toHaveBeenCalledWith(
@@ -340,7 +344,7 @@ describe('GET /api/admin/audit/export (#682)', () => {
     }
     req.query = query
 
-    await exportHandler(req as Request, res as Response)
+    await exportHandler(req as Request, res as Response, next)
 
     expect(res.status).toHaveBeenCalledWith(400)
     expect(mockFindMany).not.toHaveBeenCalled()
