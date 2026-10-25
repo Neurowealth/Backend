@@ -1,0 +1,6 @@
+Date,Description,Amount,Category,Asset,Fee
+2026-01-02,"DEPOSIT - Aave, V3",1000.50,Transfer In,USDC,1.25
+2026-01-03,WITHDRAWAL,-250.00,Transfer Out,USDC,0.50
+2026-01-04,"YIELD_CLAIM - Yield ""bonus""",12.35,Interest Income,USDC,0.00
+2026-02-01,DEPOSIT,0.50,Transfer In,BTC,0.00
+2026-02-02,REBALANCE,0.00,Transfer,USDC,0.00

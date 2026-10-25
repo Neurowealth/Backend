@@ -1,5 +1,11 @@
 import { TransactionType } from '@prisma/client'
-import { CsvValue } from '../../utils/csv'
+import {
+  AccountingExportTransaction,
+  csvDocument,
+  descriptionFor,
+  feeAmount,
+  signedAmount,
+} from './common'
 
 /**
  * Transaction type to accounting category mapping for QuickBooks Online.
@@ -19,6 +25,15 @@ const TRANSACTION_TYPE_TO_QBO_CATEGORY: Record<TransactionType, string> = {
   LOAN_LIQUIDATION: 'Transfer Out',
 }
 
+export const QBO_HEADERS = [
+  'Date',
+  'Description',
+  'Amount',
+  'Category',
+  'Asset',
+  'Fee',
+]
+
 export interface QboTransaction {
   date: string
   description: string
@@ -32,30 +47,16 @@ export interface QboTransaction {
  * Convert transactions to QuickBooks Online-compatible QBO format.
  * This is a simplified OFX-style format that QBO can import.
  */
-export function toQbo(
-  transactions: Array<{
-    type: TransactionType
-    amount: string
-    assetSymbol: string
-    fee?: string | null
-    createdAt: Date
-    protocolName?: string | null
-  }>
-): string {
+export function toQbo(transactions: AccountingExportTransaction[]): string {
   const qboTransactions: QboTransaction[] = transactions.map((tx) => {
     const category =
       TRANSACTION_TYPE_TO_QBO_CATEGORY[tx.type] || 'Uncategorized'
-    const amount = Number(tx.amount)
-    const fee = tx.fee ? Number(tx.fee) : 0
-
-    let description = `${tx.type}`
-    if (tx.protocolName) {
-      description += ` - ${tx.protocolName}`
-    }
+    const amount = signedAmount(tx.type, tx.amount)
+    const fee = feeAmount(tx.fee)
 
     return {
-      date: tx.createdAt.toISOString().split('T')[0],
-      description,
+      date: tx.createdAt.toISOString().split('T')[0]!,
+      description: descriptionFor(tx),
       amount: amount.toFixed(2),
       category,
       asset: tx.assetSymbol,
@@ -63,7 +64,6 @@ export function toQbo(
     }
   })
 
-  const headers = ['Date', 'Description', 'Amount', 'Category', 'Asset', 'Fee']
   const rows = qboTransactions.map((tx) => [
     tx.date,
     tx.description,
@@ -73,5 +73,5 @@ export function toQbo(
     tx.fee,
   ])
 
-  return [headers.join(','), ...rows.map((row) => row.join(','))].join('\n')
+  return csvDocument(QBO_HEADERS, rows)
 }

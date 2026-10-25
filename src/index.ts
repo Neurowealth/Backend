@@ -269,10 +269,19 @@ app.get('/health/ready', (_req, res) => {
 // existing clients keep working; they emit RFC 8594 Deprecation/Sunset headers
 // announcing the removal date. See docs/api-versioning.md for the policy.
 
-// Unversioned routes are supported for at least 6 months from this release.
-const UNVERSIONED_SUNSET = new Date(
-  Date.now() + 182 * 24 * 60 * 60 * 1000
-).toUTCString()
+// Unversioned routes are supported until a fixed, announced date. Pinning the
+// date (instead of recomputing it on every boot) means a redeploy can never
+// silently extend the lifetime of a deprecated alias.
+const DEFAULT_UNVERSIONED_SUNSET = 'Sat, 01 May 2027 00:00:00 GMT'
+function resolveUnversionedSunset(): string {
+  const configured = process.env.API_LEGACY_SUNSET?.trim()
+  if (!configured) return DEFAULT_UNVERSIONED_SUNSET
+  const parsed = new Date(configured)
+  return Number.isNaN(parsed.getTime())
+    ? DEFAULT_UNVERSIONED_SUNSET
+    : parsed.toUTCString()
+}
+const UNVERSIONED_SUNSET = resolveUnversionedSunset()
 
 // ── OpenAPI / Swagger UI ──────────────────────────────────────────────────────
 

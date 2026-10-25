@@ -48,6 +48,8 @@ tags:
     description: Alert rules and monitoring triggers (#366)
   - name: Webhooks
     description: User-scoped outbound webhook endpoints (#368)
+  - name: Accounting
+    description: Reconciled accounting exports for QBO and Xero (#669)
   - name: Net Worth
     description: Owner-private net worth and read-only external Stellar wallet links (#540)
 
@@ -1483,6 +1485,69 @@ components:
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 paths:
+  /accounting/export:
+    get:
+      tags:
+        - Accounting
+      operationId: exportAccountingData
+      summary: Download a reconciled QuickBooks Online or Xero CSV export
+      description: |
+        The generated file is parsed back and reconciled against ledger totals
+        per asset before it is returned. A mismatch blocks the download with a
+        422 and the diff summary; a partial or corrupt export is never served.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: format
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [qbo, xero-csv]
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Reconciled CSV attachment
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: private, no-store, max-age=0
+            X-Export-Row-Count:
+              schema:
+                type: integer
+            X-Export-Checksum:
+              schema:
+                type: string
+            X-Export-Reconciled:
+              schema:
+                type: string
+                example: 'true'
+          content:
+            text/csv:
+              schema:
+                type: string
+        '400':
+          description: Invalid format or date range
+        '401':
+          description: Authentication required
+        '403':
+          description: API key lacks transactions:read
+        '422':
+          description: Reconciliation failed; download blocked with the diff summary
+        '429':
+          description: Rate limit exceeded
   /sub-accounts/bulk:
     post:
       tags:
@@ -4503,6 +4568,81 @@ paths:
           description: All services ready.
         '503':
           description: One or more services not ready.
+  /admin/dlq/discard:
+    post:
+      operationId: discardDlqEvent
+      summary: Admin — permanently discard a dead-letter event
+      description: |
+        Permanently removes a DLQ entry that will never process successfully.
+        Requires `dlq:write`; the discard and reason are audited.
+      tags: [Admin]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, reason]
+              properties:
+                eventId:
+                  type: string
+                reason:
+                  type: string
+                  minLength: 3
+      responses:
+        '200':
+          description: Event discarded.
+        '400':
+          description: Missing eventId or reason.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Missing or insufficient admin scope.
+        '404':
+          description: Event is not in the DLQ.
+        '500':
+          description: Discard failed.
+
+  /admin/dlq/requeue:
+    post:
+      operationId: requeueDlqEvent
+      summary: Admin — requeue a dead-letter event
+      description: |
+        Resets a DLQ entry to PENDING with retryCount 0 so the backoff schedule
+        restarts after the underlying cause has been fixed. Requires
+        `dlq:write`; the requeue and reason are audited.
+      tags: [Admin]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, reason]
+              properties:
+                eventId:
+                  type: string
+                reason:
+                  type: string
+                  minLength: 3
+      responses:
+        '200':
+          description: Event requeued.
+        '400':
+          description: Missing eventId or reason.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Missing or insufficient admin scope.
+        '404':
+          description: Event is not in the DLQ.
+        '500':
+          description: Requeue failed.
+
   /admin/erasure/requests:
     get:
       tags:

@@ -29,7 +29,7 @@ describe('API versioning', () => {
     const res = await request(app).post('/api/auth/challenge').send({})
     expect(res.status).toBe(400)
     expect(res.headers['deprecation']).toBe('true')
-    expect(res.headers['sunset']).toBeDefined()
+    expect(res.headers['sunset']).toBe('Sat, 01 May 2027 00:00:00 GMT')
     expect(res.headers['link']).toContain('rel="successor-version"')
     expect(res.headers['link']).toContain('/api/v1/auth')
   })
