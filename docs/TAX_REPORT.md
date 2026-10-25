@@ -171,6 +171,19 @@ Money values are decimal strings. `totals` sums only fully priced disposals.
 `method` in the response is the account's `accountingMethod`, not a
 per-request-computed value.
 
+## Accounting exports (QBO / Xero)
+
+Transaction data can be downloaded through
+`GET /api/v1/accounting/export?format=qbo|xero-csv&from=<iso>&to=<iso>`.
+The exporter is not a blind serializer: every file is parsed back and
+reconciled against ledger totals per asset before it is returned. A mismatch
+blocks the download with `422` and a diff summary, because a silently dropped
+or duplicated row would corrupt the customer's books.
+
+See [ACCOUNTING_EXPORTS.md](ACCOUNTING_EXPORTS.md) for the sign conventions,
+fees, checksum/audit metadata, golden-file coverage, and the reconciliation
+gate.
+
 ## Backfill
 
 ```

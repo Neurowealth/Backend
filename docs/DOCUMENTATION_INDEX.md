@@ -9,6 +9,7 @@
 - **[IMPLEMENTATION_DETAILS.md](IMPLEMENTATION_DETAILS.md)** - Technical implementation details
 - **[API_REFERENCE.md](API_REFERENCE.md)** - Complete backend endpoint reference
 - **[2FA.md](2FA.md)** - Two-factor authentication implementation
+- **[ACCOUNTING_EXPORTS.md](ACCOUNTING_EXPORTS.md)** - QBO/Xero exports, reconciliation gate, and sign conventions
 - **[AGENT_DECISIONS.md](AGENT_DECISIONS.md)** - AI agent decision-making framework
 - **[AI_PROMPT_AND_TOOL_POLICY.md](AI_PROMPT_AND_TOOL_POLICY.md)** - AI prompt engineering and tool usage policies
 - **[ALERTS.md](ALERTS.md)** - Alert system configuration and handling
@@ -36,6 +37,7 @@
 - **[OPENAPI_DRIFT_REPORT.md](OPENAPI_DRIFT_REPORT.md)** - OpenAPI specification drift analysis
 - **[OUTBOX.md](OUTBOX.md)** - Durable outbox pattern for on-chain transactions
 - **[PERFORMANCE_ATTRIBUTION.md](PERFORMANCE_ATTRIBUTION.md)** - Benchmark-relative Brinson attribution
+- **[PDF_EXPORTS.md](PDF_EXPORTS.md)** - PDF PII handling, resource caps, and temp-file hygiene
 - **[PORTFOLIO_OPTIMIZATION.md](PORTFOLIO_OPTIMIZATION.md)** - Portfolio optimization and allocation suggestions
 - **[PRISMA_QUERY_PERFORMANCE.md](PRISMA_QUERY_PERFORMANCE.md)** - Database query performance optimization
 - **[PRIVACY_AND_SECURITY_ENHANCEMENTS.md](PRIVACY_AND_SECURITY_ENHANCEMENTS.md)** - Privacy and security improvements

@@ -50,7 +50,9 @@ import {
   liquidationDistance,
   maxBorrowable,
   outstandingBalance,
+  outstandingBalanceExact,
   resolveInterestRateApy,
+  toMoney,
   worstCaseShortfall,
   currentLtv,
   isLiquidationTriggered,
@@ -410,37 +412,36 @@ export async function repayLoan(params: {
     throw new AppError(409, `This loan is already ${loan.status.toLowerCase()}`)
   }
 
-  const principal = Number(loan.principalAmount)
-  const interestAccrued = Number(loan.interestAccrued)
-  const rate = Number(loan.interestRateApy)
-
   // Pay the live balance, not the persisted one: a borrower who has held the
   // loan for a week must be able to clear it in one payment, and the accrual
-  // job may not have run since.
-  const outstandingBefore = outstandingBalance(
-    principal,
-    interestAccrued,
-    rate,
+  // job may not have run since. Exact Decimal so the settle decision below
+  // cannot be flipped by float residue (#662).
+  const outstandingExact = outstandingBalanceExact(
+    loan.principalAmount as Prisma.Decimal.Value,
+    loan.interestAccrued as Prisma.Decimal.Value,
+    loan.interestRateApy as Prisma.Decimal.Value,
     loan.interestAccruedTo,
     new Date()
   )
+  const outstandingBefore = outstandingExact.toNumber()
 
   const requested =
     params.amount === undefined || params.amount === null || params.amount <= 0
-      ? outstandingBefore
-      : Number(params.amount)
+      ? outstandingExact
+      : toMoney(params.amount)
 
-  if (!Number.isFinite(requested) || requested <= 0) {
+  if (requested.lte(0)) {
     throw new AppError(400, 'Repayment amount must be a positive number')
   }
-  if (requested > outstandingBefore) {
+  if (requested.gt(outstandingExact)) {
     throw new AppError(
       400,
-      `Amount exceeds the ${outstandingBefore.toFixed(2)} ${loan.borrowedAsset} outstanding on this loan`
+      `Amount exceeds the ${outstandingExact.toFixed(2)} ${loan.borrowedAsset} outstanding on this loan`
     )
   }
 
-  const amount = Math.min(requested, outstandingBefore)
+  const amountExact = requested
+  const amount = amountExact.toNumber()
 
   if (!params.skipApprovalGuard) {
     const guard = await guardOperation({
@@ -467,7 +468,7 @@ export async function repayLoan(params: {
     }
   }
 
-  const willSettleLoan = amount >= outstandingBefore - 1e-9
+  const willSettleLoan = amountExact.gte(outstandingExact)
 
   const created = await db.$transaction(async (tx) => {
     const transaction = await tx.transaction.create({
@@ -479,7 +480,7 @@ export async function repayLoan(params: {
         type: 'LOAN_REPAYMENT',
         status: 'PENDING',
         assetSymbol: loan.borrowedAsset,
-        amount,
+        amount: amountExact,
         network: loan.position.user.network as never,
         memo: `Collateral loan repayment (loan:${loan.id})`,
       },
@@ -600,7 +601,7 @@ export async function reconcileLoanSettlements(
     const outcome = await applyConfirmedRepayment({
       transactionId: row.id,
       loanId: row.loanId,
-      amount: Number(row.amount),
+      amount: row.amount,
       now,
     })
 
@@ -622,7 +623,7 @@ export async function reconcileLoanSettlements(
 export async function applyConfirmedRepayment(params: {
   transactionId: string
   loanId: string
-  amount: number
+  amount: Prisma.Decimal.Value
   now?: Date
 }): Promise<{ applied: boolean; settled: boolean }> {
   const now = params.now ?? new Date()
@@ -660,12 +661,10 @@ export async function applyConfirmedRepayment(params: {
   // against the interest actually owed at settlement time rather than the
   // interest the last accrual tick happened to record.
   const acc = await accrueInterest(loan.id, now)
-  const principal = Number(acc.principalAmount)
-  const interestAccrued = Number(acc.interestAccrued)
 
   const split = applyRepayment({
-    principal,
-    interestAccrued,
+    principal: acc.principalAmountExact,
+    interestAccrued: acc.interestAccruedExact,
     amount: params.amount,
   })
 
@@ -681,10 +680,10 @@ export async function applyConfirmedRepayment(params: {
   logger.info('[Lending] Repayment applied', {
     loanId: loan.id,
     transactionId: params.transactionId,
-    amount: params.amount,
-    toInterest: split.toInterest,
-    toPrincipal: split.toPrincipal,
-    remainingPrincipal: split.remainingPrincipal,
+    amount: toMoney(params.amount).toString(),
+    toInterest: split.toInterest.toString(),
+    toPrincipal: split.toPrincipal.toString(),
+    remainingPrincipal: split.remainingPrincipal.toString(),
     settled: split.settled,
   })
 

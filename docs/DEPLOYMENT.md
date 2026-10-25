@@ -295,7 +295,29 @@ Full list and defaults: `.env.example`.
 
 Additional endpoints:
 - `GET /health` — basic JSON status (also available via `healthRouter`)
+- `GET /health/deep` — authenticated (`X-Internal-Token`) dependency probe; used by the k8s readiness probe in `deploy/k8s/deployment.yaml`
 - `GET /metrics` — Prometheus scrape target
+
+### Liveness / Readiness Matrix
+
+Liveness answers "is this process wedged?" and never touches dependencies, so a downstream outage can never trigger a restart loop. Readiness answers "should this pod receive traffic?" and is driven by `GET /health/deep`.
+
+Each deep check runs in parallel under its own budget (`HEALTH_CHECK_TIMEOUT_MS`, default `1000`). A hung dependency is reported as `unhealthy` with a `timed out` error once its budget expires, so total probe latency stays ~1s regardless of how many dependencies hang — well under the probe's `timeoutSeconds: 5`.
+
+| Dependency | Criticality | When it fails or hangs | Liveness (`/health/live`) | Readiness (`/health/deep`) | Rationale |
+|------------|-------------|------------------------|---------------------------|----------------------------|-----------|
+| PostgreSQL (`database`) | critical | `unhealthy` | 200 — no restart | **503** — pod removed from rotation | Pod cannot serve requests without its DB connection |
+| Agent loop (`agentLoop`) | critical | stopped or no tick in 2× interval → `unhealthy`; recent error → `degraded` | 200 — no restart | **503** when `unhealthy`; 200 when `degraded` | Per-pod process; another replica may be healthy |
+| Stellar RPC (`stellarRpc`) | non-critical | `unhealthy` | 200 — no restart | 200, `status: degraded` | Shared external service: failing readiness would drain every replica at once |
+| Twilio (`twilio`) | non-critical | `unhealthy` | 200 — no restart | 200, `status: degraded` | Shared external service; only messaging is affected |
+
+The deep probe response lists any non-healthy dependency in `degradedDependencies` (e.g. `["stellarRpc"]`). Per-check `error` strings are redacted and truncated to 200 characters, so they never carry secrets. The policy lives in `DEPENDENCY_POLICY` in `src/routes/health.ts`.
+
+Each check also exports Prometheus gauges:
+- `health_dependency_status{dependency, criticality}` — `0` healthy, `1` degraded, `2` unhealthy
+- `health_dependency_latency_ms{dependency}`
+
+Alert on `health_dependency_status{criticality="non-critical"} == 2` sustained for a few minutes: those failures do not affect readiness, so the probe alone will not surface them.
 
 ### Kubernetes Example
 
@@ -308,10 +330,15 @@ livenessProbe:
   periodSeconds: 15
   timeoutSeconds: 5
 
+# Readiness follows the Liveness / Readiness Matrix above.
+# Keep timeoutSeconds > HEALTH_CHECK_TIMEOUT_MS so a hung dependency
+# is reported as degraded/unhealthy rather than timing out the probe.
 readinessProbe:
-  httpGet:
-    path: /health/ready
-    port: 3001
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - 'wget --spider -q --header="X-Internal-Token: $INTERNAL_SERVICE_TOKEN" http://localhost:3001/health/deep'
   initialDelaySeconds: 15
   periodSeconds: 10
   timeoutSeconds: 5

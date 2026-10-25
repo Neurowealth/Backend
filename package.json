@@ -23,6 +23,7 @@
     "typecheck": "tsc --noEmit",
     "env:parity": "ts-node scripts/check-env-parity.ts",
     "profile:hot-queries": "ts-node scripts/profile-hot-queries.ts",
+    "profile:pdf": "ts-node scripts/profile-pdf-memory.ts",
     "check:stellar:drift": "ts-node scripts/check-stellar-drift.ts",
     "verify:signer-rotation": "ts-node scripts/verify-signer-rotation.ts",
     "clean": "rm -rf dist coverage",

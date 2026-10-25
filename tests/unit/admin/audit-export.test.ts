@@ -61,7 +61,8 @@ describe('GET /api/admin/audit/export (#682)', () => {
     // layer.route.stack[0] is requireAdminScope('read')
     // layer.route.stack[1] is the export controller
     scopeMiddleware = layer.route.stack[0].handle
-    exportHandler = layer.route.stack[1].handle
+    exportHandler = layer.route.stack[1]
+      .handle as unknown as typeof exportHandler
   })
 
   beforeEach(() => {

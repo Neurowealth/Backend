@@ -64,6 +64,69 @@ The versioned resources are:
 - `whatsapp` — WhatsApp integration
 - `withdraw` — Withdrawal operations
 
+## Legacy `/api/*` alias parity and sunset plan (#672)
+
+The unversioned `/api/*` aliases are not a second implementation. `src/routes/registry.ts`
+is the single mount table, and `src/index.ts` mounts every entry twice:
+
+```ts
+app.use(`/api/v1/${route.path}`, ...route.handlers)
+app.use(`/api/${route.path}`, deprecatedApiWarning, ...route.handlers)
+```
+
+That makes the full middleware chain — app-level correlation ID, error envelope,
+security headers, rate-limit chain, then the per-router guards (`requireAuth`,
+`requireScope`, consent, impersonation, idempotency) — identical on both prefixes.
+
+### What CI proves
+
+`tests/integration/apiAliasParity.integration.test.ts` walks the real registry and
+runs parametrized supertest contracts against both prefixes, asserting identical:
+
+- status codes and canonical error envelopes,
+- auth-middleware order (missing auth fails before body validation),
+- API-key scope enforcement,
+- idempotency-key requirements,
+- correlation IDs (`X-Request-ID` header and `requestId` in the error body),
+- rate-limit `429` envelopes and `Retry-After` / `RateLimit-Policy` headers,
+- accounting export bytes, row count and checksum.
+
+It also asserts the route inventory and rate-limit tier are the same on both
+mounts. A divergence fails CI rather than becoming folklore.
+
+### Intentional divergences
+
+Only the deprecation signalling differs, by design:
+
+| Behaviour | `/api/v1/*` | `/api/*` |
+| --- | --- | --- |
+| `Deprecation` header | absent | `true` |
+| `Sunset` header | absent | fixed sunset date |
+| `Link` header | absent | `<.../api/v1/...>; rel="successor-version"` |
+| Handler chain / tier | identical | identical |
+
+Consent and impersonation guards are currently applied to no route in this
+release; the parity suite asserts the handler chains match, so when one is added
+to a router it automatically appears on both prefixes.
+
+### Sunset timeline
+
+The `Sunset` value is controlled by `API_LEGACY_SUNSET` (RFC 7231 date) and
+defaults to **Sat, 01 May 2027 00:00:00 GMT**. It is pinned, not recomputed on
+each boot, so redeploying cannot extend a deprecation.
+
+| Date | Milestone |
+| --- | --- |
+| 2026-10-25 | Aliases documented and marked deprecated; parity suite green. |
+| 2027-01-31 | Final call for consumers; traffic report reviewed per route. |
+| 2027-04-01 | Remove aliases with no remaining traffic from the registry. |
+| 2027-05-01 | Hard sunset: legacy `/api/*` mounts removed, versioned `/api/v1/*` only. |
+
+Removal is a single line in the legacy mount loop plus the deprecation helper;
+the `apiVersioning` and `apiAliasParity` suites must be updated in the same PR.
+Docs, OpenAPI, and the rate-limit matrix already describe the canonical
+`/api/v1/*` paths, so no API contract changes are needed at sunset.
+
 ## Version Introduction Process
 
 ### When to Create a New Version

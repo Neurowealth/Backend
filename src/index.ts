@@ -60,6 +60,7 @@ import { scheduleReferralPayout } from './jobs/referralPayout'
 import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
 import { scheduleRecurringWithdrawals } from './jobs/recurringWithdrawals'
 import { scheduleAlertRules } from './jobs/alertRules'
+import { scheduleDigests } from './jobs/digests'
 import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { scheduleAllocationSuggestions } from './jobs/allocationSuggestions'
 import { scheduleAttribution } from './jobs/attribution'
@@ -119,6 +120,7 @@ let referralPayoutHandle: NodeJS.Timeout | null = null
 let recurringDepositsHandle: NodeJS.Timeout | null = null
 let recurringWithdrawalsHandle: NodeJS.Timeout | null = null
 let alertRulesHandle: NodeJS.Timeout | null = null
+let digestsHandle: NodeJS.Timeout | null = null
 let strategyMetricsHandle: NodeJS.Timeout | null = null
 let allocationSuggestionsHandle: NodeJS.Timeout | null = null
 let protocolRiskScoringHandle: NodeJS.Timeout | null = null
@@ -269,10 +271,19 @@ app.get('/health/ready', (_req, res) => {
 // existing clients keep working; they emit RFC 8594 Deprecation/Sunset headers
 // announcing the removal date. See docs/api-versioning.md for the policy.
 
-// Unversioned routes are supported for at least 6 months from this release.
-const UNVERSIONED_SUNSET = new Date(
-  Date.now() + 182 * 24 * 60 * 60 * 1000
-).toUTCString()
+// Unversioned routes are supported until a fixed, announced date. Pinning the
+// date (instead of recomputing it on every boot) means a redeploy can never
+// silently extend the lifetime of a deprecated alias.
+const DEFAULT_UNVERSIONED_SUNSET = 'Sat, 01 May 2027 00:00:00 GMT'
+function resolveUnversionedSunset(): string {
+  const configured = process.env.API_LEGACY_SUNSET?.trim()
+  if (!configured) return DEFAULT_UNVERSIONED_SUNSET
+  const parsed = new Date(configured)
+  return Number.isNaN(parsed.getTime())
+    ? DEFAULT_UNVERSIONED_SUNSET
+    : parsed.toUTCString()
+}
+const UNVERSIONED_SUNSET = resolveUnversionedSunset()
 
 // ── OpenAPI / Swagger UI ──────────────────────────────────────────────────────
 
@@ -415,6 +426,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(alertRulesHandle)
     alertRulesHandle = null
     logger.info('[Shutdown] Alert rules timer cleared')
+  }
+
+  if (digestsHandle) {
+    clearInterval(digestsHandle)
+    digestsHandle = null
+    logger.info('[Shutdown] Digests timer cleared')
   }
 
   if (strategyMetricsHandle) {
@@ -759,6 +776,7 @@ async function main(): Promise<void> {
   recurringDepositsHandle = scheduleRecurringDeposits()
   recurringWithdrawalsHandle = scheduleRecurringWithdrawals()
   alertRulesHandle = scheduleAlertRules()
+  digestsHandle = scheduleDigests()
   strategyMetricsHandle = scheduleStrategyMetrics()
   // Ordered before the suggestion job so the first suggestion run sees freshly
   // scored protocols rather than whatever was last left in the table.

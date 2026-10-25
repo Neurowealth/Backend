@@ -96,7 +96,8 @@ describe('src/lending/accrual — accrueInterest', () => {
       interestAccruedTo: FROM,
     })
     expect(call.data.interestAccruedTo).toEqual(TO)
-    expect(call.data.interestAccrued).toEqual({ increment: 800 })
+    expect(call.data.interestAccrued.increment.toString()).toBe('800')
+    expect(result.interestAccruedExact.toString()).toBe('800')
   })
 
   it('accrues the same total whether the window arrives in one piece or ten', async () => {

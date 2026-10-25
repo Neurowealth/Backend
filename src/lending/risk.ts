@@ -1,15 +1,18 @@
 /**
  * Pure LTV / interest / liquidation math for the collateral loan book (#532).
  *
- * Zero I/O and zero Prisma: every number that decides whether a user's money
+ * Zero I/O and zero database access: every number that decides whether a user's money
  * is force-sold is computed here, where it can be unit-tested exhaustively
  * without a database or a clock. The service layer supplies the inputs and
  * persists the outputs; this module only does arithmetic.
  *
  * ─── UNITS ─────────────────────────────────────────────────────────────────────
- * Money is a plain number in stablecoin units (18dp upstream, but every
- * figure here is a float — the service converts to/from Prisma Decimal at the
- * boundary). Rates are PERCENT, not fractions: an APY of `8` means 8%/yr,
+ * Money is in stablecoin units, stored as Decimal(36, 18). Anything that
+ * moves a balance or decides settlement — accrual, the repayment split, the
+ * settled check — is exact `Prisma.Decimal` arithmetic quantized to that
+ * scale, so repeated partial repayments cannot leave float dust or flip the
+ * settled boundary (#662). LTV and display figures stay plain floats: they
+ * only ever feed a threshold compared with an epsilon. Rates are PERCENT, not fractions: an APY of `8` means 8%/yr,
  * matching ProtocolRate.supplyApy/borrowApy and the agent's APY conventions.
  * LTV values are FRACTIONS in [0, 1] on the way in and out, so 0.5 is 50% —
  * deliberately different from rates, because confusing the two is exactly the
@@ -34,7 +37,28 @@
  * a formula. A borrower's balance must be a pure function of time.
  */
 
+import { Prisma } from '@prisma/client'
+
 export const MS_PER_YEAR = 365.25 * 24 * 60 * 60 * 1000
+
+/** Scale of every money column on CollateralLoan / Transaction (Decimal(36, 18)). */
+export const MONEY_SCALE = 18
+
+/**
+ * Decimal constructor for loan money math. Prisma's default carries only 20
+ * significant digits, which silently rounds a Decimal(36, 18) balance above
+ * ~100; 60 digits covers any product of two column values before quantizing.
+ */
+export const MoneyDecimal = Prisma.Decimal.clone({
+  precision: 60,
+  rounding: Prisma.Decimal.ROUND_HALF_EVEN,
+})
+
+/** Exact money value at column scale. Non-finite input becomes 0. */
+export function toMoney(value: Prisma.Decimal.Value): Prisma.Decimal {
+  const d = new MoneyDecimal(value)
+  return d.isFinite() ? d.toDecimalPlaces(MONEY_SCALE) : new MoneyDecimal(0)
+}
 
 /** Sums are compared with a small epsilon so float dust never reads as a breach. */
 export const LTV_EPSILON = 1e-9
@@ -87,13 +111,29 @@ export function accruedInterest(
   from: Date,
   to: Date
 ): number {
-  if (!Number.isFinite(principal) || principal <= 0) return 0
-  if (!Number.isFinite(rateApy) || rateApy <= 0) return 0
+  return accruedInterestExact(principal, rateApy, from, to).toNumber()
+}
+
+/** Exact form of {@link accruedInterest}, quantized to {@link MONEY_SCALE}. */
+export function accruedInterestExact(
+  principal: Prisma.Decimal.Value,
+  rateApy: Prisma.Decimal.Value,
+  from: Date,
+  to: Date
+): Prisma.Decimal {
+  const p = toMoney(principal)
+  const rate = new MoneyDecimal(rateApy)
+  if (p.lte(0)) return new MoneyDecimal(0)
+  if (!rate.isFinite() || rate.lte(0)) return new MoneyDecimal(0)
 
   const elapsedMs = to.getTime() - from.getTime()
-  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return 0
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return new MoneyDecimal(0)
 
-  return principal * (rateApy / 100) * (elapsedMs / MS_PER_YEAR)
+  return p
+    .times(rate)
+    .times(elapsedMs)
+    .dividedBy(new MoneyDecimal(100).times(MS_PER_YEAR))
+    .toDecimalPlaces(MONEY_SCALE)
 }
 
 /** Total owed: principal plus everything accrued to `asOf`. */
@@ -104,11 +144,26 @@ export function outstandingBalance(
   interestAccruedTo: Date,
   asOf: Date
 ): number {
-  return (
-    principal +
-    Math.max(0, interestAccrued) +
-    accruedInterest(principal, rateApy, interestAccruedTo, asOf)
-  )
+  return outstandingBalanceExact(
+    principal,
+    interestAccrued,
+    rateApy,
+    interestAccruedTo,
+    asOf
+  ).toNumber()
+}
+
+/** Exact form of {@link outstandingBalance}; use it for any settlement decision. */
+export function outstandingBalanceExact(
+  principal: Prisma.Decimal.Value,
+  interestAccrued: Prisma.Decimal.Value,
+  rateApy: Prisma.Decimal.Value,
+  interestAccruedTo: Date,
+  asOf: Date
+): Prisma.Decimal {
+  return toMoney(principal)
+    .plus(MoneyDecimal.max(0, toMoney(interestAccrued)))
+    .plus(accruedInterestExact(principal, rateApy, interestAccruedTo, asOf))
 }
 
 /**
@@ -300,26 +355,29 @@ export function liquidationDistance(
  * owed so an over-payment cannot go negative and mint a credit.
  */
 export function applyRepayment(params: {
-  principal: number
-  interestAccrued: number
-  amount: number
+  principal: Prisma.Decimal.Value
+  interestAccrued: Prisma.Decimal.Value
+  amount: Prisma.Decimal.Value
 }): {
-  toInterest: number
-  toPrincipal: number
-  applied: number
-  remainingPrincipal: number
-  remainingInterest: number
+  toInterest: Prisma.Decimal
+  toPrincipal: Prisma.Decimal
+  applied: Prisma.Decimal
+  remainingPrincipal: Prisma.Decimal
+  remainingInterest: Prisma.Decimal
   settled: boolean
 } {
-  const { principal, interestAccrued, amount } = params
-  const totalOwed = Math.max(0, principal) + Math.max(0, interestAccrued)
-  const applied = Math.min(Math.max(0, amount), totalOwed)
+  const principal = MoneyDecimal.max(0, toMoney(params.principal))
+  const interestAccrued = MoneyDecimal.max(0, toMoney(params.interestAccrued))
+  const amount = MoneyDecimal.max(0, toMoney(params.amount))
 
-  const toInterest = Math.min(applied, Math.max(0, interestAccrued))
-  const toPrincipal = applied - toInterest
+  const totalOwed = principal.plus(interestAccrued)
+  const applied = MoneyDecimal.min(amount, totalOwed)
 
-  const remainingInterest = Math.max(0, interestAccrued - toInterest)
-  const remainingPrincipal = Math.max(0, principal - toPrincipal)
+  const toInterest = MoneyDecimal.min(applied, interestAccrued)
+  const toPrincipal = applied.minus(toInterest)
+
+  const remainingInterest = interestAccrued.minus(toInterest)
+  const remainingPrincipal = principal.minus(toPrincipal)
 
   return {
     toInterest,
@@ -327,7 +385,8 @@ export function applyRepayment(params: {
     applied,
     remainingPrincipal,
     remainingInterest,
-    settled: remainingPrincipal <= 0 && remainingInterest <= 0,
+    // Exact: zero means zero, so there is no epsilon to straddle.
+    settled: remainingPrincipal.isZero() && remainingInterest.isZero(),
   }
 }
 

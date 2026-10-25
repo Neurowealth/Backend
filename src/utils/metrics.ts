@@ -199,6 +199,36 @@ export const agentBreakerTripsTotal = new client.Counter({
   registers: [register],
 })
 
+// ── Health Check Metrics ────────────────────────────────────────────────────────
+
+export const healthDependencyStatus = new client.Gauge({
+  name: 'health_dependency_status',
+  help: 'Last deep health check result per dependency (0=healthy, 1=degraded, 2=unhealthy)',
+  labelNames: ['dependency', 'criticality'] as const,
+  registers: [register],
+})
+
+export const healthDependencyLatency = new client.Gauge({
+  name: 'health_dependency_latency_ms',
+  help: 'Latency of the last deep health check per dependency in milliseconds',
+  labelNames: ['dependency'] as const,
+  registers: [register],
+})
+
+/**
+ * Record the outcome of a single deep health dependency check.
+ */
+export function recordHealthDependency(
+  dependency: string,
+  criticality: 'critical' | 'non-critical',
+  status: 'healthy' | 'degraded' | 'unhealthy',
+  latencyMs: number
+): void {
+  const value = status === 'healthy' ? 0 : status === 'degraded' ? 1 : 2
+  healthDependencyStatus.set({ dependency, criticality }, value)
+  healthDependencyLatency.set({ dependency }, latencyMs)
+}
+
 /**
  * Record a breaker's current state for dashboards.
  */

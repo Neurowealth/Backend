@@ -19,6 +19,7 @@ import {
   internalRateLimiter,
   webhookRateLimiter,
 } from '../middleware/rateLimiter'
+import accountingRouter from './accounting'
 import agentRouter from './agent'
 import agentDecisionsRouter from './agent-decisions'
 import adminRouter from './admin'
@@ -94,6 +95,8 @@ export const API_ROUTES: ApiRoute[] = [
   { path: 'telegram', handlers: [webhookRateLimiter, telegramRouter] },
   { path: 'portfolio', handlers: [portfolioRouter] },
   { path: 'transactions', handlers: [transactionsRouter] },
+  // #669 — QBO/Xero export with a mandatory ledger reconciliation gate.
+  { path: 'accounting', handlers: [accountingRouter] },
   { path: 'protocols', handlers: [protocolsRouter] },
   { path: 'deposit', handlers: [depositRouter] },
   { path: 'withdraw', handlers: [withdrawRouter] },
