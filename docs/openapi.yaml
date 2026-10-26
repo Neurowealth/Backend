@@ -2237,6 +2237,19 @@ paths:
         '403': { description: Missing dlq:write permission }
         '404': { description: Event not found in the dead-letter queue }
         '500': { description: Failed to requeue event }
+  /referrals/me:
+    get:
+      tags:
+        - Referrals
+      operationId: getMyReferralSummary
+      summary: Authenticated referrer vesting tranche schedule, upcoming vest dates, clawback offsets, and disclosure copy
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Referral vesting & clawback summary
+        '401':
+          description: Unauthorized
   /admin/referrals/fraud/queue:
     get:
       tags:

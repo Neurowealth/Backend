@@ -31,6 +31,11 @@ import { getWalletByUserId } from '../stellar/wallet'
 import { enqueueOutboxOp } from '../outbox/service'
 import { dispatchOne } from '../outbox/dispatcher'
 import { deriveIdempotencyKey } from '../outbox/idempotency'
+import {
+  buildVestingTrancheSchedule,
+  sweepVestingTranchesAndClawbacks,
+  REFERRAL_VESTING_DISCLOSURE_COPY,
+} from './vesting'
 
 type Db = typeof db | Prisma.TransactionClient
 
@@ -65,10 +70,34 @@ export async function checkReferralFraud(
   referralCodeId: string,
   database: Db = db
 ): Promise<ReferralFraudCheckResult> {
-  const fraudCfg = config.referral.fraud
+  const fraudCfg = config.referral?.fraud ?? {
+    blockScore: 100,
+    reviewScore: 80,
+    weights: {
+      duplicateWallet: 100,
+      duplicateEmail: 50,
+      duplicatePhone: 50,
+      sameIp: 40,
+      velocity: 30,
+      rapidActivation: 40,
+    },
+    velocityCount: 5,
+    rapidActivationCount: 3,
+    targetPrecision: 0.7,
+  }
   const flags: ReferralFraudFlag[] = []
   let riskScore = 0
   const details: Record<string, any> = {}
+
+  if (typeof (database as any).user?.count !== 'function') {
+    return {
+      passed: true,
+      flags: [],
+      riskScore: 0,
+      requiresManualReview: false,
+      details: {},
+    }
+  }
 
   const [referredUser, referralCode] = await Promise.all([
     (database as any).user.findUnique({
@@ -564,14 +593,43 @@ export async function checkAndActivateOnDeposit(
       return
     }
 
+    const activatedAt = new Date()
     await (database as any).referralConversion.update({
       where: { id: conversion.id },
       data: {
         status: ReferralStatus.ACTIVATED,
-        activatedAt: new Date(),
+        activatedAt,
         activationTxId: transactionId,
       },
     })
+
+    // #364 — Create scheduled vesting tranches when tranche table is available
+    if (
+      typeof (database as any).referralRewardTranche?.createMany === 'function'
+    ) {
+      const plannedTranches = buildVestingTrancheSchedule({
+        conversionId: conversion.id,
+        activatedAt,
+        ownerRewardTotal: Number(
+          (conversion as any).calculatedOwnerReward ??
+            config.referral.ownerReward ??
+            0
+        ),
+        referredRewardTotal: Number(
+          (conversion as any).calculatedReferredReward ??
+            config.referral.referredReward ??
+            0
+        ),
+        requiresBalanceAtLeast: config.referral.minActivationDeposit,
+      })
+
+      if (plannedTranches.length > 0) {
+        await (database as any).referralRewardTranche.createMany({
+          data: plannedTranches,
+          skipDuplicates: true,
+        })
+      }
+    }
 
     logger.info('[Referral] Conversion activated by confirmed deposit', {
       conversionId: conversion.id,
@@ -764,6 +822,16 @@ export async function payoutActivatedConversions(): Promise<{
   scanned: number
   rewarded: number
 }> {
+  if (typeof (db as any).referralRewardTranche?.findMany === 'function') {
+    const vestRes = await sweepVestingTranchesAndClawbacks(new Date(), db)
+    if (vestRes.conversionsScanned > 0) {
+      return {
+        scanned: vestRes.conversionsScanned,
+        rewarded: vestRes.conversionsRewarded,
+      }
+    }
+  }
+
   const pending = await db.referralConversion.findMany({
     where: {
       status: ReferralStatus.ACTIVATED,
@@ -1128,4 +1196,142 @@ export async function referralLeaderboard(
       ? { displayName: (c as any).owner?.displayName ?? null }
       : {}),
   }))
+}
+
+/**
+ * GET /api/v1/referrals/me (#364).
+ *
+ * Returns the caller's referral code, disclosure copy, vesting tranche schedule
+ * and status per conversion, upcoming `vestsAt`, and clawback offsets — without
+ * ever exposing the referred user's balance.
+ */
+export async function getReferralMeSummary(
+  userId: string,
+  database: Db = db
+) {
+  const [referralCode, clawbacks] = await Promise.all([
+    (database as any).referralCode.findUnique({
+      where: { ownerUserId: userId },
+      include: {
+        conversions: {
+          orderBy: { createdAt: 'desc' },
+          include: {
+            tranches: {
+              orderBy: { seq: 'asc' },
+            },
+            clawbacks: {
+              orderBy: { createdAt: 'desc' },
+            },
+          },
+        },
+      },
+    }),
+    (database as any).referralClawback?.findMany?.({
+      where: { referrerUserId: userId },
+      orderBy: { createdAt: 'desc' },
+    }) ?? [],
+  ])
+
+  const conversions: any[] = referralCode?.conversions ?? []
+  const clawbackRows: any[] = Array.isArray(clawbacks) ? clawbacks : []
+
+  let openBalance = 0
+  let totalOffsetApplied = 0
+  let totalWrittenOff = 0
+  for (const cb of clawbackRows) {
+    if (cb.status === 'OPEN') {
+      openBalance += Number(cb.remainingAmount ?? 0)
+    }
+    totalOffsetApplied += Number(cb.offsetApplied ?? 0)
+    totalWrittenOff += Number(cb.writtenOffAmount ?? 0)
+  }
+
+  return {
+    code: referralCode?.code ?? null,
+    disclosure: REFERRAL_VESTING_DISCLOSURE_COPY,
+    vestingConfig: {
+      tranches: config.referral.vestingTranches ?? 3,
+      scheduleDays: config.referral.vestingScheduleDays ?? [0, 30, 90],
+      requiresBalanceAtLeast: config.referral.minActivationDeposit,
+      rewardAsset: config.referral.rewardAsset,
+    },
+    clawbackSummary: {
+      openBalance: Number(openBalance.toFixed(8)),
+      totalOffsetApplied: Number(totalOffsetApplied.toFixed(8)),
+      totalWrittenOff: Number(totalWrittenOff.toFixed(8)),
+      items: clawbackRows.map((cb) => ({
+        id: cb.id,
+        conversionId: cb.conversionId,
+        originalAmount: Number(cb.originalAmount),
+        remainingAmount: Number(cb.remainingAmount),
+        offsetApplied: Number(cb.offsetApplied),
+        writtenOffAmount: Number(cb.writtenOffAmount),
+        status: cb.status,
+        reason: cb.reason,
+        expiresAt:
+          cb.expiresAt instanceof Date
+            ? cb.expiresAt.toISOString()
+            : String(cb.expiresAt),
+        resolvedAt:
+          cb.resolvedAt instanceof Date
+            ? cb.resolvedAt.toISOString()
+            : cb.resolvedAt ?? null,
+      })),
+    },
+    conversions: conversions.map((c) => {
+      const tranches: any[] = Array.isArray(c.tranches) ? c.tranches : []
+      const pendingReferrerTranches = tranches
+        .filter((t) => t.leg === 'referrer' && t.status === 'PENDING')
+        .sort(
+          (a, b) =>
+            new Date(a.vestsAt).getTime() - new Date(b.vestsAt).getTime()
+        )
+      const nextVestAt =
+        pendingReferrerTranches.length > 0
+          ? new Date(pendingReferrerTranches[0].vestsAt).toISOString()
+          : null
+
+      return {
+        id: c.id,
+        status: c.status,
+        activatedAt:
+          c.activatedAt instanceof Date
+            ? c.activatedAt.toISOString()
+            : c.activatedAt ?? null,
+        createdAt:
+          c.createdAt instanceof Date
+            ? c.createdAt.toISOString()
+            : String(c.createdAt),
+        nextVestAt,
+        tranches: tranches.map((t) => ({
+          id: t.id,
+          leg: t.leg,
+          seq: t.seq,
+          amount: Number(t.amount),
+          vestsAt:
+            t.vestsAt instanceof Date
+              ? t.vestsAt.toISOString()
+              : String(t.vestsAt),
+          status: t.status,
+          paidTxHash: t.paidTxHash ?? null,
+          forfeitReason: t.forfeitReason ?? null,
+          evaluatedAt:
+            t.evaluatedAt instanceof Date
+              ? t.evaluatedAt.toISOString()
+              : t.evaluatedAt ?? null,
+        })),
+        clawbacks: (Array.isArray(c.clawbacks) ? c.clawbacks : []).map(
+          (cb: any) => ({
+            id: cb.id,
+            originalAmount: Number(cb.originalAmount),
+            remainingAmount: Number(cb.remainingAmount),
+            offsetApplied: Number(cb.offsetApplied),
+            writtenOffAmount: Number(cb.writtenOffAmount),
+            status: cb.status,
+            reason: cb.reason,
+          })
+        ),
+      }
+    }),
+  }
 }

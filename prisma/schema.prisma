@@ -1477,14 +1477,68 @@ model ReferralConversion {
   createdAt            DateTime       @default(now())
   updatedAt            DateTime       @updatedAt
 
-  referralCode ReferralCode @relation(fields: [referralCodeId], references: [id], onDelete: Cascade)
-  referredUser User         @relation(fields: [referredUserId], references: [id], onDelete: Cascade)
+  referralCode ReferralCode            @relation(fields: [referralCodeId], references: [id], onDelete: Cascade)
+  referredUser User                    @relation(fields: [referredUserId], references: [id], onDelete: Cascade)
+  tranches     ReferralRewardTranche[]
+  clawbacks    ReferralClawback[]
 
   @@index([referralCodeId])
   @@index([status])
   @@index([createdAt])
   @@index([manualReviewRequired])
   @@map("referral_conversions")
+}
+
+/// Vesting tranche for a referral conversion reward leg (#364).
+model ReferralRewardTranche {
+  id                     String   @id @default(uuid())
+  conversionId           String
+  leg                    String // 'referrer' | 'referred'
+  seq                    Int // 1..N
+  amount                 Decimal  @db.Decimal(36, 18)
+  vestsAt                DateTime
+  status                 String   @default("PENDING") // PENDING | VESTED_PAID | FORFEITED | CLAWED_BACK
+  requiresBalanceAtLeast Decimal  @db.Decimal(36, 18)
+  outboxOpId             String?
+  paidTxHash             String?
+  rewardTxId             String?
+  payoutError            String?
+  forfeitReason          String?
+  evaluatedAt            DateTime?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  conversion ReferralConversion @relation(fields: [conversionId], references: [id], onDelete: Cascade)
+
+  @@unique([conversionId, leg, seq])
+  @@index([status, vestsAt])
+  @@index([conversionId])
+  @@map("referral_reward_tranches")
+}
+
+/// Non-custodial clawback offset record for early-withdrawn referral rewards (#364).
+model ReferralClawback {
+  id               String    @id @default(uuid())
+  referrerUserId   String
+  conversionId     String
+  trancheId        String?
+  originalAmount   Decimal   @db.Decimal(36, 18)
+  remainingAmount  Decimal   @db.Decimal(36, 18)
+  offsetApplied    Decimal   @default(0) @db.Decimal(36, 18)
+  writtenOffAmount Decimal   @default(0) @db.Decimal(36, 18)
+  status           String    @default("OPEN") // OPEN | OFFSET_COMPLETE | WRITTEN_OFF
+  reason           String
+  expiresAt        DateTime
+  resolvedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  conversion ReferralConversion @relation(fields: [conversionId], references: [id], onDelete: Cascade)
+
+  @@index([referrerUserId, status])
+  @@index([conversionId])
+  @@index([status, expiresAt])
+  @@map("referral_clawbacks")
 }
 
 model RecurringDepositPlan {
