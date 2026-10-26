@@ -7,6 +7,7 @@ import {
   getOrCreateReferralCode,
   listReferrals,
   referralLeaderboard,
+  getReferralMeSummary,
 } from '../referral/service'
 
 export async function getReferralLeaderboard(
@@ -68,5 +69,31 @@ export async function getReferrals(req: Request, res: Response): Promise<void> {
   } catch (error) {
     logger.error('[Referral] Failed to list referrals:', error)
     sendError(res, 500, 'Failed to retrieve referrals')
+  }
+}
+
+/**
+ * GET /api/v1/referrals/me
+ *
+ * Returns the authenticated caller's tiered referral summary, milestone
+ * progress, active schedule, monthly cap usage, and conversion statuses/holds
+ * without leaking internal Sybil denial reasons (#363).
+ */
+export async function getMyReferralSummary(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const userId = req.userId
+  if (!userId) {
+    sendUnauthorized(res)
+    return
+  }
+
+  try {
+    const summary = await getReferralMeSummary(userId)
+    res.status(200).json(summary)
+  } catch (error) {
+    logger.error('[Referral] Failed to load referral summary:', error)
+    sendError(res, 500, 'Failed to retrieve referral summary')
   }
 }
