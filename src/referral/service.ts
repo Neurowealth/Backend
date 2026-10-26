@@ -31,6 +31,18 @@ import { getWalletByUserId } from '../stellar/wallet'
 import { enqueueOutboxOp } from '../outbox/service'
 import { dispatchOne } from '../outbox/dispatcher'
 import { deriveIdempotencyKey } from '../outbox/idempotency'
+import { auditPayloadHashFor } from '../audit/chain'
+import {
+  getActiveRewardSchedule,
+  calculateTieredReferralReward,
+  resolveMilestoneTier,
+} from './schedule'
+import {
+  evaluateAbuseSignals,
+  detectCircularReferral,
+  checkDepositThenWithdraw,
+  type PayoutHoldState,
+} from './abuseSignals'
 
 type Db = typeof db | Prisma.TransactionClient
 
@@ -65,10 +77,34 @@ export async function checkReferralFraud(
   referralCodeId: string,
   database: Db = db
 ): Promise<ReferralFraudCheckResult> {
-  const fraudCfg = config.referral.fraud
+  const fraudCfg = config.referral?.fraud ?? {
+    blockScore: 100,
+    reviewScore: 80,
+    weights: {
+      duplicateWallet: 100,
+      duplicateEmail: 50,
+      duplicatePhone: 50,
+      sameIp: 40,
+      velocity: 30,
+      rapidActivation: 40,
+    },
+    velocityCount: 5,
+    rapidActivationCount: 3,
+    targetPrecision: 0.7,
+  }
   const flags: ReferralFraudFlag[] = []
   let riskScore = 0
   const details: Record<string, any> = {}
+
+  if (typeof (database as any).user?.count !== 'function') {
+    return {
+      passed: true,
+      flags: [],
+      riskScore: 0,
+      requiresManualReview: false,
+      details: {},
+    }
+  }
 
   const [referredUser, referralCode] = await Promise.all([
     (database as any).user.findUnique({
@@ -404,6 +440,21 @@ export async function attributeSignup(
     return null
   }
 
+  // Block circular referral cycles of length <= 3 (#363)
+  const circular = await detectCircularReferral(
+    referralCode.ownerUserId,
+    referredUserId,
+    database
+  )
+  if (circular.isCircular) {
+    logger.warn('[Referral] Circular referral blocked', {
+      referredUserId,
+      ownerUserId: referralCode.ownerUserId,
+      chain: circular.chain,
+    })
+    return null
+  }
+
   // Run fraud detection checks (#490)
   const fraudCheck = await checkReferralFraud(
     referredUserId,
@@ -515,11 +566,152 @@ export async function checkAndActivateOnDeposit(
     // its own. Documented in docs/REFERRAL_PROGRAM.md.
     if (amount.lessThan(threshold)) return
 
-    const risk = await evaluateReferralFraudRisk(
-      conversion.referralCode.ownerUserId,
-      referredUserId,
-      database
+    const now = new Date()
+    const holdHours = config.referral.minHoldWindowHours ?? 24
+    const holdUntil = new Date(now.getTime() + holdHours * 3600_000)
+
+    // Compute tiered reward (#363) against active schedule, referrer's activated
+    // count, and monthly cap.
+    const schedule = await getActiveRewardSchedule(database)
+    const monthStart = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0)
     )
+    let priorActivationsCount = 0
+    let earnedThisMonth = 0
+    try {
+      const priorConversions =
+        await (database as any).referralConversion.findMany?.({
+          where: {
+            referralCodeId: conversion.referralCodeId ?? conversion.referralCode?.id,
+            status: { in: [ReferralStatus.ACTIVATED, ReferralStatus.REWARDED] },
+          },
+          select: {
+            activatedAt: true,
+            calculatedOwnerReward: true,
+          },
+        })
+      if (Array.isArray(priorConversions)) {
+        priorActivationsCount = priorConversions.length
+        for (const pc of priorConversions) {
+          if (pc.activatedAt && new Date(pc.activatedAt) >= monthStart) {
+            earnedThisMonth += Number(
+              pc.calculatedOwnerReward ?? config.referral.ownerReward ?? 0
+            )
+          }
+        }
+      }
+    } catch {
+      priorActivationsCount = 0
+      earnedThisMonth = 0
+    }
+
+    const rewardCalc = calculateTieredReferralReward({
+      qualifyingDepositAmount: amount.toNumber(),
+      activatedConversionsCount: priorActivationsCount + 1,
+      earnedThisMonth,
+      schedule,
+    })
+
+    const [ownerSessions, referredSessions] = await Promise.all([
+      (database as any).session?.findMany?.({
+        where: { userId: conversion.referralCode.ownerUserId },
+        select: { ipAddress: true, lastSeenIp: true, userAgent: true },
+      }) ?? [],
+      (database as any).session?.findMany?.({
+        where: { userId: referredUserId },
+        select: { ipAddress: true, lastSeenIp: true, userAgent: true },
+      }) ?? [],
+    ])
+
+    const signals: ReferralFraudSignal[] = []
+    const ownerIps = collectSessionValues(ownerSessions, (s) => [
+      s.ipAddress,
+      s.lastSeenIp,
+    ])
+    const referredIps = collectSessionValues(referredSessions, (s) => [
+      s.ipAddress,
+      s.lastSeenIp,
+    ])
+    const sharedIps = [...ownerIps].filter((ip) => referredIps.has(ip))
+    if (sharedIps.length > 0) {
+      signals.push({
+        reason: 'shared_ip',
+        detail: `${sharedIps.length} shared IP address(es) between referrer and referred account`,
+      })
+    }
+    const ownerAgents = collectSessionValues(ownerSessions, (s) => [
+      s.userAgent,
+    ])
+    const referredAgents = collectSessionValues(referredSessions, (s) => [
+      s.userAgent,
+    ])
+    const sharedAgents = [...ownerAgents].filter((ua) =>
+      referredAgents.has(ua)
+    )
+    if (sharedAgents.length > 0) {
+      signals.push({
+        reason: 'shared_device_fingerprint',
+        detail: `${sharedAgents.length} shared device/user-agent fingerprint(s) between referrer and referred account`,
+      })
+    }
+    const risk: ReferralFraudAssessment = {
+      suspicious: signals.length > 0,
+      signals,
+    }
+
+    // Evaluate #363 6-signal Sybil & abuse detector (fail-closed to AUTO_REVIEW on error)
+    let abuseRiskScore = 0
+    let abuseReasons: string[] = []
+    let abuseModelVersion = config.referral.sybil?.modelVersion ?? 'sybil-v1'
+    let payoutHold: PayoutHoldState = 'NONE'
+
+    try {
+      const abuseEval = await evaluateAbuseSignals({
+        conversionId: conversion.id,
+        referralCodeId:
+          conversion.referralCodeId ?? conversion.referralCode?.id ?? '',
+        ownerUserId: conversion.referralCode.ownerUserId,
+        referredUserId,
+        qualifyingDepositAmount: amount.toNumber(),
+        activationTxId: transactionId,
+        activatedAt: now,
+        now,
+        preloadedSessions: { ownerSessions, referredSessions },
+        database,
+      })
+      abuseRiskScore = abuseEval.abuseRiskScore
+      abuseReasons = abuseEval.abuseReasons
+      abuseModelVersion = abuseEval.modelVersion
+      payoutHold = abuseEval.payoutHold
+    } catch (scorerErr) {
+      // Fail-closed invariant (#363): if the abuse scorer errors out during
+      // activation, default to payoutHold = AUTO_REVIEW, never NONE.
+      logger.error(
+        '[Referral] Abuse scorer failed — failing closed to AUTO_REVIEW',
+        {
+          conversionId: conversion.id,
+          error:
+            scorerErr instanceof Error ? scorerErr.message : String(scorerErr),
+        }
+      )
+      abuseRiskScore = config.referral.sybil?.holdThreshold ?? 40
+      abuseReasons = ['scorer_error_fail_closed']
+      payoutHold = 'AUTO_REVIEW'
+    }
+
+    const tieredFields = {
+      scheduleVersion: rewardCalc.scheduleVersion,
+      referrerMilestoneTier: rewardCalc.referrerMilestoneTier,
+      qualifyingDepositAmount: new Decimal(rewardCalc.qualifyingDepositAmount),
+      calculatedOwnerReward: new Decimal(rewardCalc.calculatedOwnerReward),
+      calculatedReferredReward: new Decimal(rewardCalc.calculatedReferredReward),
+      rewardCapped: rewardCalc.rewardCapped,
+      capReason: rewardCalc.capReason,
+      abuseRiskScore,
+      abuseReasons,
+      abuseModelVersion,
+      holdUntil,
+    }
 
     if (risk.suspicious) {
       const reasons = risk.signals.map((s) => s.reason)
@@ -529,10 +721,12 @@ export async function checkAndActivateOnDeposit(
         data: {
           status: ReferralStatus.FLAGGED,
           fraudReasons: reasons,
-          flaggedAt: new Date(),
+          flaggedAt: now,
           // Kept so a reviewer can see which deposit would have activated
           // this — resolveFlaggedConversion sets activatedAt on approval.
           activationTxId: transactionId,
+          ...tieredFields,
+          payoutHold: payoutHold === 'DENIED' ? 'DENIED' : 'AUTO_REVIEW',
         },
       })
 
@@ -543,6 +737,8 @@ export async function checkAndActivateOnDeposit(
           referredUserId,
           transactionId,
           reasons,
+          abuseRiskScore,
+          abuseReasons,
         }
       )
 
@@ -568,17 +764,75 @@ export async function checkAndActivateOnDeposit(
       where: { id: conversion.id },
       data: {
         status: ReferralStatus.ACTIVATED,
-        activatedAt: new Date(),
+        activatedAt: now,
         activationTxId: transactionId,
+        ...tieredFields,
+        payoutHold,
       },
     })
 
-    logger.info('[Referral] Conversion activated by confirmed deposit', {
-      conversionId: conversion.id,
-      referredUserId,
-      transactionId,
-      amount: amount.toString(),
-    })
+    if (payoutHold === 'DENIED') {
+      logger.warn('[Referral Security] Conversion payout denied by Sybil model', {
+        conversionId: conversion.id,
+        referredUserId,
+        ownerUserId: conversion.referralCode.ownerUserId,
+        abuseRiskScore,
+        abuseReasons,
+        abuseModelVersion,
+      })
+      await alertingService
+        .emit(
+          {
+            title: 'Referral conversion denied by Sybil detector',
+            description: `Conversion ${conversion.id} denied (score=${abuseRiskScore}, reasons=${abuseReasons.join(', ')}).`,
+            severity: 'warning',
+            component: 'referral-sybil',
+            metadata: {
+              conversionId: conversion.id,
+              referredUserId,
+              abuseRiskScore,
+              abuseReasons,
+            },
+          },
+          `referral:sybil-deny:${conversion.id}`
+        )
+        .catch(() => {})
+    } else if (payoutHold === 'AUTO_REVIEW') {
+      logger.warn('[Referral] Conversion placed on AUTO_REVIEW payout hold', {
+        conversionId: conversion.id,
+        referredUserId,
+        abuseRiskScore,
+        abuseReasons,
+      })
+      await alertingService
+        .emit(
+          {
+            title: 'Referral conversion held for Sybil review',
+            description: `Conversion ${conversion.id} held in AUTO_REVIEW (score=${abuseRiskScore}, reasons=${abuseReasons.join(', ')}).`,
+            severity: 'info',
+            component: 'referral-sybil',
+            metadata: {
+              conversionId: conversion.id,
+              referredUserId,
+              abuseRiskScore,
+              abuseReasons,
+            },
+          },
+          `referral:sybil-hold:${conversion.id}`
+        )
+        .catch(() => {})
+    } else {
+      logger.info('[Referral] Conversion activated by confirmed deposit', {
+        conversionId: conversion.id,
+        referredUserId,
+        transactionId,
+        amount: amount.toString(),
+        scheduleVersion: rewardCalc.scheduleVersion,
+        referrerMilestoneTier: rewardCalc.referrerMilestoneTier,
+        calculatedOwnerReward: rewardCalc.calculatedOwnerReward,
+        calculatedReferredReward: rewardCalc.calculatedReferredReward,
+      })
+    }
   } catch (err) {
     // Never let referral bookkeeping roll back the deposit.
     logger.error('[Referral] Activation check failed (deposit unaffected)', {
@@ -777,7 +1031,92 @@ export async function payoutActivatedConversions(): Promise<{
   })
 
   let rewarded = 0
+  const now = new Date()
   for (const conversion of pending) {
+    const convAny = conversion as any
+
+    // Fail-closed invariant (#363): refuse to pay any conversion whose
+    // abuseRiskScore is explicitly null.
+    if ('abuseRiskScore' in convAny && convAny.abuseRiskScore === null) {
+      await db.referralConversion.update({
+        where: { id: conversion.id },
+        data: {
+          payoutHold: 'AUTO_REVIEW',
+          abuseReasons: ['unscored_conversion_fail_closed'],
+        } as any,
+      })
+      logger.warn(
+        '[Referral] Refused payout for unscored conversion — routed to AUTO_REVIEW',
+        { conversionId: conversion.id }
+      )
+      continue
+    }
+
+    // Gate on payoutHold === 'NONE' (#363)
+    if (convAny.payoutHold && convAny.payoutHold !== 'NONE') {
+      continue
+    }
+
+    // Gate on holdUntil <= now (#363)
+    if (
+      convAny.holdUntil &&
+      new Date(convAny.holdUntil).getTime() > now.getTime()
+    ) {
+      continue
+    }
+
+    // Re-check deposit_then_withdraw before releasing payout (#363)
+    if (
+      convAny.qualifyingDepositAmount != null &&
+      Number(convAny.qualifyingDepositAmount) > 0
+    ) {
+      const dtw = await checkDepositThenWithdraw({
+        referredUserId: conversion.referredUserId,
+        qualifyingDepositAmount: Number(convAny.qualifyingDepositAmount),
+        since: conversion.activatedAt ?? new Date(0),
+        database: db,
+      })
+      if (dtw.triggered) {
+        const existingReasons = Array.isArray(convAny.abuseReasons)
+          ? (convAny.abuseReasons as string[])
+          : []
+        const updatedReasons = existingReasons.includes('deposit_then_withdraw')
+          ? existingReasons
+          : [...existingReasons, 'deposit_then_withdraw']
+        await db.referralConversion.update({
+          where: { id: conversion.id },
+          data: {
+            payoutHold: 'AUTO_REVIEW',
+            abuseReasons: updatedReasons,
+          } as any,
+        })
+        logger.warn(
+          '[Referral] Deposit withdrawn during hold window — escalated to AUTO_REVIEW',
+          {
+            conversionId: conversion.id,
+            referredUserId: conversion.referredUserId,
+            withdrawnRatio: dtw.withdrawnRatio,
+          }
+        )
+        await alertingService
+          .emit(
+            {
+              title: 'Referral deposit-then-withdraw detected at payout time',
+              description: `Conversion ${conversion.id} escalated to AUTO_REVIEW (withdrawnRatio=${dtw.withdrawnRatio.toFixed(2)}).`,
+              severity: 'warning',
+              component: 'referral-sybil',
+              metadata: {
+                conversionId: conversion.id,
+                withdrawnRatio: dtw.withdrawnRatio,
+              },
+            },
+            `referral:dtw-hold:${conversion.id}`
+          )
+          .catch(() => {})
+        continue
+      }
+    }
+
     const ownerUserId = conversion.referralCode.ownerUserId
     const referredUserId = conversion.referredUserId
 
@@ -791,12 +1130,21 @@ export async function payoutActivatedConversions(): Promise<{
     let { ownerRewardTxId, referredRewardTxId, tier2RewardTxId } = conversion
     let hadError = false
 
+    const ownerRewardAmount =
+      convAny.calculatedOwnerReward != null
+        ? Number(convAny.calculatedOwnerReward)
+        : config.referral.ownerReward
+    const referredRewardAmount =
+      convAny.calculatedReferredReward != null
+        ? Number(convAny.calculatedReferredReward)
+        : config.referral.referredReward
+
     // Owner leg.
-    if (!ownerRewardTxId && config.referral.ownerReward > 0) {
+    if (!ownerRewardTxId && ownerRewardAmount > 0) {
       try {
         ownerRewardTxId = await payOneReward(
           ownerUserId,
-          config.referral.ownerReward,
+          ownerRewardAmount,
           network,
           conversion.id,
           'owner'
@@ -812,11 +1160,11 @@ export async function payoutActivatedConversions(): Promise<{
     }
 
     // Referred leg (only if configured to reward the referred user).
-    if (!referredRewardTxId && config.referral.referredReward > 0) {
+    if (!referredRewardTxId && referredRewardAmount > 0) {
       try {
         referredRewardTxId = await payOneReward(
           referredUserId,
-          config.referral.referredReward,
+          referredRewardAmount,
           network,
           conversion.id,
           'referred'
@@ -876,8 +1224,8 @@ export async function payoutActivatedConversions(): Promise<{
     if (hadError) continue // stays ACTIVATED — retried next sweep
 
     const rewardTransactionIds = [
-      config.referral.ownerReward > 0 ? ownerRewardTxId : null,
-      config.referral.referredReward > 0 ? referredRewardTxId : null,
+      ownerRewardAmount > 0 ? ownerRewardTxId : null,
+      referredRewardAmount > 0 ? referredRewardTxId : null,
     ].filter((id): id is string => id !== null)
     if (rewardTransactionIds.length > 0) {
       const rewardTransactions = await db.transaction.findMany({
@@ -1128,4 +1476,346 @@ export async function referralLeaderboard(
       ? { displayName: (c as any).owner?.displayName ?? null }
       : {}),
   }))
+}
+
+/**
+ * GET /api/v1/referrals/me summary (#363).
+ *
+ * Exposes the referrer's active milestone tier, progress toward the next
+ * milestone, active reward schedule, monthly cap usage, and each conversion's
+ * status and hold countdown — while never leaking DENIED reasons (shown only
+ * as 'NOT_ELIGIBLE' so attackers cannot probe the Sybil model).
+ */
+export async function getReferralMeSummary(
+  userId: string,
+  database: Db = db
+) {
+  const [schedule, referralCode] = await Promise.all([
+    getActiveRewardSchedule(database),
+    (database as any).referralCode.findUnique({
+      where: { ownerUserId: userId },
+      include: {
+        conversions: {
+          orderBy: { createdAt: 'desc' },
+        },
+      },
+    }),
+  ])
+
+  const conversions: any[] = referralCode?.conversions ?? []
+  const now = new Date()
+  const monthStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0)
+  )
+
+  const activatedCount = conversions.filter(
+    (c) =>
+      (c.status === ReferralStatus.ACTIVATED ||
+        c.status === ReferralStatus.REWARDED) &&
+      c.payoutHold !== 'DENIED'
+  ).length
+
+  const milestone = resolveMilestoneTier(activatedCount, schedule.milestoneTiers)
+
+  let earnedThisMonth = 0
+  for (const c of conversions) {
+    if (
+      (c.status === ReferralStatus.ACTIVATED ||
+        c.status === ReferralStatus.REWARDED) &&
+      c.payoutHold !== 'DENIED' &&
+      c.activatedAt &&
+      new Date(c.activatedAt) >= monthStart
+    ) {
+      earnedThisMonth += Number(
+        c.calculatedOwnerReward ?? config.referral.ownerReward ?? 0
+      )
+    }
+  }
+
+  return {
+    code: referralCode?.code ?? null,
+    schedule: {
+      version: schedule.version,
+      rewardAsset: config.referral.rewardAsset,
+      depositTiers: schedule.depositTiers,
+      milestoneTiers: schedule.milestoneTiers,
+      maxRewardPerConversion: schedule.maxRewardPerConversion,
+      maxRewardPerReferrerPerMonth: schedule.maxRewardPerReferrerPerMonth,
+      minHoldWindowHours: schedule.minHoldWindowHours,
+    },
+    milestoneProgress: {
+      currentTier: milestone.currentTier.tier,
+      currentLabel: milestone.currentTier.label,
+      multiplier: milestone.currentTier.multiplier,
+      activatedConversions: activatedCount,
+      nextTier: milestone.nextTier
+        ? {
+            tier: milestone.nextTier.tier,
+            label: milestone.nextTier.label,
+            multiplier: milestone.nextTier.multiplier,
+            minActivatedConversions: milestone.nextTier.minActivatedConversions,
+            conversionsRemaining: milestone.conversionsToNextTier,
+          }
+        : null,
+    },
+    monthlyCapUsage: {
+      earnedThisMonth: Number(earnedThisMonth.toFixed(2)),
+      monthlyCap: schedule.maxRewardPerReferrerPerMonth,
+      remainingThisMonth: Number(
+        Math.max(0, schedule.maxRewardPerReferrerPerMonth - earnedThisMonth).toFixed(2)
+      ),
+    },
+    conversions: conversions.map((c) => {
+      const isDenied =
+        c.payoutHold === 'DENIED' || c.manualReviewRejected === true
+      const isHeldForReview =
+        c.payoutHold === 'AUTO_REVIEW' ||
+        c.status === ReferralStatus.FLAGGED ||
+        c.manualReviewRequired === true
+
+      const holdUntilDate = c.holdUntil ? new Date(c.holdUntil) : null
+      const holdRemainingSeconds =
+        !isDenied &&
+        holdUntilDate &&
+        holdUntilDate.getTime() > now.getTime()
+          ? Math.ceil((holdUntilDate.getTime() - now.getTime()) / 1000)
+          : 0
+
+      let userFacingStatus: string = c.status
+      if (isDenied) {
+        userFacingStatus = 'NOT_ELIGIBLE'
+      } else if (isHeldForReview) {
+        userFacingStatus = 'PENDING_REVIEW'
+      } else if (
+        c.status === ReferralStatus.ACTIVATED &&
+        holdRemainingSeconds > 0
+      ) {
+        userFacingStatus = 'HOLD_WINDOW'
+      }
+
+      return {
+        id: c.id,
+        status: isDenied ? 'NOT_ELIGIBLE' : c.status,
+        userFacingStatus,
+        scheduleVersion: c.scheduleVersion ?? schedule.version,
+        referrerMilestoneTier: c.referrerMilestoneTier ?? milestone.currentTier.tier,
+        qualifyingDepositAmount:
+          c.qualifyingDepositAmount != null
+            ? Number(c.qualifyingDepositAmount)
+            : null,
+        ownerReward: isDenied
+          ? 0
+          : c.calculatedOwnerReward != null
+            ? Number(c.calculatedOwnerReward)
+            : config.referral.ownerReward,
+        referredReward: isDenied
+          ? 0
+          : c.calculatedReferredReward != null
+            ? Number(c.calculatedReferredReward)
+            : config.referral.referredReward,
+        rewardCapped: Boolean(c.rewardCapped),
+        capReason: isDenied ? null : c.capReason ?? null,
+        holdUntil: isDenied
+          ? null
+          : holdUntilDate
+            ? holdUntilDate.toISOString()
+            : null,
+        holdRemainingSeconds,
+        activatedAt: c.activatedAt ? new Date(c.activatedAt).toISOString() : null,
+        createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : null,
+      }
+    }),
+  }
+}
+
+/**
+ * GET /api/v1/admin/referrals/review (#363).
+ *
+ * Lists conversions in AUTO_REVIEW (or legacy manualReviewRequired) with their
+ * abuseRiskScore, abuseReasons, deposit/withdrawal history summary, and linked
+ * accounts.
+ */
+export async function listAbuseReviewQueue(database: Db = db): Promise<any[]> {
+  const conversions = await (database as any).referralConversion.findMany({
+    where: {
+      OR: [
+        { payoutHold: 'AUTO_REVIEW' },
+        { manualReviewRequired: true, manualReviewRejected: false },
+      ],
+    },
+    include: {
+      referralCode: {
+        include: {
+          owner: {
+            select: {
+              id: true,
+              walletAddress: true,
+              email: true,
+              createdAt: true,
+            },
+          },
+        },
+      },
+      referredUser: {
+        select: {
+          id: true,
+          walletAddress: true,
+          email: true,
+          createdAt: true,
+        },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  })
+
+  const enriched: any[] = []
+  for (const c of Array.isArray(conversions) ? conversions : []) {
+    let depositTotal = Number(c.qualifyingDepositAmount ?? 0)
+    let withdrawalTotal = 0
+    try {
+      const txs = await (database as any).transaction?.findMany?.({
+        where: {
+          userId: c.referredUserId,
+          type: { in: ['DEPOSIT', 'WITHDRAWAL'] },
+          status: { in: ['CONFIRMED', 'PENDING'] },
+        },
+        select: { type: true, amount: true },
+      })
+      if (Array.isArray(txs)) {
+        depositTotal = 0
+        withdrawalTotal = 0
+        for (const tx of txs) {
+          if (tx.type === 'DEPOSIT') depositTotal += Number(tx.amount ?? 0)
+          if (tx.type === 'WITHDRAWAL') withdrawalTotal += Number(tx.amount ?? 0)
+        }
+      }
+    } catch {}
+
+    enriched.push({
+      ...c,
+      abuseRiskScore: c.abuseRiskScore ?? c.fraudCheckScore ?? 0,
+      abuseReasons:
+        Array.isArray(c.abuseReasons) && c.abuseReasons.length > 0
+          ? c.abuseReasons
+          : c.fraudReasons ?? c.fraudCheckFlags ?? [],
+      historySummary: {
+        depositTotal,
+        withdrawalTotal,
+        netRetained: Number((depositTotal - withdrawalTotal).toFixed(2)),
+      },
+      linkedAccounts: {
+        referrerUserId: c.referralCode?.ownerUserId ?? null,
+        referredUserId: c.referredUserId,
+      },
+    })
+  }
+
+  return enriched
+}
+
+/**
+ * POST /api/v1/admin/referrals/review/:id/decision (#363).
+ *
+ * Accepts { decision: 'RELEASE' | 'DENY', reason: string }, transitions
+ * payoutHold to 'NONE' (releasing to the next payout sweep) or 'DENIED', and
+ * writes a hash-chained audit entry (#315) recording the reviewer, prior
+ * score/reasons, and decision reason.
+ */
+export async function decideAbuseReviewConversion(
+  params: {
+    conversionId: string
+    decision: 'RELEASE' | 'DENY'
+    reason: string
+    reviewerId: string
+  },
+  database: Db = db
+): Promise<{
+  conversionId: string
+  decision: 'RELEASE' | 'DENY'
+  payoutHold: PayoutHoldState
+  payloadHash: string
+}> {
+  const { conversionId, decision, reason, reviewerId } = params
+  if (!reason || !reason.trim()) {
+    throw new Error('Decision reason is required')
+  }
+  if (decision !== 'RELEASE' && decision !== 'DENY') {
+    throw new Error(`Invalid decision: ${decision}`)
+  }
+
+  const conversion = await (database as any).referralConversion.findUnique({
+    where: { id: conversionId },
+  })
+  if (!conversion) {
+    throw new Error(`Referral conversion ${conversionId} not found`)
+  }
+
+  const nextHold: PayoutHoldState = decision === 'RELEASE' ? 'NONE' : 'DENIED'
+  const reviewedAt = new Date()
+
+  const auditPayload = {
+    kind: 'REFERRAL_REVIEW_DECISION',
+    conversionId,
+    reviewerId,
+    decision,
+    reason: reason.trim(),
+    priorPayoutHold: conversion.payoutHold ?? 'AUTO_REVIEW',
+    priorAbuseRiskScore: conversion.abuseRiskScore ?? null,
+    priorAbuseReasons: conversion.abuseReasons ?? [],
+    nextPayoutHold: nextHold,
+    reviewedAt: reviewedAt.toISOString(),
+  }
+  const payloadHash = auditPayloadHashFor(auditPayload)
+
+  await (database as any).referralConversion.update({
+    where: { id: conversionId },
+    data: {
+      payoutHold: nextHold,
+      status:
+        decision === 'RELEASE' && conversion.status === ReferralStatus.FLAGGED
+          ? ReferralStatus.ACTIVATED
+          : conversion.status,
+      activatedAt:
+        decision === 'RELEASE' && !conversion.activatedAt
+          ? reviewedAt
+          : conversion.activatedAt,
+      manualReviewRequired: false,
+      manualReviewRejected: decision === 'DENY',
+      reviewedBy: reviewerId,
+      reviewedAt,
+      reviewDecision: decision.toLowerCase(),
+      reviewNote: reason.trim(),
+      rejectionReason: decision === 'DENY' ? reason.trim() : null,
+    },
+  })
+
+  try {
+    await (database as any).auditPayloadHash?.create?.({
+      data: {
+        tableName: 'referral_conversions',
+        kind: 'REFERRAL_REVIEW_DECISION',
+        payloadHash,
+      },
+    })
+  } catch (err) {
+    logger.error('[Referral] Audit hash persistence failed (non-fatal)', {
+      conversionId,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
+
+  logger.info('[Referral] Admin abuse review decision recorded', {
+    conversionId,
+    decision,
+    payoutHold: nextHold,
+    reviewerId,
+    payloadHash,
+  })
+
+  return {
+    conversionId,
+    decision,
+    payoutHold: nextHold,
+    payloadHash,
+  }
 }

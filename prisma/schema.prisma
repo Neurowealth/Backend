@@ -1474,6 +1474,20 @@ model ReferralConversion {
   // Timestamp when the FLAGGED status was set — used to age-out stale reviews
   // and to report on how long conversions sit in the fraud queue.
   flaggedAt            DateTime?
+  // Tiered reward schedule & Sybil/abuse detection (#363)
+  scheduleVersion          String?
+  referrerMilestoneTier    String?
+  qualifyingDepositAmount  Decimal?       @db.Decimal(36, 18)
+  calculatedOwnerReward    Decimal?       @db.Decimal(36, 18)
+  calculatedReferredReward Decimal?       @db.Decimal(36, 18)
+  rewardCapped             Boolean        @default(false)
+  capReason                String?
+  abuseRiskScore           Int?
+  abuseReasons             String[]       @default([])
+  abuseModelVersion        String?
+  payoutHold               String         @default("NONE")
+  holdUntil                DateTime?
+  reviewNote               String?
   createdAt            DateTime       @default(now())
   updatedAt            DateTime       @updatedAt
 
@@ -1484,7 +1498,26 @@ model ReferralConversion {
   @@index([status])
   @@index([createdAt])
   @@index([manualReviewRequired])
+  @@index([payoutHold])
+  @@index([holdUntil])
   @@map("referral_conversions")
+}
+
+/// Versioned tiered referral reward schedule (#363).
+model ReferralRewardSchedule {
+  id                           String   @id @default(uuid())
+  scheduleVersion              String   @unique
+  isActive                     Boolean  @default(true)
+  depositTiers                 Json
+  milestoneTiers               Json
+  maxRewardPerConversion       Decimal  @db.Decimal(36, 18)
+  maxRewardPerReferrerPerMonth Decimal  @db.Decimal(36, 18)
+  minHoldWindowHours           Int      @default(168)
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
+
+  @@index([isActive])
+  @@map("referral_reward_schedules")
 }
 
 model RecurringDepositPlan {

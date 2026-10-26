@@ -3417,13 +3417,15 @@ router.get(
 
 import {
   listConversionsForReview,
+  listAbuseReviewQueue,
   approveReferralConversion,
   rejectReferralConversion,
+  decideAbuseReviewConversion,
 } from '../referral/service'
 
 /**
  * GET /api/admin/referrals/review
- * List referral conversions flagged for manual review.
+ * List referral conversions flagged for manual review or held in AUTO_REVIEW (#363, #490).
  * Required scope: read
  */
 router.get(
@@ -3437,7 +3439,7 @@ router.get(
         .json({ success: false, error: 'Admin authentication required' })
     }
     try {
-      const conversions = await listConversionsForReview()
+      const conversions = await listAbuseReviewQueue()
 
       res.json({
         success: true,
@@ -3451,6 +3453,77 @@ router.get(
       res.status(500).json({
         success: false,
         error: 'Failed to list referral reviews',
+      })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/referrals/review/:id/decision
+ * Release or deny a referral conversion held in AUTO_REVIEW (#363).
+ * Required scope: write
+ *
+ * Body: { decision: "RELEASE" | "DENY", reason: string }
+ */
+router.post(
+  '/referrals/review/:id/decision',
+  requireAdminScope('write'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+    try {
+      const { id } = req.params
+      const { decision, reason } = req.body ?? {}
+
+      if (decision !== 'RELEASE' && decision !== 'DENY') {
+        return res.status(400).json({
+          success: false,
+          error: 'decision must be "RELEASE" or "DENY"',
+        })
+      }
+      if (!reason || typeof reason !== 'string' || !reason.trim()) {
+        return res.status(400).json({
+          success: false,
+          error: 'reason is required',
+        })
+      }
+
+      const result = await decideAbuseReviewConversion({
+        conversionId: id,
+        decision,
+        reason,
+        reviewerId: adminAuth.name,
+      })
+
+      auditLog(req, res, 'DECIDE_REFERRAL_REVIEW', 'success', {
+        conversionId: id,
+        decision,
+        reason: reason.trim(),
+        payloadHash: result.payloadHash,
+      })
+
+      res.json({
+        success: true,
+        data: result,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error: any) {
+      logger.error('[Admin] Failed to decide referral review', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'DECIDE_REFERRAL_REVIEW', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res.status(500).json({
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Failed to record referral review decision',
       })
     }
   }

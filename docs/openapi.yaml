@@ -2237,6 +2237,57 @@ paths:
         '403': { description: Missing dlq:write permission }
         '404': { description: Event not found in the dead-letter queue }
         '500': { description: Failed to requeue event }
+  /referrals/me:
+    get:
+      tags:
+        - Referrals
+      operationId: getMyReferralSummary
+      summary: Authenticated referrer tiered summary, milestone progress, active reward schedule, and conversion statuses
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Tiered referral summary
+        '401':
+          description: Unauthorized
+  /admin/referrals/review/{id}/decision:
+    post:
+      tags:
+        - Admin
+      operationId: adminReferralReviewDecision
+      summary: Release or deny a referral conversion held in AUTO_REVIEW and record a hash-chained audit entry
+      security:
+        - adminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - decision
+                - reason
+              properties:
+                decision:
+                  type: string
+                  enum: [RELEASE, DENY]
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Review decision recorded
+        '400':
+          description: Invalid request
+        '401':
+          description: Admin authentication required
+        '403':
+          description: Forbidden
   /admin/referrals/fraud/queue:
     get:
       tags:

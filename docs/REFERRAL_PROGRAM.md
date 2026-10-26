@@ -184,7 +184,52 @@ and, for conversions reviewed in the month, the false-positive rate
 suggested `REFERRAL_FRAUD_REVIEW_SCORE`: the lowest observed score at which rejections make up at
 least `REFERRAL_FRAUD_TARGET_PRECISION` (default 0.7) of reviews at or above it.
 
-Thresholds and weights are environment-driven, not hard-coded: `REFERRAL_FRAUD_BLOCK_SCORE` (100),
+Threshold and weights are environment-driven, not hard-coded: `REFERRAL_FRAUD_BLOCK_SCORE` (100),
 `REFERRAL_FRAUD_REVIEW_SCORE` (80), `REFERRAL_FRAUD_WEIGHT_{DUPLICATE_WALLET,DUPLICATE_EMAIL,
 DUPLICATE_PHONE,SAME_IP,VELOCITY,RAPID_ACTIVATION}`, `REFERRAL_FRAUD_VELOCITY_COUNT` (5) and
 `REFERRAL_FRAUD_RAPID_ACTIVATION_COUNT` (3). Defaults reproduce the previous behaviour.
+
+## Tiered reward schedule & Sybil abuse detection (#363)
+
+### 1. Tiered reward schedule (`ReferralRewardSchedule`)
+
+Instead of a flat payout on any `$10` deposit, activation resolves a versioned `ReferralRewardSchedule` along two dimensions:
+
+1. **Referred user qualifying deposit tier**:
+   - `$10 – $99.99` → `$5` owner / `$5` referred
+   - `$100 – $499.99` → `$15` owner / `$10` referred
+   - `$500 – $2,499.99` → `$40` owner / `$25` referred
+   - `$2,500+` → `$100` owner / `$50` referred
+2. **Referrer milestone multiplier** (by lifetime activated referral conversions):
+   - `1–4` (`Bronze`) → `1.0x`
+   - `5–19` (`Silver`) → `1.25x`
+   - `20+` (`Gold`) → `1.5x`
+
+Hard caps:
+- `REFERRAL_MAX_REWARD_PER_CONVERSION` (default `$150` per leg)
+- `REFERRAL_MAX_REWARD_PER_REFERRER_PER_MONTH` (default `$1,000` per referrer per UTC calendar month)
+
+Every `ReferralConversion` records `scheduleVersion`, `referrerMilestoneTier`, `qualifyingDepositAmount`, `calculatedOwnerReward`, `calculatedReferredReward`, `rewardCapped`, and `capReason` at activation time so subsequent schedule edits never retroactively change in-flight conversions.
+
+### 2. Six Sybil & abuse signals (`src/referral/abuseSignals.ts`)
+
+| Signal code | Default weight | What it detects |
+| --- | --- | --- |
+| `self_funding_chain` | `50` (`REFERRAL_SYBIL_WEIGHT_SELF_FUNDING`) | Qualifying deposit traces within 1–2 hops or matching transfer memo/amount to a withdrawal from the referrer within `REFERRAL_SELF_FUNDING_WINDOW_HOURS` (72h) |
+| `deposit_then_withdraw` | `60` (`REFERRAL_SYBIL_WEIGHT_DEPOSIT_WITHDRAW`) | Referred user withdraws `>= REFERRAL_WITHDRAWAL_HOLD_RATIO` (`80%`) of the qualifying deposit within `REFERRAL_MIN_HOLD_WINDOW_HOURS` (24h) |
+| `burst_activations` | `45` (`REFERRAL_SYBIL_WEIGHT_BURST`) | Single referrer triggers `>= REFERRAL_BURST_ACTIVATION_COUNT` (5) activations within `REFERRAL_BURST_WINDOW_MINUTES` (60m) with near-identical or minimum-threshold deposits |
+| `shared_fingerprint` | `40` (`REFERRAL_SYBIL_WEIGHT_FINGERPRINT`) | Referrer and referred user share an IP `/24` subnet, normalized device user-agent, or card `paymentMethodRef` |
+| `circular_referral` | `85` (`REFERRAL_SYBIL_WEIGHT_CIRCULAR`) | Referral graph contains a cycle of length `<= 3` (`A -> B -> A` or `A -> B -> C -> A`); blocked at `attributeSignup` and scored as high-risk at activation |
+| `fresh_wallet_cohort` | `45` (`REFERRAL_SYBIL_WEIGHT_FRESH_COHORT`) | `>= REFERRAL_FRESH_WALLET_CLUSTER_COUNT` (3) referred users under the same referrer created within `REFERRAL_FRESH_WALLET_WINDOW_MINUTES` (10m) of each other |
+
+### 3. Score bands, hold window, and fail-closed invariants
+
+- `score < REFERRAL_HOLD_THRESHOLD` (`< 40`): `payoutHold = NONE`. Conversion waits until `holdUntil = activatedAt + REFERRAL_MIN_HOLD_WINDOW_HOURS` (24h). At payout time `deposit_then_withdraw` is re-evaluated; if `>= 80%` was withdrawn during the hold window, the conversion escalates to `payoutHold = AUTO_REVIEW` with `deposit_then_withdraw` appended and skips payout.
+- `40 <= score < 80`: `payoutHold = AUTO_REVIEW`. Shown to the referrer as `PENDING_REVIEW`; held until an admin decides via `POST /api/v1/admin/referrals/review/:id/decision`.
+- `score >= REFERRAL_DENY_THRESHOLD` (`>= 80`): `payoutHold = DENIED`. Never paid out; surfaced to the referrer as `NOT_ELIGIBLE` on `GET /api/v1/referrals/me` without exposing internal signal names or scores.
+- **Fail-closed**: if the abuse scorer throws during activation, `payoutHold` defaults to `AUTO_REVIEW` (never `NONE`). Furthermore, `payoutActivatedConversions` refuses to pay any conversion whose `abuseRiskScore` is `null` and moves it to `AUTO_REVIEW`.
+
+### 4. Admin review & override
+
+- `GET /api/v1/admin/referrals/review` (`read` scope): lists conversions in `AUTO_REVIEW` with `abuseRiskScore`, `abuseReasons`, `historySummary` (`depositTotal`, `withdrawalTotal`, `netRetained`), and `linkedAccounts`.
+- `POST /api/v1/admin/referrals/review/:id/decision` (`write` scope): accepts `{ decision: "RELEASE" | "DENY", reason: string }`, transitions `payoutHold` to `NONE` or `DENIED`, and writes a `#315` `AuditPayloadHash` (`REFERRAL_REVIEW_DECISION`) + `AdminAuditLog` entry.

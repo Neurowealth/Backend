@@ -773,6 +773,64 @@ export const config = {
         process.env.REFERRAL_FRAUD_TARGET_PRECISION || '0.7'
       ),
     },
+    // #363 — Tiered reward schedule & Sybil/abuse detection
+    scheduleVersion: process.env.REFERRAL_SCHEDULE_VERSION || 'v1',
+    minHoldWindowHours: parseInt(
+      process.env.REFERRAL_MIN_HOLD_WINDOW_HOURS || '168'
+    ),
+    maxRewardPerConversion: parseFloat(
+      process.env.REFERRAL_MAX_REWARD_PER_CONVERSION || '100'
+    ),
+    maxRewardPerReferrerPerMonth: parseFloat(
+      process.env.REFERRAL_MAX_REWARD_PER_REFERRER_MONTH || '500'
+    ),
+    sybil: {
+      modelVersion: process.env.REFERRAL_ABUSE_MODEL_VERSION || 'sybil-v1',
+      holdThreshold: parseInt(
+        process.env.REFERRAL_ABUSE_HOLD_THRESHOLD || '40'
+      ),
+      denyThreshold: parseInt(
+        process.env.REFERRAL_ABUSE_DENY_THRESHOLD || '80'
+      ),
+      selfFundingWindowHours: parseInt(
+        process.env.REFERRAL_SELF_FUNDING_WINDOW_HOURS || '72'
+      ),
+      withdrawalHoldRatio: parseFloat(
+        process.env.REFERRAL_WITHDRAWAL_HOLD_RATIO || '0.8'
+      ),
+      burstActivationCount: parseInt(
+        process.env.REFERRAL_BURST_ACTIVATION_COUNT || '5'
+      ),
+      burstWindowMinutes: parseInt(
+        process.env.REFERRAL_BURST_WINDOW_MINUTES || '60'
+      ),
+      freshWalletClusterCount: parseInt(
+        process.env.REFERRAL_FRESH_WALLET_CLUSTER_COUNT || '3'
+      ),
+      freshWalletWindowMinutes: parseInt(
+        process.env.REFERRAL_FRESH_WALLET_WINDOW_MINUTES || '10'
+      ),
+      weights: {
+        self_funding_chain: parseInt(
+          process.env.REFERRAL_SIGNAL_WEIGHT_SELF_FUNDING_CHAIN || '50'
+        ),
+        deposit_then_withdraw: parseInt(
+          process.env.REFERRAL_SIGNAL_WEIGHT_DEPOSIT_THEN_WITHDRAW || '60'
+        ),
+        burst_activations: parseInt(
+          process.env.REFERRAL_SIGNAL_WEIGHT_BURST_ACTIVATIONS || '45'
+        ),
+        shared_fingerprint: parseInt(
+          process.env.REFERRAL_SIGNAL_WEIGHT_SHARED_FINGERPRINT || '40'
+        ),
+        circular_referral: parseInt(
+          process.env.REFERRAL_SIGNAL_WEIGHT_CIRCULAR_REFERRAL || '85'
+        ),
+        fresh_wallet_cohort: parseInt(
+          process.env.REFERRAL_SIGNAL_WEIGHT_FRESH_WALLET_COHORT || '45'
+        ),
+      },
+    },
   },
   recurringDeposits: {
     intervalMs: parseInt(

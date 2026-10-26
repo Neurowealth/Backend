@@ -207,3 +207,12 @@ riskCeiling? }`** — the three keys `src/agent/loop.ts` actually reads.
 10. **A `?token=` query parameter is deliberately unsupported.** URLs reach
     access logs, proxy logs, and referrers, and the handshake token is a live
     session. Browsers use the `Sec-WebSocket-Protocol: bearer, <jwt>` pair.
+
+---
+
+## Issue #363 — Tiered Referral Rewards with Sybil & Abuse Detection
+
+1. **Schedule versioning is stamped at activation time.** `getActiveRewardSchedule` reads the active `ReferralRewardSchedule` row (falling back to the default `v1` schedule when no DB row is seeded) and stamps `scheduleVersion`, `referrerMilestoneTier`, `calculatedOwnerReward`, and `calculatedReferredReward` onto `ReferralConversion` at activation time so future schedule updates never retroactively alter already-activated conversions.
+2. **Monthly referrer cap (`REFERRAL_MAX_REWARD_PER_REFERRER_PER_MONTH`) clamps the owner leg only.** When a referrer reaches their monthly reward ceiling, their owner leg is clamped to the remaining monthly room (down to `$0` with `rewardCapped = true, capReason = 'MONTHLY_CAP'`), while the new referred user still receives their referred leg (subject to `REFERRAL_MAX_REWARD_PER_CONVERSION`).
+3. **Self-funding chain (`self_funding_chain`) uses platform ledger correlation.** Because Stellar event ingestion persists confirmed `DEPOSIT` and `WITHDRAWAL` `Transaction` rows rather than full external Horizon graph crawls inside the deposit DB transaction, `self_funding_chain` correlates referrer withdrawals and referred deposits within `REFERRAL_SELF_FUNDING_WINDOW_HOURS` (72h) by wallet address memo references, shared funder tags, or matching transfer amounts (`<= 5%` variance).
+4. **User-facing status redaction on `DENIED`.** `GET /api/v1/referrals/me` maps any conversion with `payoutHold = DENIED` to `status: 'NOT_ELIGIBLE'`, `userFacingStatus: 'NOT_ELIGIBLE'`, `ownerReward: 0`, `referredReward: 0`, and omits `abuseRiskScore` and `abuseReasons` so Sybil operators cannot probe which signal or threshold tripped.
