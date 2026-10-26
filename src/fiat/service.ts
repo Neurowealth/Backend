@@ -58,6 +58,10 @@ import {
   recordFiatOrder,
   recordFiatRateDrift,
 } from '../utils/metrics'
+import {
+  handleFiatOrderFailedForPlan,
+  handleFiatOrderSettledForPlan,
+} from '../jobs/fiatPurchases'
 import type {
   CreateFiatOrderInput,
   FiatQuoteInput,
@@ -565,6 +569,18 @@ export async function processProviderWebhook(
         userId: updated.userId,
       }
     ).catch(() => {})
+
+    await handleFiatOrderFailedForPlan(
+      updated.id,
+      updated.failureReason ?? 'Provider reported failure',
+      new Date(),
+      database
+    ).catch((err) => {
+      logger.error('[Fiat] Failed to update purchase plan run on order failure', {
+        orderId: updated.id,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
   }
 
   // If the provider handed us a tx hash, try an immediate reconciliation pass
@@ -703,6 +719,13 @@ export async function reconcileSingleOrder(
       userId: settled.userId,
     }
   ).catch(() => {})
+
+  await handleFiatOrderSettledForPlan(settled.id, database).catch((err) => {
+    logger.error('[Fiat] Failed to advance purchase plan run on settlement', {
+      orderId: settled.id,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  })
 
   if (driftPct !== null) {
     recordFiatRateDrift(order.provider, order.direction, Math.abs(driftPct))

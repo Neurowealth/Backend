@@ -364,6 +364,8 @@ model User {
   webhookSubscriptions    WebhookSubscription[]
   fiatOrders              FiatOrder[]
   fiatQuoteLocks          FiatQuoteLock[]
+  fiatPurchasePlans       FiatPurchasePlan[]
+  fiatPurchasePlanRuns    FiatPurchasePlanRun[]
   referralCode            ReferralCode?
   referralConversion      ReferralConversion?
   recurringDepositPlans   RecurringDepositPlan[]
@@ -1424,6 +1426,83 @@ model FiatQuoteLock {
   @@index([expiresAt])
   @@index([provider])
   @@map("fiat_quote_locks")
+}
+
+/// Scheduled fiat purchase plan (card/bank-funded DCA, #361).
+/// Drives the existing fiat on-ramp flow on a cadence, optionally chains the
+/// confirmed crypto settlement into a strategy deposit, and handles card/bank
+/// retries idempotently via FiatPurchasePlanRun occurrences. Only an opaque
+/// provider-side `paymentMethodRef` is stored — raw PANs or bank details never
+/// touch the platform.
+model FiatPurchasePlan {
+  id                  String                     @id @default(uuid())
+  userId              String
+  fiatAmount          Decimal                    @db.Decimal(36, 18)
+  fiatCurrency        String
+  assetSymbol         String
+  paymentMethodRef    String // opaque provider-side payment-instrument token
+  cadence             DepositCadence
+  nextRunAt           DateTime
+  status              RecurringDepositPlanStatus @default(ACTIVE)
+  autoDeposit         Boolean                    @default(true) // chain settled crypto into a strategy deposit
+  maxSlippagePct      Decimal?                   @db.Decimal(6, 4) // abort a run if the live quote is worse than the plan's baseline by more than this
+  baselineRate        Decimal?                   @db.Decimal(36, 18) // rate captured at creation/update for slippage comparison
+  retryPolicy         Json // { maxAttempts, backoffMinutes }
+  lastRunAt           DateTime?
+  lastRunStatus       String?
+  lastRunFiatOrderId  String?
+  consecutiveFailures Int                        @default(0)
+  autoPauseReason     String?
+  createdAt           DateTime                   @default(now())
+  updatedAt           DateTime                   @updatedAt
+
+  user User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs FiatPurchasePlanRun[]
+
+  @@index([userId])
+  @@index([status, nextRunAt])
+  @@map("fiat_purchase_plans")
+}
+
+/// Per-occurrence execution and retry ledger for a FiatPurchasePlan (#361).
+/// Identified uniquely by `(planId, scheduledFor)` so retries within one
+/// scheduled occurrence share the same occurrence key and reconciliation never
+/// counts one payday twice.
+model FiatPurchasePlanRun {
+  id                  String    @id @default(uuid())
+  planId              String
+  userId              String
+  scheduledFor        DateTime
+  attemptCount        Int       @default(1)
+  nextRetryAt         DateTime?
+  status              String // awaiting_settlement | action_required | retrying | completed | completed_deposit_pending | skipped_rate | deferred_unhealthy | failed
+  fiatAmount          Decimal   @db.Decimal(36, 18)
+  fiatCurrency        String
+  assetSymbol         String
+  baselineRate        Decimal?  @db.Decimal(36, 18)
+  liveQuoteRate       Decimal?  @db.Decimal(36, 18)
+  quotedCryptoAmount  Decimal?  @db.Decimal(36, 18)
+  settledCryptoAmount Decimal?  @db.Decimal(36, 18)
+  fiatOrderId         String?
+  fiatOrderIds        String[]  @default([])
+  depositTxId         String?
+  depositTxHash       String?
+  actionRequiredUrl   String?
+  actionExpiresAt     DateTime?
+  failureReason       String?
+  completedAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  plan FiatPurchasePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  user User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, scheduledFor])
+  @@index([planId, createdAt])
+  @@index([userId])
+  @@index([status])
+  @@index([fiatOrderId])
+  @@map("fiat_purchase_plan_runs")
 }
 
 /// A user's own single-level referral code (#growth). One code per user; the

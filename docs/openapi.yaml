@@ -5078,3 +5078,145 @@ paths:
           description: Forbidden
         '429':
           description: Erasure rate limit exceeded
+  /fiat/purchase-plans:
+    post:
+      tags:
+        - Fiat
+      operationId: createFiatPurchasePlan
+      summary: Create a scheduled fiat purchase plan (card-funded DCA)
+      security:
+        - bearerAuth: []
+      responses:
+        '201':
+          description: Purchase plan created
+        '400':
+          description: Validation error
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden (missing DEPOSIT permission or account frozen)
+    get:
+      tags:
+        - Fiat
+      operationId: listFiatPurchasePlans
+      summary: List caller's scheduled fiat purchase plans
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of purchase plans
+        '401':
+          description: Unauthorized
+  /fiat/purchase-plans/{id}:
+    get:
+      tags:
+        - Fiat
+      operationId: getFiatPurchasePlan
+      summary: Get a single scheduled fiat purchase plan
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Purchase plan details
+        '404':
+          description: Purchase plan not found
+    patch:
+      tags:
+        - Fiat
+      operationId: updateFiatPurchasePlan
+      summary: Update, pause, or resume a scheduled fiat purchase plan
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Updated purchase plan
+        '404':
+          description: Purchase plan not found
+        '409':
+          description: Cannot modify a cancelled purchase plan
+    delete:
+      tags:
+        - Fiat
+      operationId: cancelFiatPurchasePlan
+      summary: Cancel a scheduled fiat purchase plan
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cancelled purchase plan
+        '404':
+          description: Purchase plan not found
+  /fiat/purchase-plans/{id}/preview:
+    get:
+      tags:
+        - Fiat
+      operationId: previewFiatPurchasePlanGet
+      summary: Preview upcoming scheduled fiat purchase runs and estimated fees
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Projected schedule of upcoming runs
+        '404':
+          description: Purchase plan not found
+    post:
+      tags:
+        - Fiat
+      operationId: previewFiatPurchasePlanPost
+      summary: Preview upcoming scheduled fiat purchase runs and estimated fees
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Projected schedule of upcoming runs
+        '404':
+          description: Purchase plan not found
+  /fiat/purchase-plans/{id}/runs:
+    get:
+      tags:
+        - Fiat
+      operationId: listFiatPurchasePlanRuns
+      summary: Paginated execution history for a scheduled fiat purchase plan
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paginated list of plan runs
+        '404':
+          description: Purchase plan not found

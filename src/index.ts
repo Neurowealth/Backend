@@ -59,6 +59,7 @@ import { scheduleFiatReconciliation } from './jobs/fiatReconciliation'
 import { scheduleReferralPayout } from './jobs/referralPayout'
 import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
 import { scheduleRecurringWithdrawals } from './jobs/recurringWithdrawals'
+import { scheduleFiatPurchases } from './jobs/fiatPurchases'
 import { scheduleAlertRules } from './jobs/alertRules'
 import { scheduleDigests } from './jobs/digests'
 import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
@@ -119,6 +120,7 @@ let fiatReconciliationHandle: NodeJS.Timeout | null = null
 let referralPayoutHandle: NodeJS.Timeout | null = null
 let recurringDepositsHandle: NodeJS.Timeout | null = null
 let recurringWithdrawalsHandle: NodeJS.Timeout | null = null
+let fiatPurchasesHandle: NodeJS.Timeout | null = null
 let alertRulesHandle: NodeJS.Timeout | null = null
 let digestsHandle: NodeJS.Timeout | null = null
 let strategyMetricsHandle: NodeJS.Timeout | null = null
@@ -420,6 +422,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
   if (recurringWithdrawalsHandle) {
     clearInterval(recurringWithdrawalsHandle)
     recurringWithdrawalsHandle = null
+  }
+  if (fiatPurchasesHandle) {
+    clearInterval(fiatPurchasesHandle)
+    fiatPurchasesHandle = null
   }
 
   if (alertRulesHandle) {
@@ -775,6 +781,7 @@ async function main(): Promise<void> {
   referralPayoutHandle = scheduleReferralPayout()
   recurringDepositsHandle = scheduleRecurringDeposits()
   recurringWithdrawalsHandle = scheduleRecurringWithdrawals()
+  fiatPurchasesHandle = scheduleFiatPurchases()
   alertRulesHandle = scheduleAlertRules()
   digestsHandle = scheduleDigests()
   strategyMetricsHandle = scheduleStrategyMetrics()
