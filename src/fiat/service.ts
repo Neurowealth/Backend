@@ -57,7 +57,22 @@ import {
   recordFiatQuoteFailure,
   recordFiatOrder,
   recordFiatRateDrift,
+  recordFiatLimitEvaluation,
+  recordFiatLimitHeadroomRelease,
 } from '../utils/metrics'
+import {
+  evaluateFiatOrder,
+  computeFiatLimitsSummary,
+  evaluateScheduledFiatRun,
+  DEFAULT_FIAT_LIMIT_POLICIES,
+  ROLLING_MONTH_MS,
+  DAY_MS,
+  type KycTierValue,
+  type FiatLimitPolicyConfig,
+  type FiatLimitEvaluationResult,
+  type FiatLimitsSummary,
+  type ScheduledFiatPlanState,
+} from './limits'
 import type {
   CreateFiatOrderInput,
   FiatQuoteInput,
@@ -282,6 +297,119 @@ export async function getBestExecutionQuote(
 export interface CreateOrderContext {
   /** Authenticated user's custodial/destination Stellar address. */
   walletAddress: string
+  /** Force limit evaluation even when DB models are partially stubbed in unit tests. */
+  enforceLimits?: boolean
+  /** Skip limit evaluation when a caller (e.g. executeScheduledFiatOrder) already ran it. */
+  skipLimitCheck?: boolean
+  /** Optional explicit KYC tier override for evaluation (used in tests/internal callers). */
+  tier?: KycTierValue
+  /** Optional explicit FX rate override (pass `null` to simulate FX outage). */
+  fxRate?: number | null
+  /** Optional explicit FX feed availability flag. */
+  fxFeedAvailable?: boolean
+  /** Optional explicit compliance freeze flag. */
+  isFrozen?: boolean
+  /** Optional evaluation clock anchor. */
+  now?: Date
+}
+
+function mapDbPolicyToConfig(
+  row: any,
+  tier: KycTierValue
+): FiatLimitPolicyConfig {
+  if (!row) {
+    return (
+      DEFAULT_FIAT_LIMIT_POLICIES[tier] ?? DEFAULT_FIAT_LIMIT_POLICIES.TIER_0
+    )
+  }
+  return {
+    tier: (row.tier as KycTierValue) ?? tier,
+    perTxnMax: Number(row.perTxnMax),
+    dailyMax: Number(row.dailyMax),
+    monthlyMax: Number(row.monthlyMax),
+    maxTxnsPerHour: Number(row.maxTxnsPerHour),
+    maxTxnsPerDay: Number(row.maxTxnsPerDay),
+    currency: row.currency || 'USD',
+    offRampOverrides: (row.offRampOverrides as any) ?? null,
+  }
+}
+
+async function resolveUserLimitInputs(
+  userId: string,
+  ctx: Partial<CreateOrderContext>,
+  database: Db
+): Promise<{
+  isFrozen: boolean
+  tier: KycTierValue
+  policy: FiatLimitPolicyConfig
+  recentOrders: any[]
+  now: Date
+}> {
+  const now = ctx.now ?? new Date()
+
+  let isFrozen = ctx.isFrozen ?? false
+  if (ctx.isFrozen === undefined) {
+    if (typeof (database as any).user?.findUnique === 'function') {
+      const user = await (database as any).user.findUnique({
+        where: { id: userId },
+        select: { isActive: true },
+      })
+      if (user && user.isActive === false) {
+        isFrozen = true
+      }
+    }
+    if (
+      !isFrozen &&
+      typeof (database as any).complianceCase?.findFirst === 'function'
+    ) {
+      const activeCase = await (database as any).complianceCase.findFirst({
+        where: {
+          userId,
+          status: {
+            in: ['OPEN', 'TRIAGE', 'INVESTIGATING', 'ESCALATED', 'PENDING_SAR'],
+          },
+        },
+        select: { id: true },
+      })
+      if (activeCase) {
+        isFrozen = true
+      }
+    }
+  }
+
+  let tier: KycTierValue = ctx.tier ?? 'TIER_0'
+  if (
+    !ctx.tier &&
+    typeof (database as any).kycProfile?.findUnique === 'function'
+  ) {
+    const profile = await (database as any).kycProfile.findUnique({
+      where: { userId },
+    })
+    tier = (profile?.tier as KycTierValue) ?? 'TIER_0'
+  }
+
+  let policyRow: any = null
+  if (typeof (database as any).fiatLimitPolicy?.findUnique === 'function') {
+    policyRow = await (database as any).fiatLimitPolicy.findUnique({
+      where: { tier },
+    })
+  }
+  const policy = mapDbPolicyToConfig(policyRow, tier)
+
+  let recentOrders: any[] = []
+  if (typeof (database as any).fiatOrder?.findMany === 'function') {
+    const windowCutoff = new Date(now.getTime() - (ROLLING_MONTH_MS + DAY_MS))
+    recentOrders =
+      (await (database as any).fiatOrder.findMany({
+        where: {
+          userId,
+          createdAt: { gte: windowCutoff },
+        },
+        orderBy: { createdAt: 'asc' },
+      })) ?? []
+  }
+
+  return { isFrozen, tier, policy, recentOrders, now }
 }
 
 async function resolveOrderProvider(
@@ -378,6 +506,83 @@ export async function createFiatOrder(
   ctx: CreateOrderContext,
   database: Db = db
 ) {
+  let limitEval: FiatLimitEvaluationResult | null = null
+  let evaluatedTier: KycTierValue = ctx.tier ?? 'TIER_0'
+
+  const shouldEnforceLimits =
+    !ctx.skipLimitCheck &&
+    (ctx.enforceLimits === true ||
+      ctx.isFrozen !== undefined ||
+      ctx.tier !== undefined ||
+      typeof (database as any).kycProfile?.findUnique === 'function')
+
+  if (shouldEnforceLimits) {
+    const limitInputs = await resolveUserLimitInputs(
+      input.userId,
+      ctx,
+      database
+    )
+    evaluatedTier = limitInputs.tier
+    limitEval = evaluateFiatOrder({
+      userId: input.userId,
+      direction: input.direction,
+      amount: input.fiatAmount,
+      currency: input.fiatCurrency,
+      tier: limitInputs.tier,
+      recentOrders: limitInputs.recentOrders,
+      now: limitInputs.now,
+      policy: limitInputs.policy,
+      fxRate: ctx.fxRate,
+      fxFeedAvailable: ctx.fxFeedAvailable,
+      isFrozen: limitInputs.isFrozen,
+    })
+
+    if (!limitEval.allowed) {
+      recordFiatLimitEvaluation?.(
+        'denied',
+        limitEval.reason ?? 'unknown',
+        evaluatedTier,
+        input.direction
+      )
+      logger.warn('[Fiat] Order denied by limit/velocity/KYC check', {
+        userId: input.userId,
+        direction: input.direction,
+        amount: input.fiatAmount,
+        currency: input.fiatCurrency,
+        tier: evaluatedTier,
+        reason: limitEval.reason,
+        limit: limitEval.limit,
+        used: limitEval.used,
+        remaining: limitEval.remaining,
+      })
+      throw new FiatOrderError(
+        'fiat_limit_exceeded',
+        403,
+        `Fiat order denied: ${limitEval.reason}`,
+        {
+          reason: limitEval.reason,
+          tier: evaluatedTier,
+          limit: limitEval.limit,
+          used: limitEval.used,
+          remaining: limitEval.remaining,
+          ...(limitEval.retryAfter != null
+            ? { retryAfter: limitEval.retryAfter }
+            : {}),
+          ...(limitEval.baseCurrency
+            ? { currency: limitEval.baseCurrency }
+            : {}),
+        }
+      )
+    }
+
+    recordFiatLimitEvaluation?.(
+      limitEval.limitWarning ? 'soft_warn' : 'allowed',
+      limitEval.limitWarning?.window ?? 'ok',
+      evaluatedTier,
+      input.direction
+    )
+  }
+
   const resolved = await resolveOrderProvider(input, database)
   const provider = getProvider(resolved.providerName)
 
@@ -448,7 +653,151 @@ export async function createFiatOrder(
     status: initialStatus,
   })
 
+  if (limitEval?.limitWarning) {
+    const warn = limitEval.limitWarning
+    publishUserEvent(
+      input.userId,
+      EVENT_TYPE_TOPIC['fiat.limit.approaching'],
+      'fiat.limit.approaching',
+      {
+        orderId: order.id,
+        userId: input.userId,
+        direction: input.direction,
+        tier: evaluatedTier,
+        window: warn.window,
+        utilizationPct: warn.utilizationPct,
+        used: warn.used,
+        limit: warn.limit,
+        remaining: warn.remaining,
+        currency: warn.currency,
+      }
+    ).catch(() => {})
+
+    return {
+      ...order,
+      limitWarning: warn,
+    }
+  }
+
   return order
+}
+
+/**
+ * Compute the caller's KYC tier and per-window limit/used/remaining summary
+ * for `GET /api/v1/fiat/limits` (#362).
+ */
+export async function getUserFiatLimits(
+  userId: string,
+  options: {
+    direction?: FiatDirection
+    now?: Date
+    fxRate?: number | null
+    fxFeedAvailable?: boolean
+  } = {},
+  database: Db = db
+): Promise<FiatLimitsSummary> {
+  const limitInputs = await resolveUserLimitInputs(
+    userId,
+    {
+      now: options.now,
+      fxRate: options.fxRate,
+      fxFeedAvailable: options.fxFeedAvailable,
+    },
+    database
+  )
+  return computeFiatLimitsSummary({
+    tier: limitInputs.tier,
+    direction: options.direction ?? 'ON_RAMP',
+    recentOrders: limitInputs.recentOrders,
+    now: limitInputs.now,
+    policy: limitInputs.policy,
+    fxRate: options.fxRate,
+    fxFeedAvailable: options.fxFeedAvailable,
+  })
+}
+
+/**
+ * Execute a scheduled fiat order (`fiatPurchases` / `fiatPayouts` jobs, #362).
+ *
+ * Calls `evaluateFiatOrder` first; on denial returns a `skipped_limit` outcome
+ * and auto-pauses the plan after N consecutive `skipped_limit` runs.
+ */
+export async function executeScheduledFiatOrder(
+  params: {
+    plan: ScheduledFiatPlanState
+    orderInput: CreateFiatOrderInput
+    ctx: CreateOrderContext
+    maxConsecutiveSkips?: number
+  },
+  database: Db = db
+) {
+  const limitInputs = await resolveUserLimitInputs(
+    params.orderInput.userId,
+    params.ctx,
+    database
+  )
+  const runEval = evaluateScheduledFiatRun({
+    plan: params.plan,
+    maxConsecutiveSkips: params.maxConsecutiveSkips,
+    evaluationInput: {
+      userId: params.orderInput.userId,
+      direction: params.orderInput.direction,
+      amount: params.orderInput.fiatAmount,
+      currency: params.orderInput.fiatCurrency,
+      tier: limitInputs.tier,
+      recentOrders: limitInputs.recentOrders,
+      now: limitInputs.now,
+      policy: limitInputs.policy,
+      fxRate: params.ctx.fxRate,
+      fxFeedAvailable: params.ctx.fxFeedAvailable,
+      isFrozen: limitInputs.isFrozen,
+    },
+  })
+
+  if (runEval.outcome === 'skipped_limit') {
+    recordFiatLimitEvaluation?.(
+      'denied',
+      runEval.evaluation.reason ?? 'unknown',
+      limitInputs.tier,
+      params.orderInput.direction
+    )
+    if (runEval.shouldAutoPause) {
+      logger.warn(
+        '[Fiat] Scheduled fiat plan auto-paused after repeated skipped_limit runs',
+        {
+          planId: params.plan.id,
+          userId: params.plan.userId,
+          consecutiveSkippedLimit: runEval.consecutiveSkippedLimit,
+          reason: runEval.evaluation.reason,
+        }
+      )
+    }
+    return {
+      outcome: 'skipped_limit' as const,
+      reason: runEval.evaluation.reason,
+      limit: runEval.evaluation.limit,
+      used: runEval.evaluation.used,
+      remaining: runEval.evaluation.remaining,
+      retryAfter: runEval.evaluation.retryAfter,
+      consecutiveSkippedLimit: runEval.consecutiveSkippedLimit,
+      autoPaused: runEval.shouldAutoPause,
+      nextStatus: runEval.nextStatus,
+    }
+  }
+
+  const order = await createFiatOrder(
+    params.orderInput,
+    { ...params.ctx, skipLimitCheck: true },
+    database
+  )
+
+  return {
+    outcome: 'executed' as const,
+    order,
+    consecutiveSkippedLimit: 0,
+    autoPaused: false,
+    nextStatus: params.plan.status,
+  }
 }
 
 // ── Webhook processing (idempotent) ─────────────────────────────────────────
@@ -552,6 +901,10 @@ export async function processProviderWebhook(
   // Emit outbound webhook for terminal failure/refund so subscribers react.
   if (updated.status === 'FAILED' || updated.status === 'REFUNDED') {
     recordFiatOrder(providerName, updated.status)
+    recordFiatLimitHeadroomRelease?.(
+      updated.status as 'FAILED' | 'REFUNDED',
+      updated.direction ?? 'ON_RAMP'
+    )
     publishUserEvent(
       updated.userId,
       EVENT_TYPE_TOPIC['fiat.order.failed'],

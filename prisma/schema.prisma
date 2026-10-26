@@ -163,6 +163,13 @@ enum FiatOrderStatus {
   REFUNDED
 }
 
+enum KycTier {
+  TIER_0
+  TIER_1
+  TIER_2
+  TIER_3
+}
+
 enum ReferralStatus {
   PENDING
   ACTIVATED
@@ -395,6 +402,7 @@ model User {
   supportTickets          SupportTicket[]
   webAuthnCredentials     WebAuthnCredential[]
   digestSubscriptions     DigestSubscription[]
+  kycProfile              KycProfile?
 
   @@map("users")
 }
@@ -1424,6 +1432,40 @@ model FiatQuoteLock {
   @@index([expiresAt])
   @@index([provider])
   @@map("fiat_quote_locks")
+}
+
+/// Per-user KYC verification profile and tier (#362).
+/// Tier is set only by verified provider callbacks or an audited admin override —
+/// never from client input. `providerRef` is an opaque provider-side token; no
+/// identity documents or PII are stored on the platform.
+model KycProfile {
+  userId      String    @id
+  tier        KycTier   @default(TIER_0)
+  providerRef String?
+  verifiedAt  DateTime?
+  reviewNote  String?
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("kyc_profiles")
+}
+
+/// Per-tier fiat transaction and velocity limits (#362).
+/// Defined in a canonical base `currency` (default USD); cross-currency orders
+/// are converted via the FX feed (rateSource: FX_FEED) before evaluation.
+model FiatLimitPolicy {
+  tier             KycTier  @id
+  perTxnMax        Decimal  @db.Decimal(36, 18)
+  dailyMax         Decimal  @db.Decimal(36, 18)
+  monthlyMax       Decimal  @db.Decimal(36, 18)
+  maxTxnsPerHour   Int
+  maxTxnsPerDay    Int
+  currency         String
+  offRampOverrides Json?
+  updatedAt        DateTime @updatedAt
+
+  @@map("fiat_limit_policies")
 }
 
 /// A user's own single-level referral code (#growth). One code per user; the

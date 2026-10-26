@@ -34,6 +34,7 @@ import assistantRouter from './assistant'
 import authRouter from './auth'
 import depositRouter from './deposit'
 import fiatRouter from './fiat'
+import kycRouter from './kyc'
 import healthRouter from './health'
 import keysRouter from './keys'
 import liquidityFloorRouter from './liquidity-floor'
@@ -112,6 +113,7 @@ export const API_ROUTES: ApiRoute[] = [
   { path: 'analytics', handlers: [analyticsRouter] },
   { path: 'stellar', handlers: [stellarRouter] },
   { path: 'fiat', handlers: [fiatRouter] },
+  { path: 'kyc', handlers: [kycRouter] },
   { path: 'referrals', handlers: [referralsRouter] },
   { path: 'deposit/recurring', handlers: [recurringDepositRouter] },
   { path: 'recurring-withdrawals', handlers: [recurringWithdrawalRouter] },

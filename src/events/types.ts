@@ -87,6 +87,7 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'fiat.order.settled': 'transactions',
   'fiat.order.failed': 'transactions',
   'fiat.order.rate_mismatch': 'transactions',
+  'fiat.limit.approaching': 'alerts',
   'recurring_deposit.executed': 'transactions',
   'recurring_deposit.failed': 'transactions',
   'outbox.op_failed': 'transactions',

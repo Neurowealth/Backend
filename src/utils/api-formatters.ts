@@ -244,6 +244,17 @@ const USER_EVENT_PAYLOAD_ALLOWLIST: Record<string, readonly string[]> = {
     'settledCryptoAmount',
     'driftPct',
   ],
+  'fiat.limit.approaching': [
+    'orderId',
+    'direction',
+    'tier',
+    'window',
+    'utilizationPct',
+    'used',
+    'limit',
+    'remaining',
+    'currency',
+  ],
   'recurring_deposit.executed': [
     'planId',
     'amount',

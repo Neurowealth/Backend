@@ -518,6 +518,20 @@ export const fiatRateDriftPct = new client.Histogram({
   registers: [register],
 })
 
+export const fiatLimitEvaluationsTotal = new client.Counter({
+  name: 'fiat_limit_evaluations_total',
+  help: 'Total fiat transaction limit and velocity evaluations (#362)',
+  labelNames: ['outcome', 'reason', 'tier', 'direction'] as const,
+  registers: [register],
+})
+
+export const fiatLimitHeadroomReleasedTotal = new client.Counter({
+  name: 'fiat_limit_headroom_released_total',
+  help: 'Total pending/settled fiat order headroom releases due to FAILED or REFUNDED status (#362)',
+  labelNames: ['status', 'direction'] as const,
+  registers: [register],
+})
+
 // ── Helper Functions ─────────────────────────────────────────────────────────────
 
 /**
@@ -782,6 +796,28 @@ export function recordFiatRateDrift(
   absDriftPct: number
 ): void {
   fiatRateDriftPct.observe({ provider, direction }, absDriftPct)
+}
+
+/**
+ * Record a fiat transaction limit / velocity evaluation (#362).
+ */
+export function recordFiatLimitEvaluation(
+  outcome: 'allowed' | 'denied' | 'soft_warn',
+  reason: string,
+  tier: string,
+  direction: string
+): void {
+  fiatLimitEvaluationsTotal.inc({ outcome, reason, tier, direction })
+}
+
+/**
+ * Record a pending/settled fiat order headroom release on FAILED or REFUNDED (#362).
+ */
+export function recordFiatLimitHeadroomRelease(
+  status: 'FAILED' | 'REFUNDED',
+  direction: string
+): void {
+  fiatLimitHeadroomReleasedTotal.inc({ status, direction })
 }
 
 // ── Outbox Metrics (#325) ────────────────────────────────────────────────────
