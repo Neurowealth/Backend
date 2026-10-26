@@ -24,6 +24,11 @@ import {
   fiatQuoteSchema,
   bestExecutionQuoteQuerySchema,
   createFiatOrderSchema,
+  createFiatPurchasePlanSchema,
+  updateFiatPurchasePlanSchema,
+  fiatPurchasePlanIdParamSchema,
+  fiatPurchasePlanPreviewQuerySchema,
+  fiatPurchasePlanRunsQuerySchema,
 } from '../validators/fiat-validators'
 import {
   getFiatQuote,
@@ -33,6 +38,16 @@ import {
   processProviderWebhook,
   recordProviderWebhookDelivery,
 } from '../fiat/service'
+import {
+  calculateNextFiatPurchaseRun,
+  generateFiatPurchasePreview,
+  isUserComplianceFrozen,
+  recordPlanAuditEntry,
+} from '../jobs/fiatPurchases'
+import {
+  requireSubAccountPermission,
+  checkSubAccountPermission,
+} from '../middleware/subAccount'
 import { getProvider } from '../fiat/registry'
 import { NoHealthyProvidersError, FiatOrderError } from '../fiat/types'
 import db from '../db'
@@ -230,6 +245,502 @@ router.post(
       })
       return sendError(res, 500, 'Webhook processing failed')
     }
+  }
+)
+
+// ── Scheduled Fiat Purchase Plans (Card-Funded DCA, #361) ───────────────────
+
+async function ensureSubAccountDepositPermission(
+  actorUserId: string,
+  targetUserId: string
+): Promise<{ allowed: boolean; reason?: string }> {
+  if (actorUserId !== targetUserId) {
+    const check = await checkSubAccountPermission(
+      actorUserId,
+      targetUserId,
+      'DEPOSIT'
+    )
+    if (!check.allowed) {
+      return { allowed: false, reason: check.reason }
+    }
+    return { allowed: true }
+  }
+
+  // If the authenticated user is itself a child sub-account, verify it holds DEPOSIT permission
+  const childLink = await (db as any).subAccount?.findFirst?.({
+    where: { childUserId: targetUserId, status: 'ACTIVE' },
+  })
+  if (childLink && !childLink.permissions?.includes('DEPOSIT')) {
+    return { allowed: false, reason: 'no_permission' }
+  }
+
+  return { allowed: true }
+}
+
+router.post(
+  '/purchase-plans',
+  requireAuth,
+  requireScope('fiat:write'),
+  idempotent({ required: false, failClosed: true, ttlSeconds: 86400 }),
+  validate({ body: createFiatPurchasePlanSchema, errorMessage: 'Validation error' }),
+  requireSubAccountPermission('DEPOSIT'),
+  async (req: Request, res: Response) => {
+    const actorUserId = req.auth?.userId ?? req.userId
+    if (!actorUserId) {
+      return sendError(res, 401, 'Unauthorized')
+    }
+
+    const targetUserId = req.body.userId ?? actorUserId
+    const perm = await ensureSubAccountDepositPermission(
+      actorUserId,
+      targetUserId
+    )
+    if (!perm.allowed) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        required: 'DEPOSIT',
+      })
+    }
+
+    const user = await (db as any).user.findUnique({
+      where: { id: targetUserId },
+    })
+    if (!user) {
+      return sendError(res, 404, 'User not found')
+    }
+    const freezeCheck = await isUserComplianceFrozen(targetUserId, db)
+    if (user.isFrozen || freezeCheck.frozen) {
+      return sendError(
+        res,
+        403,
+        'Account is frozen due to a compliance hold; cannot create purchase plan'
+      )
+    }
+
+    let baselineRate: number | null =
+      req.body.baselineRate !== undefined ? req.body.baselineRate : null
+    if (baselineRate === null) {
+      try {
+        const quoteResult = await getBestExecutionQuote(
+          {
+            direction: 'ON_RAMP',
+            fiatAmount: Number(req.body.fiatAmount),
+            fiatCurrency: req.body.fiatCurrency,
+            assetSymbol: req.body.assetSymbol,
+          },
+          { userId: targetUserId },
+          db
+        )
+        if (quoteResult.best) {
+          baselineRate =
+            quoteResult.best.rate ??
+            (Number(req.body.fiatAmount) > 0
+              ? Number(quoteResult.best.cryptoAmount) /
+                Number(req.body.fiatAmount)
+              : null)
+        }
+      } catch {
+        // Non-fatal: baselineRate will be captured on first quote/run
+      }
+    }
+
+    const nextRunAt = calculateNextFiatPurchaseRun(req.body.cadence)
+    const plan = await (db as any).fiatPurchasePlan.create({
+      data: {
+        userId: targetUserId,
+        fiatAmount: req.body.fiatAmount,
+        fiatCurrency: req.body.fiatCurrency,
+        assetSymbol: req.body.assetSymbol,
+        paymentMethodRef: req.body.paymentMethodRef,
+        cadence: req.body.cadence,
+        nextRunAt,
+        status: 'ACTIVE',
+        autoDeposit: req.body.autoDeposit ?? true,
+        maxSlippagePct: req.body.maxSlippagePct ?? null,
+        baselineRate,
+        retryPolicy: req.body.retryPolicy ?? {
+          maxAttempts: 3,
+          backoffMinutes: 15,
+        },
+        consecutiveFailures: 0,
+      },
+    })
+
+    await recordPlanAuditEntry(db, 'PLAN_CREATED', {
+      planId: plan.id,
+      actorUserId,
+      userId: plan.userId,
+      fiatAmount: Number(plan.fiatAmount),
+      fiatCurrency: plan.fiatCurrency,
+      assetSymbol: plan.assetSymbol,
+      cadence: plan.cadence,
+      autoDeposit: plan.autoDeposit,
+      maxSlippagePct: plan.maxSlippagePct
+        ? Number(plan.maxSlippagePct)
+        : null,
+      status: plan.status,
+    })
+
+    return res.status(201).json({ plan })
+  }
+)
+
+router.get(
+  '/purchase-plans',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const actorUserId = req.auth?.userId ?? req.userId
+    if (!actorUserId) {
+      return sendError(res, 401, 'Unauthorized')
+    }
+
+    const requestedUserId =
+      typeof req.query.userId === 'string' ? req.query.userId : actorUserId
+    if (requestedUserId !== actorUserId) {
+      const check = await checkSubAccountPermission(
+        actorUserId,
+        requestedUserId,
+        'VIEW'
+      )
+      if (!check.allowed) {
+        return res.status(403).json({ error: 'Forbidden' })
+      }
+    }
+
+    const plans = await (db as any).fiatPurchasePlan.findMany({
+      where: { userId: requestedUserId },
+      orderBy: { createdAt: 'desc' },
+    })
+    return res.json({ plans })
+  }
+)
+
+router.get(
+  '/purchase-plans/:id',
+  requireAuth,
+  validate({
+    params: fiatPurchasePlanIdParamSchema,
+    errorMessage: 'Validation error',
+  }),
+  async (req: Request, res: Response) => {
+    const actorUserId = req.auth?.userId ?? req.userId
+    if (!actorUserId) {
+      return sendError(res, 401, 'Unauthorized')
+    }
+
+    const plan = await (db as any).fiatPurchasePlan.findUnique({
+      where: { id: req.params.id },
+    })
+    if (!plan) {
+      return sendError(res, 404, 'Purchase plan not found')
+    }
+    if (plan.userId !== actorUserId) {
+      const check = await checkSubAccountPermission(
+        actorUserId,
+        plan.userId,
+        'VIEW'
+      )
+      if (!check.allowed) {
+        return sendError(res, 404, 'Purchase plan not found')
+      }
+    }
+
+    return res.json({ plan })
+  }
+)
+
+router.patch(
+  '/purchase-plans/:id',
+  requireAuth,
+  requireScope('fiat:write'),
+  validate({
+    params: fiatPurchasePlanIdParamSchema,
+    body: updateFiatPurchasePlanSchema,
+    errorMessage: 'Validation error',
+  }),
+  async (req: Request, res: Response) => {
+    const actorUserId = req.auth?.userId ?? req.userId
+    if (!actorUserId) {
+      return sendError(res, 401, 'Unauthorized')
+    }
+
+    const existing = await (db as any).fiatPurchasePlan.findUnique({
+      where: { id: req.params.id },
+    })
+    if (!existing) {
+      return sendError(res, 404, 'Purchase plan not found')
+    }
+
+    const perm = await ensureSubAccountDepositPermission(
+      actorUserId,
+      existing.userId
+    )
+    if (!perm.allowed) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        required: 'DEPOSIT',
+      })
+    }
+
+    if (existing.status === 'CANCELLED') {
+      return sendError(res, 409, 'Cannot modify a cancelled purchase plan')
+    }
+
+    const data: Record<string, unknown> = { updatedAt: new Date() }
+    if (req.body.fiatAmount !== undefined) data.fiatAmount = req.body.fiatAmount
+    if (req.body.paymentMethodRef !== undefined) {
+      data.paymentMethodRef = req.body.paymentMethodRef
+    }
+    if (req.body.cadence !== undefined) data.cadence = req.body.cadence
+    if (req.body.status !== undefined) data.status = req.body.status
+    if (req.body.autoDeposit !== undefined) {
+      data.autoDeposit = req.body.autoDeposit
+    }
+    if (req.body.maxSlippagePct !== undefined) {
+      data.maxSlippagePct = req.body.maxSlippagePct
+    }
+    if (req.body.baselineRate !== undefined) {
+      data.baselineRate = req.body.baselineRate
+    }
+    if (req.body.retryPolicy !== undefined) {
+      data.retryPolicy = req.body.retryPolicy
+    }
+
+    if (
+      (req.body.status === 'ACTIVE' && existing.status === 'PAUSED') ||
+      (req.body.cadence !== undefined && req.body.cadence !== existing.cadence)
+    ) {
+      const nextCadence = req.body.cadence ?? existing.cadence
+      data.nextRunAt = calculateNextFiatPurchaseRun(nextCadence)
+      if (req.body.status === 'ACTIVE') {
+        data.consecutiveFailures = 0
+        data.autoPauseReason = null
+      }
+    }
+
+    const updated = await (db as any).fiatPurchasePlan.update({
+      where: { id: existing.id },
+      data,
+    })
+
+    const auditAction =
+      req.body.status === 'PAUSED' && existing.status !== 'PAUSED'
+        ? 'PLAN_PAUSED'
+        : req.body.status === 'ACTIVE' && existing.status === 'PAUSED'
+          ? 'PLAN_RESUMED'
+          : req.body.status === 'CANCELLED'
+            ? 'PLAN_CANCELLED'
+            : 'PLAN_UPDATED'
+
+    await recordPlanAuditEntry(db, auditAction, {
+      planId: existing.id,
+      actorUserId,
+      before: {
+        status: existing.status,
+        fiatAmount: Number(existing.fiatAmount),
+        cadence: existing.cadence,
+        autoDeposit: existing.autoDeposit,
+      },
+      after: {
+        status: updated.status,
+        fiatAmount: Number(updated.fiatAmount),
+        cadence: updated.cadence,
+        autoDeposit: updated.autoDeposit,
+      },
+    })
+
+    return res.json({ plan: updated })
+  }
+)
+
+router.delete(
+  '/purchase-plans/:id',
+  requireAuth,
+  requireScope('fiat:write'),
+  validate({
+    params: fiatPurchasePlanIdParamSchema,
+    errorMessage: 'Validation error',
+  }),
+  async (req: Request, res: Response) => {
+    const actorUserId = req.auth?.userId ?? req.userId
+    if (!actorUserId) {
+      return sendError(res, 401, 'Unauthorized')
+    }
+
+    const existing = await (db as any).fiatPurchasePlan.findUnique({
+      where: { id: req.params.id },
+    })
+    if (!existing) {
+      return sendError(res, 404, 'Purchase plan not found')
+    }
+
+    const perm = await ensureSubAccountDepositPermission(
+      actorUserId,
+      existing.userId
+    )
+    if (!perm.allowed) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        required: 'DEPOSIT',
+      })
+    }
+
+    const updated = await (db as any).fiatPurchasePlan.update({
+      where: { id: existing.id },
+      data: {
+        status: 'CANCELLED',
+        updatedAt: new Date(),
+      },
+    })
+
+    await recordPlanAuditEntry(db, 'PLAN_CANCELLED', {
+      planId: existing.id,
+      actorUserId,
+      before: { status: existing.status },
+      after: { status: 'CANCELLED' },
+    })
+
+    return res.json({ plan: updated })
+  }
+)
+
+async function handlePurchasePlanPreview(req: Request, res: Response) {
+  const actorUserId = req.auth?.userId ?? req.userId
+  if (!actorUserId) {
+    return sendError(res, 401, 'Unauthorized')
+  }
+
+  const plan = await (db as any).fiatPurchasePlan.findUnique({
+    where: { id: req.params.id },
+  })
+  if (!plan) {
+    return sendError(res, 404, 'Purchase plan not found')
+  }
+  if (plan.userId !== actorUserId) {
+    const check = await checkSubAccountPermission(
+      actorUserId,
+      plan.userId,
+      'VIEW'
+    )
+    if (!check.allowed) {
+      return sendError(res, 404, 'Purchase plan not found')
+    }
+  }
+
+  const runsCount = Number(req.query.runs ?? req.body?.runs ?? 6)
+  try {
+    let liveRate: number | null = null
+    try {
+      const quoteResult = await getBestExecutionQuote(
+        {
+          direction: 'ON_RAMP',
+          fiatAmount: Number(plan.fiatAmount),
+          fiatCurrency: plan.fiatCurrency,
+          assetSymbol: plan.assetSymbol,
+        },
+        { userId: plan.userId },
+        db
+      )
+      if (quoteResult.best) {
+        liveRate =
+          quoteResult.best.rate ??
+          (Number(plan.fiatAmount) > 0
+            ? Number(quoteResult.best.cryptoAmount) / Number(plan.fiatAmount)
+            : null)
+      }
+    } catch {
+      // Fallback to plan.baselineRate in generateFiatPurchasePreview
+    }
+
+    const preview = generateFiatPurchasePreview({
+      plan,
+      runs: Number.isFinite(runsCount) && runsCount > 0 ? runsCount : 6,
+      liveRate,
+    })
+    return res.json(preview)
+  } catch (err) {
+    return respondToFiatError(res, err, 'Failed to generate purchase preview')
+  }
+}
+
+router.get(
+  '/purchase-plans/:id/preview',
+  requireAuth,
+  validate({
+    params: fiatPurchasePlanIdParamSchema,
+    query: fiatPurchasePlanPreviewQuerySchema,
+    errorMessage: 'Validation error',
+  }),
+  handlePurchasePlanPreview
+)
+
+router.post(
+  '/purchase-plans/:id/preview',
+  requireAuth,
+  validate({
+    params: fiatPurchasePlanIdParamSchema,
+    query: fiatPurchasePlanPreviewQuerySchema,
+    errorMessage: 'Validation error',
+  }),
+  handlePurchasePlanPreview
+)
+
+router.get(
+  '/purchase-plans/:id/runs',
+  requireAuth,
+  validate({
+    params: fiatPurchasePlanIdParamSchema,
+    query: fiatPurchasePlanRunsQuerySchema,
+    errorMessage: 'Validation error',
+  }),
+  async (req: Request, res: Response) => {
+    const actorUserId = req.auth?.userId ?? req.userId
+    if (!actorUserId) {
+      return sendError(res, 401, 'Unauthorized')
+    }
+
+    const plan = await (db as any).fiatPurchasePlan.findUnique({
+      where: { id: req.params.id },
+    })
+    if (!plan) {
+      return sendError(res, 404, 'Purchase plan not found')
+    }
+    if (plan.userId !== actorUserId) {
+      const check = await checkSubAccountPermission(
+        actorUserId,
+        plan.userId,
+        'VIEW'
+      )
+      if (!check.allowed) {
+        return sendError(res, 404, 'Purchase plan not found')
+      }
+    }
+
+    const page = Number(req.query.page ?? 1)
+    const limit = Number(req.query.limit ?? 20)
+    const skip = (page - 1) * limit
+
+    const [runs, total] = await Promise.all([
+      (db as any).fiatPurchasePlanRun.findMany({
+        where: { planId: plan.id },
+        orderBy: { scheduledFor: 'desc' },
+        skip,
+        take: limit,
+      }),
+      (db as any).fiatPurchasePlanRun.count({
+        where: { planId: plan.id },
+      }),
+    ])
+
+    return res.json({
+      runs,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    })
   }
 )
 

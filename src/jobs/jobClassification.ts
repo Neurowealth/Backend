@@ -18,6 +18,7 @@ export const JOB_CLASSIFICATION: Record<string, JobConcurrencyClass> = {
   alert_rules: 'idempotent-by-design',
   allocation_suggestions: 'idempotent-by-design',
   approval_expiry_sweep: 'locked',
+  fiat_purchases: 'locked',
   fiat_reconciliation: 'locked',
   linked_external_wallet_sync: 'idempotent-by-design',
   'loan-accrual': 'idempotent-by-design',
