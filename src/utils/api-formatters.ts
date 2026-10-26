@@ -129,6 +129,10 @@ export const mapGoalToResponse = (goal: any) => ({
   targetDate: goal.targetDate.toISOString(),
   riskCeiling: goal.riskCeiling,
   includeExternalHoldings: goal.includeExternalHoldings ?? false,
+  priority: goal.priority !== undefined ? Number(goal.priority) : 100,
+  allocationWeight:
+    goal.allocationWeight !== undefined ? Number(goal.allocationWeight) : 1,
+  fundingMode: goal.fundingMode ?? 'SEQUENTIAL',
   status: goal.status,
   createdAt: goal.createdAt.toISOString(),
   updatedAt: goal.updatedAt.toISOString(),

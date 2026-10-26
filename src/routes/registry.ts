@@ -34,6 +34,7 @@ import assistantRouter from './assistant'
 import authRouter from './auth'
 import depositRouter from './deposit'
 import fiatRouter from './fiat'
+import goalsRouter from './goals'
 import healthRouter from './health'
 import keysRouter from './keys'
 import liquidityFloorRouter from './liquidity-floor'
@@ -94,6 +95,7 @@ export const API_ROUTES: ApiRoute[] = [
   { path: 'whatsapp', handlers: [webhookRateLimiter, whatsappRouter] },
   { path: 'telegram', handlers: [webhookRateLimiter, telegramRouter] },
   { path: 'portfolio', handlers: [portfolioRouter] },
+  { path: 'goals', handlers: [goalsRouter] },
   { path: 'transactions', handlers: [transactionsRouter] },
   // #669 — QBO/Xero export with a mandatory ledger reconciliation gate.
   { path: 'accounting', handlers: [accountingRouter] },

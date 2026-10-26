@@ -368,6 +368,22 @@ components:
           type: boolean
           default: false
           description: Include known external issuer-matched USDC in this owner's private goal progress.
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          default: 100
+          description: Priority rank (lower number is funded first in SEQUENTIAL mode).
+        allocationWeight:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          default: 1
+          description: Relative weight used when splitting contributions in WEIGHTED mode.
+        fundingMode:
+          type: string
+          enum: [SEQUENTIAL, WEIGHTED]
+          default: SEQUENTIAL
 
     GoalUpdateRequest:
       type: object
@@ -387,6 +403,29 @@ components:
         includeExternalHoldings:
           type: boolean
           description: Opt in or out of counting known external USDC in this owner's goal progress.
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        allocationWeight:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        fundingMode:
+          type: string
+          enum: [SEQUENTIAL, WEIGHTED]
+
+    GoalReassignRequest:
+      type: object
+      required: [toGoalId, amount]
+      properties:
+        toGoalId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
 
     GoalProgressResponse:
       type: object
@@ -4787,6 +4826,17 @@ paths:
           description: External wallet not found for the caller.
 
   /portfolio/goals:
+    get:
+      operationId: listPortfolioSavingsGoals
+      summary: List all savings goals with progress and priority-weighted attribution
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Per-goal progress, attributed currentAmount, portfolioShare, and unallocated remainder.
+        '401':
+          description: Missing/invalid bearer token.
     post:
       operationId: createSavingsGoal
       summary: Create a savings goal
@@ -4840,6 +4890,64 @@ paths:
           description: Missing/invalid bearer token or the caller does not own the goal.
         '404':
           description: Goal not found.
+    put:
+      operationId: putPortfolioSavingsGoal
+      summary: Update savings goal priority, allocationWeight, fundingMode, or targets
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoalUpdateRequest'
+      responses:
+        '200':
+          description: Savings goal updated.
+        '400':
+          description: Goal validation failed.
+        '401':
+          description: Missing/invalid bearer token or the caller does not own the goal.
+        '404':
+          description: Goal not found.
+
+  /portfolio/goals/{id}/reassign:
+    post:
+      operationId: reassignPortfolioSavingsGoal
+      summary: Manually reassign attributed capital between the caller's goals
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoalReassignRequest'
+      responses:
+        '200':
+          description: Capital attribution reassigned between goals.
+        '400':
+          description: Invalid reassignment request or insufficient attributed balance.
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: Source or destination goal not found.
 
   /portfolio/goals/{id}/progress:
     get:
@@ -4869,6 +4977,216 @@ paths:
                 $ref: '#/components/schemas/GoalProgressResponse'
         '401':
           description: Missing/invalid bearer token or goal belongs to another user.
+        '404':
+          description: Goal not found.
+
+  /goals:
+    get:
+      operationId: listSavingsGoals
+      summary: List all savings goals with progress and priority-weighted attribution
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Per-goal progress, attributed currentAmount, portfolioShare, and unallocated remainder.
+        '401':
+          description: Missing/invalid bearer token.
+    post:
+      operationId: createTopLevelSavingsGoal
+      summary: Create a savings goal
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoalCreateRequest'
+      responses:
+        '201':
+          description: Savings goal created.
+        '400':
+          description: Goal validation failed.
+        '401':
+          description: Missing/invalid bearer token.
+
+  /goals/{userId}:
+    get:
+      operationId: getUserCurrentSavingsGoal
+      summary: Get the user's current highest-priority active savings goal
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current savings goal.
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: Savings goal not found.
+
+  /goals/{id}:
+    patch:
+      operationId: patchTopLevelSavingsGoal
+      summary: Partially update a savings goal
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoalUpdateRequest'
+      responses:
+        '200':
+          description: Savings goal updated.
+        '400':
+          description: Goal validation failed.
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: Goal not found.
+    put:
+      operationId: putTopLevelSavingsGoal
+      summary: Update savings goal priority, allocationWeight, fundingMode, or targets
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoalUpdateRequest'
+      responses:
+        '200':
+          description: Savings goal updated.
+        '400':
+          description: Goal validation failed.
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: Goal not found.
+    delete:
+      operationId: cancelTopLevelSavingsGoal
+      summary: Soft-cancel a savings goal
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Savings goal cancelled.
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: Goal not found.
+
+  /goals/{id}/reassign:
+    post:
+      operationId: reassignSavingsGoal
+      summary: Manually reassign attributed capital between the caller's goals
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoalReassignRequest'
+      responses:
+        '200':
+          description: Capital attribution reassigned between goals.
+        '400':
+          description: Invalid reassignment request or insufficient attributed balance.
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: Source or destination goal not found.
+
+  /goals/{id}/progress:
+    get:
+      operationId: getTopLevelSavingsGoalProgress
+      summary: Get owner-scoped savings goal progress
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Owner-only goal trajectory and external snapshot caveats.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalProgressResponse'
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: Goal not found.
+
+  /goals/{id}/simulate:
+    post:
+      operationId: simulateTopLevelSavingsGoal
+      summary: Run Monte Carlo attainment simulation for a savings goal
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Goal simulation result.
+        '401':
+          description: Missing/invalid bearer token.
         '404':
           description: Goal not found.
 
