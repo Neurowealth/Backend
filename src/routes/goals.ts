@@ -1,14 +1,16 @@
 /**
- * Goal-based investing routes (#281), mounted under /api/portfolio/goals.
+ * Goal-based investing routes (#281, #358), mounted under /api/v1/goals and
+ * /api/v1/portfolio/goals.
  *
- *   POST   /api/portfolio/goals            — create the caller's savings goal
- *   GET    /api/portfolio/goals/:userId     — the user's current goal (owner-scoped)
- *   PATCH  /api/portfolio/goals/:id         — update target amount/date/riskCeiling
- *   DELETE /api/portfolio/goals/:id         — cancel (soft) a goal
- *   GET    /api/portfolio/goals/:id/progress — trajectory + reachability
- *
- * PATCH/DELETE/progress are keyed by goal id, not :userId, so enforceUserAccess
- * doesn't apply to them — ownership is checked explicitly in the controller.
+ *   GET    /                        — list caller's goals with progress + allocation (#358)
+ *   POST   /                        — create a savings goal
+ *   GET    /:userId                 — the user's current goal (owner-scoped)
+ *   PATCH  /:id                     — update target amount/date/riskCeiling/priority/weight/mode
+ *   PUT    /:id                     — update target amount/date/riskCeiling/priority/weight/mode (#358)
+ *   POST   /:id/reassign            — manually reassign attributed capital between goals (#358)
+ *   DELETE /:id                     — cancel (soft) a goal
+ *   GET    /:id/progress            — trajectory + reachability
+ *   POST   /:id/simulate            — Monte Carlo goal attainment probability (#319)
  */
 import { Router } from 'express'
 import { requireAuth, enforceUserAccess } from '../middleware/authenticate'
@@ -19,12 +21,15 @@ import { userIdParamSchema } from '../validators/common-validators'
 import {
   createGoalSchema,
   updateGoalSchema,
+  reassignGoalSchema,
   goalIdParamSchema,
 } from '../validators/goal-validators'
 import {
+  listGoalsHandler,
   createGoalHandler,
   getGoalHandler,
   updateGoalHandler,
+  reassignGoalHandler,
   cancelGoalHandler,
   getGoalProgressHandler,
 } from '../controllers/goal-controller'
@@ -32,6 +37,8 @@ import { simulateGoalHandler } from '../controllers/goal-simulation-controller'
 import { simulateGoalSchema } from '../validators/simulation-validators'
 
 const router = Router()
+
+router.get('/', requireAuth, listGoalsHandler)
 
 router.post(
   '/',
@@ -56,6 +63,22 @@ router.patch(
   requireScope('goals:write'),
   validate({ params: goalIdParamSchema, body: updateGoalSchema }),
   updateGoalHandler
+)
+
+router.put(
+  '/:id',
+  requireAuth,
+  requireScope('goals:write'),
+  validate({ params: goalIdParamSchema, body: updateGoalSchema }),
+  updateGoalHandler
+)
+
+router.post(
+  '/:id/reassign',
+  requireAuth,
+  requireScope('goals:write'),
+  validate({ params: goalIdParamSchema, body: reassignGoalSchema }),
+  reassignGoalHandler
 )
 
 router.delete(

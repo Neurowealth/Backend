@@ -25,6 +25,11 @@ import {
   GoalTrackingStrategy,
 } from './strategies'
 import {
+  selectBindingGoal,
+  sortGoalsByPriority,
+  type AllocatableGoal,
+} from '../goals/allocation'
+import {
   resolveExposureCap,
   buildExposureSnapshot,
   planCappedRebalance,
@@ -71,9 +76,77 @@ async function loadProtocolRiskScores(): Promise<Record<string, number>> {
 }
 
 /**
- * Load a user's ACTIVE savings goal (#281), if any. Only called when
- * userStrategyPreferences are present, so users who never create a goal issue
- * no extra query beyond this single lookup.
+ * Load all of a user's ACTIVE platform savings goals (#358), enriched with
+ * any attributed balances from `GoalAllocation`. Falls back to `findFirst`
+ * when a test mock only defines `savingsGoal.findFirst`.
+ */
+export async function loadActiveGoals(
+  userId: string
+): Promise<AllocatableGoal[]> {
+  const where = {
+    userId,
+    status: 'ACTIVE' as const,
+    includeExternalHoldings: false,
+  }
+  const sgModel = (db as any).savingsGoal
+  if (!sgModel) return []
+
+  let rawGoals: any[] = []
+  if (typeof sgModel.findMany === 'function') {
+    const res = await sgModel.findMany({ where })
+    rawGoals = Array.isArray(res) ? res : []
+  } else if (typeof sgModel.findFirst === 'function') {
+    const single = await sgModel.findFirst({ where })
+    rawGoals = single ? [single] : []
+  }
+
+  if (rawGoals.length === 0) return []
+
+  const gaModel = (db as any).goalAllocation
+  const attributedByGoal = new Map<string, number>()
+  if (gaModel && typeof gaModel.findMany === 'function') {
+    const rows = await gaModel.findMany({
+      where: { goalId: { in: rawGoals.map((g) => g.id).filter(Boolean) } },
+      select: { goalId: true, amount: true },
+    })
+    if (Array.isArray(rows) && rows.length > 0) {
+      for (const r of rows) {
+        attributedByGoal.set(
+          r.goalId,
+          (attributedByGoal.get(r.goalId) ?? 0) + Number(r.amount)
+        )
+      }
+    }
+  }
+
+  return sortGoalsByPriority(
+    rawGoals.map((g, idx) => ({
+      id: g.id ?? `goal-${idx}`,
+      targetAmount: Number(g.targetAmount),
+      startingAmount: Number(g.startingAmount),
+      currentAmount: attributedByGoal.has(g.id)
+        ? Math.max(0, attributedByGoal.get(g.id)!)
+        : undefined,
+      targetDate: g.targetDate,
+      createdAt: g.createdAt,
+      priority: g.priority ?? 100,
+      allocationWeight: g.allocationWeight ?? 1,
+      fundingMode: g.fundingMode ?? 'SEQUENTIAL',
+      status: g.status ?? 'ACTIVE',
+      positionId: g.positionId ?? null,
+      riskCeiling: g.riskCeiling ?? null,
+      includeExternalHoldings: Boolean(g.includeExternalHoldings),
+    }))
+  )
+}
+
+/**
+ * Load a user's binding ACTIVE savings goal (#281, #358), if any.
+ *
+ * When a user has multiple active goals, selects the binding goal (the
+ * under-funded goal with the highest `requiredApy`) and the stricter
+ * (`Math.max`) of all active goals' `riskCeiling`s. For a user with a single
+ * active goal, returns the exact pre-#358 shape and values.
  */
 async function loadActiveGoal(userId: string): Promise<{
   targetAmount: number
@@ -81,15 +154,14 @@ async function loadActiveGoal(userId: string): Promise<{
   targetDate: Date
   riskCeiling: number | null
 } | null> {
-  const goal = await db.savingsGoal.findFirst({
-    where: { userId, status: 'ACTIVE', includeExternalHoldings: false },
-  })
-  if (!goal) return null
+  const goals = await loadActiveGoals(userId)
+  const selection = selectBindingGoal(goals)
+  if (!selection) return null
   return {
-    targetAmount: Number(goal.targetAmount),
-    startingAmount: Number(goal.startingAmount),
-    targetDate: goal.targetDate,
-    riskCeiling: goal.riskCeiling,
+    targetAmount: selection.bindingGoal.targetAmount,
+    startingAmount: selection.bindingGoal.startingAmount,
+    targetDate: selection.bindingGoal.targetDate,
+    riskCeiling: selection.effectiveRiskCeiling,
   }
 }
 
@@ -906,7 +978,7 @@ export async function executeRebalanceIfNeeded(
           currentProtocol
         )
 
-        if (likelyRebuy) {
+        if (likelyRebuy && typeof (db as any).user?.findFirst === 'function') {
           const userJurisdiction = await db.user.findFirst({
             where: { id: userStrategyPreferences[0]?.userId },
             select: { taxJurisdiction: true },

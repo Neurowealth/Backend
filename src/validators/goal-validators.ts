@@ -4,6 +4,8 @@ export const goalIdParamSchema = z.object({
   id: z.string().uuid('Invalid goal ID format'),
 })
 
+export const goalFundingModeSchema = z.enum(['SEQUENTIAL', 'WEIGHTED'])
+
 export const createGoalSchema = z
   .object({
     targetAmount: z.number().positive('targetAmount must be greater than 0'),
@@ -14,6 +16,12 @@ export const createGoalSchema = z
     positionId: z.string().uuid().optional(),
     riskCeiling: z.number().min(0).max(100).optional(),
     includeExternalHoldings: z.boolean().default(false),
+    priority: z.number().int().min(1).max(10000).optional(),
+    allocationWeight: z.coerce
+      .number()
+      .positive('allocationWeight must be greater than 0')
+      .optional(),
+    fundingMode: goalFundingModeSchema.optional(),
   })
   .refine(
     (data) =>
@@ -34,16 +42,25 @@ export const updateGoalSchema = z
     targetDate: z.coerce.date().optional(),
     riskCeiling: z.number().min(0).max(100).optional(),
     includeExternalHoldings: z.boolean().optional(),
+    priority: z.number().int().min(1).max(10000).optional(),
+    allocationWeight: z.coerce
+      .number()
+      .positive('allocationWeight must be greater than 0')
+      .optional(),
+    fundingMode: goalFundingModeSchema.optional(),
   })
   .refine(
     (data) =>
       data.targetAmount !== undefined ||
       data.targetDate !== undefined ||
       data.riskCeiling !== undefined ||
-      data.includeExternalHoldings !== undefined,
+      data.includeExternalHoldings !== undefined ||
+      data.priority !== undefined ||
+      data.allocationWeight !== undefined ||
+      data.fundingMode !== undefined,
     {
       message:
-        'At least one of targetAmount, targetDate, riskCeiling must be provided',
+        'At least one of targetAmount, targetDate, riskCeiling, priority, allocationWeight, fundingMode must be provided',
     }
   )
   .refine(
@@ -54,3 +71,8 @@ export const updateGoalSchema = z
       path: ['targetDate'],
     }
   )
+
+export const reassignGoalSchema = z.object({
+  toGoalId: z.string().uuid('Invalid destination goal ID format'),
+  amount: z.coerce.number().positive('Reassign amount must be greater than 0'),
+})

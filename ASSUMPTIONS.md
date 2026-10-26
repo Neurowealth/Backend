@@ -198,6 +198,37 @@ riskCeiling? }`** — the three keys `src/agent/loop.ts` actually reads.
    an end user's browser is not. Only the socket payload is projected onto the
    per-event-type allowlist.
 
+---
+
+## Issue #358 — Multiple Concurrent Goals with Priority-Weighted Allocation
+
+1. **The binding goal drives `GoalTrackingStrategy`.** When a user has multiple
+   concurrent `ACTIVE` goals (with `includeExternalHoldings: false`), the agent
+   evaluates `requiredApy` for each under-funded goal (`currentAmount < targetAmount`)
+   and targets the **binding goal** — the one requiring the highest annualised
+   return (with ties broken deterministically by `priority` ASC, `targetDate` ASC,
+   `createdAt` ASC). Optimizing for the hardest live goal ensures the agent does
+   not leave an urgent goal behind while comfortably funding an easy one.
+2. **Stricter risk ceiling across all active goals.** Because `riskCeiling` in
+   `applyRiskCeiling` is a minimum acceptable protocol safety score (`score >= riskCeiling`),
+   the stricter of multiple ceilings is their **maximum** (`Math.max`), matching
+   `src/agent/effectiveStrategy.ts`.
+3. **Single-goal backward compatibility.** When a user has exactly one active
+   goal and no `GoalAllocation` rows have been recorded yet, `computeGoalProgress`
+   and `loadActiveGoal` fall back to the exact pre-#358 `startingAmount` and
+   `Position.currentValue` sum so existing single-goal behavior is byte-for-byte
+   unchanged.
+4. **Yield attribution is proportional to current attributed balance.** Each
+   yield attribution pass splits positive yield across active under-target goals
+   in proportion to their current attributed capital (`currentAmount`), capped
+   at each goal's remaining headroom to `targetAmount` with water-filling
+   overflow cascade.
+5. **Achieved goals retain their capital until reassigned or withdrawn.** Reaching
+   `targetAmount` transitions a goal to `ACHIEVED` and stops future contribution
+   or yield inflows, but never auto-sweeps its balance into other goals without
+   an explicit `POST /api/v1/goals/:id/reassign`.
+
+
 9. **`agent.rebalanced` from `src/stellar/events.ts` has no user stream.** The
    contract event is protocol-wide with no user to address, so it publishes with
    an empty user list and reaches the webhook channel alone. The per-user view

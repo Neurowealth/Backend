@@ -356,6 +356,8 @@ model User {
   // #532 — User's preferred display currency for UI amounts. Defaults to USD
   // and does NOT affect how amounts are stored (always in asset-native units).
   displayCurrency     String           @default("USD")
+  // #358 — Default goal funding mode across concurrent active goals ('SEQUENTIAL' | 'WEIGHTED').
+  goalFundingMode     String           @default("SEQUENTIAL")
 
   sessions                Session[]
   positions               Position[]
@@ -1638,17 +1640,40 @@ model SavingsGoal {
   targetDate              DateTime
   riskCeiling             Int? // optional min protocol risk score (0-100), matches UserStrategyPreferences.riskCeiling
   includeExternalHoldings Boolean    @default(false)
+  priority                Int        @default(100)
+  allocationWeight        Decimal    @default(1) @db.Decimal(36, 18)
+  fundingMode             String     @default("SEQUENTIAL")
   status                  GoalStatus @default(ACTIVE)
   createdAt               DateTime   @default(now())
   updatedAt               DateTime   @updatedAt
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  position Position? @relation(fields: [positionId], references: [id])
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  position    Position?        @relation(fields: [positionId], references: [id])
+  allocations GoalAllocation[]
 
   @@index([userId])
   @@index([status])
   @@index([userId, status])
   @@map("savings_goals")
+}
+
+/// Attribution ledger for multiple concurrent goals (#358).
+/// Goals are views over the same underlying capital; each GoalAllocation row
+/// records how much of a contribution, yield snapshot, withdrawal, or manual
+/// reassignment is attributed to a goal.
+model GoalAllocation {
+  id         String   @id @default(uuid())
+  goalId     String
+  sourceType String // DEPOSIT | RECURRING_DEPOSIT | YIELD | REBALANCE_GAIN | MANUAL_REASSIGN | WITHDRAWAL
+  sourceId   String?
+  amount     Decimal  @db.Decimal(36, 18)
+  createdAt  DateTime @default(now())
+
+  goal SavingsGoal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@index([goalId])
+  @@index([sourceId])
+  @@map("goal_allocations")
 }
 
 /// Strategy marketplace (#285). An opt-in, anonymized snapshot of one user's

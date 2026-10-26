@@ -44,10 +44,10 @@ implies every admin scope, and the legacy `agent` implies `agent:read` and
 | --- | --- | --- | --- | --- | --- | --- |
 | `loans:read` | read | enforced | — | Read loan state and borrowing capacity. | — | `GET /api/v1/loans`, `GET /api/v1/loans/:loanId`, `GET /api/v1/loans/capacity` |
 | `portfolio:read` | read | enforced | — | Read portfolio positions, balances, history, earnings and tax reports. | — | `GET /api/v1/portfolio/:userId`, `GET /api/v1/portfolio/:userId/earnings`, `GET /api/v1/portfolio/:userId/history`, `GET /api/v1/portfolio/:userId/suggestions`, `GET /api/v1/portfolio/:userId/tax-report` |
-| `transactions:read` | read | enforced | — | Read transaction history. | — | `GET /api/v1/transactions/:id/events`, `GET /api/v1/transactions/:userId`, `GET /api/v1/transactions/detail/:txHash` |
+| `transactions:read` | read | enforced | — | Read transaction history. | — | `GET /api/v1/accounting/export`, `GET /api/v1/transactions/:id/events`, `GET /api/v1/transactions/:userId`, `GET /api/v1/transactions/detail/:txHash` |
 | `vault:read` | read | enforced | — | Read vault state and balance. | — | `GET /api/v1/vault/balance` |
 | `alerts:manage` | write | enforced | — | Manage alert rules. | — | `DELETE /api/v1/alerts/:id`, `PATCH /api/v1/alerts/:id`, `POST /api/v1/alerts`, `POST /api/v1/alerts/:id/restore` |
-| `goals:write` | write | enforced | — | Manage savings goals. | — | `DELETE /api/v1/portfolio/goals/:id`, `PATCH /api/v1/portfolio/goals/:id`, `POST /api/v1/portfolio/goals` |
+| `goals:write` | write | enforced | — | Manage savings goals. | — | `DELETE /api/v1/goals/:id`, `DELETE /api/v1/portfolio/goals/:id`, `PATCH /api/v1/goals/:id`, `PATCH /api/v1/portfolio/goals/:id`, `POST /api/v1/goals`, `POST /api/v1/goals/:id/reassign`, `POST /api/v1/portfolio/goals`, `POST /api/v1/portfolio/goals/:id/reassign`, `PUT /api/v1/goals/:id`, `PUT /api/v1/portfolio/goals/:id` |
 | `portfolio:write` | write | enforced | — | Change portfolio state. | — | `DELETE /api/v1/net-worth/external-wallets/:id`, `POST /api/v1/net-worth/external-wallets` |
 | `strategies:write` | write | enforced | — | Publish, follow and unfollow strategies. | — | `POST /api/v1/strategies/publish` |
 | `webhooks:manage` | write | enforced | — | Manage webhook endpoints and deliveries. | — | `DELETE /api/webhooks/:id`, `PATCH /api/webhooks/:id`, `POST /api/webhooks` |
@@ -75,7 +75,7 @@ New keys are **read-only by default**. Write scopes must be explicitly requested
 | `messages:read` | read | enforced | — | Read message delivery state. | — | `GET /api/v1/admin/messages`, `GET /api/v1/admin/messages/:id`, `GET /api/v1/admin/messages/stats` |
 | `metrics:read` | read | enforced | — | Read operational metrics and dashboards. | — | `GET /api/v1/admin/jobs/dashboard`, `GET /api/v1/admin/stellar/metrics` |
 | `outbox:read` | read | enforced | — | Read the durable outbox. | — | `GET /api/v1/admin/outbox`, `GET /api/v1/admin/outbox/:id`, `GET /api/v1/admin/outbox/stats` |
-| `read` | read | enforced | — | General read access to admin resources. | — | `GET /api/v1/admin/erasure/preview/:userId`, `GET /api/v1/admin/erasure/requests`, `GET /api/v1/admin/referrals/review` |
+| `read` | read | enforced | — | General read access to admin resources. | — | `GET /api/v1/admin/audit/export`, `GET /api/v1/admin/erasure/preview/:userId`, `GET /api/v1/admin/erasure/requests`, `GET /api/v1/admin/referrals/review` |
 | `referrals:read` | read | enforced | — | Read flagged referral conversions. | — | `GET /api/v1/admin/referrals/flagged`, `GET /api/v1/admin/referrals/fraud/calibration`, `GET /api/v1/admin/referrals/fraud/queue` |
 | `reserves:read` | read | enforced | — | Read reserve and sponsorship state. | — | `GET /api/v1/admin/reserves` |
 | `risk-metadata:read` | read | enforced | — | Read protocol risk metadata. | `GET /api/v1/admin/risk-metadata` lists entries with a stale flag. | `GET /api/v1/admin/risk-metadata` |
@@ -97,7 +97,7 @@ New keys are **read-only by default**. Write scopes must be explicitly requested
 | `agent` | operational | declared-only | `agent:read`, `agent:write` | Agent loop operations. | — | — |
 | `agent:write` | operational | enforced | — | Change agent circuit breakers. | — | `POST /api/v1/admin/agent/breakers`, `POST /api/v1/admin/agent/breakers/:id/reset` |
 | `backfill:write` | operational | enforced | — | Run Stellar event backfills. | — | `POST /api/v1/admin/stellar/backfill` |
-| `dlq:write` | operational | enforced | — | Replay, retry and resolve dead-lettered work. | — | `POST /api/v1/admin/dlq/replay`, `POST /api/v1/admin/dlq/resolve`, `POST /api/v1/admin/dlq/retry`, `POST /api/v1/admin/notifications/dlq/:id/retry` |
+| `dlq:write` | operational | enforced | — | Replay, retry and resolve dead-lettered work. | — | `POST /api/v1/admin/dlq/discard`, `POST /api/v1/admin/dlq/replay`, `POST /api/v1/admin/dlq/requeue`, `POST /api/v1/admin/dlq/resolve`, `POST /api/v1/admin/dlq/retry`, `POST /api/v1/admin/notifications/dlq/:id/retry` |
 | `fiat:write` | operational | enforced | — | Change fiat provider failover state. | — | `POST /api/v1/admin/fiat/providers/:name/failover` |
 | `flags:write` | operational | enforced | — | Manage feature flags, staged rollouts and emergency rollbacks. | — | `POST /api/v1/admin/feature-flags/:key/reset`, `POST /api/v1/admin/feature-flags/:key/rollback`, `POST /api/v1/admin/feature-flags/:key/staged-rollout`, `POST /api/v1/admin/feature-flags/emergency-disable-all`, `PUT /api/v1/admin/feature-flags/:key` |
 | `messages:write` | operational | enforced | — | Retry and recover failed message deliveries. | — | `DELETE /api/v1/admin/messages/:id`, `POST /api/v1/admin/messages/:id/retry`, `POST /api/v1/admin/messages/retry-dead-letters` |
