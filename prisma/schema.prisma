@@ -1518,13 +1518,31 @@ model RecurringDepositPlan {
   /// Single-protocol plans are a single-entry map — no schema break.
   allocationMap      Json?
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  runs RecurringDepositRun[]
+  // ── Goal-linked catch-up sizing (#357) ─────────────────────────────────
+  /// Optional linked SavingsGoal for goal-gap catch-up sizing.
+  savingsGoalId      String?
+  /// Goal sizing mode: FIXED (default) or GOAL_CATCH_UP.
+  sizingMode         String                     @default("FIXED")
+  /// Minimum per-run contribution bound when sizingMode = GOAL_CATCH_UP.
+  minAmount          Decimal?                   @db.Decimal(36, 18)
+  /// Maximum per-run contribution bound when sizingMode = GOAL_CATCH_UP.
+  maxAmount          Decimal?                   @db.Decimal(36, 18)
+  /// Catch-up horizon: NEXT_RUN or SPREAD_REMAINING (default).
+  catchUpHorizon     String                     @default("SPREAD_REMAINING")
+  /// Projected goal shortfall recorded on the most recent GOAL_CATCH_UP run.
+  lastShortfall      Decimal?                   @db.Decimal(36, 18)
+  /// Bound that clamped the most recent GOAL_CATCH_UP run ('min' | 'max' | null).
+  lastClampedBy      String?
+
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  savingsGoal SavingsGoal?          @relation(fields: [savingsGoalId], references: [id], onDelete: SetNull)
+  runs        RecurringDepositRun[]
 
   createdAt     DateTime                   @default(now())
   updatedAt     DateTime                   @updatedAt
 
   @@index([userId])
+  @@index([savingsGoalId])
   @@index([status, nextRunAt])
   @@map("recurring_deposit_plans")
 }
@@ -1642,8 +1660,9 @@ model SavingsGoal {
   createdAt               DateTime   @default(now())
   updatedAt               DateTime   @updatedAt
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  position Position? @relation(fields: [positionId], references: [id])
+  user                  User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  position              Position?              @relation(fields: [positionId], references: [id])
+  recurringDepositPlans RecurringDepositPlan[]
 
   @@index([userId])
   @@index([status])

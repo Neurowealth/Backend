@@ -44,6 +44,7 @@ import networkRouter from './network'
 import notificationDlqRouter from './notification-dlq'
 import notificationsRouter from './notifications'
 import portfolioRouter from './portfolio'
+import goalsRouter from './goals'
 import protocolsRouter from './protocols'
 import protectionFundRouter from './protection-fund'
 import recurringDepositRouter from './recurring-deposits'
@@ -94,6 +95,7 @@ export const API_ROUTES: ApiRoute[] = [
   { path: 'whatsapp', handlers: [webhookRateLimiter, whatsappRouter] },
   { path: 'telegram', handlers: [webhookRateLimiter, telegramRouter] },
   { path: 'portfolio', handlers: [portfolioRouter] },
+  { path: 'goals', handlers: [goalsRouter] },
   { path: 'transactions', handlers: [transactionsRouter] },
   // #669 — QBO/Xero export with a mandatory ledger reconciliation gate.
   { path: 'accounting', handlers: [accountingRouter] },
@@ -114,6 +116,7 @@ export const API_ROUTES: ApiRoute[] = [
   { path: 'fiat', handlers: [fiatRouter] },
   { path: 'referrals', handlers: [referralsRouter] },
   { path: 'deposit/recurring', handlers: [recurringDepositRouter] },
+  { path: 'recurring-deposits', handlers: [recurringDepositRouter] },
   { path: 'recurring-withdrawals', handlers: [recurringWithdrawalRouter] },
   { path: 'alerts', handlers: [alertsRouter] },
   { path: 'strategies', handlers: [strategiesRouter] },

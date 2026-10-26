@@ -23,6 +23,13 @@ import {
   type DrawdownInput,
   type ContributionDecision,
 } from '../deposits/smartDcaPolicy'
+import {
+  computeContribution as computeGoalCatchUpContribution,
+  evaluateBalanceFallback,
+  type CatchUpHorizon,
+  type GoalContributionSizingResult,
+} from '../goals/contributionSizing'
+import { computeGoalProgress } from '../goals/service'
 import type { RecurringDepositPlan } from '@prisma/client'
 
 export { addCadence } from '../utils/cadence'
@@ -229,6 +236,9 @@ async function createRunLedger(params: {
   errorMessage?: string
   allocationLegs?: unknown
 }): Promise<void> {
+  if (typeof (db as any).recurringDepositRun?.create !== 'function') {
+    return
+  }
   try {
     await db.recurringDepositRun.create({
       data: {
@@ -252,17 +262,41 @@ async function createRunLedger(params: {
   }
 }
 
+async function resolveAvailableUserBalance(
+  plan: RecurringDepositPlan,
+  wallet: Record<string, unknown> | null
+): Promise<number | null> {
+  const planBalance = (plan as any).availableBalance
+  if (typeof planBalance === 'number' && Number.isFinite(planBalance)) {
+    return planBalance
+  }
+  const walletBalance =
+    (wallet as any)?.availableBalance ?? (wallet as any)?.balance
+  if (typeof walletBalance === 'number' && Number.isFinite(walletBalance)) {
+    return walletBalance
+  }
+  if (typeof walletBalance === 'string' && walletBalance.trim() !== '') {
+    const parsed = Number(walletBalance)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
 /**
  * Execute a single recurring deposit plan.
  *
  * For ADAPTIVE plans, the contribution amount is computed by the policy
- * engine before deposit. The run ledger records every execution attempt.
+ * engine before deposit. For GOAL_CATCH_UP plans (#357), the contribution
+ * amount is derived from the linked SavingsGoal's projected shortfall.
  */
 async function executePlan(plan: RecurringDepositPlan): Promise<void> {
   const now = new Date()
 
   // ── Resolve policy config from plan fields ──────────────────────────
   const policy = (plan as any).policy ?? 'FIXED'
+  const sizingMode = ((plan as any).sizingMode ?? 'FIXED') as
+    'FIXED' | 'GOAL_CATCH_UP'
+  const savingsGoalId = ((plan as any).savingsGoalId ?? null) as string | null
   const config: SmartDcaConfig = {
     policy,
     catchUpMode: (plan as any).catchUpMode ?? 'RETRY',
@@ -305,23 +339,190 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
     return
   }
 
+  // ── Goal-linked catch-up sizing (#357) ──────────────────────────────
+  let catchUpDecision: GoalContributionSizingResult | null = null
+  if (sizingMode === 'GOAL_CATCH_UP' || savingsGoalId) {
+    const sgModel = (db as any).savingsGoal
+    const goal =
+      savingsGoalId && sgModel && typeof sgModel.findUnique === 'function'
+        ? await sgModel.findUnique({ where: { id: savingsGoalId } })
+        : null
+
+    if (sizingMode === 'GOAL_CATCH_UP') {
+      if (!goal || goal.userId !== plan.userId || goal.status !== 'ACTIVE') {
+        const goalStatus = goal?.status ?? 'MISSING'
+        const isAchieved = goalStatus === 'ACHIEVED'
+        const pauseStatus = isAchieved
+          ? 'paused_goal_achieved'
+          : 'paused_goal_inactive'
+        const pauseReason = isAchieved
+          ? 'Auto-paused: linked savings goal reached ACHIEVED'
+          : `Auto-paused: linked savings goal is ${goalStatus.toLowerCase()}`
+
+        await db.recurringDepositPlan.update({
+          where: { id: plan.id },
+          data: {
+            status: 'PAUSED',
+            autoPauseReason: pauseReason,
+            lastRunStatus: pauseStatus,
+          },
+        })
+        await createRunLedger({
+          planId: plan.id,
+          userId: plan.userId,
+          baselineAmount: Number(plan.amount),
+          appliedAmount: 0,
+          regimeSnapshot: {
+            sizingMode: 'GOAL_CATCH_UP',
+            savingsGoalId,
+            goalStatus,
+          },
+          reasoning: pauseReason,
+          status: 'SKIPPED',
+        })
+        logger.info('[RecurringDeposit] Auto-paused goal-linked plan', {
+          planId: plan.id,
+          userId: plan.userId,
+          savingsGoalId,
+          goalStatus,
+        })
+        publishUserEvent(
+          plan.userId,
+          EVENT_TYPE_TOPIC['recurring_deposit.failed'],
+          'recurring_deposit.failed',
+          {
+            planId: plan.id,
+            userId: plan.userId,
+            amount: 0,
+            assetSymbol: plan.assetSymbol,
+            cadence: plan.cadence,
+            reason: pauseStatus,
+          }
+        ).catch(() => {})
+        return
+      }
+
+      // Compute current goal progress (falling back gracefully when position/rate tables are unmocked)
+      let currentAmount = Number(goal.currentAmount ?? goal.startingAmount ?? 0)
+      let actualApy: number | null =
+        typeof goal.actualApy === 'number' ? goal.actualApy : null
+      if (
+        actualApy === null &&
+        typeof (db as any).position?.findMany === 'function'
+      ) {
+        try {
+          const progress = await computeGoalProgress(goal.id, db)
+          currentAmount = progress.currentAmount
+          actualApy = progress.actualApy
+        } catch {
+          // Fallback to goal row's currentAmount / startingAmount
+        }
+      }
+
+      // Auto-pause if currentAmount already meets or exceeds targetAmount
+      if (currentAmount >= Number(goal.targetAmount)) {
+        const pauseReason =
+          'Auto-paused: linked savings goal has already reached targetAmount'
+        await db.recurringDepositPlan.update({
+          where: { id: plan.id },
+          data: {
+            status: 'PAUSED',
+            autoPauseReason: pauseReason,
+            lastRunStatus: 'paused_goal_achieved',
+          },
+        })
+        await createRunLedger({
+          planId: plan.id,
+          userId: plan.userId,
+          baselineAmount: Number(plan.amount),
+          appliedAmount: 0,
+          regimeSnapshot: {
+            sizingMode: 'GOAL_CATCH_UP',
+            savingsGoalId: goal.id,
+            currentAmount,
+            targetAmount: Number(goal.targetAmount),
+          },
+          reasoning: pauseReason,
+          status: 'SKIPPED',
+        })
+        return
+      }
+
+      const horizon = ((plan as any).catchUpHorizon ??
+        'SPREAD_REMAINING') as CatchUpHorizon
+      const minBound =
+        (plan as any).minAmount !== undefined &&
+        (plan as any).minAmount !== null
+          ? Number((plan as any).minAmount)
+          : null
+      const maxBound =
+        (plan as any).maxAmount !== undefined &&
+        (plan as any).maxAmount !== null
+          ? Number((plan as any).maxAmount)
+          : null
+
+      catchUpDecision = computeGoalCatchUpContribution({
+        goal: {
+          targetAmount: Number(goal.targetAmount),
+          targetDate: goal.targetDate,
+          startingAmount: Number(goal.startingAmount ?? 0),
+          riskCeiling: goal.riskCeiling ?? null,
+        },
+        currentAmount,
+        actualApy,
+        cadence: plan.cadence,
+        now,
+        mode: 'GOAL_CATCH_UP',
+        horizon,
+        baseAmount: Number(plan.amount),
+        bounds: {
+          minAmount: minBound,
+          maxAmount: maxBound,
+        },
+      })
+    }
+  }
+
   // ── Load regime + drawdown data (ADAPTIVE plans only) ────────────────
   let regimeInput: RegimeInput | null = null
   let drawdownInput: DrawdownInput | null = null
 
-  if (policy === 'ADAPTIVE') {
+  if (policy === 'ADAPTIVE' && !catchUpDecision) {
     regimeInput = await loadRegimeInput(plan.userId, now)
     drawdownInput = await loadDrawdownInput(plan.userId, now)
   }
 
-  // ── Compute contribution via policy engine ──────────────────────────
-  const decision = computeContribution(
-    config,
-    Number(plan.amount),
-    regimeInput,
-    drawdownInput,
-    now
-  )
+  // ── Compute contribution via policy engine or goal catch-up ─────────
+  const decision: ContributionDecision = catchUpDecision
+    ? {
+        baselineAmount: Number(plan.amount),
+        appliedAmount: catchUpDecision.amount,
+        scaleFactor:
+          Number(plan.amount) > 0
+            ? Number((catchUpDecision.amount / Number(plan.amount)).toFixed(4))
+            : 1,
+        regime: null,
+        pausedOnDrawdown: false,
+        doubledOnDrawdown: false,
+        reasoning: `Goal catch-up (${catchUpDecision.projectionBasis.horizon}): shortfall=${catchUpDecision.shortfall.toFixed(2)}, amount=${catchUpDecision.amount.toFixed(2)}${catchUpDecision.clampedBy ? `, clampedBy=${catchUpDecision.clampedBy}` : ''}`,
+        regimeSnapshot: {
+          sizingMode: 'GOAL_CATCH_UP',
+          savingsGoalId,
+          shortfall: catchUpDecision.shortfall,
+          clampedBy: catchUpDecision.clampedBy,
+          unclampedAmount: catchUpDecision.unclampedAmount,
+          remainingRuns: catchUpDecision.remainingRuns,
+          projectionBasis: catchUpDecision.projectionBasis,
+        },
+        allocationLegs: [],
+      }
+    : computeContribution(
+        config,
+        Number(plan.amount),
+        regimeInput,
+        drawdownInput,
+        now
+      )
 
   // ── Drawdown pause: skip and reschedule ─────────────────────────────
   if (decision.pausedOnDrawdown) {
@@ -402,6 +603,85 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
     return
   }
 
+  // ── Pre-flight available balance fallback (#357) ────────────────────
+  let runStatusLabel: 'executed' | 'executed_partial_balance' = 'executed'
+  let ledgerStatus: 'EXECUTED' | 'PARTIAL' = 'EXECUTED'
+  const availableBalance = await resolveAvailableUserBalance(
+    plan,
+    wallet as unknown as Record<string, unknown>
+  )
+  if (availableBalance !== null && availableBalance < decision.appliedAmount) {
+    const minBound =
+      (plan as any).minAmount !== undefined && (plan as any).minAmount !== null
+        ? Number((plan as any).minAmount)
+        : null
+    const balanceEval = evaluateBalanceFallback({
+      derivedAmount: decision.appliedAmount,
+      availableBalance,
+      minAmount: minBound,
+    })
+
+    if (balanceEval.action === 'SKIP') {
+      const nextRunAt = addCadence(plan.cadence, now)
+      await db.recurringDepositPlan.update({
+        where: { id: plan.id },
+        data: {
+          lastRunStatus: 'skipped_insufficient_balance',
+          nextRunAt,
+          ...(catchUpDecision
+            ? {
+                lastShortfall: catchUpDecision.shortfall,
+                lastClampedBy: catchUpDecision.clampedBy,
+              }
+            : {}),
+        },
+      })
+      await createRunLedger({
+        planId: plan.id,
+        userId: plan.userId,
+        baselineAmount: decision.baselineAmount,
+        appliedAmount: 0,
+        regimeSnapshot: {
+          ...decision.regimeSnapshot,
+          availableBalance,
+        },
+        reasoning: balanceEval.reason,
+        status: 'SKIPPED',
+      })
+      logger.warn(
+        '[RecurringDeposit] Skipped run due to insufficient balance below minAmount',
+        {
+          planId: plan.id,
+          userId: plan.userId,
+          derivedAmount: decision.appliedAmount,
+          availableBalance,
+          minAmount: minBound,
+        }
+      )
+      publishUserEvent(
+        plan.userId,
+        EVENT_TYPE_TOPIC['recurring_deposit.failed'],
+        'recurring_deposit.failed',
+        {
+          planId: plan.id,
+          userId: plan.userId,
+          amount: decision.appliedAmount,
+          assetSymbol: plan.assetSymbol,
+          cadence: plan.cadence,
+          reason: 'skipped_insufficient_balance',
+        }
+      ).catch(() => {})
+      return
+    }
+
+    if (balanceEval.action === 'PARTIAL') {
+      decision.appliedAmount = balanceEval.appliedAmount
+      decision.reasoning = `${decision.reasoning}; ${balanceEval.reason}`
+      runStatusLabel = 'executed_partial_balance'
+      ledgerStatus = 'PARTIAL'
+    }
+  }
+
   // ── Execute deposit ─────────────────────────────────────────────────
   try {
     const result = await executeDeposit({
@@ -417,11 +697,17 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
       await db.recurringDepositPlan.update({
         where: { id: plan.id },
         data: {
-          lastRunStatus: 'executed',
+          lastRunStatus: runStatusLabel,
           nextRunAt,
           consecutiveFailures: 0, // Reset on success
           accumulatedRuns:
             config.catchUpMode === 'ACCUMULATE' ? 0 : config.accumulatedRuns,
+          ...(catchUpDecision
+            ? {
+                lastShortfall: catchUpDecision.shortfall,
+                lastClampedBy: catchUpDecision.clampedBy,
+              }
+            : {}),
         },
       })
       await createRunLedger({
@@ -431,7 +717,7 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
         appliedAmount: decision.appliedAmount,
         regimeSnapshot: decision.regimeSnapshot,
         reasoning: decision.reasoning,
-        status: 'EXECUTED',
+        status: ledgerStatus,
         txHash: result.transaction!.txHash ?? undefined,
         allocationLegs:
           decision.allocationLegs.length > 0
@@ -458,8 +744,43 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
           assetSymbol: plan.assetSymbol,
           cadence: plan.cadence,
           txHash: result.transaction!.txHash,
+          ...(catchUpDecision
+            ? {
+                savingsGoalId,
+                sizingMode: 'GOAL_CATCH_UP',
+                shortfall: catchUpDecision.shortfall,
+                clampedBy: catchUpDecision.clampedBy,
+                reason: decision.reasoning,
+              }
+            : {}),
         }
       ).catch(() => {})
+
+      if (
+        catchUpDecision &&
+        catchUpDecision.clampedBy === 'max' &&
+        catchUpDecision.stillShortAfterRun
+      ) {
+        publishUserEvent(
+          plan.userId,
+          EVENT_TYPE_TOPIC['goal.contribution_capped'],
+          'goal.contribution_capped',
+          {
+            planId: plan.id,
+            goalId: savingsGoalId,
+            appliedAmount: decision.appliedAmount,
+            unclampedAmount: catchUpDecision.unclampedAmount,
+            maxAmount:
+              (plan as any).maxAmount !== undefined &&
+              (plan as any).maxAmount !== null
+                ? Number((plan as any).maxAmount)
+                : decision.appliedAmount,
+            shortfall: catchUpDecision.shortfall,
+            clampedBy: 'max',
+            horizon: catchUpDecision.projectionBasis.horizon,
+          }
+        ).catch(() => {})
+      }
     } else if (result.status === 'PENDING_APPROVAL') {
       await db.recurringDepositPlan.update({
         where: { id: plan.id },

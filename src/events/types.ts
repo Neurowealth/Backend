@@ -62,6 +62,8 @@ export const SOCKET_ONLY_EVENT_TYPES = [
   /** #365 — a scheduled portfolio digest was generated. Stream + user's own
    *  webhook endpoint only; never an operator webhook (see docs/NOTIFICATIONS.md). */
   'digest.generated',
+  /** #357 — goal-linked recurring deposit was clamped by maxAmount while a shortfall remains. */
+  'goal.contribution_capped',
 ] as const
 
 export type SocketOnlyEventType = (typeof SOCKET_ONLY_EVENT_TYPES)[number]
@@ -115,6 +117,7 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'security.session_anomaly': 'alerts',
   'account.impersonation_started': 'account',
   'digest.generated': 'alerts',
+  'goal.contribution_capped': 'alerts',
 }
 
 const SOCKET_ONLY = new Set<string>(SOCKET_ONLY_EVENT_TYPES)
