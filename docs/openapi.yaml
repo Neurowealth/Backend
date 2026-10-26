@@ -5078,3 +5078,285 @@ paths:
           description: Forbidden
         '429':
           description: Erasure rate limit exceeded
+
+  /deposit/recurring/{id}/preview:
+    get:
+      tags:
+        - RecurringDeposits
+      operationId: previewRecurringDepositById
+      summary: Preview the next N runs of a recurring deposit plan (#357)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: runs
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 12
+      responses:
+        '200':
+          description: Projected recurring deposit run schedule
+        '401':
+          description: Unauthorized
+        '404':
+          description: Plan not found
+
+  /recurring-deposits:
+    post:
+      tags:
+        - RecurringDeposits
+      operationId: createRecurringDepositAlias
+      summary: Create a recurring deposit plan (supports goal-linked catch-up sizing #357)
+      security:
+        - bearerAuth: []
+      responses:
+        '201':
+          description: Recurring deposit plan created
+
+  /recurring-deposits/by-user/{userId}:
+    get:
+      tags:
+        - RecurringDeposits
+      operationId: listRecurringDepositsByUserAlias
+      summary: List recurring deposit plans for a user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paginated recurring deposit plans
+
+  /recurring-deposits/preview:
+    get:
+      tags:
+        - RecurringDeposits
+      operationId: previewLatestRecurringDepositAlias
+      summary: Preview the caller's most recent active recurring deposit plan
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Projected recurring deposit run schedule
+
+  /recurring-deposits/{id}:
+    patch:
+      tags:
+        - RecurringDeposits
+      operationId: updateRecurringDepositAlias
+      summary: Update a recurring deposit plan
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Updated recurring deposit plan
+    delete:
+      tags:
+        - RecurringDeposits
+      operationId: cancelRecurringDepositAlias
+      summary: Cancel a recurring deposit plan
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cancelled recurring deposit plan
+
+  /recurring-deposits/{id}/preview:
+    get:
+      tags:
+        - RecurringDeposits
+      operationId: previewRecurringDepositByIdAlias
+      summary: Preview the next N runs of a recurring deposit plan (#357)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: runs
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 12
+      responses:
+        '200':
+          description: Projected recurring deposit run schedule
+
+  /recurring-deposits/{id}/runs:
+    get:
+      tags:
+        - RecurringDeposits
+      operationId: listRecurringDepositRunsAlias
+      summary: List execution run ledger rows for a recurring deposit plan
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paginated run ledger rows
+
+  /portfolio/goals/{id}/funding:
+    get:
+      tags:
+        - Goals
+      operationId: getPortfolioGoalFundingStatus
+      summary: Get linked recurring deposit plans and catch-up funding status for a goal (#357)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Goal funding status and linked plans
+
+  /goals:
+    post:
+      tags:
+        - Goals
+      operationId: createGoalAlias
+      summary: Create a savings goal
+      security:
+        - bearerAuth: []
+      responses:
+        '201':
+          description: Savings goal created
+
+  /goals/{userId}:
+    get:
+      tags:
+        - Goals
+      operationId: getGoalForUserAlias
+      summary: Get the user's current savings goal
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Savings goal
+
+  /goals/{id}:
+    patch:
+      tags:
+        - Goals
+      operationId: updateGoalAlias
+      summary: Update a savings goal
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Updated savings goal
+    delete:
+      tags:
+        - Goals
+      operationId: cancelGoalAlias
+      summary: Cancel a savings goal
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cancelled savings goal
+
+  /goals/{id}/progress:
+    get:
+      tags:
+        - Goals
+      operationId: getGoalProgressAlias
+      summary: Get savings goal progress and trajectory
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Savings goal progress
+
+  /goals/{id}/funding:
+    get:
+      tags:
+        - Goals
+      operationId: getGoalFundingStatusAlias
+      summary: Get linked recurring deposit plans and catch-up funding status for a goal (#357)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Goal funding status and linked plans
+
+  /goals/{id}/simulate:
+    post:
+      tags:
+        - Goals
+      operationId: simulateGoalAlias
+      summary: Run Monte Carlo simulation for a savings goal
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Monte Carlo simulation result

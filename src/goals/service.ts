@@ -23,6 +23,12 @@ import {
   calculateRequiredApy,
   calculateYearsRemaining,
 } from '../agent/strategies'
+import {
+  computeContribution as computeGoalCatchUpContribution,
+  previewGoalCatchUpRuns,
+  type CatchUpHorizon,
+  type GoalSizingMode,
+} from './contributionSizing'
 
 type Db = typeof db | Prisma.TransactionClient
 
@@ -280,6 +286,35 @@ export async function updateGoal(
   })
 }
 
+async function autoPauseGoalLinkedPlans(
+  goalId: string,
+  goalStatus: 'ACHIEVED' | 'CANCELLED',
+  database: Db = db
+): Promise<void> {
+  const rdpModel = (database as any).recurringDepositPlan
+  if (!rdpModel || typeof rdpModel.updateMany !== 'function') return
+
+  const reason =
+    goalStatus === 'ACHIEVED'
+      ? 'Auto-paused: linked savings goal reached ACHIEVED'
+      : 'Auto-paused: linked savings goal was cancelled'
+  const lastRunStatus =
+    goalStatus === 'ACHIEVED' ? 'paused_goal_achieved' : 'paused_goal_inactive'
+
+  await rdpModel.updateMany({
+    where: {
+      savingsGoalId: goalId,
+      sizingMode: 'GOAL_CATCH_UP',
+      status: 'ACTIVE',
+    },
+    data: {
+      status: 'PAUSED',
+      autoPauseReason: reason,
+      lastRunStatus,
+    },
+  })
+}
+
 /** Soft-cancel: sets status = CANCELLED, never hard-deletes. */
 export async function cancelGoal(id: string, database: Db = db): Promise<any> {
   const goal = await getGoalById(id, database)
@@ -290,10 +325,12 @@ export async function cancelGoal(id: string, database: Db = db): Promise<any> {
     return goal
   }
 
-  return (database as any).savingsGoal.update({
+  const cancelled = await (database as any).savingsGoal.update({
     where: { id },
     data: { status: 'CANCELLED' },
   })
+  await autoPauseGoalLinkedPlans(id, 'CANCELLED', database)
+  return cancelled
 }
 
 /**
@@ -453,6 +490,7 @@ export async function computeGoalProgress(
       where: { id: goal.id },
       data: { status: 'ACHIEVED' },
     })
+    await autoPauseGoalLinkedPlans(goal.id, 'ACHIEVED', database)
     await logAgentAction(
       'GOAL_PROGRESS',
       'SUCCESS',
@@ -595,5 +633,184 @@ export async function computeGoalProgress(
     externalStaleWalletCount: amounts.externalStaleWalletCount,
     unpricedExternalHoldingCount: amounts.unpricedExternalHoldingCount,
     note: progressNotes.length > 0 ? progressNotes.join(' ') : undefined,
+  }
+}
+
+export interface GoalFundingPlanStatus {
+  planId: string
+  status: string
+  cadence: string
+  assetSymbol: string
+  baseAmount: number
+  sizingMode: GoalSizingMode
+  catchUpHorizon: CatchUpHorizon
+  minAmount: number | null
+  maxAmount: number | null
+  nextRunAt: string | null
+  lastRunStatus: string | null
+  lastShortfall: number | null
+  lastClampedBy: string | null
+  nextContribution: number
+  shortfall: number
+  clampedBy: string | null
+  onTrackWithPlan: boolean
+  estimatedCompletionDate: string | null
+  daysLate: number
+  completionSummary: string
+}
+
+export interface GoalFundingReport {
+  goalId: string
+  goalStatus: string
+  targetAmount: number
+  currentAmount: number
+  targetDate: string
+  actualApy: number
+  onTrack: boolean
+  linkedPlans: GoalFundingPlanStatus[]
+  summary: string
+}
+
+/**
+ * Compute funding status for a savings goal (#357): lists all linked
+ * `RecurringDepositPlan`s and evaluates whether current settings + bounds put
+ * the goal on track.
+ */
+export async function getGoalFundingStatus(
+  goalId: string,
+  database: Db = db
+): Promise<GoalFundingReport> {
+  const goal = await getGoalById(goalId, database)
+  if (!goal) {
+    throw new GoalNotFoundError('Savings goal not found')
+  }
+
+  let currentAmount = Number(goal.currentAmount ?? goal.startingAmount ?? 0)
+  let actualApy = typeof goal.actualApy === 'number' ? goal.actualApy : 0
+  let baseOnTrack = currentAmount >= Number(goal.targetAmount)
+
+  if (typeof (database as any).position?.findMany === 'function') {
+    try {
+      const progress = await computeGoalProgress(goalId, database)
+      currentAmount = progress.currentAmount
+      actualApy = progress.actualApy
+      baseOnTrack = progress.onTrack
+    } catch {
+      // Fallback to goal row's fields
+    }
+  }
+
+  const rdpModel = (database as any).recurringDepositPlan
+  const rawPlans: any[] =
+    rdpModel && typeof rdpModel.findMany === 'function'
+      ? await rdpModel.findMany({
+          where: { savingsGoalId: goalId },
+          orderBy: { createdAt: 'desc' },
+        })
+      : []
+
+  const now = new Date()
+  const linkedPlans: GoalFundingPlanStatus[] = rawPlans.map((plan) => {
+    const sizingMode = (plan.sizingMode ?? 'FIXED') as GoalSizingMode
+    const horizon = (plan.catchUpHorizon ??
+      'SPREAD_REMAINING') as CatchUpHorizon
+    const minAmount =
+      plan.minAmount !== undefined && plan.minAmount !== null
+        ? Number(plan.minAmount)
+        : null
+    const maxAmount =
+      plan.maxAmount !== undefined && plan.maxAmount !== null
+        ? Number(plan.maxAmount)
+        : null
+
+    const sizing = computeGoalCatchUpContribution({
+      goal: {
+        targetAmount: Number(goal.targetAmount),
+        targetDate: goal.targetDate,
+        startingAmount: Number(goal.startingAmount ?? 0),
+        riskCeiling: goal.riskCeiling ?? null,
+      },
+      currentAmount,
+      actualApy,
+      cadence: plan.cadence,
+      now,
+      mode: sizingMode,
+      horizon,
+      baseAmount: Number(plan.amount),
+      bounds: { minAmount, maxAmount },
+    })
+
+    const preview = previewGoalCatchUpRuns({
+      planId: plan.id,
+      goalId: goal.id,
+      goal: {
+        targetAmount: Number(goal.targetAmount),
+        targetDate: goal.targetDate,
+        startingAmount: Number(goal.startingAmount ?? 0),
+        riskCeiling: goal.riskCeiling ?? null,
+      },
+      currentAmount,
+      actualApy,
+      cadence: plan.cadence,
+      baseAmount: Number(plan.amount),
+      sizingMode,
+      horizon,
+      bounds: { minAmount, maxAmount },
+      runs: 12,
+      now,
+    })
+
+    return {
+      planId: plan.id,
+      status: plan.status,
+      cadence: plan.cadence,
+      assetSymbol: plan.assetSymbol,
+      baseAmount: Number(plan.amount),
+      sizingMode,
+      catchUpHorizon: horizon,
+      minAmount,
+      maxAmount,
+      nextRunAt: plan.nextRunAt ? new Date(plan.nextRunAt).toISOString() : null,
+      lastRunStatus: plan.lastRunStatus ?? null,
+      lastShortfall:
+        plan.lastShortfall !== undefined && plan.lastShortfall !== null
+          ? Number(plan.lastShortfall)
+          : null,
+      lastClampedBy: plan.lastClampedBy ?? null,
+      nextContribution: sizing.amount,
+      shortfall: sizing.shortfall,
+      clampedBy: sizing.clampedBy,
+      onTrackWithPlan: preview.onTrackWithCurrentBounds,
+      estimatedCompletionDate: preview.estimatedCompletionDate,
+      daysLate: preview.daysLate,
+      completionSummary: preview.completionSummary,
+    }
+  })
+
+  const activePlans = linkedPlans.filter((p) => p.status === 'ACTIVE')
+  const onTrack = baseOnTrack || activePlans.some((p) => p.onTrackWithPlan)
+
+  const summary =
+    activePlans.length === 0
+      ? baseOnTrack
+        ? 'Goal is on track from portfolio yield without an active linked deposit plan.'
+        : 'Goal is behind schedule and has no active linked recurring deposit plan.'
+      : onTrack
+        ? 'Linked recurring deposit plan settings put this goal on track to complete by targetDate.'
+        : activePlans[0].completionSummary
+
+  return {
+    goalId: goal.id,
+    goalStatus: goal.status,
+    targetAmount: Number(goal.targetAmount),
+    currentAmount,
+    targetDate:
+      goal.targetDate instanceof Date
+        ? goal.targetDate.toISOString()
+        : new Date(goal.targetDate).toISOString(),
+    actualApy,
+    onTrack,
+    linkedPlans,
+    summary,
   }
 }

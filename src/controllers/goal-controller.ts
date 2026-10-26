@@ -18,6 +18,7 @@ import {
   updateGoal,
   cancelGoal,
   computeGoalProgress,
+  getGoalFundingStatus,
   GoalConflictError,
   GoalNotFoundError,
   GoalValidationError,
@@ -209,5 +210,46 @@ export async function getGoalProgressHandler(
     }
     logger.error('[Goals] Failed to compute goal progress:', error)
     sendError(res, 500, 'Failed to compute savings goal progress')
+  }
+}
+
+/**
+ * GET /api/portfolio/goals/:id/funding (#357)
+ *
+ * Returns linked recurring deposit plans and whether current settings + bounds
+ * put the goal on track.
+ */
+export async function getGoalFundingHandler(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const authUserId = req.auth?.userId ?? req.userId
+  if (!authUserId) {
+    sendUnauthorized(res)
+    return
+  }
+
+  const id = String(req.params.id)
+
+  try {
+    const existing = await getGoalById(id)
+    if (!existing) {
+      sendNotFound(res, 'Savings goal')
+      return
+    }
+    if (existing.userId !== authUserId) {
+      sendUnauthorized(res)
+      return
+    }
+
+    const funding = await getGoalFundingStatus(id)
+    res.status(200).json(funding)
+  } catch (error) {
+    if (error instanceof GoalNotFoundError) {
+      sendNotFound(res, 'Savings goal')
+      return
+    }
+    logger.error('[Goals] Failed to compute goal funding:', error)
+    sendError(res, 500, 'Failed to compute savings goal funding')
   }
 }

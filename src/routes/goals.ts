@@ -27,6 +27,7 @@ import {
   updateGoalHandler,
   cancelGoalHandler,
   getGoalProgressHandler,
+  getGoalFundingHandler,
 } from '../controllers/goal-controller'
 import { simulateGoalHandler } from '../controllers/goal-simulation-controller'
 import { simulateGoalSchema } from '../validators/simulation-validators'
@@ -71,6 +72,13 @@ router.get(
   requireAuth,
   validate({ params: goalIdParamSchema }),
   getGoalProgressHandler
+)
+
+router.get(
+  '/:id/funding',
+  requireAuth,
+  validate({ params: goalIdParamSchema }),
+  getGoalFundingHandler
 )
 
 /**
