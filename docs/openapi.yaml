@@ -5091,3 +5091,137 @@ paths:
           description: Forbidden
         '429':
           description: Erasure rate limit exceeded
+  /fiat/limits:
+    get:
+      tags:
+        - Fiat
+      operationId: getFiatLimits
+      summary: Get caller's KYC tier, per-window limit/used/remaining, and next reset time (#362)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: direction
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [ON_RAMP, OFF_RAMP]
+      responses:
+        '200':
+          description: Caller's KYC tier and per-window usage summary
+        '401':
+          description: Unauthorized
+  /kyc/verify:
+    post:
+      tags:
+        - KYC
+      operationId: verifyKyc
+      summary: Initiate provider-hosted KYC verification flow (#362)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider:
+                  type: string
+                redirectUrl:
+                  type: string
+      responses:
+        '200':
+          description: KYC verification session initiated
+        '400':
+          description: Validation error
+        '401':
+          description: Unauthorized
+  /kyc/webhook/{provider}:
+    post:
+      tags:
+        - KYC
+      operationId: kycProviderWebhook
+      summary: Signature-verified provider KYC callback setting KycProfile.tier (#362)
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: KYC tier updated
+        '400':
+          description: Invalid payload
+        '401':
+          description: Invalid webhook signature
+  /admin/fiat/limit-policies:
+    get:
+      tags:
+        - Admin
+      operationId: adminGetFiatLimitPolicies
+      summary: Get per-tier fiat transaction and velocity limit policies (#362)
+      security:
+        - adminAuth: []
+      responses:
+        '200':
+          description: Active fiat limit policies by KYC tier
+        '401':
+          description: Admin authentication required
+    put:
+      tags:
+        - Admin
+      operationId: adminUpdateFiatLimitPolicies
+      summary: Update per-tier fiat transaction and velocity limit policies (#362)
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated fiat limit policies
+        '400':
+          description: Validation error
+        '401':
+          description: Admin authentication required
+  /admin/users/{id}/kyc-tier:
+    post:
+      tags:
+        - Admin
+      operationId: adminOverrideUserKycTier
+      summary: Manually override a user's KYC tier with mandatory reviewNote (#362)
+      security:
+        - adminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tier, reviewNote]
+              properties:
+                tier:
+                  type: string
+                  enum: [TIER_0, TIER_1, TIER_2, TIER_3]
+                reviewNote:
+                  type: string
+                providerRef:
+                  type: string
+      responses:
+        '200':
+          description: User KYC tier overridden and audit-logged
+        '400':
+          description: Missing reviewNote or invalid tier
+        '401':
+          description: Admin authentication required
