@@ -16,13 +16,15 @@ import {
   getMyReferralCode,
   getReferrals,
   getReferralLeaderboard,
+  getMyReferralSummary,
 } from '../controllers/referral-controller'
 
 const router = Router()
 
-// The caller's own code. Must precede the /:userId route so "code" is not
-// captured as a userId.
+// The caller's own code and vesting summary. Must precede the /:userId route so
+// "code" and "me" are not captured as a userId.
 router.get('/code', requireAuth, getMyReferralCode)
+router.get('/me', requireAuth, getMyReferralSummary)
 router.get('/leaderboard', getReferralLeaderboard)
 
 router.get(

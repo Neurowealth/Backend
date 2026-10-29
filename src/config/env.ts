@@ -742,6 +742,29 @@ export const config = {
     payoutIntervalMs: parseInt(
       process.env.REFERRAL_PAYOUT_INTERVAL_MS || '120000'
     ),
+    // #364 — referral reward vesting & early-withdrawal clawback
+    vestingTranches: parseInt(process.env.REFERRAL_VESTING_TRANCHES || '3', 10),
+    vestingScheduleDays: (
+      process.env.REFERRAL_VESTING_SCHEDULE_DAYS || '0,30,90'
+    )
+      .split(',')
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => !Number.isNaN(n) && n >= 0),
+    vestingGraceHours: parseInt(
+      process.env.REFERRAL_VESTING_GRACE_HOURS || '6',
+      10
+    ),
+    vestingConsecutiveSnapshots: parseInt(
+      process.env.REFERRAL_VESTING_CONSECUTIVE_SNAPSHOTS || '3',
+      10
+    ),
+    clawbackMaxPerReferrer: parseFloat(
+      process.env.CLAWBACK_MAX_PER_REFERRER || '200'
+    ),
+    clawbackWriteoffDays: parseInt(
+      process.env.CLAWBACK_WRITEOFF_DAYS || '90',
+      10
+    ),
     // #619 — fraud scoring is config-driven so thresholds can be tuned from
     // the calibration report without a deploy.
     fraud: {

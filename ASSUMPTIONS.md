@@ -207,3 +207,12 @@ riskCeiling? }`** — the three keys `src/agent/loop.ts` actually reads.
 10. **A `?token=` query parameter is deliberately unsupported.** URLs reach
     access logs, proxy logs, and referrers, and the handshake token is a live
     session. Browsers use the `Sec-WebSocket-Protocol: bearer, <jwt>` pair.
+
+---
+
+## Issue #364 — Referral Reward Vesting & Early-Withdrawal Clawback
+
+1. **Default 3-tranche `{0d, 30d, 90d}` vesting schedule with exact remainder on final tranche.** Each leg (`referrer` and `referred`) is split into `REFERRAL_VESTING_TRANCHES` (default `3`) at `REFERRAL_VESTING_SCHEDULE_DAYS` (`0,30,90`), with 8-decimal `ROUND_DOWN` on tranches `1..N-1` and the exact remainder on tranche `N` so tranche sums equal the exact leg total with zero float drift.
+2. **Consecutive-snapshot guard (`M = 3`) prevents rebalance dip false positives.** `evaluateReferredBalanceCheckpoint` requires `M` consecutive hourly snapshot buckets below `requiresBalanceAtLeast` before forfeiting a tranche or triggering an early-withdrawal clawback. A user who withdraws and re-deposits before `vestsAt` passes the checkpoint so long as the snapshots at `vestsAt` meet `requiresBalanceAtLeast`.
+3. **Clawbacks are strictly off-chain future-reward offsets capped at `CLAWBACK_MAX_PER_REFERRER` (`$200`) and written off after `CLAWBACK_WRITEOFF_DAYS` (`90` days).** The platform never initiates an on-chain pull from a referrer's wallet. Excess above the per-referrer cap or unrecovered balances past 90 days are recorded in `writtenOffAmount` (`status = 'WRITTEN_OFF'`) and audited in `#315` `AuditPayloadHash`.
+4. **Referred user balance privacy.** `GET /api/v1/referrals/me` and `referral.tranche_forfeited` expose only tranche status (`PENDING | VESTED_PAID | FORFEITED | CLAWED_BACK`) and reason codes — never the referred user's balance or position sizes.

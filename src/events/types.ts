@@ -62,6 +62,9 @@ export const SOCKET_ONLY_EVENT_TYPES = [
   /** #365 — a scheduled portfolio digest was generated. Stream + user's own
    *  webhook endpoint only; never an operator webhook (see docs/NOTIFICATIONS.md). */
   'digest.generated',
+  /** #364 — referral reward vesting tranche forfeited or clawback recorded. */
+  'referral.tranche_forfeited',
+  'referral.clawback_recorded',
 ] as const
 
 export type SocketOnlyEventType = (typeof SOCKET_ONLY_EVENT_TYPES)[number]
@@ -115,6 +118,8 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'security.session_anomaly': 'alerts',
   'account.impersonation_started': 'account',
   'digest.generated': 'alerts',
+  'referral.tranche_forfeited': 'alerts',
+  'referral.clawback_recorded': 'alerts',
 }
 
 const SOCKET_ONLY = new Set<string>(SOCKET_ONLY_EVENT_TYPES)

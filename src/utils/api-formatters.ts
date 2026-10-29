@@ -290,6 +290,23 @@ const USER_EVENT_PAYLOAD_ALLOWLIST: Record<string, readonly string[]> = {
     'caveats',
     'hasPositions',
   ],
+  'referral.tranche_forfeited': [
+    'conversionId',
+    'trancheId',
+    'leg',
+    'seq',
+    'amount',
+    'reason',
+    'forfeitedAt',
+  ],
+  'referral.clawback_recorded': [
+    'conversionId',
+    'clawbackId',
+    'originalAmount',
+    'remainingAmount',
+    'reason',
+    'createdAt',
+  ],
 }
 
 /**
