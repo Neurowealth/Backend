@@ -9,10 +9,13 @@ import {
   WORKFLOW_CONSENT_REQUIREMENTS,
   validateWorkflowConsent,
   AuditableBypassReason,
+  CONSENT_POLICY_VERSION,
+  purposesHashFor,
+  UserConsents,
 } from '../privacy/consentPolicy'
 
 export interface ConsentRequest extends Request {
-  userConsents?: Record<ConsentScope, boolean>
+  userConsents?: UserConsents
 }
 
 /**
@@ -42,6 +45,19 @@ export function requireConsentPolicy(
       bypassReason: bypassReasonHeader,
       bypassJustification: bypassJustificationHeader,
     })
+
+    if (!validation.allowed && validation.reconsentRequired) {
+      res.status(403).json({
+        error: 'Consent Policy Violation',
+        code: 'CONSENT_RECONSENT_REQUIRED',
+        workflow,
+        requiredScope,
+        policyVersion: CONSENT_POLICY_VERSION,
+        purposesHash: purposesHashFor(requiredScope),
+        reason: validation.reason,
+      })
+      return
+    }
 
     if (!validation.allowed) {
       res.status(403).json({

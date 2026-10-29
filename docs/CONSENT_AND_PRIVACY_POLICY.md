@@ -43,6 +43,35 @@ If a required consent flag is missing or revoked:
 
 ---
 
+## 2a. Consent Versioning and Re-consent
+
+A consent is only valid for the purpose text the user agreed to. Each consent is stored as a `ConsentRecord`:
+
+| Field | Meaning |
+|---|---|
+| `granted` | Whether the scope is currently granted. |
+| `policyVersion` | `CONSENT_POLICY_VERSION` at the time of the last grant or withdrawal. |
+| `purposesHash` | SHA-256 of the scope's purpose text (`CONSENT_PURPOSES`) at that time. |
+| `updatedAt` | ISO timestamp of the last change. |
+| `history` | Ordered `granted` / `withdrawn` entries, each with its `policyVersion`, `purposesHash` and timestamp. |
+
+Use `grantConsent(scope, previous?)` and `withdrawConsent(scope, previous?)` to produce records; they return a new record and append to `history`.
+
+### When consent is invalidated
+
+`purposesHash` is derived from the purpose string for that scope in `CONSENT_PURPOSES`. Editing a scope's purpose text changes its hash, so existing consents for **that scope only** stop counting. Consents for unchanged scopes stay valid. When a change is material, also bump `CONSENT_POLICY_VERSION` so the history records which revision each consent belongs to. Keep the purpose text in `CONSENT_PURPOSES` and the table in section 1 in sync.
+
+### Enforcement
+
+- `validateWorkflowConsent()` returns `allowed: false` with `reconsentRequired: true` when the stored `purposesHash` no longer matches the current one.
+- `requireConsentPolicy()` answers HTTP 403 with `code: "CONSENT_RECONSENT_REQUIRED"`, plus the current `policyVersion` and `purposesHash`, so a client can prompt the user to re-consent. A missing or withdrawn consent keeps the `CONSENT_POLICY_DENIED` code.
+- Once the user re-consents with `grantConsent()`, the new record carries the current hash and the workflow is allowed again.
+- The block is logged with the consented and current policy versions and hashes. Auditable bypasses (section 3) still apply to stale consents.
+- Only high-risk workflows are gated. Endpoints that do not use `requireConsentPolicy()` are unaffected while a re-consent is pending.
+- A plain `true` in the consent map is the legacy unversioned form. It is still honoured, but it carries no version, so it can't be invalidated by a purpose change. Store `ConsentRecord`s for new consents.
+
+---
+
 ## 3. Auditable Exceptions and Bypass Logic
 
 In specific operational, legal, or emergency scenarios, system processes or administrators may bypass standard consent checks under strict audit controls.
