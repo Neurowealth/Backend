@@ -40,6 +40,18 @@ export class TimeoutError extends Error {
   }
 }
 
+/**
+ * An error the caller knows is deterministic — retrying the same request
+ * cannot succeed (e.g. a Stellar tx rejected with tx_bad_seq). Thrown errors
+ * of this type bypass retry and circuit-breaker failure accounting.
+ */
+export class NonRetryableError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'NonRetryableError'
+  }
+}
+
 export class HttpClientAdapter {
   private config: HttpClientConfig
   private state: CircuitState = 'closed'
@@ -80,7 +92,11 @@ export class HttpClientAdapter {
         this.onSuccess()
         return result
       } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error))
+        const err = error instanceof Error ? error : new Error(String(error))
+        if (err instanceof NonRetryableError) {
+          throw err
+        }
+        lastError = err
         this.onFailure(lastError)
 
         if (this.state === 'open') {

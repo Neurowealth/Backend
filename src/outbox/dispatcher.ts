@@ -305,7 +305,15 @@ async function submitClaimedOp(op: OutboxOpRecord): Promise<TransactionResult> {
 
     // Any other exception: either schedule a retry with backoff or, if
     // attempts are exhausted, fail permanently.
-    const { terminal } = await markFailedOrRetry(op, message)
+    const { terminal, applied } = await markFailedOrRetry(op, message)
+    if (!applied) {
+      // The op already moved on (re-claimed or resolved) while this
+      // execution was in flight — don't mirror or alert on stale state.
+      logger.warn('[Outbox] Failure transition skipped — op already moved on', {
+        opId: op.id,
+      })
+      throw err
+    }
     recordOutboxOp(op.kind, op.priority, terminal ? 'failed' : 'retry')
 
     if (terminal) {
@@ -498,10 +506,12 @@ async function reconcileStuckSubmitted(): Promise<void> {
     // forces markFailedOrRetry down its terminal branch, so this always
     // ends in FAILED (the `terminal` flag is effectively always true).
     if (op.attempts >= config.outbox.feeBumpMaxAttempts) {
-      const { terminal } = await markFailedOrRetry(
-        { id: op.id, attempts: config.outbox.maxAttempts },
-        `Unconfirmed after ${config.outbox.feeBumpMaxAttempts} fee-bump attempts (submittedAt=${op.submittedAt?.toISOString()})`
+      const { terminal, applied } = await markFailedOrRetry(
+        { id: op.id, attempts: op.attempts },
+        `Unconfirmed after ${config.outbox.feeBumpMaxAttempts} fee-bump attempts (submittedAt=${op.submittedAt?.toISOString()})`,
+        { forceTerminal: true }
       )
+      if (!applied) continue // op moved on while the sweep was deciding
       recordOutboxOp(op.kind, op.priority, terminal ? 'failed' : 'retry')
       if (terminal) await onTerminalFailure(op, 'Fee-bump cap exceeded')
       continue

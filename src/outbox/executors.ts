@@ -24,7 +24,6 @@ import { OutboxPayload } from './types'
 import {
   Keypair,
   Asset,
-  rpc,
   TransactionBuilder,
   Operation,
   BASE_FEE,
@@ -38,8 +37,6 @@ import {
 import {
   submitTransaction,
   waitForConfirmation,
-  prepareTransaction,
-  simulateTransaction,
   getAccount,
   getNetworkPassphrase,
 } from '../stellar/client'
@@ -107,15 +104,12 @@ async function submitSponsoredTransaction(
   tx: ReturnType<typeof buildSponsoredCreateAccount>,
   signer: Keypair
 ): Promise<TransactionResult> {
-  const simulation = await simulateTransaction(tx as any)
-  if (rpc.Api.isSimulationError(simulation as any)) {
-    throw new Error(
-      `Sponsorship simulation failed: ${(simulation as any).error}`
-    )
-  }
-  const prepared = await prepareTransaction(tx as any)
-  prepared.sign(signer)
-  const hash = await submitTransaction(prepared)
+  // These are classic (non-Soroban) transactions — BeginSponsoringFutureReserves,
+  // CreateAccount, ChangeTrust, RevokeSponsorship — which simulateTransaction /
+  // prepareTransaction cannot handle (Soroban simulate only supports a single
+  // InvokeHostFunction op). Sign and submit directly instead.
+  tx.sign(signer)
+  const hash = await submitTransaction(tx as any)
   const result = await waitForConfirmation(hash)
   if (
     (result as any).status !== 'success' &&
@@ -215,10 +209,12 @@ export async function executeOutboxPayload(
       )
     case 'sponsor_create_account': {
       const sponsor = getSponsorKeypair(payload.sponsorAccount)
+      const sponsorAccount = await getAccount(sponsor.publicKey())
       const tx = buildSponsoredCreateAccount({
         newAccountId: payload.newAccountId,
         sponsorKeypair: sponsor,
         startingBalance: '0',
+        sponsorSequence: sponsorAccount.sequenceNumber(),
       })
       const result = await submitSponsoredTransaction(tx, sponsor)
       await db.reserveSponsorship
@@ -237,11 +233,13 @@ export async function executeOutboxPayload(
     }
     case 'sponsor_trustline': {
       const sponsor = getSponsorKeypair(payload.sponsorAccount)
+      const sponsorAccount = await getAccount(sponsor.publicKey())
       const asset = new Asset(payload.assetCode, payload.assetIssuer)
       const tx = buildSponsoredTrustline({
         accountId: payload.accountId,
         asset,
         sponsorKeypair: sponsor,
+        sponsorSequence: sponsorAccount.sequenceNumber(),
       })
       const result = await submitSponsoredTransaction(tx, sponsor)
       await db.reserveSponsorship
@@ -260,10 +258,12 @@ export async function executeOutboxPayload(
     }
     case 'revoke_sponsorship': {
       const sponsor = getSponsorKeypair(payload.sponsorAccount)
+      const sponsorAccount = await getAccount(sponsor.publicKey())
       const tx = buildRevokeSponsorship({
         sponsorKeypair: sponsor,
         accountId: payload.sponsoredId,
         ledgerKey: payload.ledgerKey,
+        sponsorSequence: sponsorAccount.sequenceNumber(),
       })
       const result = await submitSponsoredTransaction(tx, sponsor)
       await db.reserveSponsorship

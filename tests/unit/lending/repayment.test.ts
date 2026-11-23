@@ -34,6 +34,16 @@ jest.mock('../../../src/db', () => {
         }
         return { ...row }
       }),
+      updateMany: jest.fn(async ({ where, data }: any) => {
+        if (where.status && row.status !== where.status) return { count: 0 }
+        for (const [k, v] of Object.entries(data)) {
+          row[k] =
+            v instanceof Object && 'toFixed' in (v as any)
+              ? new Prisma.Decimal((v as any).toFixed(18))
+              : v
+        }
+        return { count: 1 }
+      }),
     },
     transaction: {
       updateMany: jest.fn(async ({ where }: any) => {
@@ -42,6 +52,7 @@ jest.mock('../../../src/db', () => {
         return { count: 1 }
       }),
       create: jest.fn(async ({ data }: any) => ({ id: 'tx-1', ...data })),
+      aggregate: jest.fn(async () => ({ _sum: { amount: null } })),
     },
     $transaction: jest.fn(async (fn: any) => fn(client)),
   }
@@ -77,6 +88,9 @@ jest.mock('../../../src/approvals/service', () => ({
 }))
 jest.mock('../../../src/utils/logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+}))
+jest.mock('../../../src/services/alerting', () => ({
+  alertingService: { emit: jest.fn(async () => {}) },
 }))
 
 const dbMock = require('../../../src/db')
