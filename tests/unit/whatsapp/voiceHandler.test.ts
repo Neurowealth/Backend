@@ -35,6 +35,18 @@ jest.mock('../../../src/utils/logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }))
 
+// #837 — the real withdrawal service is exercised in its own unit suite; the
+// handler tests only assert that confirmation reaches it and never fakes success.
+const mockExecuteBotWithdrawal = jest.fn()
+jest.mock('../../../src/botWithdrawals', () => ({
+  executeBotWithdrawal: (...args: unknown[]) =>
+    mockExecuteBotWithdrawal(...args),
+}))
+
+jest.mock('../../../src/agent/assistant/assistant', () => ({
+  handleAssistantMessage: jest.fn(),
+}))
+
 // Stub the custodial-wallet creation the user store triggers, so tests don't
 // touch Stellar/crypto.
 jest.mock('../../../src/stellar/wallet', () => ({
@@ -87,6 +99,11 @@ async function verifiedUser(phone: string, balance = 1000): Promise<void> {
 
 beforeEach(() => {
   jest.clearAllMocks()
+  mockExecuteBotWithdrawal.mockResolvedValue({
+    ok: false,
+    body: 'Withdrawals are temporarily unavailable. No funds have been moved.',
+    reference: null,
+  })
   clearUsersForTests()
   clearAllPendingConfirmations()
   mockDownload.mockResolvedValue({ buffer: FIXTURE, contentType: 'audio/ogg' })
@@ -116,15 +133,20 @@ describe('WhatsApp voice notes (#288)', () => {
     expect(getUserForTests(PHONE)!.balance).toBe(500)
   })
 
-  it('executes the withdraw only after an affirmative reply (text)', async () => {
+  it('routes the withdraw through the real path only after an affirmative reply (text)', async () => {
     await verifiedUser(PHONE, 500)
     useProvider(async () => ({ text: 'withdraw 50', confidence: 0.95 }))
 
     await handleWhatsAppMessage(PHONE, '', MEDIA) // parks confirmation
+    expect(mockExecuteBotWithdrawal).not.toHaveBeenCalled()
     const res = await handleWhatsAppMessage(PHONE, 'yes') // text confirm
 
-    expect(res.body).toMatch(/withdrawal request received/i)
-    expect(getUserForTests(PHONE)!.balance).toBe(450)
+    expect(mockExecuteBotWithdrawal).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'whatsapp', amount: 50 })
+    )
+    expect(res.body).toMatch(/unavailable/i)
+    expect(res.body).not.toMatch(/withdrawal request received/i)
+    expect(getUserForTests(PHONE)!.balance).toBe(500)
   })
 
   it('accepts a voice "yes" as confirmation of a voice-originated action', async () => {
@@ -136,8 +158,9 @@ describe('WhatsApp voice notes (#288)', () => {
     useProvider(async () => ({ text: 'yes', confidence: 0.95 }))
     const res = await handleWhatsAppMessage(PHONE, '', MEDIA)
 
-    expect(res.body).toMatch(/withdrawal request received/i)
-    expect(getUserForTests(PHONE)!.balance).toBe(450)
+    expect(mockExecuteBotWithdrawal).toHaveBeenCalledTimes(1)
+    expect(res.body).toMatch(/unavailable/i)
+    expect(getUserForTests(PHONE)!.balance).toBe(500)
   })
 
   it('cancels the pending action on a negative reply without executing', async () => {
@@ -233,12 +256,15 @@ describe('WhatsApp voice notes (#288)', () => {
     expect(res.body).toMatch(/didn't understand/i)
   })
 
-  it('does not require confirmation for a typed (non-voice) withdraw', async () => {
+  it('sends a typed (non-voice) withdraw through the real path without a fake success', async () => {
     await verifiedUser(PHONE, 500)
 
     const res = await handleWhatsAppMessage(PHONE, 'withdraw 50')
 
-    expect(res.body).toMatch(/withdrawal request received/i)
-    expect(getUserForTests(PHONE)!.balance).toBe(450)
+    expect(mockExecuteBotWithdrawal).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'whatsapp', amount: 50 })
+    )
+    expect(res.body).toMatch(/unavailable/i)
+    expect(getUserForTests(PHONE)!.balance).toBe(500)
   })
 })
