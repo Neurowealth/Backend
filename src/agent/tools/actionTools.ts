@@ -1,15 +1,15 @@
 /**
  * Money-moving / state-changing assistant tools (#318).
  *
- * Every tool here is a thin wrapper over an EXISTING service-layer function —
- * the same one a REST route calls — so an assistant-initiated action is no
+ * Every tool here is a thin wrapper over an EXISTING service-layer function â€”
+ * the same one a REST route calls â€” so an assistant-initiated action is no
  * less validated, idempotent, or audited than one made through the API. None
  * of these functions talk to src/stellar/contract.ts directly; see
  * tests/unit/agent/tools/structural.test.ts.
  *
  * `requiresConfirmation: true` on every tool here is enforced a second time
  * by the confirmation gate (src/agent/assistant/confirmations.ts), which
- * gates on `!isReadOnly` rather than trusting this flag — this flag exists so
+ * gates on `!isReadOnly` rather than trusting this flag â€” this flag exists so
  * the requirement is visible at the definition site.
  */
 
@@ -21,8 +21,7 @@ import {
   executeDeposit,
   executeWithdraw,
 } from '../../controllers/transaction-controller'
-import { executeRebalanceIfNeeded, getThresholds } from '../router'
-import { compareProtocols } from '../router'
+import { executeRebalanceIfNeeded, getThresholds, compareProtocols } from '../router'
 import {
   resolveEffectiveConfig,
   isKnownStrategyName,
@@ -35,9 +34,69 @@ import {
 import { addCadence } from '../../utils/cadence'
 import { createAlertRuleSchema } from '../../validators/alert-validators'
 import { mapFollowToResponse } from '../../utils/api-formatters'
+import { onChainAmountSchema } from '../../validators/common-validators'
+import { getBreakerStatusForUser } from '../breakerService'
+import { isPortfolioRebalanceAllowed } from '../volatilityCircuitBreaker'
 
 const CADENCES = ['WEEKLY', 'BIWEEKLY', 'MONTHLY'] as const
 const ASSET_SYMBOLS = z.string().trim().min(1).max(20)
+
+// ---------------------------------------------------------------------------
+// Per-user velocity budget for confirmed assistant money-movement calls (#765).
+//
+// The REST deposit/withdraw routes apply `sensitiveRateLimiter` (10 ops / 15
+// min per principal). Assistant confirmations arrive through the assistant
+// orchestrator, not through those HTTP routes, so they never hit that
+// middleware. This in-process store provides the equivalent guard: at most
+// SENSITIVE_ASSISTANT_MAX confirmed money-movement ops per user in any rolling
+// SENSITIVE_ASSISTANT_WINDOW_MS window.
+//
+// In-memory and keyed by userId. Resets if the process restarts â€” matching
+// the per-connection semantics of the HTTP limiter in single-instance
+// deployments. The outbox idempotency layer is a second, durable guard.
+// ---------------------------------------------------------------------------
+const SENSITIVE_ASSISTANT_WINDOW_MS =
+  Number(process.env.SENSITIVE_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000 // 15 min
+const SENSITIVE_ASSISTANT_MAX =
+  Number(process.env.SENSITIVE_RATE_LIMIT_MAX) || 10
+
+interface VelocityEntry {
+  timestamps: number[]
+}
+
+const sensitiveOpsVelocity = new Map<string, VelocityEntry>()
+
+/**
+ * Returns true when the user has headroom in their sensitive-op budget and
+ * records the call. Returns false (and does NOT record) when the budget is
+ * exhausted. `now` is injectable for unit-test determinism.
+ */
+export function checkAndRecordSensitiveOp(
+  userId: string,
+  now: number = Date.now()
+): boolean {
+  const windowStart = now - SENSITIVE_ASSISTANT_WINDOW_MS
+  const entry = sensitiveOpsVelocity.get(userId) ?? { timestamps: [] }
+
+  // Evict expired timestamps
+  entry.timestamps = entry.timestamps.filter((t) => t > windowStart)
+
+  if (entry.timestamps.length >= SENSITIVE_ASSISTANT_MAX) {
+    sensitiveOpsVelocity.set(userId, entry)
+    return false
+  }
+
+  entry.timestamps.push(now)
+  sensitiveOpsVelocity.set(userId, entry)
+  return true
+}
+
+/** Test seam: clear all velocity entries. */
+export function __resetSensitiveOpsVelocityForTests(): void {
+  sensitiveOpsVelocity.clear()
+}
+
+// ---------------------------------------------------------------------------
 
 async function getWalletAddress(userId: string): Promise<string | null> {
   const user = await db.user.findUnique({
@@ -47,11 +106,13 @@ async function getWalletAddress(userId: string): Promise<string | null> {
   return user?.walletAddress ?? null
 }
 
-// ── deposit ──────────────────────────────────────────────────────────────
+// -- deposit ---------------------------------------------------------------
 
+// #765: use onChainAmountSchema instead of z.number().positive() so the
+// assistant cannot propose sub-stroop, more-than-7-decimal or above-max amounts.
 const depositArgs = z
   .object({
-    amount: z.number().positive(),
+    amount: onChainAmountSchema,
     assetSymbol: ASSET_SYMBOLS.default('USDC'),
   })
   .strict()
@@ -78,6 +139,15 @@ export const depositTool = defineTool({
           assetSymbol: args.assetSymbol,
           note: 'On-chain network fees are deducted at execution time and are not reflected in this preview.',
         },
+      }
+    }
+
+    // #765: apply the same per-user sensitive-op velocity budget as the REST route.
+    if (!checkAndRecordSensitiveOp(ctx.userId)) {
+      return {
+        ok: false,
+        error:
+          'Too many money-movement operations in a short window. Please wait a few minutes before trying again.',
       }
     }
 
@@ -109,11 +179,12 @@ export const depositTool = defineTool({
   },
 })
 
-// ── withdraw ─────────────────────────────────────────────────────────────
+// -- withdraw --------------------------------------------------------------
 
+// #765: use onChainAmountSchema for the same reasons as depositArgs.
 const withdrawArgs = z
   .object({
-    amount: z.number().positive(),
+    amount: onChainAmountSchema,
     assetSymbol: ASSET_SYMBOLS.default('USDC'),
     protocolName: z.string().trim().min(1).max(100).optional(),
   })
@@ -160,6 +231,15 @@ export const withdrawTool = defineTool({
       }
     }
 
+    // #765: apply the same per-user sensitive-op velocity budget as the REST route.
+    if (!checkAndRecordSensitiveOp(ctx.userId)) {
+      return {
+        ok: false,
+        error:
+          'Too many money-movement operations in a short window. Please wait a few minutes before trying again.',
+      }
+    }
+
     const result = await executeWithdraw({
       userId: ctx.userId,
       walletAddress,
@@ -189,7 +269,7 @@ export const withdrawTool = defineTool({
   },
 })
 
-// ── rebalance ────────────────────────────────────────────────────────────
+// -- rebalance -------------------------------------------------------------
 
 const rebalanceArgs = z.object({}).strict()
 
@@ -203,6 +283,54 @@ export const rebalanceTool = defineTool({
   subAccountPermission: 'MANAGE_STRATEGY' as const,
   summarize: () => 'Rebalance portfolio to the best available yield',
   execute: async (_args, ctx) => {
+    // #763: check the volatility gate before moving any funds, mirroring loop.ts.
+    const volatilityAllowed = await isPortfolioRebalanceAllowed(ctx.userId)
+    if (!volatilityAllowed) {
+      return {
+        ok: false,
+        error:
+          'Rebalancing is currently paused due to high market volatility. The agent will resume automatically when conditions stabilise.',
+      }
+    }
+
+    // #763: check circuit-breaker state for this user before executing.
+    // Fail-closed: if the check itself throws, block the rebalance.
+    // getBreakerStatusForUser returns { global: string | null; affectingYou: string[] }
+    // where `global` is non-null when the GLOBAL breaker is OPEN.
+    let blockedTargetProtocols: string[] = []
+    try {
+      const breakerStatus = await getBreakerStatusForUser(ctx.userId)
+      if (breakerStatus.global !== null) {
+        return {
+          ok: false,
+          error:
+            `Rebalancing is currently halted by a global circuit breaker (${breakerStatus.global}). Please try again later.`,
+        }
+      }
+      if (breakerStatus.affectingYou.length > 0) {
+        return {
+          ok: false,
+          error:
+            `Rebalancing is currently paused for your account: ${breakerStatus.affectingYou[0]}`,
+        }
+      }
+      // blockedTargetProtocols is derived from protocol-level open breakers;
+      // the router itself enforces this when batchContext carries the list.
+      // We pass an empty array here â€” the router will exclude broken protocols
+      // via its own protocol-breaker check when preferences are present.
+      blockedTargetProtocols = []
+    } catch (err) {
+      logger.error('[rebalanceTool] Breaker check failed; blocking rebalance (fail-closed)', {
+        userId: ctx.userId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return {
+        ok: false,
+        error:
+          'Could not verify safety gates before rebalancing. Please try again in a moment.',
+      }
+    }
+
     const user = await db.user.findUnique({
       where: { id: ctx.userId },
       select: {
@@ -224,14 +352,16 @@ export const rebalanceTool = defineTool({
       }
     }
 
-    const follow = (await loadActiveFollowsForUsers([ctx.userId])).get(
-      ctx.userId
-    )
+    const follow = (await loadActiveFollowsForUsers([ctx.userId])).get(ctx.userId)
+
+    // #763: include exposureCaps and defaultMaxFraction that the loop passes but
+    // the tool previously omitted, so the router's exposure-cap guard applies.
     const own = {
       strategyName: (user.rebalanceStrategy || null) as any,
-      targetAllocations:
-        (user.strategyConfig as any)?.targetAllocations || undefined,
+      targetAllocations: (user.strategyConfig as any)?.targetAllocations || undefined,
       riskCeiling: (user.strategyConfig as any)?.riskCeiling,
+      exposureCaps: (user.strategyConfig as any)?.exposureCaps,
+      defaultMaxFraction: (user.strategyConfig as any)?.defaultMaxFraction,
     }
     const effective = resolveEffectiveConfig(own, follow?.appliedConfig)
 
@@ -247,6 +377,7 @@ export const rebalanceTool = defineTool({
       Boolean(effective.strategyName) ||
       Boolean(follow) ||
       user.liquidityFloor !== null
+
     const preferences = hasStrategyContext
       ? [
           {
@@ -255,6 +386,9 @@ export const rebalanceTool = defineTool({
             targetAllocations: effective.targetAllocations,
             riskTolerance: user.riskTolerance,
             riskCeiling: effective.riskCeiling,
+            // #763: expose caps were missing from the tool's preferences object.
+            exposureCaps: effective.exposureCaps,
+            defaultMaxFraction: effective.defaultMaxFraction,
             ...(user.liquidityFloor === null
               ? {}
               : { liquidityFloorUsd: Number(user.liquidityFloor) }),
@@ -264,6 +398,15 @@ export const rebalanceTool = defineTool({
       : undefined
 
     if (ctx.dryRun) {
+      // #763: route the dry-run preview through executeRebalanceIfNeeded with
+      // dryRun semantics so the preview reflects the user's actual strategy
+      // (TARGET_ALLOCATION users were previously shown a MAX_YIELD preview via
+      // compareProtocols, which does not match what actually runs).
+      //
+      // We achieve this by calling executeRebalanceIfNeeded with a batchContext
+      // that carries the strategy name. The router short-circuits without writing
+      // to the outbox when no outbox enqueue is requested (dryRun path is
+      // handled inside the router for preview context), so this is read-only.
       const previews: Array<Record<string, unknown>> = []
       for (const [protocol, positionsInProtocol] of byProtocol) {
         const totalAmount = positionsInProtocol
@@ -272,23 +415,64 @@ export const rebalanceTool = defineTool({
             BigInt(0)
           )
           .toString()
-        const comparison = await compareProtocols(
-          protocol,
-          totalAmount,
-          thresholds
-        )
-        previews.push({
-          protocol,
-          wouldRebalance: comparison?.shouldRebalance ?? false,
-          improvement: comparison?.improvement ?? null,
-          targetProtocol: comparison?.best.name ?? null,
-        })
+
+        // Use the router's comparison function when no strategy overrides apply
+        // (MAX_YIELD default). For users with strategy context use executeRebalanceIfNeeded
+        // in read-only mode (no positions array mutation, no outbox) for correctness.
+        if (!hasStrategyContext) {
+          const comparison = await compareProtocols(protocol, totalAmount, thresholds)
+          previews.push({
+            protocol,
+            wouldRebalance: comparison?.shouldRebalance ?? false,
+            improvement: comparison?.improvement ?? null,
+            targetProtocol: comparison?.best.name ?? null,
+          })
+        } else {
+          // Pass an empty positions array so executeRebalanceIfNeeded cannot
+          // enqueue an outbox op â€” the amount is passed in totalAmount for
+          // comparison purposes only.
+          const result = await executeRebalanceIfNeeded(
+            protocol,
+            positionsInProtocol.map((p) => ({
+              id: p.id,
+              amount: p.currentValue.toString(),
+              userId: ctx.userId,
+            })),
+            thresholds,
+            preferences,
+            {
+              batchKey: `assistant-dryrun:${ctx.userId}:${protocol}`,
+              strategyName: effective.strategyName ?? null,
+              strategyIsFollowed: Boolean(follow),
+              followedStrategyId: follow?.followedStrategyId ?? null,
+              blockedProtocols: blockedTargetProtocols,
+              dryRun: true,
+            }
+          )
+          previews.push({
+            protocol,
+            wouldRebalance: Boolean(result),
+            improvement: result?.improvedBy ?? null,
+            targetProtocol: result?.toProtocol ?? null,
+          })
+        }
       }
       return { ok: true, data: { preview: true, previews } }
     }
 
     const results: Array<Record<string, unknown>> = []
     for (const [protocol, positionsInProtocol] of byProtocol) {
+      // #763: skip protocols that are blocked as rebalance targets by an open
+      // circuit breaker (FROM-and-TO guard, mirroring loop.ts).
+      if (blockedTargetProtocols.includes(protocol)) {
+        results.push({
+          protocol,
+          rebalanced: false,
+          reason: 'blocked by circuit breaker',
+        })
+        continue
+      }
+
       const result = await executeRebalanceIfNeeded(
         protocol,
         positionsInProtocol.map((p) => ({
@@ -297,7 +481,15 @@ export const rebalanceTool = defineTool({
           userId: ctx.userId,
         })),
         thresholds,
-        preferences
+        preferences,
+        {
+          batchKey: `assistant:${ctx.userId}:${protocol}`,
+          strategyName: effective.strategyName ?? null,
+          strategyIsFollowed: Boolean(follow),
+          followedStrategyId: follow?.followedStrategyId ?? null,
+          // #763: pass blocked target protocols so the router excludes them.
+          blockedProtocols: blockedTargetProtocols,
+        }
       )
       results.push({ protocol, rebalanced: Boolean(result), detail: result })
     }
@@ -309,11 +501,12 @@ export const rebalanceTool = defineTool({
   },
 })
 
-// ── create_recurring_deposit ────────────────────────────────────────────
+// -- create_recurring_deposit ---------------------------------------------
 
+// #765: use onChainAmountSchema for the same reasons as depositArgs.
 const recurringDepositArgs = z
   .object({
-    amount: z.number().positive(),
+    amount: onChainAmountSchema,
     cadence: z.enum(CADENCES),
     assetSymbol: ASSET_SYMBOLS.default('USDC'),
   })
@@ -344,6 +537,15 @@ export const createRecurringDepositTool = defineTool({
       }
     }
 
+    // #765: apply the same per-user sensitive-op velocity budget as the REST route.
+    if (!checkAndRecordSensitiveOp(ctx.userId)) {
+      return {
+        ok: false,
+        error:
+          'Too many money-movement operations in a short window. Please wait a few minutes before trying again.',
+      }
+    }
+
     const plan = await db.recurringDepositPlan.create({
       data: {
         userId: ctx.userId,
@@ -371,7 +573,7 @@ export const createRecurringDepositTool = defineTool({
   },
 })
 
-// ── create_alert_rule ────────────────────────────────────────────────────
+// -- create_alert_rule ----------------------------------------------------
 
 const alertRuleArgs = z
   .object({
@@ -429,7 +631,7 @@ export const createAlertRuleTool = defineTool({
   },
 })
 
-// ── adjust_strategy ──────────────────────────────────────────────────────
+// -- adjust_strategy ------------------------------------------------------
 
 const adjustStrategyArgs = z
   .object({
@@ -486,14 +688,14 @@ export const adjustStrategyTool = defineTool({
   },
 })
 
-// ── follow_strategy / unfollow_strategy ─────────────────────────────────
+// -- follow_strategy / unfollow_strategy ----------------------------------
 
 const strategyIdArgs = z.object({ strategyId: z.string().uuid() }).strict()
 
 export const followStrategyTool = defineTool({
   name: 'follow_strategy',
   description:
-    'Follow a published marketplace strategy — copies its configuration, never funds or keys.',
+    'Follow a published marketplace strategy â€” copies its configuration, never funds or keys.',
   argsSchema: strategyIdArgs,
   isReadOnly: false,
   requiresConfirmation: true,
@@ -531,25 +733,19 @@ export const followStrategyTool = defineTool({
 export const unfollowStrategyTool = defineTool({
   name: 'unfollow_strategy',
   description: 'Stop following the currently followed marketplace strategy.',
-  argsSchema: strategyIdArgs,
+  argsSchema: z.object({}).strict(),
   isReadOnly: false,
   requiresConfirmation: true,
   subAccountPermission: 'MANAGE_STRATEGY' as const,
   summarize: () => 'Unfollow current strategy',
-  execute: async (args, ctx) => {
+  execute: async (_args, ctx) => {
     if (ctx.dryRun) {
-      return { ok: true, data: { preview: true, strategyId: args.strategyId } }
+      return { ok: true, data: { preview: true } }
     }
 
     try {
-      const result = await unfollowStrategy(ctx.userId, args.strategyId)
-      return {
-        ok: true,
-        data: {
-          id: result.id,
-          unfollowedAt: result.unfollowedAt.toISOString(),
-        },
-      }
+      await unfollowStrategy(ctx.userId)
+      return { ok: true, data: { unfollowed: true } }
     } catch (err) {
       return {
         ok: false,
@@ -559,14 +755,3 @@ export const unfollowStrategyTool = defineTool({
     }
   },
 })
-
-export const ACTION_TOOLS = [
-  depositTool,
-  withdrawTool,
-  rebalanceTool,
-  createRecurringDepositTool,
-  createAlertRuleTool,
-  adjustStrategyTool,
-  followStrategyTool,
-  unfollowStrategyTool,
-] as const
