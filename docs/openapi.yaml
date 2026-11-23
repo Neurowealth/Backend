@@ -266,6 +266,8 @@ components:
           totalKnownUsd,
           platformValueUsd,
           externalKnownValueUsd,
+          staleKnownExternalValueUsd,
+          lastKnownTotalUsd,
           valuationComplete,
           unpricedExternalHoldingCount,
           staleWalletCount,
@@ -278,11 +280,25 @@ components:
           enum: [USD]
         totalKnownUsd:
           type: number
-          description: Known subtotal; not a complete total when valuationComplete is false.
+          description: |
+            Current known value: platformValueUsd + externalKnownValueUsd.
+            Excludes stale wallets (see staleKnownExternalValueUsd) and
+            unpriced assets, so it is not a complete total when
+            valuationComplete is false.
         platformValueUsd:
           type: number
         externalKnownValueUsd:
           type: number
+          description: Priced balances of external wallets that are not stale.
+        staleKnownExternalValueUsd:
+          type: number
+          description: |
+            Priced balances of stale external wallets (failed or overdue
+            sync), as of each wallet's lastSyncedAt. Not included in
+            totalKnownUsd.
+        lastKnownTotalUsd:
+          type: number
+          description: totalKnownUsd + staleKnownExternalValueUsd, i.e. the total using last-known values for stale wallets.
         valuationComplete:
           type: boolean
         unpricedExternalHoldingCount:

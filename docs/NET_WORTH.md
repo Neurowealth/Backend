@@ -40,9 +40,21 @@ subtotal, not a claim that every asset is priced.
 Successful snapshots retain their original `lastSyncedAt`. If a later read
 fails, the previous balances remain visible with `stale: true`, the last
 successful `asOf`, and `syncFailed: true`. Data older than 30 minutes is also
-marked stale. Stale snapshots may still contribute to opted-in private goals;
-the net-worth response sets `valuationComplete: false`, while goal progress
-reports `externalStaleWalletCount` and `unpricedExternalHoldingCount`.
+marked stale.
+
+The net-worth totals keep current and last-known values apart (#843):
+
+| Field | Meaning |
+| ----- | ------- |
+| `totalKnownUsd` | Current known value: `platformValueUsd + externalKnownValueUsd`. |
+| `externalKnownValueUsd` | Priced balances of external wallets that are **not** stale. |
+| `staleKnownExternalValueUsd` | Priced balances of stale wallets, as of their `lastSyncedAt`. Not in `totalKnownUsd`. |
+| `lastKnownTotalUsd` | `totalKnownUsd + staleKnownExternalValueUsd`: the total if stale balances are assumed unchanged. |
+
+Any stale wallet also sets `valuationComplete: false` and counts in
+`staleWalletCount`. Stale snapshots may still contribute to opted-in private
+goals, where goal progress reports `externalStaleWalletCount` and
+`unpricedExternalHoldingCount`.
 
 Removing a linked wallet immediately removes it from net-worth and goal
 calculations. Existing historical snapshots/reports are not rewritten.

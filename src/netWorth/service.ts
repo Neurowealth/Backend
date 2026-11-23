@@ -86,19 +86,35 @@ export async function getNetWorth(userId: string) {
     (sum, holding) => sum + holding.valueUsd,
     0
   )
-  const externalKnownValueUsd = externalHoldings.reduce(
-    (sum, holding) => sum + (holding.valueUsd ?? 0),
-    0
+  // #843 — a stale wallet's balances are last-known values, not current ones,
+  // so they are kept out of the "known" totals and reported separately.
+  // `lastKnownTotalUsd` is the old stale-inclusive figure, under a name that
+  // says what it is.
+  const sumKnownUsd = (holdings: typeof externalHoldings) =>
+    holdings.reduce((sum, holding) => sum + (holding.valueUsd ?? 0), 0)
+  const externalKnownValueUsd = sumKnownUsd(
+    externalHoldings.filter((holding) => !holding.stale)
+  )
+  const staleKnownExternalValueUsd = sumKnownUsd(
+    externalHoldings.filter((holding) => holding.stale)
   )
   const unpricedExternalHoldingCount = externalHoldings.filter(
     (holding) => holding.valueUsd === null
   ).length
 
+  const totalKnownUsd = platformValueUsd + externalKnownValueUsd
+
   return {
     currency: 'USD',
-    totalKnownUsd: platformValueUsd + externalKnownValueUsd,
+    // Current known value: platform positions plus freshly synced, priced
+    // external balances.
+    totalKnownUsd,
     platformValueUsd,
     externalKnownValueUsd,
+    // Priced balances of stale wallets, as of each wallet's lastSyncedAt.
+    staleKnownExternalValueUsd,
+    // totalKnownUsd plus the stale last-known values.
+    lastKnownTotalUsd: totalKnownUsd + staleKnownExternalValueUsd,
     valuationComplete:
       unpricedExternalHoldingCount === 0 &&
       walletViews.every((wallet) => !wallet.stale),
