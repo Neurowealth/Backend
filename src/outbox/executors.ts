@@ -44,6 +44,7 @@ import {
   getNetworkPassphrase,
 } from '../stellar/client'
 import db from '../db'
+import { applyLoanLiquidationSale } from '../lending/liquidation'
 
 /**
  * Which Stellar public key an op's submission will sign with — resolved
@@ -175,15 +176,14 @@ export async function executeOutboxPayload(
         onSubmitted
       )
     case 'loan_liquidation': {
-      // Protective netting sale of collateral — internal platform netting entry
-      const txHash = `liquidation-${payload.loanId}-${payload.sequence}-${Date.now()}`
-      if (onSubmitted) {
-        await onSubmitted(txHash)
+      // Protective netting sale of collateral — an internal ledger entry,
+      // not a Stellar transfer. applyLoanLiquidationSale performs the whole
+      // sale atomically and returns a namespaced platform reference.
+      const result = await applyLoanLiquidationSale(payload)
+      if (onSubmitted && result.hash) {
+        await onSubmitted(result.hash)
       }
-      return {
-        hash: txHash,
-        status: 'success',
-      }
+      return result
     }
     case 'protection_fund_payout': {
       // Disburse protection fund payout to beneficiary
