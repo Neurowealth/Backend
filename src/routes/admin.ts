@@ -2845,7 +2845,7 @@ router.post(
         .json({ success: false, error: 'Admin authentication required' })
     }
     try {
-      const { fromTier, toTier, asset, amount, reason } = req.body
+      const { fromTier, toTier, asset, assetIssuer, amount, reason } = req.body
       const { executeEmergencySweep } = await import('../jobs/treasurySweep')
       await executeEmergencySweep(
         fromTier,
@@ -2853,7 +2853,8 @@ router.post(
         asset,
         amount,
         adminAuth.name,
-        reason ?? 'manual_admin_action'
+        reason ?? 'manual_admin_action',
+        assetIssuer
       )
       auditLog(req, res, 'TREASURY_EMERGENCY_SWEEP', 'success', {
         fromTier,

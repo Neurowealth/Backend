@@ -2,6 +2,13 @@
 
 Comprehensive reference for all backend endpoints defined in src/routes.
 
+### Decimal values
+
+Money and token amounts stored as Prisma `Decimal` values are returned as JSON
+strings. This preserves the database value exactly, including fractional token
+amounts and large balances. Clients should parse these strings with a
+decimal-safe numeric type rather than JavaScript `Number` when doing arithmetic.
+
 ## Base Information
 
 - Base URL (local): http://localhost:3001
