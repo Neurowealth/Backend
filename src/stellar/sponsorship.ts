@@ -19,7 +19,7 @@ import {
   Asset,
 } from '@stellar/stellar-sdk'
 import { getNetworkPassphrase } from './client'
-import { getAccount } from './client'
+import { getExternalWalletBalances } from './client'
 import { logger } from '../utils/logger'
 import { config } from '../config/env'
 
@@ -84,9 +84,14 @@ export function buildSponsoredCreateAccount(params: {
   newAccountId: string
   sponsorKeypair: Keypair
   startingBalance?: string
+  /** Live sequence number of the sponsor account (from getAccount). */
+  sponsorSequence?: string
 }): ReturnType<typeof TransactionBuilder.prototype.build> {
   const { newAccountId, sponsorKeypair, startingBalance = '0' } = params
-  const sponsorAccount = new Account(sponsorKeypair.publicKey(), '0')
+  const sponsorAccount = new Account(
+    sponsorKeypair.publicKey(),
+    params.sponsorSequence ?? '0'
+  )
 
   const tx = new TransactionBuilder(sponsorAccount, {
     fee: BASE_FEE,
@@ -145,9 +150,14 @@ export function buildSponsoredTrustline(params: {
   accountId: string
   asset: Asset
   sponsorKeypair: Keypair
+  /** Live sequence number of the sponsor account (from getAccount). */
+  sponsorSequence?: string
 }): ReturnType<typeof TransactionBuilder.prototype.build> {
   const { accountId, asset, sponsorKeypair } = params
-  const sponsorAccount = new Account(sponsorKeypair.publicKey(), '0')
+  const sponsorAccount = new Account(
+    sponsorKeypair.publicKey(),
+    params.sponsorSequence ?? '0'
+  )
 
   const tx = new TransactionBuilder(sponsorAccount, {
     fee: BASE_FEE,
@@ -186,9 +196,14 @@ export function buildRevokeSponsorship(params: {
   sponsorKeypair: Keypair
   accountId: string
   ledgerKey: string
+  /** Live sequence number of the sponsor account (from getAccount). */
+  sponsorSequence?: string
 }): ReturnType<typeof TransactionBuilder.prototype.build> {
   const { sponsorKeypair, ledgerKey, accountId } = params
-  const sponsorAccount = new Account(sponsorKeypair.publicKey(), '0')
+  const sponsorAccount = new Account(
+    sponsorKeypair.publicKey(),
+    params.sponsorSequence ?? '0'
+  )
 
   let revokeOp: any
 
@@ -266,16 +281,12 @@ export async function pickSponsor(): Promise<Keypair> {
 
   for (const kp of sponsors) {
     try {
-      const account = await getAccount(kp.publicKey())
-      // account.balances is array of {asset_type, balance, selling_liabilities?}
-      const native = (account as any).balances?.find(
-        (b: any) => b.asset_type === 'native'
-      )
-      const balance = native ? parseFloat(native.balance) : 0
-      const liabilities = native?.selling_liabilities
-        ? parseFloat(native.selling_liabilities)
-        : 0
-      const available = balance - liabilities
+      // rpc.Server.getAccount returns a bare Account (id + sequence only);
+      // balances live on Horizon /accounts, read via getExternalWalletBalances.
+      const balances = await getExternalWalletBalances(kp.publicKey())
+      const native = balances.find((b) => b.assetType === 'native')
+      const balance = native ? parseFloat(native.amount) : 0
+      const available = balance
       if (available >= floor && available > bestBal) {
         best = kp
         bestBal = available

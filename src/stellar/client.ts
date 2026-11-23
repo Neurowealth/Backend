@@ -16,7 +16,11 @@ import {
   Account,
 } from '@stellar/stellar-sdk'
 import { config } from '../config'
-import { HttpClientAdapter, TimeoutError } from '../utils/http-client'
+import {
+  HttpClientAdapter,
+  NonRetryableError,
+  TimeoutError,
+} from '../utils/http-client'
 import { logger } from '../utils/logger'
 import { TransactionConfirmationTimeoutError, TransactionResult } from './types'
 import { fetchWithRetry } from '../utils/fetchWithRetry'
@@ -169,6 +173,12 @@ class ResilientRpcClient {
         return result
       } catch (error) {
         endTimer({ success: 'false' })
+        if (error instanceof NonRetryableError) {
+          // Deterministic rejection (e.g. tx_bad_seq): resubmitting to
+          // another endpoint cannot help, so don't fail over or count it
+          // against this endpoint's circuit breaker.
+          throw error
+        }
         lastError = error instanceof Error ? error : new Error(String(error))
         logger.warn(
           `[StellarRPC] Endpoint ${slot.url} failed for "${context}": ${lastError.message}`
@@ -233,13 +243,63 @@ export function getAgentKeypair(): Keypair {
 
 // ── Public RPC helpers ────────────────────────────────────────────────────────
 
+/**
+ * The network definitively rejected a transaction (sendTransaction ERROR,
+ * e.g. tx_bad_seq, tx_insufficient_balance). Deterministic — never retried
+ * and never counted against endpoint health. Carries the decoded result
+ * code (e.g. "txBadSeq") and the raw errorResult XDR for diagnostics.
+ */
+export class TransactionSubmitRejectedError extends NonRetryableError {
+  constructor(
+    public readonly resultCode: string,
+    public readonly resultXdr?: string
+  ) {
+    super(
+      `Transaction rejected by network: ${resultCode}` +
+        (resultXdr ? ` (${resultXdr})` : '')
+    )
+    this.name = 'TransactionSubmitRejectedError'
+  }
+}
+
+/**
+ * The network asked us to try again later (TRY_AGAIN_LATER). The tx was
+ * NOT accepted, so retrying the same submission is safe and desirable.
+ */
+export class TransactionTryAgainLaterError extends Error {
+  constructor(public readonly txHash: string) {
+    super(
+      `Transaction submission deferred by network (TRY_AGAIN_LATER): ${txHash}`
+    )
+    this.name = 'TransactionTryAgainLaterError'
+  }
+}
+
+function decodeSubmitErrorCode(
+  errorResult: rpc.Api.SendTransactionResponse['errorResult']
+): string {
+  try {
+    const result = (errorResult as any)?.result?.()
+    const name = result?.switch?.().name
+    if (typeof name === 'string' && name) return name
+  } catch {
+    // fall through to generic code
+  }
+  return 'unknown'
+}
+
 export async function submitTransaction(tx: Transaction): Promise<string> {
   return getResilientClient().execute(async (server) => {
     const response = await server.sendTransaction(tx)
     if (response.status === 'ERROR') {
-      throw new Error(
-        `Transaction failed: ${response.errorResult?.toXDR('base64')}`
+      const resultXdr = response.errorResult?.toXDR('base64')
+      throw new TransactionSubmitRejectedError(
+        decodeSubmitErrorCode(response.errorResult),
+        resultXdr
       )
+    }
+    if (response.status === 'TRY_AGAIN_LATER') {
+      throw new TransactionTryAgainLaterError(response.hash)
     }
     return response.hash
   }, 'stellar.submitTransaction')
