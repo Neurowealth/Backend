@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { paginationSchema } from '../utils/pagination'
 import { requireAuth } from '../middleware/authenticate'
+import { requireSessionAuth } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import { idempotent } from '../middleware/idempotency'
 import { sendError, sendNotFound, AppError } from '../utils/errors'
@@ -45,6 +46,7 @@ function handleServiceError(res: Response, err: unknown, action: string) {
 router.get(
   '/',
   requireAuth,
+  requireSessionAuth,
   validate({ query: approvalListQuerySchema }),
   async (req: Request, res: Response) => {
     try {
@@ -66,7 +68,7 @@ router.get(
 )
 
 // ── GET /:id — full request + decisions ─────────────────────────────────────
-router.get('/:id', requireAuth, async (req: Request, res: Response) => {
+router.get('/:id', requireAuth, requireSessionAuth, async (req: Request, res: Response) => {
   try {
     const request = await getVisibleRequestDetail(
       req.params.id,
@@ -85,6 +87,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response) => {
 router.post(
   '/:id/approve',
   requireAuth,
+  requireSessionAuth,
   idempotent({ required: false, ttlSeconds: 86400 }),
   validate({ body: approveSchema, errorMessage: 'Validation error' }),
   async (req: Request, res: Response) => {
@@ -106,6 +109,7 @@ router.post(
 router.post(
   '/:id/reject',
   requireAuth,
+  requireSessionAuth,
   idempotent({ required: false, ttlSeconds: 86400 }),
   validate({ body: rejectSchema, errorMessage: 'Validation error' }),
   async (req: Request, res: Response) => {
@@ -127,6 +131,7 @@ router.post(
 router.post(
   '/:id/cancel',
   requireAuth,
+  requireSessionAuth,
   idempotent({ required: false, ttlSeconds: 86400 }),
   async (req: Request, res: Response) => {
     try {

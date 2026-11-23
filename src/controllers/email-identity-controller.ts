@@ -203,9 +203,9 @@ export async function handleMailWebhook(
 
     res.json({ success: true, message: 'Mail webhook processed' })
   } catch (err: any) {
-    // SES delivers only cryptographically signed SNS envelopes (#524). A body
-    // that fails verification is an unauthenticated caller, not a malformed
-    // one: 401, logged, and never processed. The code check (plain string)
+    // SES delivers only cryptographically signed SNS envelopes (#524, #756).
+    // A body that fails verification cannot be trusted: reject it as a bad
+    // request, log it, and never process it. The code check (plain string)
     // survives the mailProvider module being mocked under unit test.
     if (
       err &&
@@ -215,7 +215,7 @@ export async function handleMailWebhook(
         '[EmailIdentityController] Rejected mail webhook: SNS signature verification failed',
         { reason: err?.reason, error: err.message }
       )
-      res.status(401).json({ error: 'Unauthorized' })
+      res.status(400).json({ error: 'Invalid mail webhook signature' })
       return
     }
     logger.error('[EmailIdentityController] Failed to process mail webhook', {

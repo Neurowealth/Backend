@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { requireAuth } from '../middleware/authenticate'
+import { requireSessionAuth } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import { sendError, sendNotFound } from '../utils/errors'
 import { logger } from '../utils/logger'
@@ -41,7 +42,7 @@ async function assertManageStrategyOnChild(
 }
 
 // ── GET / — policies the caller owns (own-account + any child-scoped) ──────
-router.get('/', requireAuth, async (req: Request, res: Response) => {
+router.get('/', requireAuth, requireSessionAuth, async (req: Request, res: Response) => {
   const policies = await db.approvalPolicy.findMany({
     where: { principalUserId: req.auth!.userId },
     orderBy: { createdAt: 'desc' },
@@ -50,7 +51,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
 })
 
 // ── GET /:id ─────────────────────────────────────────────────────────────
-router.get('/:id', requireAuth, async (req: Request, res: Response) => {
+router.get('/:id', requireAuth, requireSessionAuth, async (req: Request, res: Response) => {
   const policy = await db.approvalPolicy.findUnique({
     where: { id: req.params.id },
   })
@@ -64,6 +65,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response) => {
 router.post(
   '/',
   requireAuth,
+  requireSessionAuth,
   validate({
     body: createApprovalPolicySchema,
     errorMessage: 'Validation error',
@@ -113,6 +115,7 @@ router.post(
 router.put(
   '/:id',
   requireAuth,
+  requireSessionAuth,
   validate({
     body: updateApprovalPolicySchema,
     errorMessage: 'Validation error',

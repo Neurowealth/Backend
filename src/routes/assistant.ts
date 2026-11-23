@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { requireAuth } from '../middleware/authenticate'
+import { requireSessionAuth } from '../middleware/apiKeyAuth'
+import { sensitiveRateLimiter } from '../middleware/rateLimiter'
 import { validate } from '../middleware/validate'
 import { assistantChatSchema } from '../validators/assistant-validators'
 import { handleAssistantMessage } from '../agent/assistant/assistant'
@@ -16,9 +18,16 @@ import { sendUnauthorized } from '../utils/errors'
 const router = Router()
 
 router.use(requireAuth)
+// #753 — the assistant can propose AND confirm money-moving tools. An API
+// key with any scope could otherwise drive those tools without ever passing
+// requireWithdrawScope, so this surface is session-JWT only.
+router.use(requireSessionAuth)
 
 router.post(
   '/chat',
+  // LLM calls are expensive and can reach action tools; reuse the existing
+  // sensitive-operation budget rather than the plain per-principal tier.
+  sensitiveRateLimiter,
   validate(assistantChatSchema),
   async (req: Request, res: Response) => {
     const callerUserId = req.auth!.userId

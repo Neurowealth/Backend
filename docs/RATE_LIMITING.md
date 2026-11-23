@@ -126,6 +126,7 @@ legacy `/api/*` alias with the same handlers, and therefore the same tier.
 | `/api/v1/webauthn` | ANY | `auth` | 900000ms | 20 | Top-level WebAuthn alias, same ceremony budget. |
 | `/api/v1/whatsapp` | ANY | `webhook` | 60000ms | 30 | Inbound WhatsApp provider callbacks, HMAC-signed. |
 | `/api/v1/telegram` | ANY | `webhook` | 60000ms | 30 | Inbound Telegram provider callbacks, HMAC-signed. |
+| `/api/v1/webhooks/mail` | POST | `webhook` | 60000ms | 30 | Unauthenticated SES/SNS mail bounce callback, signature-verified. |
 | `/api/v1/admin` | ANY | `admin` | 900000ms | 10 | Management API — reserves, key minting, referral settlement. |
 | `/api/v1/admin/support/tickets` | ANY | `admin` | 900000ms | 10 | Admin view of support tickets. |
 | `/api/v1/admin/notifications/dlq` | ANY | `admin` | 900000ms | 10 | Dead-letter queue inspection and replay. |
@@ -141,6 +142,7 @@ legacy `/api/*` alias with the same handlers, and therefore the same tier.
 | `/api/v1/keys` | POST | `sensitive` | 900000ms | 10 | Minting an API key is a takeover vector — credential change. |
 | `/api/v1/keys/:id/rotate` | POST | `sensitive` | 900000ms | 10 | Rotating a key is a credential change. |
 | `/api/v1/support/tickets` | POST | `sensitive` | 900000ms | 10 | Opening a ticket is a state change on a customer-visible record. |
+| `/api/v1/assistant/chat` | POST | `sensitive` | 900000ms | 10 | Assistant chat can propose and confirm money-moving tool calls; session-only with the sensitive-operation budget. |
 | `/api/v1/accounting` | ANY | `tiered` | 900000ms / 600 authenticated | 60 | Accounting export is a user-scoped read gated by transactions:read; the reconciliation gate runs before any bytes are sent. |
 | `/api/v1/portfolio/:userId/suggest-allocation` | POST | `optimizer` | 60000ms | 5 | CPU-bound allocation solver — the classic exhaustion vector. |
 | `/api/v1/strategies/simulate` | POST | `simulate` | 60000ms | 6 | CPU-bound historical replay. |
@@ -148,6 +150,7 @@ legacy `/api/*` alias with the same handlers, and therefore the same tier.
 | `/api/v1/agent` | ANY | `internal` | 60000ms | 500 | Agent loop endpoints — service-to-service, guarded by the internal token. |
 | `/api/v1` | ANY | `tiered` | 900000ms / 600 authenticated | 60 | Default for every remaining versioned API route: the global budget plus the identity tier (strict per-IP when anonymous, generous per-principal once authenticated). |
 | `/api/webhooks` | ANY | `tiered` | 900000ms / 600 authenticated | 60 | Pre-version webhook management surface; same baseline as /api/v1. |
+| `/api/webhooks/mail` | POST | `webhook` | 60000ms | 30 | Legacy alias of the unauthenticated mail bounce callback. |
 | `/api/analytics` | ANY | `tiered` | 900000ms / 600 authenticated | 60 | Pre-version analytics alias; same baseline as /api/v1. |
 | `/api/stellar` | ANY | `tiered` | 900000ms / 600 authenticated | 60 | Pre-version Stellar alias; same baseline as /api/v1. |
 | `/health` | ANY | `tiered` | 900000ms / 600 authenticated | 60 | Liveness and readiness probes. The GLOBAL limiter skips these so k8s probes never consume the budget; the tiered limiter still applies. |
