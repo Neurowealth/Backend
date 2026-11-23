@@ -151,9 +151,11 @@ GET /api/v1/portfolio/:userId/tax-report?year=<yyyy>&format=json|csv&method=FIFO
 - Auth: `requireAuth` + `enforceUserAccess` (own report only). The userId is a
   path param deliberately — `enforceUserAccess` only checks
   `params.userId`/`body.userId`, so a query-param userId would bypass it.
-- `year` is bounded 2000–2100; boundaries are **UTC** (`disposedAt` in
-  `[Jan 1 00:00 UTC, next Jan 1)`). A disposal belongs to the year it was
-  disposed in, regardless of when the lot was acquired.
+- The period is the user's jurisdiction's tax year (see "Tax years" below),
+  chosen with exactly one of `taxYear` (the canonical label, `2025` or
+  `2025-26`) or `year` (2000–2100, the year the tax year starts in).
+  Boundaries are **UTC**. A disposal belongs to the tax year it was disposed
+  in, regardless of when the lot was acquired.
 - `method` is **optional and a confirmation gate, not a recompute switch**:
   if passed, it must equal the account's current `accountingMethod` or the
   request is rejected with 400 (`MethodMismatchError`). This report shows
@@ -163,7 +165,7 @@ GET /api/v1/portfolio/:userId/tax-report?year=<yyyy>&format=json|csv&method=FIFO
   withdrawals did lot-for-lot. Change the account's method (forward-only, see
   above) to affect future reports.
 - A year with no activity returns a valid empty report (200).
-- `format=csv` returns an RFC 4180 attachment (`tax-report-<year>.csv`).
+- `format=csv` returns an RFC 4180 attachment (`tax-report-<taxYearLabel>.csv`).
   Cells starting with `=` `+` `-` `@` tab or CR are prefixed with `'`
   (spreadsheet formula-injection guard, `src/utils/csv.ts`).
 
@@ -177,6 +179,21 @@ per-request-computed value.
 `src/tax/jurisdictions/`. The profile decides which disposals fall in the tax
 year, whether a disposal is long-term, and what long-term means; the report
 does the money math.
+
+### Tax years (#844)
+
+| Jurisdiction | Tax year | `taxYear` label | `year=2025` selects |
+| ------------ | -------- | --------------- | ------------------- |
+| US, DE, CA | 1 Jan – 31 Dec | `2025` | 2025-01-01 to 2025-12-31 |
+| UK | 6 Apr – 5 Apr | `2025-26` | 2025-04-06 to 2026-04-05 |
+| AU | 1 Jul – 30 Jun | `2025-26` | 2025-07-01 to 2026-06-30 |
+
+`year` always means the calendar year the tax year **starts** in. Since that
+is easy to misread for UK/AU, prefer `taxYear`: it is checked against the
+user's jurisdiction, and a bare `2025` for a UK/AU user is a 400 suggesting
+`2025-26` rather than a silently chosen period. The response's `year`,
+`taxYearLabel`, `taxYearStart` (inclusive), `taxYearEnd` (exclusive) and
+`caveats.taxYearNote` identify the period that was used.
 
 ### Long-term treatment (#839)
 
@@ -266,8 +283,8 @@ indicate an insufficient-lots condition (see the paired critical alert).
 3. **USDC 1:1 USD assumption** — actual market price may deviate slightly.
 4. **HTTP-controller-only transactions** never re-seen by the event listener
    get no lots/disposals (consistent with Position behavior).
-5. **UTC year boundaries** — users in other timezones may expect local-time
-   year edges.
+5. **UTC tax-year boundaries** — users in other timezones may expect
+   local-time edges (e.g. UK midnight on 6 April in BST).
 6. **Forward-only unless the backfill script is run** at deploy.
 7. Yield claims, referral rewards, and swaps do not create or consume lots;
    only DEPOSIT/WITHDRAWAL Transactions participate.

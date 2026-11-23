@@ -25,7 +25,11 @@ import { AccountingMethod, Prisma, TaxJurisdiction } from '@prisma/client'
 import { Decimal } from '@prisma/client/runtime/library'
 import db from '../db'
 import { CsvValue } from '../utils/csv'
-import { resolveJurisdiction, TaxProfile } from './jurisdictions'
+import {
+  isSplitTaxYear,
+  resolveJurisdiction,
+  TaxProfile,
+} from './jurisdictions'
 
 type Db = typeof db | Prisma.TransactionClient
 
@@ -72,6 +76,10 @@ export interface TaxReportDisposal {
 
 export interface TaxReport {
   userId: string
+  // #844 — the calendar year the jurisdiction's tax year *starts* in, which is
+  // what the `year` query parameter selects. For UK/AU it is not the year the
+  // tax year ends in: year=2025 is UK 2025-26 and AU FY2025-26. Use
+  // taxYearLabel / taxYearStart / taxYearEnd as the canonical period.
   year: number
   method: AccountingMethod
   // #356 — the jurisdiction this report was built under, and the tax-year
@@ -120,6 +128,9 @@ export interface TaxReport {
     // #356 — always present: this report is bookkeeping output, not filed
     // tax advice, and jurisdiction rules simplify real-world edge cases.
     jurisdictionDisclaimer: string
+    // #844 — states the exact period covered, in words, so a UK/AU reader
+    // is not left to infer which tax year `year` selected.
+    taxYearNote: string
   }
 }
 
@@ -165,6 +176,21 @@ export function taxableGainFor(
     default:
       return realizedGain
   }
+}
+
+function taxYearNote(
+  profile: TaxProfile,
+  year: number,
+  label: string,
+  start: Date,
+  end: Date
+): string {
+  const day = (d: Date) => d.toISOString().slice(0, 10)
+  const lastDay = new Date(end.getTime() - 24 * 60 * 60 * 1000)
+  const period = `${profile.displayName} tax year ${label}: ${day(start)} to ${day(lastDay)} inclusive (UTC).`
+  return isSplitTaxYear(profile)
+    ? `${period} year=${year} selects the tax year that starts in ${year}.`
+    : period
 }
 
 export async function buildTaxReport(
@@ -326,6 +352,7 @@ export async function buildTaxReport(
       unpricedAssets: [...unpricedAssets].sort(),
       stablecoinAssumption:
         'USDC is priced at 1.00 USD by assumption (STABLECOIN_ASSUMPTION); no market price feed is used.',
+      taxYearNote: taxYearNote(profile, year, taxYearLabel, yearStart, yearEnd),
       jurisdictionDisclaimer: `This report applies the ${profile.displayName} (${profile.jurisdiction}) tax profile (tax year ${taxYearLabel}). It is bookkeeping output, not tax advice — verify with a qualified professional for your situation.`,
       rebalancesNotIncluded:
         'Protocol rebalances are same-asset transfers and are not treated as taxable disposals in this report.',

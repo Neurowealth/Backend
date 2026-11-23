@@ -374,6 +374,62 @@ describe('buildTaxReport — jurisdiction long-term treatment (#839)', () => {
   })
 })
 
+describe('buildTaxReport — UK/AU tax-year boundaries (#844)', () => {
+  function asJurisdiction(taxJurisdiction: string) {
+    mockDb.user.findUnique.mockResolvedValue({
+      accountingMethod: 'FIFO',
+      methodEffectiveAt: null,
+      taxJurisdiction,
+    })
+  }
+
+  it('UK: year=2025 selects 6 Apr 2025 to 5 Apr 2026, labelled 2025-26', async () => {
+    asJurisdiction('UK')
+    mockDb.lotDisposal.findMany.mockResolvedValue([])
+
+    const report = await buildTaxReport('user-1', 2025)
+
+    const where = mockDb.lotDisposal.findMany.mock.calls[0][0].where
+    expect(where.disposedAt.gte.toISOString()).toBe('2025-04-06T00:00:00.000Z')
+    expect(where.disposedAt.lt.toISOString()).toBe('2026-04-06T00:00:00.000Z')
+    expect(report).toMatchObject({
+      year: 2025,
+      taxYearLabel: '2025-26',
+      taxYearStart: '2025-04-06T00:00:00.000Z',
+      taxYearEnd: '2026-04-06T00:00:00.000Z',
+    })
+    expect(report.caveats.taxYearNote).toBe(
+      'United Kingdom tax year 2025-26: 2025-04-06 to 2026-04-05 inclusive (UTC). year=2025 selects the tax year that starts in 2025.'
+    )
+  })
+
+  it('AU: year=2025 selects 1 Jul 2025 to 30 Jun 2026, labelled 2025-26', async () => {
+    asJurisdiction('AU')
+    mockDb.lotDisposal.findMany.mockResolvedValue([])
+
+    const report = await buildTaxReport('user-1', 2025)
+
+    expect(report).toMatchObject({
+      taxYearLabel: '2025-26',
+      taxYearStart: '2025-07-01T00:00:00.000Z',
+      taxYearEnd: '2026-07-01T00:00:00.000Z',
+    })
+    expect(report.caveats.taxYearNote).toMatch(
+      /2025-07-01 to 2026-06-30 inclusive/
+    )
+  })
+
+  it('a calendar-year note does not mention start-year selection', async () => {
+    mockDb.lotDisposal.findMany.mockResolvedValue([])
+
+    const report = await buildTaxReport('user-1', 2026)
+
+    expect(report.caveats.taxYearNote).toBe(
+      'United States tax year 2026: 2026-01-01 to 2026-12-31 inclusive (UTC).'
+    )
+  })
+})
+
 describe('taxReportToCsvRows', () => {
   it('produces one row per disposal aligned with the headers', async () => {
     mockDb.lotDisposal.findMany.mockResolvedValue([disposalRow()])

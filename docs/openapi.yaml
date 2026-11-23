@@ -4799,6 +4799,104 @@ paths:
         '404':
           description: External wallet not found for the caller.
 
+  /portfolio/{userId}/tax-report:
+    get:
+      operationId: getTaxReport
+      summary: Realized gain/loss report for one tax year
+      description: |
+        Realized gains from confirmed withdrawals, under the user's
+        `taxJurisdiction` and `accountingMethod`. See docs/TAX_REPORT.md.
+
+        **Tax years are per jurisdiction and are not always calendar years.**
+        Select the period with exactly one of:
+
+        - `taxYear`, the canonical label, checked against the user's
+          jurisdiction: `2025` for US, DE and CA (1 Jan to 31 Dec), and
+          `2025-26` for UK (6 Apr 2025 to 5 Apr 2026) and AU (1 Jul 2025 to
+          30 Jun 2026). A bare `2025` is rejected for UK/AU because it could
+          mean either tax year touching 2025.
+        - `year`, the calendar year the tax year **starts** in. For UK/AU,
+          `year=2025` means `2025-26`.
+
+        The response always returns the canonical period as `taxYearLabel`,
+        `taxYearStart` (inclusive) and `taxYearEnd` (exclusive), plus a
+        `caveats.taxYearNote` sentence. All boundaries are UTC.
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: taxYear
+          description: Canonical tax-year label; `YYYY` or `YYYY-YY` depending on jurisdiction.
+          schema:
+            type: string
+            pattern: '^\d{4}(-\d{2})?$'
+            example: 2025-26
+        - in: query
+          name: year
+          description: Calendar year the jurisdiction's tax year starts in (2000-2100).
+          schema:
+            type: integer
+            minimum: 2000
+            maximum: 2100
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+        - in: query
+          name: method
+          description: Optional confirmation that the account uses this accounting method.
+          schema:
+            type: string
+            enum: [FIFO, LIFO, HIFO, SPECIFIC_ID]
+      responses:
+        '200':
+          description: |
+            The report as JSON, or with `format=csv` a
+            `tax-report-<taxYearLabel>.csv` attachment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  year:
+                    type: integer
+                    description: Calendar year the tax year starts in.
+                  jurisdiction:
+                    type: string
+                    enum: [US, UK, DE, AU, CA]
+                  taxYearLabel:
+                    type: string
+                    example: 2025-26
+                  taxYearStart:
+                    type: string
+                    format: date-time
+                    description: Inclusive UTC start.
+                  taxYearEnd:
+                    type: string
+                    format: date-time
+                    description: Exclusive UTC end.
+            text/csv:
+              schema:
+                type: string
+        '400':
+          description: |
+            Validation failed (neither or both of `year`/`taxYear`), the
+            `taxYear` label is not valid for the user's jurisdiction, or
+            `method` does not match the account.
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: User not found.
+
   /portfolio/goals:
     post:
       operationId: createSavingsGoal

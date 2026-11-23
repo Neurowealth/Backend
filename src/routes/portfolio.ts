@@ -33,6 +33,11 @@ import {
   TAX_REPORT_CSV_HEADERS,
   MethodMismatchError,
 } from '../tax/report'
+import {
+  parseTaxYearLabel,
+  resolveJurisdiction,
+  TaxYearLabelError,
+} from '../tax/jurisdictions'
 import { AccountingMethod } from '@prisma/client'
 import { toCsv } from '../utils/csv'
 import {
@@ -70,14 +75,28 @@ const taxReportSchema = z.object({
   params: z.object({
     userId: z.string().uuid(),
   }),
-  query: z.object({
-    year: z.coerce.number().int().min(2000).max(2100),
-    format: z.enum(['json', 'csv']).default('json'),
-    // #317 — whitelisted against the AccountingMethod enum (never a raw
-    // string into a switch/ORDER BY); optional confirmation gate, not a
-    // recompute switch — see src/tax/report.ts's buildTaxReport.
-    method: z.nativeEnum(AccountingMethod).optional(),
-  }),
+  query: z
+    .object({
+      // #844 — `year` is the calendar year the jurisdiction's tax year
+      // starts in (UK/AU: year=2025 is 2025-26). `taxYear` takes the
+      // canonical label instead ("2025", or "2025-26" for UK/AU) and is
+      // checked against the user's jurisdiction. Send exactly one.
+      year: z.coerce.number().int().min(2000).max(2100).optional(),
+      taxYear: z
+        .string()
+        .trim()
+        .regex(/^\d{4}(-\d{2})?$/, 'taxYear must look like 2025 or 2025-26')
+        .optional(),
+      format: z.enum(['json', 'csv']).default('json'),
+      // #317 — whitelisted against the AccountingMethod enum (never a raw
+      // string into a switch/ORDER BY); optional confirmation gate, not a
+      // recompute switch — see src/tax/report.ts's buildTaxReport.
+      method: z.nativeEnum(AccountingMethod).optional(),
+    })
+    .refine((q) => (q.year === undefined) !== (q.taxYear === undefined), {
+      message: 'Provide exactly one of year or taxYear',
+      path: ['year'],
+    }),
 })
 
 const historySchema = z.object({
@@ -407,14 +426,28 @@ router.get(
     const userId = req.params.userId as string
     const user = await db.user.findUnique({
       where: { id: userId },
-      select: { id: true },
+      select: { id: true, taxJurisdiction: true },
     })
 
     if (!user) {
       return sendNotFound(res, 'User')
     }
 
-    const year = req.query.year as unknown as number
+    const taxYear = req.query.taxYear as string | undefined
+    let year = req.query.year as unknown as number
+    if (taxYear !== undefined) {
+      try {
+        year = parseTaxYearLabel(
+          resolveJurisdiction(user.taxJurisdiction),
+          taxYear
+        )
+      } catch (err) {
+        if (err instanceof TaxYearLabelError) {
+          return res.status(400).json({ error: err.message })
+        }
+        throw err
+      }
+    }
     const method = req.query.method as AccountingMethod | undefined
 
     let report
@@ -431,7 +464,7 @@ router.get(
       res.setHeader('Content-Type', 'text/csv; charset=utf-8')
       res.setHeader(
         'Content-Disposition',
-        `attachment; filename="tax-report-${year}.csv"`
+        `attachment; filename="tax-report-${report.taxYearLabel}.csv"`
       )
       return res
         .status(200)
