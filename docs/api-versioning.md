@@ -172,7 +172,7 @@ router.get('/v2/balance', getBalanceV2);
 export default router;
 ```
 
-Then in your main app file (`src/app.ts` or similar), mount all routes at `/api`:
+Then in the server entrypoint (`src/index.ts`), mount all routes at `/api`:
 
 ```typescript
 app.use('/api/portfolio', portfolioRouter);
