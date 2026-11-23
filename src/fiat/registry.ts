@@ -20,6 +20,7 @@
  * never to an order already in flight.
  */
 import { setFiatProviderCircuitState } from '../utils/metrics'
+import { config } from '../config/env'
 import {
   CircuitState,
   FiatRampProvider,
@@ -44,12 +45,8 @@ interface HealthState {
   lastSuccessAt: number | null
 }
 
-const CIRCUIT_BREAKER_THRESHOLD = Number(
-  process.env.FIAT_PROVIDER_CIRCUIT_BREAKER_THRESHOLD || 5
-)
-const CIRCUIT_BREAKER_RESET_MS = Number(
-  process.env.FIAT_PROVIDER_CIRCUIT_BREAKER_RESET_MS || 30_000
-)
+const CIRCUIT_BREAKER_THRESHOLD = config.fiat.circuitBreakerThreshold
+const CIRCUIT_BREAKER_RESET_MS = config.fiat.circuitBreakerResetMs
 
 const health = new Map<string, HealthState>()
 let roundRobinCursor = 0
