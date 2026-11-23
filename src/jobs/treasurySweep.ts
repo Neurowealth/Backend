@@ -28,6 +28,7 @@ export interface SweepPlan {
   fromTier: TreasuryTier
   toTier: TreasuryTier
   asset: string
+  assetIssuer?: string
   amount: string
   reason: string
 }
@@ -84,7 +85,7 @@ async function planSweeps(
 
 export async function evaluateTreasuryBalances(): Promise<SweepPlan[]> {
   const plans = (await planSweeps(false)).map(
-    ({ fromTier, toTier, asset, amount, reason }) => ({
+    ({ fromTier, toTier, asset, assetIssuer, amount, reason }) => ({
       fromTier,
       toTier,
       asset,
@@ -165,6 +166,7 @@ async function runSweep(plan: SweepPlan): Promise<void> {
       fromTier: plan.fromTier,
       toTier: plan.toTier,
       asset: plan.asset,
+      assetIssuer: plan.assetIssuer,
       amount: plan.amount,
       status: 'PLANNED',
       reason: plan.reason,
@@ -204,13 +206,15 @@ export async function executeEmergencySweep(
   asset: string,
   amount: string,
   triggeredBy: string,
-  reason: string
+  reason: string,
+  assetIssuer?: string
 ): Promise<void> {
   const sweep = await db.treasurySweep.create({
     data: {
       fromTier,
       toTier,
       asset,
+      assetIssuer,
       amount,
       status: 'PLANNED',
       reason: `emergency:${reason}`,
@@ -228,6 +232,7 @@ export async function executeEmergencySweep(
       fromTier,
       toTier,
       asset,
+      assetIssuer,
       amount: Number(amount),
       sweepId: sweep.id,
     },

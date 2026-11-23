@@ -17,7 +17,7 @@ import {
   triggerRebalance as submitRebalance,
   payReferralReward,
 } from '../stellar/contract'
-import { getWalletByUserId } from '../stellar/wallet'
+import { getKeypairForUser, getWalletByUserId } from '../stellar/wallet'
 import { getAgentKeypair } from '../stellar/client'
 import { TransactionResult } from '../stellar/types'
 import { OutboxPayload } from './types'
@@ -102,13 +102,15 @@ export function getSponsorKeypair(publicKey: string): Keypair {
 
 async function submitSponsoredTransaction(
   tx: ReturnType<typeof buildSponsoredCreateAccount>,
-  signer: Keypair
+  signer: Keypair,
+  sponsoredSigner?: Keypair
 ): Promise<TransactionResult> {
   // These are classic (non-Soroban) transactions — BeginSponsoringFutureReserves,
   // CreateAccount, ChangeTrust, RevokeSponsorship — which simulateTransaction /
   // prepareTransaction cannot handle (Soroban simulate only supports a single
   // InvokeHostFunction op). Sign and submit directly instead.
   tx.sign(signer)
+  if (sponsoredSigner) tx.sign(sponsoredSigner)
   const hash = await submitTransaction(tx as any)
   const result = await waitForConfirmation(hash)
   if (
@@ -216,7 +218,12 @@ export async function executeOutboxPayload(
         startingBalance: '0',
         sponsorSequence: sponsorAccount.sequenceNumber(),
       })
-      const result = await submitSponsoredTransaction(tx, sponsor)
+      const sponsoredSigner = await getKeypairForUser(payload.sponsoredId)
+      const result = await submitSponsoredTransaction(
+        tx,
+        sponsor,
+        sponsoredSigner
+      )
       await db.reserveSponsorship
         .create({
           data: {
@@ -241,7 +248,12 @@ export async function executeOutboxPayload(
         sponsorKeypair: sponsor,
         sponsorSequence: sponsorAccount.sequenceNumber(),
       })
-      const result = await submitSponsoredTransaction(tx, sponsor)
+      const sponsoredSigner = await getKeypairForUser(payload.sponsoredId)
+      const result = await submitSponsoredTransaction(
+        tx,
+        sponsor,
+        sponsoredSigner
+      )
       await db.reserveSponsorship
         .create({
           data: {
@@ -293,6 +305,7 @@ async function submitTreasurySweepPayment(payload: {
   fromTier: string
   toTier: string
   asset: string
+  assetIssuer?: string
   amount: number
   sweepId: string
 }): Promise<TransactionResult> {
@@ -312,8 +325,15 @@ async function submitTreasurySweepPayment(payload: {
 
   const signer = getSponsorKeypair(fromAccount.publicKey)
   const source = await getAccount(fromAccount.publicKey)
+  if (payload.asset !== 'XLM' && !payload.assetIssuer) {
+    throw new Error(
+      `Missing issuer for non-native treasury sweep asset ${payload.asset}`
+    )
+  }
   const asset =
-    payload.asset === 'XLM' ? Asset.native() : new Asset(payload.asset, '')
+    payload.asset === 'XLM'
+      ? Asset.native()
+      : new Asset(payload.asset, payload.assetIssuer!)
 
   const tx = new TransactionBuilder(source, {
     fee: BASE_FEE,
