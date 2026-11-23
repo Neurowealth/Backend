@@ -548,16 +548,14 @@ export async function mirrorLinkedTransaction(
   payload: OutboxPayload,
   outcome: { txHash?: string; status: 'CONFIRMED' | 'FAILED' }
 ): Promise<void> {
-  // Protection fund payouts have no Transaction row but need balance/claim
-  // updates on confirmed delivery (#651).
+  // Protection fund payouts have no Transaction row but need a claim status
+  // update on confirmed delivery (#651). The balance is debited exactly once
+  // inside executePayout's transaction, when the claim is queued — debiting
+  // here again would double-charge the fund on every confirmation.
   if (payload.method === 'protection_fund_payout') {
     if (outcome.status === 'CONFIRMED') {
-      await db.protectionFundBalance.updateMany({
-        where: { assetSymbol: payload.assetSymbol },
-        data: { amount: { decrement: payload.amount } },
-      })
       await db.coverageClaim.updateMany({
-        where: { id: payload.claimId },
+        where: { id: payload.claimId, status: 'PAYOUT_QUEUED' },
         data: { status: 'PAID' },
       })
     }
