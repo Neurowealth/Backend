@@ -392,7 +392,9 @@ export class StreamConnection {
         error: error instanceof Error ? error.message : String(error),
       })
       this.sendError('internal', 'Could not read the event stream')
-      this.state = 'live'
+      // #838 — never leave `replaying` with buffered live events and no
+      // resumable marker. No replay event was emitted, so afterSeq is safe.
+      this.abortReplayWithGap(afterSeq, currentSeq, oldest)
       return
     }
 
@@ -461,7 +463,9 @@ export class StreamConnection {
         error: error instanceof Error ? error.message : String(error),
       })
       this.sendError('internal', 'Replay failed')
-      this.state = 'live'
+      // #838 — `cursor` is the last seq actually delivered. Going live here
+      // would silently drop everything buffered while the replay query ran.
+      this.abortReplayWithGap(cursor, currentSeq, oldest)
       return
     }
 
@@ -622,8 +626,48 @@ export class StreamConnection {
     this.emitGap(reason, this.lastSentSeq, this.lastSentSeq, null, false)
   }
 
+  /**
+   * #838 — abort a failed replay with an explicit, resumable gap.
+   *
+   * The durable stream still holds every event past `afterSeq`, including any
+   * live events that arrived while the replay query was in flight. Dropping
+   * the local buffer and moving to `gapped` marks them recoverable instead of
+   * silently switching to live and losing them. `afterSeq` is always a cursor
+   * this connection has already delivered (or the client's original cursor),
+   * so a later `resume` is safe even when the replay died mid-page.
+   */
+  private abortReplayWithGap(
+    afterSeq: number,
+    currentSeq: number,
+    oldestAvailableSeq: number | null
+  ): void {
+    const alreadyGapped = this.state === 'gapped'
+    const buffered = this.liveBuffer.length
+    this.state = 'gapped'
+    this.liveBuffer = []
+    this.lastSentSeq = afterSeq
+
+    logger.warn('[WS] Replay aborted — buffered live events left for resume', {
+      streamUserId: this.auth.streamUserId,
+      afterSeq: this.lastSentSeq,
+      buffered,
+    })
+
+    // A backpressure gap emitted during the replay already carries a safe
+    // (earlier) cursor; avoid a second, redundant gap frame in that case.
+    if (!alreadyGapped) {
+      this.emitGap(
+        'replay_failed',
+        this.lastSentSeq,
+        currentSeq,
+        oldestAvailableSeq,
+        false
+      )
+    }
+  }
+
   private emitGap(
-    reason: 'retention' | 'backpressure' | 'unknown_stream',
+    reason: 'retention' | 'backpressure' | 'unknown_stream' | 'replay_failed',
     afterSeq: number | null,
     currentSeq: number,
     oldestAvailableSeq: number | null,
