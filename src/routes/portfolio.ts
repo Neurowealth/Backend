@@ -41,6 +41,8 @@ import {
   paginationSchema,
 } from '../utils/pagination'
 import goalsRouter from './goals'
+import { requireNotImpersonation } from '../middleware/impersonation'
+import { exportAccountingData } from '../controllers/accounting-controller'
 
 const router = Router()
 
@@ -119,6 +121,7 @@ const optimizerConcurrency = new ConcurrencyLimiter({
 router.post(
   '/:userId/suggest-allocation',
   requireAuth,
+  requireNotImpersonation,
   enforceUserAccess,
   optimizerRateLimiter,
   validate(suggestAllocationSchema),
@@ -205,6 +208,55 @@ router.get(
       total,
       suggestions: rows.map(mapAllocationSuggestionToResponse),
     })
+  }
+)
+
+/**
+ * GET /portfolio/accounting-export (#549, #762)
+ *
+ * Accounting export download from portfolio route, gated by portfolio:read.
+ */
+router.get(
+  '/accounting-export',
+  requireAuth,
+  requireScope('portfolio:read'),
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+    const result = await exportAccountingData(userId, req.query)
+
+    if (!result.success) {
+      return res.status(result.statusCode ?? 500).json({
+        error: result.error ?? 'Failed to generate accounting export',
+        ...(result.reconciliation
+          ? {
+              reconciliation: {
+                reconciled: result.reconciliation.reconciled,
+                rowCount: result.reconciliation.rowCount,
+                checksum: result.reconciliation.checksum,
+                diffs: result.reconciliation.diffs,
+                totals: result.reconciliation.totals,
+              },
+            }
+          : {}),
+      })
+    }
+
+    res.setHeader(
+      'Content-Type',
+      result.contentType ?? 'text/csv; charset=utf-8'
+    )
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${result.filename ?? 'accounting-export.csv'}"`
+    )
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0')
+    res.setHeader('Pragma', 'no-cache')
+    res.setHeader('Expires', '0')
+    res.setHeader('X-Export-Row-Count', String(result.rowCount ?? 0))
+    res.setHeader('X-Export-Checksum', result.checksum ?? '')
+    res.setHeader('X-Export-Reconciled', 'true')
+
+    return res.status(200).send(result.data)
   }
 )
 

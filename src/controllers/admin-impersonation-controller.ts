@@ -3,6 +3,7 @@ import { logger } from '../utils/logger'
 import {
   generateImpersonationToken,
   verifyImpersonationToken,
+  revokeImpersonationSession,
   type ImpersonationContext,
 } from '../middleware/impersonation'
 import { publishUserEvent } from '../events/publisher'
@@ -90,6 +91,8 @@ export async function endImpersonation(
   options?: { adminId?: string; targetUserId?: string; ipAddress?: string }
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    revokeImpersonationSession(sessionId)
+
     await (db as any).adminAuditLog.create({
       data: {
         action: 'impersonation.end',

@@ -45,6 +45,10 @@ import { messageDeliveryService } from '../messaging'
 import { config } from '../config/env'
 import { buildPaginationMeta } from '../utils/pagination'
 import { adminAuditExportQuerySchema } from '../validators/admin-audit-export'
+import {
+  startImpersonation,
+  endImpersonation,
+} from '../controllers/admin-impersonation-controller'
 
 const router = Router()
 const prisma = db
@@ -4275,6 +4279,81 @@ router.post(
       res.status(500).json({ success: false, error: message })
     }
   }
+)
+
+// -- Admin Impersonation (#548, #762) ------------------------------------------
+
+router.post(
+  '/impersonation',
+  requireAdminScope('admin:impersonate'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+    const { targetUserId, reason } = req.body ?? {}
+    if (!targetUserId || typeof targetUserId !== 'string') {
+      return res.status(400).json({ error: 'targetUserId is required' })
+    }
+
+    const result = await startImpersonation(
+      adminAuth.id,
+      adminAuth.name,
+      targetUserId,
+      {
+        ipAddress: req.ip,
+        reason: typeof reason === 'string' ? reason : undefined,
+        userAgent: req.get('user-agent'),
+      }
+    )
+
+    if (!result.success) {
+      const status = result.error === 'Target user not found' ? 404 : 400
+      return res.status(status).json({ error: result.error })
+    }
+
+    return res.status(200).json({
+      success: true,
+      token: result.token,
+      sessionId: result.sessionId,
+    })
+  }
+)
+
+const handleEndImpersonation = async (req: Request, res: Response) => {
+  const adminAuth = getAdminAuth(res)
+  if (!adminAuth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  const sessionId =
+    req.params.sessionId ||
+    req.body?.sessionId ||
+    (req.query?.sessionId as string)
+  if (!sessionId || typeof sessionId !== 'string') {
+    return res.status(400).json({ error: 'sessionId is required' })
+  }
+
+  const result = await endImpersonation(sessionId, {
+    adminId: adminAuth.id,
+    ipAddress: req.ip,
+  })
+
+  if (!result.success) {
+    return res.status(400).json({ error: result.error })
+  }
+
+  return res.status(200).json({ success: true, status: 'revoked' })
+}
+
+router.delete(
+  '/impersonation',
+  requireAdminScope('admin:impersonate'),
+  handleEndImpersonation
+)
+router.delete(
+  '/impersonation/:sessionId',
+  requireAdminScope('admin:impersonate'),
+  handleEndImpersonation
 )
 
 export default router

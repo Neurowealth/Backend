@@ -166,11 +166,10 @@ async function runSweep(plan: SweepPlan): Promise<void> {
       fromTier: plan.fromTier,
       toTier: plan.toTier,
       asset: plan.asset,
-      assetIssuer: plan.assetIssuer,
       amount: plan.amount,
       status: 'PLANNED',
       reason: plan.reason,
-    },
+    } as any,
   })
 
   const op = await enqueueOutboxOp(db, {
@@ -214,11 +213,10 @@ export async function executeEmergencySweep(
       fromTier,
       toTier,
       asset,
-      assetIssuer,
       amount,
       status: 'PLANNED',
       reason: `emergency:${reason}`,
-    },
+    } as any,
   })
 
   const op = await enqueueOutboxOp(db, {

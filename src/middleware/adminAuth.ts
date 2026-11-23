@@ -363,15 +363,14 @@ export const ADMIN_SCOPE_CATALOG: Record<AdminScope, ScopeDefinition> = {
   },
   'admin:impersonate': {
     scope: 'admin:impersonate',
-    enforcement: 'declared-only',
+    enforcement: 'enforced',
     description: 'View the API as a user, read-only.',
     risk: 'operational',
     grants: 'A read-only "view as" session for support investigations.',
     requires:
-      'No route requires this scope today — the impersonation controller ' +
-      'exists but is not yet exposed through the admin API. Every ' +
-      'impersonated request is attributed to the operator in the admin ' +
-      'audit log.',
+      'Requires admin authentication. Endpoints: POST /api/v1/admin/impersonation ' +
+      'starts an audited impersonation session, DELETE /api/v1/admin/impersonation ' +
+      'revokes it.',
   },
   super: {
     scope: 'super',

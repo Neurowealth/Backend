@@ -5,6 +5,7 @@ import { resolveApproxLocation } from '../utils/geoip'
 import { logger } from '../utils/logger'
 import { authenticateApiKey, isUserApiKeyToken } from './apiKeyAuth'
 import { evaluateAndHandleSessionAnomaly } from '../services/session-anomaly.service'
+import { verifyImpersonationToken } from './impersonation'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -74,9 +75,46 @@ export async function requireAuth(
     return
   }
 
-  // #374 — route scoped per-user API keys via dedicated auth path
+  // #374 - route scoped per-user API keys via dedicated auth path
   if (isUserApiKeyToken(token)) {
     return authenticateApiKey(req, res, next)
+  }
+
+  // Support impersonation tokens for read-only user access (#548, #762)
+  const impersonationContext = verifyImpersonationToken(token)
+  if (impersonationContext) {
+    const user = await db.user.findUnique({
+      where: { id: impersonationContext.targetUserId },
+      select: { id: true, walletAddress: true, network: true, isActive: true },
+    })
+
+    if (!user) {
+      res.status(401).json({ error: 'Target user not found' })
+      return
+    }
+
+    if (!user.isActive) {
+      res.status(401).json({ error: AUTH_ERRORS.USER_INACTIVE })
+      return
+    }
+
+    req.userId = user.id
+    req.stellarPubKey = user.walletAddress
+    req.authKind = 'session'
+    req.authScopes = [
+      'session',
+      'portfolio:read',
+      'transactions:read',
+      'vault:read',
+      'loans:read',
+    ]
+    req.auth = {
+      userId: user.id,
+      sessionId: impersonationContext.sessionId,
+      walletAddress: user.walletAddress,
+      network: user.network,
+    }
+    return next()
   }
 
   try {

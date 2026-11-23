@@ -62,7 +62,10 @@ const REFRESH_ERRORS: Record<
  * POST /api/auth/challenge
  */
 export async function challenge(req: Request, res: Response): Promise<void> {
-  const { stellarPubKey } = req.body as { stellarPubKey: string }
+  const { stellarPubKey, purpose } = req.body as {
+    stellarPubKey: string
+    purpose?: string
+  }
 
   try {
     Keypair.fromPublicKey(stellarPubKey)
@@ -71,7 +74,8 @@ export async function challenge(req: Request, res: Response): Promise<void> {
     return
   }
 
-  const nonce = `nw-auth-${randomBytes(32).toString('hex')}`
+  const noncePrefix = purpose ? `nw-stepup-${purpose}` : 'nw-auth'
+  const nonce = `${noncePrefix}-${randomBytes(32).toString('hex')}`
   const expiresAt = new Date(Date.now() + config.jwt.nonce_ttl_ms)
 
   await db.authNonce.upsert({
@@ -80,8 +84,95 @@ export async function challenge(req: Request, res: Response): Promise<void> {
     create: { stellarPubKey, nonce, expiresAt },
   })
 
-  logger.info(`[Auth] Challenge issued for ${stellarPubKey}`)
+  logger.info(
+    `[Auth] Challenge issued for ${stellarPubKey}${purpose ? ` (purpose: ${purpose})` : ''}`
+  )
   res.status(200).json({ nonce, expiresAt: expiresAt.toISOString() })
+}
+
+/**
+ * Issue a purpose-bound step-up challenge (#761).
+ */
+export async function issueStepUpChallenge(
+  stellarPubKey: string,
+  purpose: string = 'step-up',
+  ttlMs: number = config.jwt.nonce_ttl_ms
+): Promise<{ nonce: string; expiresAt: Date }> {
+  try {
+    Keypair.fromPublicKey(stellarPubKey)
+  } catch {
+    throw new Error('Invalid Stellar public key')
+  }
+
+  const nonce = `nw-stepup-${purpose}-${randomBytes(32).toString('hex')}`
+  const expiresAt = new Date(Date.now() + ttlMs)
+
+  await db.authNonce.upsert({
+    where: { stellarPubKey },
+    update: { nonce, expiresAt },
+    create: { stellarPubKey, nonce, expiresAt },
+  })
+
+  return { nonce, expiresAt }
+}
+
+/**
+ * Verify and atomically consume a purpose-bound step-up challenge (#761).
+ */
+export async function verifyAndConsumeStepUpChallenge(
+  stellarPubKey: string,
+  nonce: string,
+  signature: string,
+  expectedPurpose?: string
+): Promise<boolean> {
+  // 1. Verify cryptographic signature
+  const isValidSig = stellarVerification.verifyStellarSignature(
+    stellarPubKey,
+    nonce,
+    signature
+  )
+  if (!isValidSig) {
+    return false
+  }
+
+  // 2. Lookup stored challenge row
+  const stored = await db.authNonce.findUnique({ where: { stellarPubKey } })
+  if (!stored) {
+    return false
+  }
+
+  // 3. Match nonce exactly
+  if (stored.nonce !== nonce) {
+    return false
+  }
+
+  // 4. Expiry check
+  if (stored.expiresAt <= new Date()) {
+    await db.authNonce.delete({ where: { stellarPubKey } }).catch(() => {})
+    return false
+  }
+
+  // 5. Purpose binding check: must be a step-up nonce, never an auth login challenge
+  if (!stored.nonce.startsWith('nw-stepup-')) {
+    return false
+  }
+
+  if (expectedPurpose) {
+    const isMatchingPurpose =
+      stored.nonce.startsWith(`nw-stepup-${expectedPurpose}`) ||
+      stored.nonce.startsWith('nw-stepup-step-up')
+    if (!isMatchingPurpose) {
+      return false
+    }
+  }
+
+  // 6. Delete atomically on use
+  try {
+    await db.authNonce.delete({ where: { stellarPubKey } })
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -110,6 +201,11 @@ export async function verify(req: Request, res: Response): Promise<void> {
   if (stored.expiresAt <= new Date()) {
     await db.authNonce.delete({ where: { stellarPubKey } })
     res.status(401).json({ error: 'Challenge nonce has expired' })
+    return
+  }
+
+  if (!stored.nonce.startsWith('nw-auth-')) {
+    res.status(401).json({ error: 'Invalid challenge type for login' })
     return
   }
 
