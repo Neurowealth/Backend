@@ -79,6 +79,8 @@ jobs:
 
       - name: Integration test suite
         run: npm run test:integration -- --runInBand
+      - name: DB-backed regression and integration suites (#799)
+        run: npm run test:db
       - name: Release tooling regression tests
         run: node --test scripts/tests/release.test.cjs
 

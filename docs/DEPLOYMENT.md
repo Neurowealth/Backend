@@ -65,7 +65,10 @@ npm run dev
 
 The `docker-compose.yml` runs:
 - **PostgreSQL** on port 5432
-- **Application** on port 3001 (optional)
+- **Redis** on port 6379
+
+The application itself runs on port 3001 via `npm run dev`, `npm start`, or
+the container image, not through Docker Compose.
 
 ### Verifying Local Setup
 

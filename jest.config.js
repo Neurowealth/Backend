@@ -14,8 +14,9 @@ module.exports = {
   roots: ['<rootDir>/tests'],
   testMatch: ['**/*.test.ts'],
   // Integration tests that require a live Postgres instance are excluded from
-  // the default `npm test` run (they fail in CI without a provisioned DB).
-  // Run them manually with: npx jest --testPathPattern='integration/(deposit-withdraw|tax-report|outbox)' --setupFilesAfterSetup=...
+  // the default `npm test` run so a local run does not need a database. CI has
+  // Postgres and migrations already, and runs this set via `npm run test:db`
+  // (jest.db.config.js). There is no `--setupFilesAfterSetup` Jest flag.
   testPathIgnorePatterns: [
     '/node_modules/',
     'deposit-withdraw\\.integration\\.test\\.ts$',

@@ -30,7 +30,10 @@ export const CORE_REQUIRED_KEYS = [
 export const BASELINE_FILE = '.env.example'
 
 export type EnvParityIssueKind =
-  'missing-core-key' | 'missing-baseline-key' | 'undocumented-key'
+  | 'missing-core-key'
+  | 'missing-baseline-key'
+  | 'undocumented-key'
+  | 'database-url-mismatch'
 
 export interface EnvParityIssue {
   file: string
@@ -115,6 +118,125 @@ export function checkEnvParity(
           kind: 'undocumented-key',
           severity: 'warning',
           message: `${file}: "${key}" is not documented in ${baseline} — add it there so other environments can adopt it`,
+        })
+      }
+    }
+  }
+
+  return issues
+}
+
+/**
+ * Parse an env-file body into key/value pairs.
+ *
+ * Unlike `parseEnvKeys`, this keeps values so the DATABASE_URL can be compared
+ * against the individual DB_* keys in the same file. Quotes around a value are
+ * stripped (dotenv does the same); comments and malformed lines are ignored.
+ */
+export function parseEnvValues(content: string): Record<string, string> {
+  const values: Record<string, string> = {}
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#') || !line.includes('=')) continue
+    const separator = line.indexOf('=')
+    const key = line.slice(0, separator).trim()
+    if (!key) continue
+    let value = line.slice(separator + 1).trim()
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1)
+    }
+    values[key] = value
+  }
+  return values
+}
+
+interface PostgresUrlParts {
+  user: string
+  password: string
+  host: string
+  port: string
+  database: string
+}
+
+/**
+ * Break a PostgreSQL connection URL into the parts that must agree with the
+ * individual DB_* variables. Returns null when the value is not a parseable
+ * postgres URL, so callers can skip the comparison rather than false-alarm.
+ */
+function parsePostgresUrl(raw: string): PostgresUrlParts | null {
+  if (!/^postgres(ql)?:\/\//i.test(raw)) return null
+  try {
+    const url = new URL(raw)
+    const decode = (value: string) => {
+      try {
+        return decodeURIComponent(value)
+      } catch {
+        return value
+      }
+    }
+    return {
+      user: decode(url.username),
+      password: decode(url.password),
+      host: url.hostname,
+      // WHATWG URL leaves port empty when it is omitted. Default to 5432 so a
+      // URL without an explicit port still agrees with DB_PORT=5432.
+      port: url.port || '5432',
+      database: decode(url.pathname.replace(/^\//, '')),
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Check that DATABASE_URL agrees with the DB_* variables in every env file
+ * that defines both (#800). A mismatch means following the quickstart with
+ * that file authenticates against a different role/database than the one the
+ * DB_* variables describe, which is exactly the failure the issue reports.
+ *
+ * Files without DB_* variables (for example the hermetic .env.test) cannot be
+ * compared and are skipped. Each mismatched component is a separate error so
+ * CI output says precisely what to fix.
+ */
+export function checkDatabaseUrlConsistency(
+  files: Record<string, string>
+): EnvParityIssue[] {
+  const issues: EnvParityIssue[] = []
+  const comparisons: Array<{
+    key: string
+    label: string
+    fromUrl: (parts: PostgresUrlParts) => string
+  }> = [
+    { key: 'DB_USER', label: 'user', fromUrl: (p) => p.user },
+    { key: 'DB_PASSWORD', label: 'password', fromUrl: (p) => p.password },
+    { key: 'DB_HOST', label: 'host', fromUrl: (p) => p.host },
+    { key: 'DB_PORT', label: 'port', fromUrl: (p) => p.port },
+    { key: 'DB_NAME', label: 'database', fromUrl: (p) => p.database },
+  ]
+
+  for (const [file, content] of Object.entries(files)) {
+    const values = parseEnvValues(content)
+    const rawUrl = values.DATABASE_URL
+    if (!rawUrl) continue
+    const parts = parsePostgresUrl(rawUrl)
+    if (!parts) continue
+
+    for (const comparison of comparisons) {
+      const expected = values[comparison.key]
+      // No DB_* counterpart in this file means there is nothing to compare.
+      if (expected === undefined) continue
+      const actual = comparison.fromUrl(parts)
+      if (expected !== actual) {
+        issues.push({
+          file,
+          key: comparison.key,
+          kind: 'database-url-mismatch',
+          severity: 'error',
+          message: `${file}: DATABASE_URL ${comparison.label} "${actual}" does not match ${comparison.key} "${expected}" — align them so the quickstart authenticates correctly`,
         })
       }
     }

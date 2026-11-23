@@ -1,7 +1,13 @@
 /**
  * Integration tests for GET /metrics
  * Covers: authorization behavior, response status codes, and Prometheus text format.
- * Issue #187
+ * Issue #187, #797
+ *
+ * The tokens come from .env.test, which tests/setup-env.ts loads before any
+ * test module is imported. That ordering matters: src/config/env.ts snapshots
+ * the values when the app module loads, so assigning them in beforeAll would
+ * be too late. beforeAll below asserts they are present instead of skipping
+ * the authorized cases (#797).
  */
 
 import request from 'supertest'
@@ -31,17 +37,14 @@ describe('GET /metrics', () => {
   })
 
   describe('authorized access via X-Internal-Token', () => {
-    const token = process.env.INTERNAL_SERVICE_TOKEN
+    let token: string
 
     beforeAll(() => {
-      if (!token)
-        console.warn(
-          'Skipping authorized tests: INTERNAL_SERVICE_TOKEN not set'
-        )
+      token = process.env.INTERNAL_SERVICE_TOKEN || ''
+      expect(token).not.toBe('')
     })
 
     it('returns 200 with valid X-Internal-Token', async () => {
-      if (!token) return
       const res = await request(app)
         .get('/metrics')
         .set('X-Internal-Token', token)
@@ -49,7 +52,6 @@ describe('GET /metrics', () => {
     })
 
     it('returns text/plain content-type', async () => {
-      if (!token) return
       const res = await request(app)
         .get('/metrics')
         .set('X-Internal-Token', token)
@@ -57,7 +59,6 @@ describe('GET /metrics', () => {
     })
 
     it('returns Prometheus-compatible exposition format', async () => {
-      if (!token) return
       const res = await request(app)
         .get('/metrics')
         .set('X-Internal-Token', token)
@@ -67,15 +68,14 @@ describe('GET /metrics', () => {
   })
 
   describe('authorized access via Bearer (admin) token', () => {
-    const token = process.env.ADMIN_API_TOKEN
+    let token: string
 
     beforeAll(() => {
-      if (!token)
-        console.warn('Skipping authorized tests: ADMIN_API_TOKEN not set')
+      token = process.env.ADMIN_API_TOKEN || ''
+      expect(token).not.toBe('')
     })
 
     it('returns 200 with valid ADMIN_API_TOKEN as Bearer', async () => {
-      if (!token) return
       const res = await request(app)
         .get('/metrics')
         .set('Authorization', `Bearer ${token}`)
@@ -83,11 +83,17 @@ describe('GET /metrics', () => {
     })
 
     it('returns Prometheus-compatible text with admin token', async () => {
-      if (!token) return
       const res = await request(app)
         .get('/metrics')
         .set('Authorization', `Bearer ${token}`)
       expect(res.text).toMatch(/^#\s+(HELP|TYPE)\s+\w+/m)
+    })
+
+    it('returns 404 when the Bearer token is not the admin token', async () => {
+      const res = await request(app)
+        .get('/metrics')
+        .set('Authorization', `Bearer wrong-${token}`)
+      expect(res.status).toBe(404)
     })
   })
 })
