@@ -91,6 +91,8 @@ export type OutboxPayload =
       fromTier: string
       toTier: string
       asset: string
+      /** Required for classic non-native assets; omitted for XLM. */
+      assetIssuer?: string
       amount: number
       sweepId: string
     }

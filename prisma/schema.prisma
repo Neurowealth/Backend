@@ -1725,6 +1725,9 @@ model LotDisposal {
 /// separately (#225). One ACTIVE goal per user is enforced at the API layer,
 /// not via a DB constraint, since past goals (ACHIEVED/MISSED/CANCELLED) are
 /// kept for history.
+// NOTE: a partial unique index enforcing at most one ACTIVE goal per user
+// lives in migration 20261123000000_savings_goal_single_active (Prisma does not
+// model partial indexes in the schema). Do not regenerate it away (#790).
 model SavingsGoal {
   id                      String     @id @default(uuid())
   userId                  String

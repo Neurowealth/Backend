@@ -6,7 +6,7 @@
  * config snapshots them once and exposes empty strings when they are absent,
  * so a consumer can safely test `if (token)` before comparing.
  */
-type EnvModule = typeof import('../../../src/config/env')
+type AdminTokensEnvModule = typeof import('../../../src/config/env')
 
 function loadSecurityConfig(overrides: Record<string, string | undefined>) {
   const previous: Record<string, string | undefined> = {}
@@ -17,10 +17,10 @@ function loadSecurityConfig(overrides: Record<string, string | undefined>) {
   }
 
   try {
-    let loaded: EnvModule | undefined
+    let loaded: AdminTokensEnvModule | undefined
     jest.isolateModules(() => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      loaded = require('../../../src/config/env') as EnvModule
+      loaded = require('../../../src/config/env') as AdminTokensEnvModule
     })
     if (!loaded) throw new Error('config module failed to load')
     return loaded.config.security

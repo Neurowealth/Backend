@@ -305,7 +305,15 @@ async function submitClaimedOp(op: OutboxOpRecord): Promise<TransactionResult> {
 
     // Any other exception: either schedule a retry with backoff or, if
     // attempts are exhausted, fail permanently.
-    const { terminal } = await markFailedOrRetry(op, message)
+    const { terminal, applied } = await markFailedOrRetry(op, message)
+    if (!applied) {
+      // The op already moved on (re-claimed or resolved) while this
+      // execution was in flight — don't mirror or alert on stale state.
+      logger.warn('[Outbox] Failure transition skipped — op already moved on', {
+        opId: op.id,
+      })
+      throw err
+    }
     recordOutboxOp(op.kind, op.priority, terminal ? 'failed' : 'retry')
 
     if (terminal) {
@@ -350,8 +358,10 @@ export async function dispatchOne(opId: string): Promise<TransactionResult> {
     throw new Error(`Outbox op ${opId} is not PENDING (status=${op.status})`)
   }
 
-  // Compliance/freeze guard: never dispatch for a halted user.
-  if (await isUserHalted(op.userId)) {
+  // Compliance/freeze guard: never dispatch for a halted user. SYSTEM ops
+  // (loans, protection payouts, provisioning) are exempt — their userId can
+  // be a wallet id or an account the freeze check doesn't own (#743).
+  if (op.actor !== 'SYSTEM' && (await isUserHalted(op.userId))) {
     throw new Error(
       `Outbox op ${opId} not dispatched: user ${op.userId} is frozen`
     )
@@ -496,10 +506,12 @@ async function reconcileStuckSubmitted(): Promise<void> {
     // forces markFailedOrRetry down its terminal branch, so this always
     // ends in FAILED (the `terminal` flag is effectively always true).
     if (op.attempts >= config.outbox.feeBumpMaxAttempts) {
-      const { terminal } = await markFailedOrRetry(
-        { id: op.id, attempts: config.outbox.maxAttempts },
-        `Unconfirmed after ${config.outbox.feeBumpMaxAttempts} fee-bump attempts (submittedAt=${op.submittedAt?.toISOString()})`
+      const { terminal, applied } = await markFailedOrRetry(
+        { id: op.id, attempts: op.attempts },
+        `Unconfirmed after ${config.outbox.feeBumpMaxAttempts} fee-bump attempts (submittedAt=${op.submittedAt?.toISOString()})`,
+        { forceTerminal: true }
       )
+      if (!applied) continue // op moved on while the sweep was deciding
       recordOutboxOp(op.kind, op.priority, terminal ? 'failed' : 'retry')
       if (terminal) await onTerminalFailure(op, 'Fee-bump cap exceeded')
       continue
@@ -540,8 +552,9 @@ export async function runDispatchSweep(): Promise<void> {
   )
 
   for (const op of claimable) {
-    // Skip (but leave PENDING) ops belonging to frozen users.
-    if (await isUserHalted(op.userId)) {
+    // Skip (but leave PENDING) ops belonging to frozen users. SYSTEM ops
+    // are exempt from the freeze guard (#743).
+    if (op.actor !== 'SYSTEM' && (await isUserHalted(op.userId))) {
       logger.info('[Outbox] Skipping op for frozen user', {
         opId: op.id,
         userId: op.userId,

@@ -26,6 +26,10 @@ module.exports = {
     // a real DB. See the header comment in
     // tests/integration/outbox/dispatcher.integration.test.ts for how to run it.
     'outbox/dispatcher\\.integration\\.test\\.ts$',
+    // #790: proves the partial unique index makes "one ACTIVE goal per user"
+    // durable under concurrency. Needs a live DB; CI runs it explicitly via
+    // `npm run test:integration:goals`.
+    'integration/goals/singleActiveGoal\\.integration\\.test\\.ts$',
   ],
   // Must run before any test module so src/config/env.ts sees the test config
   // at import time. See tests/setup-env.ts.

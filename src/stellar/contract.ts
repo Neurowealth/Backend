@@ -74,20 +74,56 @@ async function buildContractCall(
   return tx
 }
 
+// Number of decimal places one stroop represents (10^7 stroops per token).
+const STROOPS_DECIMALS = 7
+
+/**
+ * Expand IEEE-754 exponent notation ("1e-7", "1.5e+3") into plain decimal
+ * notation so the string can be split on '.' unambiguously.
+ */
+function expandExponential(decimal: string): string {
+  if (!/[eE]/.test(decimal)) return decimal
+  const [mantissa, exponent] = decimal.toLowerCase().split('e')
+  const exp = parseInt(exponent, 10)
+  const negative = mantissa.startsWith('-')
+  const unsigned = negative ? mantissa.slice(1) : mantissa
+  const dotIndex = unsigned.indexOf('.')
+  const intPart = dotIndex === -1 ? unsigned : unsigned.slice(0, dotIndex)
+  const fracPart = dotIndex === -1 ? '' : unsigned.slice(dotIndex + 1)
+  const digits = intPart + fracPart
+  const pointPos = intPart.length + exp
+  let result: string
+  if (pointPos <= 0) {
+    result = `0.${'0'.repeat(-pointPos)}${digits}`
+  } else if (pointPos >= digits.length) {
+    result = digits + '0'.repeat(pointPos - digits.length)
+  } else {
+    result = `${digits.slice(0, pointPos)}.${digits.slice(pointPos)}`
+  }
+  return (negative ? '-' : '') + result
+}
+
 function toContractAmount(amount: number): bigint {
-  const stroops = amount * STROOPS_PER_TOKEN
-  if (
-    !Number.isFinite(amount) ||
-    amount <= 0 ||
-    amount > MAX_CONTRACT_AMOUNT ||
-    !Number.isSafeInteger(stroops)
-  ) {
+  if (!Number.isFinite(amount) || amount <= 0 || amount > MAX_CONTRACT_AMOUNT) {
     throw new Error(
       `Amount must be finite, positive, and no greater than ${MAX_CONTRACT_AMOUNT}`
     )
   }
 
-  return BigInt(stroops)
+  // Convert via the decimal string, not float multiplication (#741):
+  // 19.99 * 1e7 === 199899999.99999997 in IEEE-754, which fails an
+  // isSafeInteger check even though 19.99 is a perfectly valid amount.
+  const [whole, fraction = ''] = expandExponential(amount.toString()).split('.')
+  if (fraction.length > STROOPS_DECIMALS) {
+    throw new Error(
+      `Amount must have at most ${STROOPS_DECIMALS} decimal places`
+    )
+  }
+
+  return (
+    BigInt(whole) * BigInt(STROOPS_PER_TOKEN) +
+    BigInt(fraction.padEnd(STROOPS_DECIMALS, '0'))
+  )
 }
 
 async function executeWriteContractCall(
@@ -124,10 +160,10 @@ async function executeWriteContractCall(
   await onSubmitted?.(txHash)
   const result = await waitForConfirmation(txHash)
 
-  if (result.status !== 'success') {
-    throw new Error(`Transaction ${method} failed on-chain`)
-  }
-
+  // A resolved `status: 'failed'` is returned, not thrown (#744): the
+  // dispatcher's terminal-failure branch records the txHash and marks the
+  // op FAILED without retrying, instead of the error falling into the
+  // transient retry/backoff path.
   return result
 }
 

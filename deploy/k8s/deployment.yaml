@@ -35,7 +35,7 @@ spec:
         - name: migrate
           image: neurowealth-backend:latest
           imagePullPolicy: IfNotPresent
-          command: ["npx", "prisma", "migrate", "deploy"]
+          command: ["npx", "--no-install", "prisma", "migrate", "deploy"]
           envFrom:
             - secretRef:
                 name: neurowealth-secrets

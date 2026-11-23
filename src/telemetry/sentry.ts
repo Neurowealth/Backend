@@ -15,6 +15,7 @@
 
 import * as Sentry from '@sentry/node'
 import { nodeProfilingIntegration } from '@sentry/profiling-node'
+import { config } from '../config/env'
 
 // ---------------------------------------------------------------------------
 // Guard: no-op when DSN is not configured
@@ -53,9 +54,7 @@ if (!SENTRY_DSN) {
 
     // Performance tracing — set to a low value in production to control costs.
     // Override via SENTRY_TRACES_SAMPLE_RATE env var.
-    tracesSampleRate: parseFloat(
-      process.env.SENTRY_TRACES_SAMPLE_RATE ?? '0.1'
-    ),
+    tracesSampleRate: config.telemetry.sentryTracesSampleRate,
 
     // ---------------------------------------------------------------------------
     // Event filtering

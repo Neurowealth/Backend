@@ -88,31 +88,22 @@ import type {
   RankedQuote,
 } from './types'
 import { NoHealthyProvidersError, FiatOrderError } from './types'
+import { config } from '../config/env'
 
 /** How long a PENDING/PROCESSING order may sit before the age-out job fails it. */
-export const STALE_ORDER_MAX_AGE_MS = Number(
-  process.env.FIAT_STALE_ORDER_MAX_AGE_MS || 24 * 60 * 60 * 1000
-)
+export const STALE_ORDER_MAX_AGE_MS = config.fiat.staleOrderMaxAgeMs
 
 /** How long a quote returned by getBestExecutionQuote stays honorable (#313). */
-export const QUOTE_LOCK_TTL_MS = Number(
-  process.env.FIAT_QUOTE_LOCK_TTL_MS || 60_000
-)
+export const QUOTE_LOCK_TTL_MS = config.fiat.quoteLockTtlMs
 
 /** Per-provider timeout for a single quote request in the parallel fan-out. */
-const QUOTE_PROVIDER_TIMEOUT_MS = Number(
-  process.env.FIAT_QUOTE_PROVIDER_TIMEOUT_MS || 8_000
-)
+const QUOTE_PROVIDER_TIMEOUT_MS = config.fiat.quoteProviderTimeoutMs
 
 /** Beyond this |settled - quoted| / quoted, emit a rate-drift alert + webhook. */
-export const RATE_DRIFT_TOLERANCE_PCT = Number(
-  process.env.FIAT_RATE_DRIFT_TOLERANCE_PCT || 0.02
-)
+export const RATE_DRIFT_TOLERANCE_PCT = config.fiat.rateDriftTolerancePct
 
 /** Beyond this drift, escalate to critical — flags the order for manual re-quote/refund review. */
-export const RATE_DRIFT_CRITICAL_PCT = Number(
-  process.env.FIAT_RATE_DRIFT_CRITICAL_PCT || 0.1
-)
+export const RATE_DRIFT_CRITICAL_PCT = config.fiat.rateDriftCriticalPct
 
 /**
  * How close a candidate on-chain transaction's amount must be to an order's

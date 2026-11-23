@@ -11,16 +11,10 @@ function getJwtSeeds(): string[] {
  * token has a small blast radius; clients refresh with the long-lived opaque
  * refresh token (see #214 rotation flow in auth-controller).
  */
-const ACCESS_TOKEN_TTL_MIN = parseInt(
-  process.env.JWT_ACCESS_TTL_MIN || '15',
-  10
-)
+const ACCESS_TOKEN_TTL_MIN = config.jwt.accessTokenTtlMin
 
 /** Refresh-token lifetime in days (default 7). */
-const REFRESH_TOKEN_TTL_DAYS = parseInt(
-  process.env.JWT_REFRESH_TTL_DAYS || '7',
-  10
-)
+const REFRESH_TOKEN_TTL_DAYS = config.jwt.refreshTokenTtlDays
 
 export class JwtAdapter {
   static async generateToken(
