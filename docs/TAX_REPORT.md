@@ -171,6 +171,39 @@ Money values are decimal strings. `totals` sums only fully priced disposals.
 `method` in the response is the account's `accountingMethod`, not a
 per-request-computed value.
 
+## Jurisdictions
+
+`User.taxJurisdiction` (default `US`) selects a profile in
+`src/tax/jurisdictions/`. The profile decides which disposals fall in the tax
+year, whether a disposal is long-term, and what long-term means; the report
+does the money math.
+
+### Long-term treatment (#839)
+
+| Jurisdiction | Long-term after | Treatment (`longTermEffect`) |
+| ------------ | --------------- | ---------------------------- |
+| US | 365 days | `RATE_SPLIT`: separate short/long totals, no reduction. |
+| UK | n/a | `NONE`: no long/short split. |
+| DE | 366 days | `FULL_EXEMPTION`: a long-term disposal is not taxable. |
+| AU | 365 days | `FLAT_DISCOUNT` 50%: the CGT discount on long-term gains. |
+| CA | 0 days | `FLAT_DISCOUNT` 50%: the inclusion rate, so every disposal counts at half. |
+
+Each disposal keeps its raw `realizedGain` and gets a `taxableGain` after
+this treatment (also a CSV column). The totals report both:
+
+- `realizedGain`, `shortTermGain`, `longTermGain` are raw gains;
+- `exemptGain` is long-term gain removed by `FULL_EXEMPTION`;
+- `discountApplied` is the amount `FLAT_DISCOUNT` took off;
+- `taxableGain = realizedGain - exemptGain - discountApplied`;
+- `allowanceApplied` is the flat annual allowance (UK £3,000), applied against
+  `taxableGain`;
+- `taxableGainAfterAllowance` is the figure to treat as taxable.
+  `realizedGainAfterAllowance` is kept for compatibility and is the raw gain
+  less the allowance.
+
+Losses get the same treatment as gains: a loss on a DE exempt disposal is not
+deductible, and CA's inclusion rate halves allowable losses too.
+
 ## Accounting exports (QBO / Xero)
 
 Transaction data can be downloaded through
@@ -249,5 +282,11 @@ indicate an insufficient-lots condition (see the paired critical alert).
 11. **Only the most recent method change is tracked** (`methodEffectiveAt`
     is a single timestamp) — a second change does not retroactively
     re-attribute the window before the first one.
-12. Wash-sale-like adjustment rules and long/short-term holding-period
-    classification are not computed — out of scope, jurisdiction-specific.
+12. Wash-sale-like adjustment rules are not computed — out of scope,
+    jurisdiction-specific. Long/short classification and the long-term
+    treatment above are (see "Jurisdictions").
+13. **AU's discount is applied per disposal**, so it also halves a long-term
+    loss. The ATO nets capital losses against gains first and discounts the
+    remaining long-term gain, so an AU year with long-term losses reports a
+    higher taxable gain than the ATO method would. Germany's €600 annual
+    exemption for private sales is not modeled.

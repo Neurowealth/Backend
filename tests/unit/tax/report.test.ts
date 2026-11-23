@@ -113,6 +113,10 @@ describe('buildTaxReport', () => {
       longTermGain: '0',
       allowanceApplied: '0',
       realizedGainAfterAllowance: '10',
+      exemptGain: '0',
+      discountApplied: '0',
+      taxableGain: '10',
+      taxableGainAfterAllowance: '10',
     })
     expect(report.caveats.unpricedDisposalCount).toBe(1)
     expect(report.caveats.unpricedAssets).toEqual(['XLM'])
@@ -205,6 +209,171 @@ describe('buildTaxReport', () => {
   })
 })
 
+describe('buildTaxReport — jurisdiction long-term treatment (#839)', () => {
+  function asJurisdiction(taxJurisdiction: string) {
+    mockDb.user.findUnique.mockResolvedValue({
+      accountingMethod: 'FIFO',
+      methodEffectiveAt: null,
+      taxJurisdiction,
+    })
+  }
+
+  // Held ~2 years: long-term in every profile.
+  const longHeld = (
+    realizedGain: string,
+    disposedAt = '2026-06-15T12:00:00Z'
+  ) =>
+    disposalRow({
+      disposedAt: new Date(disposedAt),
+      proceeds: '100',
+      costBasis: String(100 - Number(realizedGain)),
+      realizedGain,
+      lot: {
+        acquiredAt: new Date('2024-06-01T00:00:00Z'),
+        acquisitionPrice: '1',
+        transaction: { txHash: 'old-deposit' },
+      },
+    })
+  // Held ~1 month: short-term in every profile with a threshold.
+  const shortHeld = (
+    realizedGain: string,
+    disposedAt = '2026-06-15T12:00:00Z'
+  ) =>
+    disposalRow({
+      disposedAt: new Date(disposedAt),
+      proceeds: '100',
+      costBasis: String(100 - Number(realizedGain)),
+      realizedGain,
+      lot: {
+        acquiredAt: new Date('2026-05-15T00:00:00Z'),
+        acquisitionPrice: '1',
+        transaction: { txHash: 'new-deposit' },
+      },
+    })
+
+  it('DE (FULL_EXEMPTION): long-term gains do not count towards taxable gain', async () => {
+    asJurisdiction('DE')
+    mockDb.lotDisposal.findMany.mockResolvedValue([
+      longHeld('40'),
+      shortHeld('10'),
+    ])
+
+    const report = await buildTaxReport('user-1', 2026)
+
+    expect(report.totals).toMatchObject({
+      realizedGain: '50',
+      longTermGain: '40',
+      shortTermGain: '10',
+      exemptGain: '40',
+      discountApplied: '0',
+      taxableGain: '10',
+      taxableGainAfterAllowance: '10',
+    })
+    // The raw gain stays visible per disposal.
+    expect(report.disposals[0]).toMatchObject({
+      realizedGain: '40',
+      taxableGain: '0',
+      longTerm: true,
+    })
+    expect(report.disposals[1].taxableGain).toBe('10')
+  })
+
+  it('DE: an exempt long-term loss is not deductible either', async () => {
+    asJurisdiction('DE')
+    mockDb.lotDisposal.findMany.mockResolvedValue([
+      longHeld('-30'),
+      shortHeld('10'),
+    ])
+
+    const report = await buildTaxReport('user-1', 2026)
+
+    expect(report.totals).toMatchObject({
+      realizedGain: '-20',
+      exemptGain: '-30',
+      taxableGain: '10',
+    })
+  })
+
+  it('AU (FLAT_DISCOUNT 50%): eligible long-term gains are halved; short-term are not', async () => {
+    asJurisdiction('AU')
+    // AU tax year 2025 runs 2025-07-01 to 2026-06-30.
+    mockDb.lotDisposal.findMany.mockResolvedValue([
+      longHeld('40'),
+      shortHeld('10'),
+    ])
+
+    const report = await buildTaxReport('user-1', 2025)
+
+    expect(report.totals).toMatchObject({
+      realizedGain: '50',
+      longTermGain: '40',
+      discountApplied: '20',
+      exemptGain: '0',
+      taxableGain: '30',
+      taxableGainAfterAllowance: '30',
+    })
+    expect(report.disposals[0].taxableGain).toBe('20')
+    expect(report.disposals[1].taxableGain).toBe('10')
+  })
+
+  it('CA (FLAT_DISCOUNT 50% from day one): every gain is included at 50%', async () => {
+    asJurisdiction('CA')
+    mockDb.lotDisposal.findMany.mockResolvedValue([
+      longHeld('40'),
+      shortHeld('10'),
+    ])
+
+    const report = await buildTaxReport('user-1', 2026)
+
+    expect(report.totals).toMatchObject({
+      realizedGain: '50',
+      discountApplied: '25',
+      taxableGain: '25',
+    })
+  })
+
+  it('US (RATE_SPLIT) and UK (NONE) leave the gain undiscounted', async () => {
+    asJurisdiction('US')
+    mockDb.lotDisposal.findMany.mockResolvedValue([longHeld('40')])
+    const us = await buildTaxReport('user-1', 2026)
+    expect(us.totals).toMatchObject({
+      taxableGain: '40',
+      discountApplied: '0',
+      exemptGain: '0',
+    })
+
+    asJurisdiction('UK')
+    const uk = await buildTaxReport('user-1', 2026)
+    expect(uk.totals).toMatchObject({ taxableGain: '40', realizedGain: '40' })
+  })
+
+  it('UK: the annual exempt amount is applied against the taxable gain', async () => {
+    asJurisdiction('UK')
+    mockDb.lotDisposal.findMany.mockResolvedValue([longHeld('5000')])
+
+    const report = await buildTaxReport('user-1', 2026)
+
+    expect(report.totals).toMatchObject({
+      allowanceApplied: '3000',
+      realizedGainAfterAllowance: '2000',
+      taxableGainAfterAllowance: '2000',
+    })
+  })
+
+  it('unpriced disposals have no taxable gain and stay out of the totals', async () => {
+    asJurisdiction('DE')
+    mockDb.lotDisposal.findMany.mockResolvedValue([
+      longHeld('40'),
+      disposalRow({ realizedGain: null, proceeds: null, costBasis: null }),
+    ])
+
+    const report = await buildTaxReport('user-1', 2026)
+
+    expect(report.disposals[1].taxableGain).toBeNull()
+    expect(report.totals.exemptGain).toBe('40')
+  })
+})
+
 describe('taxReportToCsvRows', () => {
   it('produces one row per disposal aligned with the headers', async () => {
     mockDb.lotDisposal.findMany.mockResolvedValue([disposalRow()])
@@ -216,5 +385,6 @@ describe('taxReportToCsvRows', () => {
     expect(rows[0]).toHaveLength(TAX_REPORT_CSV_HEADERS.length)
     expect(rows[0][TAX_REPORT_CSV_HEADERS.indexOf('amount')]).toBe('40')
     expect(rows[0][TAX_REPORT_CSV_HEADERS.indexOf('priced')]).toBe(true)
+    expect(rows[0][TAX_REPORT_CSV_HEADERS.indexOf('taxableGain')]).toBe('0')
   })
 })
