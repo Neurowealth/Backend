@@ -48,4 +48,10 @@ export const responses = {
 
     return `Did you mean to ${list}?`
   },
+
+  // Prompt shown when a command was clear but its amount wasn't (#769), e.g.
+  // "withdraw 1,5", which reads as 1.5 or 15 depending on the locale. Rather
+  // than guess, the bot asks for the one format it accepts.
+  ambiguousAmount: (amount: string) =>
+    `I couldn't tell what amount "${amount}" means. Please use a dot for decimals and commas only between thousands, for example 1.5 or 1,000.50.`,
 }

@@ -81,8 +81,11 @@ export type Intent =
       /**
        * The parser recognized signals for two or more competing actions
        * (e.g. both "deposit" and "withdraw") but wasn't confident enough in
-       * either to act on it directly. `prompt` is ready to show verbatim;
-       * `candidates` lists the actions it couldn't choose between.
+       * either to act on it directly, or it recognized one action whose
+       * amount was written ambiguously (#769, e.g. "withdraw 1,5").
+       * `prompt` is ready to show verbatim; `candidates` lists the actions it
+       * couldn't choose between, or the single action that needs a clear
+       * amount.
        */
       action: 'clarification'
       confidence: number
@@ -182,16 +185,57 @@ function normalizeComparator(value: string): string {
 }
 
 /**
- * Safely extracts a positive number from text.
+ * The one amount format the regex parser accepts (#769): a dot is the only
+ * decimal separator, and commas may appear only between groups of three
+ * digits ("1,000.50"). Comma decimals ("1,5"), dot-grouped thousands
+ * ("1.000,50") and repeated dots ("1.2.3") read differently from locale to
+ * locale, so they are never guessed at.
  */
-function parseAmount(value: string): number | null {
-  const amount = parseFloat(value.replace(/,/g, ''))
+const AMOUNT_FORMAT = /^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/
 
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return null
+type AmountReading =
+  | { status: 'ok'; amount: number }
+  | { status: 'not_positive' }
+  | { status: 'unclear'; text: string }
+
+/**
+ * Reads an amount typed by the user.
+ *
+ * Returns 'unclear' when the text isn't in AMOUNT_FORMAT, so the caller can
+ * ask the user to restate it, and 'not_positive' for a well-formed amount
+ * that is zero or too large to represent.
+ */
+function readAmount(value: string): AmountReading {
+  // A sentence-ending period ("deposit 100.") isn't part of the number.
+  const candidate = value.replace(/\.+$/, '')
+
+  if (!AMOUNT_FORMAT.test(candidate)) {
+    return { status: 'unclear', text: candidate || value }
   }
 
-  return amount
+  const amount = Number(candidate.replace(/,/g, ''))
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { status: 'not_positive' }
+  }
+
+  return { status: 'ok', amount }
+}
+
+/**
+ * The 'clarification' intent returned when a command is clear but its amount
+ * is not (#769), e.g. "withdraw 1,5". It is returned whatever the configured
+ * confidence threshold, because acting on a guessed amount could move the
+ * wrong sum of money. Its confidence matches a two-way choice, since an
+ * unclear amount has at least two plausible readings.
+ */
+function amountClarificationIntent(action: string, amountText: string): Intent {
+  return {
+    action: 'clarification',
+    confidence: ambiguityConfidence(2),
+    candidates: [action],
+    prompt: responses.ambiguousAmount(amountText),
+  }
 }
 
 /**
@@ -424,9 +468,14 @@ export function parseWithRegex(message: string): Intent | null {
 
   if (actionMatch) {
     const action = actionMatch[1].toLowerCase() as 'deposit' | 'withdraw'
-    const amount = parseAmount(actionMatch[2])
+    const reading = readAmount(actionMatch[2])
 
-    if (amount !== null) {
+    if (reading.status === 'unclear') {
+      return amountClarificationIntent(action, reading.text)
+    }
+
+    if (reading.status === 'ok') {
+      const amount = reading.amount
       const intent: Intent =
         action === 'deposit'
           ? {
@@ -524,14 +573,18 @@ export function parseWithRegex(message: string): Intent | null {
   )
 
   if (recurringMatch) {
-    const amount = parseAmount(recurringMatch[1])
+    const reading = readAmount(recurringMatch[1])
     const cadence = normalizeCadence(recurringMatch[2])
 
-    if (amount !== null && cadence !== null) {
+    if (reading.status === 'unclear') {
+      return amountClarificationIntent('create_recurring_deposit', reading.text)
+    }
+
+    if (reading.status === 'ok' && cadence !== null) {
       return {
         action: 'create_recurring_deposit',
         confidence: 1,
-        amount,
+        amount: reading.amount,
         cadence,
       }
     }
@@ -545,7 +598,7 @@ export function parseWithRegex(message: string): Intent | null {
   )
 
   if (recurringDepositMatch) {
-    const amount = parseAmount(recurringDepositMatch[1])
+    const reading = readAmount(recurringDepositMatch[1])
     const cadenceText = recurringDepositMatch[2]
       .replace(/^every\s+week$/i, 'weekly')
       .replace(/^every\s+two\s+weeks$/i, 'biweekly')
@@ -553,11 +606,15 @@ export function parseWithRegex(message: string): Intent | null {
 
     const cadence = normalizeCadence(cadenceText)
 
-    if (amount !== null && cadence !== null) {
+    if (reading.status === 'unclear') {
+      return amountClarificationIntent('create_recurring_deposit', reading.text)
+    }
+
+    if (reading.status === 'ok' && cadence !== null) {
       return {
         action: 'create_recurring_deposit',
         confidence: 1,
-        amount,
+        amount: reading.amount,
         cadence,
       }
     }
@@ -628,9 +685,14 @@ export function parseWithRegex(message: string): Intent | null {
   if (alertMatch) {
     const subject = alertMatch[1].trim()
     const comparator = normalizeComparator(alertMatch[2])
-    const threshold = parseAmount(alertMatch[3])
+    const reading = readAmount(alertMatch[3])
 
-    if (threshold !== null) {
+    if (reading.status === 'unclear') {
+      return amountClarificationIntent('alert_create', reading.text)
+    }
+
+    if (reading.status === 'ok') {
+      const threshold = reading.amount
       // Try to split "Blend apy" into protocol + metric.
       const parts = subject.split(/\s+/)
 
