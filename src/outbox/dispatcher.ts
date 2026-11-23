@@ -350,8 +350,10 @@ export async function dispatchOne(opId: string): Promise<TransactionResult> {
     throw new Error(`Outbox op ${opId} is not PENDING (status=${op.status})`)
   }
 
-  // Compliance/freeze guard: never dispatch for a halted user.
-  if (await isUserHalted(op.userId)) {
+  // Compliance/freeze guard: never dispatch for a halted user. SYSTEM ops
+  // (loans, protection payouts, provisioning) are exempt — their userId can
+  // be a wallet id or an account the freeze check doesn't own (#743).
+  if (op.actor !== 'SYSTEM' && (await isUserHalted(op.userId))) {
     throw new Error(
       `Outbox op ${opId} not dispatched: user ${op.userId} is frozen`
     )
@@ -540,8 +542,9 @@ export async function runDispatchSweep(): Promise<void> {
   )
 
   for (const op of claimable) {
-    // Skip (but leave PENDING) ops belonging to frozen users.
-    if (await isUserHalted(op.userId)) {
+    // Skip (but leave PENDING) ops belonging to frozen users. SYSTEM ops
+    // are exempt from the freeze guard (#743).
+    if (op.actor !== 'SYSTEM' && (await isUserHalted(op.userId))) {
       logger.info('[Outbox] Skipping op for frozen user', {
         opId: op.id,
         userId: op.userId,

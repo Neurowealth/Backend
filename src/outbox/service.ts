@@ -428,12 +428,39 @@ export async function findClaimableOps(
   limit: number
 ): Promise<OutboxOpRecord[]> {
   const now = new Date()
+  // Exclude ops owned by deactivated users in the query itself (#743), so a
+  // backlog of frozen-user PENDING ops can't consume `take: limit` and starve
+  // live ops behind them. userId values that don't resolve to a User row
+  // (SYSTEM, custodial wallet ids) are unaffected.
+  const halted = await db.user.findMany({
+    where: { isActive: false },
+    select: { id: true },
+  })
+  const haltedIds = halted.map((u) => u.id)
   const rows = await db.outboxOp.findMany({
     where: {
       status: 'PENDING' as PrismaOutboxOpStatus,
-      // Eligible if there's no backoff set, or the backoff has elapsed.
-      OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
+      AND: [
+        // Eligible if there's no backoff set, or the backoff has elapsed.
+        { OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
+        // SYSTEM ops are exempt from the freeze guard (#743), matching
+        // isUserHalted's SYSTEM_USER_IDS bypass.
+        ...(haltedIds.length > 0
+          ? [
+              {
+                OR: [
+                  { actor: 'SYSTEM' as const },
+                  { userId: { notIn: haltedIds } },
+                ],
+              },
+            ]
+          : []),
+      ],
     },
+    // Priority-then-FIFO in SQL (Postgres enums order by declaration:
+    // CRITICAL < NORMAL < LOW), so the `take` window itself is ordered —
+    // not just the batch returned to the JS sorter.
+    orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
     take: limit,
   })
   return rows.map(toRecord)
