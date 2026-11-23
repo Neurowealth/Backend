@@ -9,7 +9,10 @@ coverage
 *.log
 .git
 .github
-docs
+# Exclude the docs tree except the OpenAPI spec, which `npm run build:spec`
+# copies into dist/docs (#791).
+docs/*
+!docs/openapi.yaml
 tests
 scripts
 README.md
