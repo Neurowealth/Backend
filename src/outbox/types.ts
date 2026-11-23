@@ -95,6 +95,20 @@ export type OutboxPayload =
       sweepId: string
     }
   /**
+   * #752 — on-chain signer rotation. The treasury ACCOUNT address never
+   * changes: setOptions adds the new signer and removes the old one on that
+   * same account. Signer keys stay on the SignerRotation row; the payload only
+   * snapshots what the executor must submit.
+   */
+  | {
+      method: 'treasury_signer_rotation'
+      rotationId: string
+      treasuryAccountId: string
+      oldSignerKey: string
+      newSignerKey: string
+      finalizedBy: string
+    }
+  /**
    * #532 — hand borrowed stablecoin to the user. Funds leave the vault, so it
    * settles through the same audited write path as a withdrawal, under its own
    * kind and transaction type: a loan is not a withdrawal and must never be
@@ -148,8 +162,9 @@ export type OutboxPayload =
     }
   /**
    * #651 — protection fund pays out an approved coverage claim. Funds leave
-   * the protection pool and are sent to the claimant's wallet. The balance
-   * decrement must only happen after confirmed on-chain delivery.
+   * the protection pool and are sent to the claimant's wallet. The fund is
+   * debited atomically when the claim is queued (executePayout); confirmation
+   * only moves the claim from PAYOUT_QUEUED to PAID.
    */
   | {
       method: 'protection_fund_payout'

@@ -2,7 +2,7 @@ import { rpc, scValToNative, xdr } from '@stellar/stellar-sdk'
 import { TransactionType, TransactionStatus, Network } from '@prisma/client'
 import db from '../db'
 import { Decimal } from '@prisma/client/runtime/library'
-import { getRpcServer } from './client'
+import { getResilientClient } from './client'
 import {
   ContractEvent,
   DepositEvent,
@@ -603,47 +603,146 @@ export async function handleEvent(
   })
 }
 
+type RpcEventPage = Awaited<ReturnType<rpc.Server['getEvents']>>
+type RpcEventRecord = RpcEventPage['events'][number]
+
+const CONTRACT_FILTERS: Array<{ type: 'contract'; contractIds: string[] }> = [
+  { type: 'contract', contractIds: [VAULT_CONTRACT_ID] },
+]
+
+/**
+ * Soroban getEvents returns one page per call. Follow the returned cursor
+ * until the page is empty so no event past the first page is skipped, and
+ * route every call through the failover-aware client.
+ */
+async function fetchAllEventPages(
+  startLedger: number,
+  finalLedger: number
+): Promise<{ pages: RpcEventPage[]; complete: boolean }> {
+  const client = getResilientClient()
+  const pages: RpcEventPage[] = []
+  const seenCursors = new Set<string>()
+  let cursor: string | undefined
+  // A broken endpoint echoing the same cursor forever must not hang the poll.
+  const MAX_PAGES = 1000
+
+  for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex++) {
+    const page = await client.execute(
+      (server) =>
+        cursor
+          ? server.getEvents({ cursor, filters: CONTRACT_FILTERS })
+          : server.getEvents({ startLedger, filters: CONTRACT_FILTERS }),
+      'events.getEvents'
+    )
+    pages.push(page)
+
+    const inRange = page.events.filter((event) => event.ledger <= finalLedger)
+    if (page.events.length === 0 || inRange.length < page.events.length) {
+      return { pages, complete: true }
+    }
+
+    const nextCursor = page.cursor
+    if (!nextCursor) return { pages, complete: true }
+    if (nextCursor === cursor || seenCursors.has(nextCursor)) {
+      // Same page again: there may be more events we can no longer reach.
+      return { pages, complete: false }
+    }
+    seenCursors.add(nextCursor)
+    cursor = nextCursor
+  }
+  return { pages, complete: false }
+}
+
+function toContractEvents(
+  events: RpcEventRecord[],
+  maxLedger: number
+): ContractEvent[] {
+  const result: ContractEvent[] = []
+  for (const event of events) {
+    if (event.ledger > maxLedger) continue
+    const topics = event.topic
+    const eventType = topics.length > 0 ? scValToNative(topics[0]) : null
+
+    if (['deposit', 'withdraw', 'rebalance'].includes(eventType as string)) {
+      result.push({
+        type: eventType as 'deposit' | 'withdraw' | 'rebalance',
+        ledger: event.ledger,
+        txHash: event.txHash,
+        contractId:
+          typeof event.contractId === 'string'
+            ? event.contractId
+            : VAULT_CONTRACT_ID,
+        topics,
+        value: event.value,
+      })
+    }
+  }
+  return result
+}
+
+/** Ascending-ledger batches: a ledger is only "done" once all its events are. */
+function groupEventsByLedger(
+  events: ContractEvent[]
+): Array<[number, ContractEvent[]]> {
+  const byLedger = new Map<number, ContractEvent[]>()
+  for (const event of events) {
+    const batch = byLedger.get(event.ledger) ?? []
+    batch.push(event)
+    byLedger.set(event.ledger, batch)
+  }
+  return Array.from(byLedger.entries()).sort((a, b) => a[0] - b[0])
+}
+
+async function processEventBatchWithResult(
+  events: ContractEvent[]
+): Promise<{ failed: ContractEvent[] }> {
+  if (events.length === 0) return { failed: [] }
+
+  const start = Date.now()
+  logger.info(
+    `[Batch Processing] Attempting to process ${events.length} events`
+  )
+
+  try {
+    await db.$transaction(async (tx) => {
+      for (const event of events) {
+        await handleEvent(event, tx)
+      }
+    })
+    logger.info(
+      `[Batch Processing] Throughput: Successfully processed batch of ${events.length} events in ${Date.now() - start}ms`
+    )
+    return { failed: [] }
+  } catch (batchError) {
+    logger.error(
+      `[Batch Processing Error] Transaction failed, falling back to individual processing:`,
+      batchError
+    )
+    // Fallback: Process individually so robust events succeed. Report the ones
+    // that still fail so the caller can hold the cursor before that ledger.
+    const failed: ContractEvent[] = []
+    for (const event of events) {
+      try {
+        await handleEvent(event, db)
+      } catch (individualError) {
+        failed.push(event)
+        logger.error(
+          `[Batch Fallback Error] Event processing completely failed for ${event.txHash}`,
+          individualError
+        )
+      }
+    }
+    return { failed }
+  }
+}
+
 /**
  * Process a batch of events in a single transaction (Issue #55)
  */
 export async function processEventBatch(
   events: ContractEvent[]
 ): Promise<void> {
-  const start = Date.now()
-  let processedCount = 0
-
-  logger.info(
-    `[Batch Processing] Attempting to process ${events.length} events`
-  )
-
-  try {
-    // Multiple events processed in a single transaction
-    await db.$transaction(async (tx) => {
-      for (const event of events) {
-        await handleEvent(event, tx)
-        processedCount++
-      }
-    })
-    const duration = Date.now() - start
-    logger.info(
-      `[Batch Processing] Throughput: Successfully processed batch of ${processedCount} events in ${duration}ms`
-    )
-  } catch (batchError) {
-    logger.error(
-      `[Batch Processing Error] Transaction failed, falling back to individual processing:`,
-      batchError
-    )
-    // Fallback: Process individually so robust events succeed
-    for (const event of events) {
-      try {
-        await handleEvent(event, db)
-      } catch (individualError) {
-        logger.error(
-          `[Batch Fallback Error] Event processing completely failed for ${event.txHash}`
-        )
-      }
-    }
-  }
+  await processEventBatchWithResult(events)
 }
 
 /**
@@ -662,8 +761,10 @@ async function loadLastProcessedLedger(): Promise<number> {
   }
 
   // First time - start from one before latest so we catch recent events
-  const server = getRpcServer()
-  const latestLedger = await server.getLatestLedger()
+  const latestLedger = await getResilientClient().execute(
+    (server) => server.getLatestLedger(),
+    'events.getLatestLedger'
+  )
   const startLedger = Math.max(0, latestLedger.sequence - 1)
   logger.info(`[Event Listener] First run, starting from ledger ${startLedger}`)
   return startLedger
@@ -690,10 +791,11 @@ async function persistLastProcessedLedger(ledger: number): Promise<void> {
  * Fetch and process events from ledger range with Batching (Issue #55)
  */
 async function fetchEvents(startLedger: number): Promise<void> {
-  const server = getRpcServer()
-
   try {
-    const latestLedger = await server.getLatestLedger()
+    const latestLedger = await getResilientClient().execute(
+      (server) => server.getLatestLedger(),
+      'events.getLatestLedger'
+    )
 
     if (startLedger > latestLedger.sequence) {
       return // No new ledgers
@@ -701,46 +803,44 @@ async function fetchEvents(startLedger: number): Promise<void> {
 
     recordLedgerLag(latestLedger.sequence)
 
-    const events = await server.getEvents({
+    const { pages, complete } = await fetchAllEventPages(
       startLedger,
-      filters: [
-        {
-          type: 'contract',
-          contractIds: [VAULT_CONTRACT_ID],
-        },
-      ],
-    })
+      latestLedger.sequence
+    )
+    const allEvents = pages.flatMap((page) =>
+      toContractEvents(page.events, latestLedger.sequence)
+    )
 
-    const contractEvents: ContractEvent[] = []
-    for (const event of events.events) {
-      const topics = event.topic
-      const eventType = topics.length > 0 ? scValToNative(topics[0]) : null
-
-      if (['deposit', 'withdraw', 'rebalance'].includes(eventType)) {
-        contractEvents.push({
-          type: eventType as 'deposit' | 'withdraw' | 'rebalance',
-          ledger: event.ledger,
-          txHash: event.txHash,
-          contractId:
-            typeof event.contractId === 'string'
-              ? event.contractId
-              : VAULT_CONTRACT_ID,
-          topics: topics,
-          value: event.value,
-        })
+    // Only advance to ledgers whose events were ALL handled successfully.
+    // A ledger that failed any event stays as the next poll's start ledger;
+    // handleEvent's processed-event dedupe makes that replay safe.
+    let safeLedger = startLedger - 1
+    let failedLedger: number | null = null
+    for (const [ledger, batch] of groupEventsByLedger(allEvents)) {
+      const { failed } = await processEventBatchWithResult(batch)
+      if (failed.length > 0) {
+        failedLedger = ledger
+        break
       }
+      safeLedger = ledger
     }
 
-    if (contractEvents.length > 0) {
-      // Use batch processing
-      await processEventBatch(contractEvents)
+    if (failedLedger === null && complete) {
+      // All pages were fetched and processed; empty ledgers are done too.
+      safeLedger = latestLedger.sequence
+    } else if (failedLedger === null) {
+      logger.warn(
+        `[Event Listener] Pagination stopped before exhaustion; cursor held at ledger ${safeLedger}`
+      )
+    } else {
+      logger.warn(
+        `[Event Listener] Holding cursor at ledger ${safeLedger}; ledger ${failedLedger} still has failed events`
+      )
     }
 
-    // Update cursor in database
-    await persistLastProcessedLedger(latestLedger.sequence)
-    lastProcessedLedger = latestLedger.sequence
-    // Update Prometheus metrics
-    updateLastProcessedLedger(latestLedger.sequence)
+    await persistLastProcessedLedger(safeLedger)
+    lastProcessedLedger = safeLedger
+    updateLastProcessedLedger(safeLedger)
   } catch (error) {
     logger.error(
       '[Event Listener] Error fetching events:',
@@ -756,8 +856,11 @@ export async function backfillEvents(
   startLedger: number,
   endLedger?: number
 ): Promise<void> {
-  const server = getRpcServer()
-  const latestLedger = await server.getLatestLedger()
+  const client = getResilientClient()
+  const latestLedger = await client.execute(
+    (server) => server.getLatestLedger(),
+    'events.getLatestLedger'
+  )
   const finalLedger =
     endLedger && endLedger <= latestLedger.sequence
       ? endLedger
@@ -775,36 +878,13 @@ export async function backfillEvents(
   ) {
     const chunkEnd = Math.min(current + CHUNK_SIZE - 1, finalLedger)
     try {
-      const events = await server.getEvents({
-        startLedger: current,
-        filters: [{ type: 'contract', contractIds: [VAULT_CONTRACT_ID] }],
-      })
-
-      const contractEvents: ContractEvent[] = []
-      for (const event of events.events) {
-        const topics = event.topic
-        const eventType = topics.length > 0 ? scValToNative(topics[0]) : null
-
-        if (
-          ['deposit', 'withdraw', 'rebalance'].includes(eventType) &&
-          event.ledger <= chunkEnd
-        ) {
-          contractEvents.push({
-            type: eventType as 'deposit' | 'withdraw' | 'rebalance',
-            ledger: event.ledger,
-            txHash: event.txHash,
-            contractId:
-              typeof event.contractId === 'string'
-                ? event.contractId
-                : VAULT_CONTRACT_ID,
-            topics: topics,
-            value: event.value,
-          })
+      const { pages } = await fetchAllEventPages(current, chunkEnd)
+      for (const page of pages) {
+        for (const [, batch] of groupEventsByLedger(
+          toContractEvents(page.events, chunkEnd)
+        )) {
+          await processEventBatch(batch)
         }
-      }
-
-      if (contractEvents.length > 0) {
-        await processEventBatch(contractEvents)
       }
     } catch (error) {
       logger.error(
@@ -848,8 +928,10 @@ export async function startEventListener(): Promise<void> {
 
   // Fault recovery: Check if we are lagging significantly behind latest ledger
   try {
-    const server = getRpcServer()
-    const latestLedger = await server.getLatestLedger()
+    const latestLedger = await getResilientClient().execute(
+      (server) => server.getLatestLedger(),
+      'events.getLatestLedger'
+    )
     if (latestLedger.sequence > lastProcessedLedger + 1) {
       logger.info(
         `[Fault Recovery] Downtime detected. Backfilling missed events from ${lastProcessedLedger + 1} to ${latestLedger.sequence}`

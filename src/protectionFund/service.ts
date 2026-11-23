@@ -11,9 +11,52 @@ import { db } from '../db'
 import { config } from '../config/env'
 import { logger } from '../utils/logger'
 import { enqueueOutboxOp } from '../outbox/service'
-import { appendAuditBlock } from '../audit/chain'
+import {
+  aggregatePayloadHash,
+  appendAuditBlock,
+  GENESIS_AUDIT_HASH,
+  type AuditBlockType,
+} from '../audit/chain'
 
 type Db = typeof db | Prisma.TransactionClient
+
+/**
+ * appendAuditBlock is pure — it hashes a block but never writes it. Anchor the
+ * resulting block on the real audit chain, on the same client as the business
+ * write so a failure rolls both back (see src/jobs/dataRetention.ts).
+ */
+async function recordAuditBlock(
+  database: Db,
+  blockType: AuditBlockType,
+  payloads: unknown[]
+): Promise<void> {
+  const payloadHash = aggregatePayloadHash(payloads)
+  const latest = await database.auditBlock.findFirst({
+    orderBy: { height: 'desc' },
+    select: { hash: true, height: true },
+  })
+
+  const block = appendAuditBlock({
+    height: (latest?.height ?? 0) + 1,
+    prevHash: latest?.hash ?? GENESIS_AUDIT_HASH,
+    payloadHash,
+    blockType,
+    createdAt: new Date(),
+    payloads,
+  })
+
+  await database.auditBlock.create({
+    data: {
+      height: block.height,
+      prevHash: block.prevHash,
+      hash: block.hash,
+      blockType: block.blockType,
+      payloadCount: block.payloadCount,
+      payloadHash: block.payloadHash,
+      createdAt: block.createdAt,
+    },
+  })
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -42,7 +85,7 @@ export interface ClaimResult {
   netLoss: number
   payoutAmount: number
   coverageType: 'FULL' | 'PRORATED' | 'ZERO'
-  status: 'PENDING' | 'PAID' | 'REJECTED'
+  status: 'PENDING' | 'PAYOUT_QUEUED' | 'PAID' | 'REJECTED'
 }
 
 // ─── Coverage Terms ─────────────────────────────────────────────────────────
@@ -103,20 +146,13 @@ export async function recordContribution(
     },
   })
 
-  await appendAuditBlock({
-    height: 0,
-    prevHash: 'sha256:0',
-    payloadHash: 'sha256:0',
-    blockType: 'ADMIN_BATCH',
-    createdAt: new Date(),
-    payloads: [
-      {
-        type: 'PROTECTION_FUND_CONTRIBUTION',
-        contributionId: contribution.id,
-        amount: input.amount,
-      },
-    ],
-  })
+  await recordAuditBlock(database, 'ADMIN_BATCH', [
+    {
+      type: 'PROTECTION_FUND_CONTRIBUTION',
+      contributionId: contribution.id,
+      amount: input.amount,
+    },
+  ])
 
   return contribution
 }
@@ -146,20 +182,13 @@ export async function declareCoverageEvent(input: DeclareEventInput) {
     },
   })
 
-  await appendAuditBlock({
-    height: 0,
-    prevHash: 'sha256:0',
-    payloadHash: 'sha256:0',
-    blockType: 'ADMIN_BATCH',
-    createdAt: new Date(),
-    payloads: [
-      {
-        type: 'COVERAGE_EVENT_DECLARED',
-        eventId: event.id,
-        protocol: input.protocolName,
-      },
-    ],
-  })
+  await recordAuditBlock(db, 'ADMIN_BATCH', [
+    {
+      type: 'COVERAGE_EVENT_DECLARED',
+      eventId: event.id,
+      protocol: input.protocolName,
+    },
+  ])
 
   return event
 }
@@ -292,62 +321,79 @@ function computePositionLoss(
 // ─── Payout ─────────────────────────────────────────────────────────────────
 
 export async function executePayout(claimId: string) {
-  const claim = await db.coverageClaim.findUnique({
-    where: { id: claimId },
-    include: { event: true },
-  })
-  if (!claim) throw new Error('Claim not found')
-  if (claim.status !== 'PENDING')
-    throw new Error(`Claim is not pending (status: ${claim.status})`)
-  if (claim.payoutAmount.lte(0)) throw new Error('Claim has zero payout')
-  const user = await db.user.findUnique({
-    where: { id: claim.userId },
-    select: { walletAddress: true },
-  })
-  if (!user?.walletAddress)
-    throw new Error(`User ${claim.userId} has no wallet address`)
+  return db.$transaction(async (tx) => {
+    const claim = await tx.coverageClaim.findUnique({
+      where: { id: claimId },
+      include: { event: true },
+    })
+    if (!claim) throw new Error('Claim not found')
+    if (claim.status !== 'PENDING')
+      throw new Error(`Claim is not pending (status: ${claim.status})`)
+    if (claim.payoutAmount.lte(0)) throw new Error('Claim has zero payout')
+    const user = await tx.user.findUnique({
+      where: { id: claim.userId },
+      select: { walletAddress: true },
+    })
+    if (!user?.walletAddress)
+      throw new Error(`User ${claim.userId} has no wallet address`)
 
-  const outboxOp = await enqueueOutboxOp(db, {
-    userId: claim.userId,
-    kind: 'WITHDRAW',
-    actor: 'SYSTEM',
-    idempotencyKey: `PROTECTION_FUND_PAYOUT:${claimId}`,
-    payload: {
-      method: 'protection_fund_payout',
+    // Compare-and-set claim: exactly one concurrent caller moves PENDING to
+    // PAYOUT_QUEUED. A loser (or a repeat POST) throws and rolls the whole
+    // transaction back, so the fund can only ever be debited once.
+    const claimed = await tx.coverageClaim.updateMany({
+      where: { id: claimId, status: 'PENDING' },
+      data: { status: 'PAYOUT_QUEUED' },
+    })
+    if (claimed.count !== 1) {
+      throw new Error(`Claim is not pending (status: ${claim.status})`)
+    }
+
+    const assetSymbol = config.protectionFund.defaultAssetSymbol
+    // Guard the decrement on the balance itself: a fund that cannot cover the
+    // payout leaves the claim PENDING (the transaction rolls back) rather than
+    // going negative.
+    const debited = await tx.protectionFundBalance.updateMany({
+      where: { assetSymbol, amount: { gte: claim.payoutAmount } },
+      data: { amount: { decrement: claim.payoutAmount } },
+    })
+    if (debited.count !== 1) {
+      throw new Error(
+        `Insufficient protection fund balance for claim ${claimId}`
+      )
+    }
+
+    const outboxOp = await enqueueOutboxOp(tx, {
       userId: claim.userId,
-      userAddress: user.walletAddress,
-      amount: Number(claim.payoutAmount),
-      assetSymbol: 'USDC',
-      claimId,
-      eventId: claim.eventId,
-    },
-    priority: 'CRITICAL',
-  })
+      kind: 'WITHDRAW',
+      actor: 'SYSTEM',
+      idempotencyKey: `PROTECTION_FUND_PAYOUT:${claimId}`,
+      payload: {
+        method: 'protection_fund_payout',
+        userId: claim.userId,
+        userAddress: user.walletAddress,
+        amount: Number(claim.payoutAmount),
+        assetSymbol,
+        claimId,
+        eventId: claim.eventId,
+      },
+      priority: 'CRITICAL',
+    })
 
-  await db.coverageClaim.update({
-    where: { id: claimId },
-    data: { outboxOpId: outboxOp.id },
-  })
+    await tx.coverageClaim.update({
+      where: { id: claimId },
+      data: { outboxOpId: outboxOp.id },
+    })
 
-  // Balance decrement happens in mirrorLinkedTransaction on confirmed delivery,
-  // not here, so the fund is never debited before the transfer actually lands.
-
-  await appendAuditBlock({
-    height: 0,
-    prevHash: 'sha256:0',
-    payloadHash: 'sha256:0',
-    blockType: 'TXN_BATCH',
-    createdAt: new Date(),
-    payloads: [
+    await recordAuditBlock(tx, 'TXN_BATCH', [
       {
         type: 'PROTECTION_FUND_PAYOUT',
         claimId,
         amount: Number(claim.payoutAmount),
       },
-    ],
-  })
+    ])
 
-  return outboxOp
+    return outboxOp
+  })
 }
 
 // ─── Queries ────────────────────────────────────────────────────────────────

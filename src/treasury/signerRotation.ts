@@ -12,6 +12,7 @@ import { Prisma } from '@prisma/client'
 import { StrKey } from '@stellar/stellar-sdk'
 import db from '../db'
 import { logger } from '../utils/logger'
+import { enqueueOutboxOp } from '../outbox/service'
 
 type Db = typeof db | Prisma.TransactionClient
 
@@ -103,21 +104,49 @@ export async function finalizeRotation(
     )
   }
 
-  // Re-validate at finalize: rows created before validation existed (or by a
-  // path that bypassed initiateRotation) must not be promoted to the treasury
-  // account's signing key.
+  // Re-validate at finalize: a legacy/bad row must never be submitted as an
+  // on-chain signer.
   assertValidPublicKey('newSignerKey', existing.newSignerKey)
 
   const result = await (database as typeof db).$transaction(async (tx) => {
-    const finalized = await tx.signerRotation.update({
-      where: { id: rotationId },
+    // Compare-and-set the status so two concurrent finalizes cannot both
+    // enqueue a rotation for the same signing keys.
+    const claimed = await tx.signerRotation.updateMany({
+      where: { id: rotationId, status: 'DUAL_ACTIVE' },
       data: { status: 'FINALIZED', finalizedAt: new Date() },
     })
-    await tx.treasuryAccount.update({
-      where: { id: existing.treasuryAccountId },
-      data: { publicKey: existing.newSignerKey },
+    if (claimed.count !== 1) {
+      throw new SignerRotationStateError(
+        `Cannot finalize rotation in status ${existing.status}`
+      )
+    }
+
+    // A Stellar rotation changes the SIGNERS of an account, never its address.
+    // The account's publicKey is deliberately left untouched so sweeps keep
+    // targeting the treasury account; old/new keys remain on the rotation row.
+    // The actual on-chain setOptions (add new, then remove old) goes through
+    // the durable outbox, signed by the configured treasury signer keys.
+    const op = await enqueueOutboxOp(tx, {
+      idempotencyKey: `TREASURY_SIGNER_ROTATION:${rotationId}`,
+      userId: 'SYSTEM',
+      kind: 'TREASURY_SWEEP',
+      actor: 'SYSTEM',
+      priority: 'CRITICAL',
+      payload: {
+        method: 'treasury_signer_rotation',
+        rotationId,
+        treasuryAccountId: existing.treasuryAccountId,
+        oldSignerKey: existing.oldSignerKey,
+        newSignerKey: existing.newSignerKey,
+        finalizedBy,
+      },
     })
-    return finalized
+
+    logger.info('[SignerRotation] Signer update queued on-chain', {
+      rotationId,
+      outboxOpId: op.id,
+    })
+    return { id: rotationId, status: 'FINALIZED' }
   })
 
   logger.info('[SignerRotation] Rotation finalized', {

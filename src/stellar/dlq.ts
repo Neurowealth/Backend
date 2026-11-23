@@ -162,12 +162,27 @@ function toDomain(row: PrismaDeadLetterRow): DeadLetterEvent {
 
 export class DeadLetterQueue {
   static async add(event: any, errorMsg: string): Promise<DeadLetterEvent> {
+    const identity = {
+      contractId: event?.contractId ?? 'unknown',
+      txHash: event?.txHash ?? 'unknown',
+      eventType: event?.type ?? 'unknown',
+      ledger: typeof event?.ledger === 'number' ? event.ledger : 0,
+    }
+
+    // A failed batch is retried event-by-event after the batch transaction
+    // rolls back, so the same event can reach add() twice. No DB unique
+    // constraint exists on these four columns yet; skip an existing entry
+    // rather than creating a duplicate DLQ row on the second write.
+    const existing = await (db as any).deadLetterEvent.findFirst({
+      where: identity,
+    })
+    if (existing) {
+      return toDomain(existing)
+    }
+
     const row = await (db as any).deadLetterEvent.create({
       data: {
-        contractId: event?.contractId ?? 'unknown',
-        txHash: event?.txHash ?? 'unknown',
-        eventType: event?.type ?? 'unknown',
-        ledger: typeof event?.ledger === 'number' ? event.ledger : 0,
+        ...identity,
         error: errorMsg,
         payload: buildPayload(event),
         status: 'PENDING' as const,

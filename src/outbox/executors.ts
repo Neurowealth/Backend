@@ -84,6 +84,21 @@ export async function resolveSignerPublicKey(
       }
       return account.publicKey
     }
+    case 'treasury_signer_rotation': {
+      // The source account of the setOptions transaction is the treasury
+      // account itself (its address never changes on a Stellar signer
+      // rotation), so sequence-number locking must use that address.
+      const account = await db.treasuryAccount.findUnique({
+        where: { id: payload.treasuryAccountId },
+        select: { publicKey: true },
+      })
+      if (!account) {
+        throw new Error(
+          `Treasury account ${payload.treasuryAccountId} not found for rotation ${payload.rotationId}`
+        )
+      }
+      return account.publicKey
+    }
     default: {
       const unhandled: never = payload as never
       throw new Error(
@@ -276,6 +291,8 @@ export async function executeOutboxPayload(
     }
     case 'treasury_sweep':
       return submitTreasurySweepPayment(payload)
+    case 'treasury_signer_rotation':
+      return submitTreasurySignerRotation(payload)
     default: {
       const unhandled: never = payload as never
       throw new Error(
@@ -333,4 +350,60 @@ async function submitTreasurySweepPayment(payload: {
   const hash = await submitTransaction(tx)
   const result = await waitForConfirmation(hash)
   return result
+}
+
+/**
+ * Finalize a signer rotation on-chain (#752).
+ *
+ * Stellar signers are entries ON the treasury account: rotating a key must
+ * never rewrite TreasuryAccount.publicKey (that is the account address that
+ * sweeps send to and that signs sweeps out). Emit two setOptions operations in
+ * one transaction — add the new key first so signing capacity is never
+ * reduced, then remove the old one — and sign with every configured treasury
+ * signer key (each configured key is one multisig approval; production runs
+ * more than one).
+ */
+async function submitTreasurySignerRotation(payload: {
+  rotationId: string
+  treasuryAccountId: string
+  oldSignerKey: string
+  newSignerKey: string
+}): Promise<TransactionResult> {
+  const account = await db.treasuryAccount.findUnique({
+    where: { id: payload.treasuryAccountId },
+  })
+  if (!account) {
+    throw new Error(
+      `Treasury account ${payload.treasuryAccountId} not found for rotation ${payload.rotationId}`
+    )
+  }
+
+  const source = await getAccount(account.publicKey)
+  const signers = getSponsorKeypairs()
+  if (signers.length === 0) {
+    throw new Error(
+      'No treasury signer keys configured for signer rotation submission'
+    )
+  }
+
+  const tx = new TransactionBuilder(source, {
+    fee: BASE_FEE,
+    networkPassphrase: getNetworkPassphrase(),
+  })
+    .addOperation(
+      Operation.setOptions({
+        signer: { ed25519PublicKey: payload.newSignerKey, weight: 1 },
+      })
+    )
+    .addOperation(
+      Operation.setOptions({
+        signer: { ed25519PublicKey: payload.oldSignerKey, weight: 0 },
+      })
+    )
+    .setTimeout(30)
+    .build()
+
+  tx.sign(...signers)
+  const hash = await submitTransaction(tx)
+  return waitForConfirmation(hash)
 }
