@@ -2,6 +2,7 @@
  * Agent Loop - Main orchestration of scheduled and event-based agent tasks
  */
 
+import { createHash } from 'crypto'
 import cron, { ScheduledTask } from 'node-cron'
 import { logger, logBackgroundJob } from '../utils/logger'
 import {
@@ -25,7 +26,11 @@ import {
 } from './breakerService'
 import { persistRebalanceDecision } from './rebalanceDecision'
 import type { DecisionTrace } from './types'
-import { resolveEffectiveConfig } from './effectiveStrategy'
+import {
+  resolveEffectiveConfig,
+  type EffectiveStrategyConfig,
+} from './effectiveStrategy'
+import { canonicalizeAuditPayload } from '../audit/chain'
 import {
   loadActiveFollowsForUsers,
   type ActiveFollowConfig,
@@ -56,6 +61,50 @@ const cronJobs: ScheduledTask[] = []
 function updateAgentHeartbeat(): void {
   lastTickAt = new Date()
   metricsUpdateAgentHeartbeat()
+}
+
+function hasLiquidityFloor(user: unknown): boolean {
+  const floor = (user as { liquidityFloor?: unknown }).liquidityFloor
+  return floor !== null && floor !== undefined
+}
+
+/**
+ * True when a position's user will be handed to executeRebalanceIfNeeded with
+ * strategy preferences, so the strategy engine runs for their batch. Without
+ * preferences the router never reads a user's strategy settings at all.
+ */
+function usesStrategyPreferences(
+  config: EffectiveStrategyConfig,
+  follow: ActiveFollowConfig | undefined,
+  user: unknown
+): boolean {
+  return (
+    Boolean(config.strategyName) || Boolean(follow) || hasLiquidityFloor(user)
+  )
+}
+
+/**
+ * Stable fingerprint of the per-user settings that router.ts and the
+ * strategies read from userStrategyPreferences[0] on behalf of a whole batch
+ * (#768): the target allocations, and the exposure-cap settings (per-protocol
+ * caps, the default max fraction, and the risk tolerance that picks the
+ * default cap). Keys are compared in sorted order, so the same settings
+ * always give the same fingerprint however they were stored.
+ */
+export function strategySettingsFingerprint(
+  config: Pick<
+    EffectiveStrategyConfig,
+    'targetAllocations' | 'exposureCaps' | 'defaultMaxFraction'
+  >,
+  riskTolerance: unknown
+): string {
+  const canonical = canonicalizeAuditPayload({
+    targetAllocations: config.targetAllocations ?? null,
+    exposureCaps: config.exposureCaps ?? null,
+    defaultMaxFraction: config.defaultMaxFraction ?? null,
+    riskTolerance: riskTolerance ?? null,
+  })
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 16)
 }
 
 /**
@@ -203,6 +252,13 @@ async function rebalanceCheckJob(): Promise<void> {
       // For users without a follow the component is the constant 'none'; without
       // an active goal it is 'false', so grouping is unchanged for the no-follow,
       // no-goal path.
+      //
+      // #768: the strategies also read targetAllocations and the exposure-cap
+      // settings from the first user's preferences, so users whose settings
+      // differ get a different settings fingerprint and never share a batch.
+      // The fingerprint is only added for users who get strategy preferences;
+      // batches without them never read these settings, so their keys and
+      // grouping are unchanged.
       const byProtocolAndStrategy = new Map<
         string,
         { protocol: string; positions: PositionWithUser[]; batchKey: string }
@@ -210,13 +266,13 @@ async function rebalanceCheckJob(): Promise<void> {
       for (const pos of positions) {
         const { config, follow } = effectiveByUser.get(pos.userId)!
         const hasGoal = goalsByUser.has(pos.userId)
-        const liquidityFloorConfigured =
-          (pos.user as any).liquidityFloor !== null &&
-          (pos.user as any).liquidityFloor !== undefined
-        const floorUserKey = liquidityFloorConfigured ? pos.userId : 'shared'
+        const floorUserKey = hasLiquidityFloor(pos.user) ? pos.userId : 'shared'
+        const settingsKey = usesStrategyPreferences(config, follow, pos.user)
+          ? `:${strategySettingsFingerprint(config, (pos.user as any).riskTolerance)}`
+          : ''
         const key = `${pos.protocolName}:${config.strategyName || 'DEFAULT'}:${
           config.riskCeiling ?? 'none'
-        }:${follow?.followId ?? 'none'}:${hasGoal ? 'goal' : 'nogoal'}:${floorUserKey}`
+        }:${follow?.followId ?? 'none'}:${hasGoal ? 'goal' : 'nogoal'}:${floorUserKey}${settingsKey}`
         if (!byProtocolAndStrategy.has(key)) {
           byProtocolAndStrategy.set(key, {
             protocol: pos.protocolName,
@@ -347,11 +403,11 @@ async function rebalanceCheckJob(): Promise<void> {
         // preferences are undefined. A follower whose OWN rebalanceStrategy is
         // null — the common case for a new user, and exactly who this feature
         // targets — would have had their followed config silently ignored.
-        const hasStrategyContext =
-          Boolean(lead.config.strategyName) ||
-          Boolean(lead.follow) ||
-          ((protocolPositions[0].user as any).liquidityFloor !== null &&
-            (protocolPositions[0].user as any).liquidityFloor !== undefined)
+        const hasStrategyContext = usesStrategyPreferences(
+          lead.config,
+          lead.follow,
+          protocolPositions[0].user
+        )
 
         const userStrategyPreferences = hasStrategyContext
           ? protocolPositions.map((p: PositionWithUser) => {
