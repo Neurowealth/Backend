@@ -3,6 +3,8 @@ import { z } from 'zod'
 import db from '../db'
 import { requireAuth } from '../middleware/authenticate'
 import { requireScope } from '../middleware/apiKeyAuth'
+import { webhookRateLimiter } from '../middleware/rateLimiter'
+import { handleMailWebhook } from '../controllers/email-identity-controller'
 import { validate } from '../middleware/validate'
 import { sendNotFound } from '../utils/errors'
 import { generateWebhookSecret } from '../utils/webhookSignature'
@@ -46,6 +48,13 @@ function isAllowedWebhookUrl(url: string): boolean {
   }
 }
 
+/**
+ * Unauthenticated provider mail webhook callback (#367, #756). Must be
+ * registered BEFORE `router.use(requireAuth)`: the provider has no user JWT,
+ * only the signed SNS envelope verified by handleMailWebhook.
+ */
+router.post('/mail', webhookRateLimiter, handleMailWebhook)
+
 router.use(requireAuth)
 
 /**
@@ -88,6 +97,7 @@ router.post(
 /** GET /api/webhooks */
 router.get(
   '/',
+  requireScope('webhooks:manage'),
   validate({
     query: paginationSchema.extend({
       isActive: z.enum(['true', 'false']).optional(),
@@ -136,6 +146,7 @@ router.get(
 
 router.get(
   '/:id',
+  requireScope('webhooks:manage'),
   validate({ params: webhookIdParamSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -211,6 +222,7 @@ router.delete(
 /** POST /api/webhooks/subscriptions/:id/rotate-secret (#377) */
 router.post(
   '/:id/rotate-secret',
+  requireScope('webhooks:manage'),
   validate({ params: webhookIdParamSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -239,6 +251,7 @@ router.post(
 /** POST /api/webhooks/subscriptions/:id/promote-secret (#377) */
 router.post(
   '/:id/promote-secret',
+  requireScope('webhooks:manage'),
   validate({ params: webhookIdParamSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -266,6 +279,7 @@ router.post(
 /** GET /api/webhooks/subscriptions/:id/health (#377) */
 router.get(
   '/:id/health',
+  requireScope('webhooks:manage'),
   validate({ params: webhookIdParamSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -298,32 +312,37 @@ router.get(
 )
 
 /** POST /api/webhooks/dead-letters/:id/replay (#377) */
-router.post('/dead-letters/:id/replay', async (req: Request, res: Response) => {
-  const userId = req.auth!.userId
-  const dl = await prisma.webhookDeadLetter.findUnique({
-    where: { id: req.params.id },
-    include: { subscription: { select: { userId: true } } },
-  })
-  if (!dl || dl.subscription.userId !== userId) {
-    return sendNotFound(res, 'Dead letter')
+router.post(
+  '/dead-letters/:id/replay',
+  requireScope('webhooks:manage'),
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+    const dl = await prisma.webhookDeadLetter.findUnique({
+      where: { id: req.params.id },
+      include: { subscription: { select: { userId: true } } },
+    })
+    if (!dl || dl.subscription.userId !== userId) {
+      return sendNotFound(res, 'Dead letter')
+    }
+
+    const ok = await replayDeadLetter(req.params.id)
+    if (!ok) {
+      return res.status(409).json({ error: 'Dead letter not replayable' })
+    }
+
+    logger.info('[Webhook] Manual dead-letter replay', {
+      deadLetterId: req.params.id,
+      userId,
+    })
+
+    return res.status(200).json({ status: 'replayed', id: req.params.id })
   }
-
-  const ok = await replayDeadLetter(req.params.id)
-  if (!ok) {
-    return res.status(409).json({ error: 'Dead letter not replayable' })
-  }
-
-  logger.info('[Webhook] Manual dead-letter replay', {
-    deadLetterId: req.params.id,
-    userId,
-  })
-
-  return res.status(200).json({ status: 'replayed', id: req.params.id })
-})
+)
 
 /** POST /api/webhooks/subscriptions/:id/replay — bulk replay PENDING DLQ (#377) */
 router.post(
   '/:id/replay',
+  requireScope('webhooks:manage'),
   validate({ params: webhookIdParamSchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -367,28 +386,32 @@ import {
   replayEvents,
   listDeliveries,
 } from '../controllers/user-webhook-controller'
-import { handleMailWebhook } from '../controllers/email-identity-controller'
-
-// Unauthenticated provider mail webhook callback (#367)
-router.post('/mail', handleMailWebhook)
 
 // User-scoped outbound webhook management endpoints (#368)
 router.post(
   '/endpoints',
   requireAuth,
+  requireScope('webhooks:manage'),
   validate({ body: createUserWebhookEndpointSchema }),
   createEndpoint
 )
-router.get('/endpoints', requireAuth, listEndpoints)
+router.get(
+  '/endpoints',
+  requireAuth,
+  requireScope('webhooks:manage'),
+  listEndpoints
+)
 router.get(
   '/endpoints/:id',
   requireAuth,
+  requireScope('webhooks:manage'),
   validate({ params: userWebhookEndpointIdParamSchema }),
   getEndpoint
 )
 router.patch(
   '/endpoints/:id',
   requireAuth,
+  requireScope('webhooks:manage'),
   validate({
     params: userWebhookEndpointIdParamSchema,
     body: updateUserWebhookEndpointSchema,
@@ -398,30 +421,35 @@ router.patch(
 router.delete(
   '/endpoints/:id',
   requireAuth,
+  requireScope('webhooks:manage'),
   validate({ params: userWebhookEndpointIdParamSchema }),
   deleteEndpoint
 )
 router.post(
   '/endpoints/:id/rotate-secret',
   requireAuth,
+  requireScope('webhooks:manage'),
   validate({ params: userWebhookEndpointIdParamSchema }),
   rotateSecret
 )
 router.post(
   '/endpoints/:id/test',
   requireAuth,
+  requireScope('webhooks:manage'),
   validate({ params: userWebhookEndpointIdParamSchema }),
   sendTestPing
 )
 router.post(
   '/endpoints/:id/replay',
   requireAuth,
+  requireScope('webhooks:manage'),
   validate({ params: userWebhookEndpointIdParamSchema }),
   replayEvents
 )
 router.get(
   '/endpoints/:id/deliveries',
   requireAuth,
+  requireScope('webhooks:manage'),
   validate({ params: userWebhookEndpointIdParamSchema }),
   listDeliveries
 )

@@ -7,6 +7,7 @@ import {
 } from 'express'
 import { SubAccount, SubAccountPermission } from '@prisma/client'
 import { requireAuth } from '../middleware/authenticate'
+import { requireSessionAuth } from '../middleware/apiKeyAuth'
 import { validate } from '../middleware/validate'
 import db from '../db'
 import { logger } from '../utils/logger'
@@ -53,6 +54,7 @@ const audit = (
 router.get(
   '/summary',
   requireAuth,
+  requireSessionAuth,
   handle(async (req, res) => {
     const subAccounts = await db.subAccount.findMany({
       where: { parentUserId: req.auth!.userId },
@@ -96,6 +98,7 @@ router.get(
 router.post(
   '/bulk',
   requireAuth,
+  requireSessionAuth,
   validate({ body: bulkSubAccountsSchema }),
   handle(async (req, res) => {
     const { operations, atomic } = bulkSubAccountsSchema.parse(req.body)
@@ -189,6 +192,7 @@ router.post(
 router.post(
   '/',
   requireAuth,
+  requireSessionAuth,
   validate({ body: createSubAccountSchema, errorMessage: 'Validation error' }),
   handle(async (req, res) => {
     const subAccount = await createSubAccount(req.auth!.userId, req.body)
@@ -199,6 +203,7 @@ router.post(
 router.patch(
   '/:id/permissions',
   requireAuth,
+  requireSessionAuth,
   validate({ body: updatePermissionsSchema, errorMessage: 'Validation error' }),
   handle(async (req, res) => {
     const subAccount = await updateSubAccount(
@@ -213,6 +218,7 @@ router.patch(
 router.patch(
   '/:id/limits',
   requireAuth,
+  requireSessionAuth,
   validate({ body: updateLimitsSchema, errorMessage: 'Validation error' }),
   handle(async (req, res) => {
     const subAccount = await updateSubAccount(
@@ -227,6 +233,7 @@ router.patch(
 router.delete(
   '/:id',
   requireAuth,
+  requireSessionAuth,
   handle(async (req, res) => {
     const subAccount = await updateSubAccount(
       req.auth!.userId,

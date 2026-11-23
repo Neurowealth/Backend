@@ -340,6 +340,12 @@ export const RATE_LIMIT_MATRIX: readonly RateLimitMatrixEntry[] = [
     tier: 'webhook',
     note: 'Inbound Telegram provider callbacks, HMAC-signed.',
   },
+  {
+    path: '/api/v1/webhooks/mail',
+    method: 'POST',
+    tier: 'webhook',
+    note: 'Unauthenticated SES/SNS mail bounce callback, signature-verified.',
+  },
 
   // ── The management API (admin tier) ─────────────────────────────────────
   {
@@ -438,6 +444,14 @@ export const RATE_LIMIT_MATRIX: readonly RateLimitMatrixEntry[] = [
     note: 'Opening a ticket is a state change on a customer-visible record.',
   },
   {
+    path: '/api/v1/assistant/chat',
+    method: 'POST',
+    tier: 'sensitive',
+    note:
+      'Assistant chat can propose and confirm money-moving tool calls; ' +
+      'session-only with the sensitive-operation budget.',
+  },
+  {
     path: '/api/v1/accounting',
     prefix: true,
     tier: 'tiered',
@@ -491,6 +505,12 @@ export const RATE_LIMIT_MATRIX: readonly RateLimitMatrixEntry[] = [
     prefix: true,
     tier: 'tiered',
     note: 'Pre-version webhook management surface; same baseline as /api/v1.',
+  },
+  {
+    path: '/api/webhooks/mail',
+    method: 'POST',
+    tier: 'webhook',
+    note: 'Legacy alias of the unauthenticated mail bounce callback.',
   },
   {
     path: '/api/analytics',

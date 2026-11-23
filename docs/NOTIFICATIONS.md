@@ -48,7 +48,7 @@ To protect deliverability and prevent spam, email addresses must pass a double o
     1. The `SigningCertUrl` host must match `^sns\.[a-z0-9-]+\.amazonaws\.com$` over HTTPS — a spoofed or non-AWS certificate origin is rejected without being fetched.
     2. The certificate is fetched and cached per URL under a 5-minute TTL (failed fetches are never cached, so SNS retries get a genuine attempt).
     3. The canonical string is rebuilt with the exact field set for the message `Type` (Notification vs SubscriptionConfirmation differ), and `crypto.verify` checks `Signature` with `SignatureVersion` (1 → SHA-1, 2 → SHA-256; absent defaults to 1).
-  - A delivery that fails verification — tampered body, spoofed certificate host, or certificate fetch failure — is rejected as **unauthenticated (401)**, logged, counted in `mail_webhook_rejections_total{reason}`, and **never** processed. A body that is not an SNS envelope at all has no verifiable provenance and is likewise rejected. The controller maps a verified-but-unprocessable payload to 400 and unexpected failures to 500.
+  - A delivery that fails verification — tampered body, spoofed certificate host, or certificate fetch failure — is rejected as a bad request (400), logged, counted in `mail_webhook_rejections_total{reason}`, and **never** processed. A body that is not an SNS envelope at all has no verifiable provenance and is likewise rejected. The controller maps a verified-but-unprocessable payload to 400 and unexpected failures to 500.
 
 ---
 

@@ -134,6 +134,9 @@ export const API_ROUTES: ApiRoute[] = [
     handlers: [adminRateLimiter, adminRiskMetadataRouter],
   },
   { path: 'assistant', handlers: [assistantRouter] },
+  // #756 — the documented /api/v1/webhooks surface, including the provider
+  // mail callback. The legacy /api/webhooks mount stays in EXTRA_MOUNTS.
+  { path: 'webhooks', handlers: [webhooksRouter] },
   { path: 'approvals', handlers: [approvalsRouter] },
   { path: 'approval-policies', handlers: [approvalPoliciesRouter] },
   { path: 'keys', handlers: [keysRouter] },
