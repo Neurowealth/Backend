@@ -22,6 +22,10 @@ import {
   beginTotpEnrollment,
   verifyTotpEnrollment,
 } from '../services/totp.service'
+import {
+  issueStepUpChallenge,
+  verifyAndConsumeStepUpChallenge,
+} from '../controllers/auth-controller'
 
 const router = Router()
 const prisma = db
@@ -198,25 +202,48 @@ router.post('/2fa/verify-enrollment', async (req: Request, res: Response) => {
  * wallet-signature challenge (proof-of-control), not merely an active
  * session — the session itself could be the compromised asset.
  */
+/** POST /api/v1/sessions/challenge - issue a purpose-bound step-up challenge (#761) */
+router.post('/challenge', async (req: Request, res: Response) => {
+  const stellarPubKey =
+    (req.body?.stellarPubKey as string) || req.auth?.walletAddress
+  const purpose = (req.body?.purpose as string) || 'step-up'
+
+  if (!stellarPubKey) {
+    return res.status(400).json({ error: 'stellarPubKey is required' })
+  }
+
+  try {
+    const result = await issueStepUpChallenge(stellarPubKey, purpose)
+    return res.status(200).json({
+      nonce: result.nonce,
+      expiresAt: result.expiresAt.toISOString(),
+      purpose,
+    })
+  } catch (err) {
+    return res.status(400).json({ error: (err as Error).message })
+  }
+})
+
 router.post(
   '/2fa/disable',
-  validate({ body: disable2faBody }),
   requireFreshSignature(),
+  validate({ body: disable2faBody }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
     const { stellarPubKey, signature, nonce } = req.body
 
-    const isValid = stellarVerification.verifyStellarSignature(
-      stellarPubKey,
-      nonce,
-      signature
-    )
-    if (!isValid) {
+    const user = await db.user.findUnique({ where: { id: userId } })
+    if (!user || user.walletAddress !== stellarPubKey) {
       return res.status(401).json({ error: 'Step-up authentication failed' })
     }
 
-    const user = await db.user.findUnique({ where: { id: userId } })
-    if (!user || user.walletAddress !== stellarPubKey) {
+    const isValid = await verifyAndConsumeStepUpChallenge(
+      stellarPubKey,
+      nonce,
+      signature,
+      '2fa:disable'
+    )
+    if (!isValid) {
       return res.status(401).json({ error: 'Step-up authentication failed' })
     }
 
@@ -244,26 +271,28 @@ router.post(
   }
 )
 
-/** POST /api/v1/sessions/revoke-others — revoke all except current (step-up) */
+/** POST /api/v1/sessions/revoke-others - revoke all except current (step-up) */
 router.post(
   '/revoke-others',
+  requireFreshSignature(),
   validate({ body: revokeOthersBody }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
     const currentSessionId = req.auth!.sessionId
     const { stellarPubKey, signature, nonce } = req.body
 
-    const isValid = stellarVerification.verifyStellarSignature(
-      stellarPubKey,
-      nonce,
-      signature
-    )
-    if (!isValid) {
+    const user = await db.user.findUnique({ where: { id: userId } })
+    if (!user || user.walletAddress !== stellarPubKey) {
       return res.status(401).json({ error: 'Step-up authentication failed' })
     }
 
-    const user = await db.user.findUnique({ where: { id: userId } })
-    if (!user || user.walletAddress !== stellarPubKey) {
+    const isValid = await verifyAndConsumeStepUpChallenge(
+      stellarPubKey,
+      nonce,
+      signature,
+      'sessions:revoke-others'
+    )
+    if (!isValid) {
       return res.status(401).json({ error: 'Step-up authentication failed' })
     }
 
