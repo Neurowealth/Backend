@@ -247,12 +247,13 @@ describe('TARGET_ALLOCATION batching (#768)', () => {
       ),
     ],
     [
-      'the default max fraction',
+      'default max fractions',
       targetUser({ Blend: 80, Luma: 20 }, { defaultMaxFraction: 0.9 }),
       targetUser({ Blend: 80, Luma: 20 }, { defaultMaxFraction: 0.4 }),
     ],
     [
-      'the risk tolerance that picks the default cap',
+      // The risk tolerance picks the default cap when no override is set.
+      'risk tolerances',
       targetUser({ Blend: 80, Luma: 20 }, {}, { riskTolerance: 2 }),
       targetUser({ Blend: 80, Luma: 20 }, {}, { riskTolerance: 9 }),
     ],
