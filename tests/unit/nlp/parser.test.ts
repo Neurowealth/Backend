@@ -92,6 +92,117 @@ describe('parseWithRegex clarification fallback', () => {
   })
 })
 
+describe('parseWithRegex amount format (#769)', () => {
+  it.each([
+    ['1,000.50', 1000.5],
+    ['1,000', 1000],
+    ['1,234,567.89', 1234567.89],
+    ['1000.50', 1000.5],
+    ['12.345', 12.345],
+    ['0.5', 0.5],
+    ['25', 25],
+  ])('reads %p as %p', (text, amount) => {
+    expect(parseWithRegex(`deposit ${text}`)).toEqual({
+      action: 'deposit',
+      confidence: 1,
+      amount,
+    })
+    expect(parseWithRegex(`withdraw ${text}`)).toEqual({
+      action: 'withdraw',
+      confidence: 1,
+      amount,
+    })
+  })
+
+  it('keeps the currency and ignores a sentence-ending period', () => {
+    expect(parseWithRegex('withdraw 1,000.50 usdc.')).toEqual({
+      action: 'withdraw',
+      confidence: 1,
+      amount: 1000.5,
+      currency: 'USDC',
+    })
+    expect(parseWithRegex('deposit 100.')).toEqual({
+      action: 'deposit',
+      confidence: 1,
+      amount: 100,
+    })
+  })
+
+  it.each(['1,5', '1.000,50', '1.2.3', '10,00', '1,0000', ',5', '1,,000'])(
+    'asks for a clear amount instead of guessing what %p means',
+    (text) => {
+      for (const action of ['deposit', 'withdraw'] as const) {
+        const intent = parseWithRegex(`${action} ${text}`)
+        expect(intent).toEqual({
+          action: 'clarification',
+          confidence: expect.any(Number),
+          candidates: [action],
+          prompt: responses.ambiguousAmount(text),
+        })
+        expect(intent!.confidence).toBeLessThan(config.nlp.confidenceThreshold)
+      }
+    }
+  )
+
+  it('leaves a sentence-ending period out of the amount it asks about', () => {
+    expect(parseWithRegex('withdraw 1,5.')).toEqual(
+      expect.objectContaining({
+        action: 'clarification',
+        prompt: responses.ambiguousAmount('1,5'),
+      })
+    )
+  })
+
+  it('still ignores a well-formed amount of zero', () => {
+    expect(parseWithRegex('deposit 0')).toBeNull()
+  })
+
+  it('reads recurring deposit amounts and alert thresholds the same way', () => {
+    expect(parseWithRegex('recurring deposit 1,000.50 weekly')).toEqual({
+      action: 'create_recurring_deposit',
+      confidence: 1,
+      amount: 1000.5,
+      cadence: 'WEEKLY',
+    })
+    expect(parseWithRegex('deposit 2,500 every month')).toEqual({
+      action: 'create_recurring_deposit',
+      confidence: 1,
+      amount: 2500,
+      cadence: 'MONTHLY',
+    })
+    expect(parseWithRegex('alert me when Blend apy > 1,000.5')).toEqual(
+      expect.objectContaining({
+        action: 'alert_create',
+        comparator: '>',
+        threshold: 1000.5,
+      })
+    )
+  })
+
+  it.each([
+    ['recurring deposit 1,5 weekly', 'create_recurring_deposit'],
+    ['deposit 1,5 every week', 'create_recurring_deposit'],
+    ['alert me when Blend apy < 1,5', 'alert_create'],
+  ])('asks for a clear amount in %p', (message, action) => {
+    expect(parseWithRegex(message)).toEqual({
+      action: 'clarification',
+      confidence: expect.any(Number),
+      candidates: [action],
+      prompt: responses.ambiguousAmount('1,5'),
+    })
+  })
+
+  it('never turns "withdraw 1,5" into a withdrawal end to end', async () => {
+    const intent = await parseIntent('withdraw 1,5')
+    expect(intent).toEqual(
+      expect.objectContaining({
+        action: 'clarification',
+        candidates: ['withdraw'],
+      })
+    )
+  })
+})
+
 describe('parseIntent confidence end-to-end (AI_MODE=local)', () => {
   it('resolves a clean command with full confidence', async () => {
     const intent = await parseIntent('withdraw 25')
@@ -139,6 +250,14 @@ describe('responses.clarification', () => {
   it('phrases a single label as a yes/no-style question asking for more detail', () => {
     expect(responses.clarification(['deposit money'])).toBe(
       'Did you want to deposit money? Could you give me a bit more detail?'
+    )
+  })
+})
+
+describe('responses.ambiguousAmount', () => {
+  it('quotes the amount and shows the accepted format', () => {
+    expect(responses.ambiguousAmount('1,5')).toBe(
+      'I couldn\'t tell what amount "1,5" means. Please use a dot for decimals and commas only between thousands, for example 1.5 or 1,000.50.'
     )
   })
 })
