@@ -79,6 +79,9 @@ jobs:
 
       - name: Integration test suite
         run: npm run test:integration -- --runInBand
+      - name: DB-backed regression and integration suites (#799)
+        run: npm run test:db
+
       - name: Savings goal concurrency integration test (#790)
         run: npm run test:integration:goals
       - name: Release tooling regression tests

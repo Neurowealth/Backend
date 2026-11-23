@@ -12,6 +12,7 @@
     "prebuild": "npm run clean && npm run build:spec && npx prisma generate",
     "test:unit": "jest tests/unit",
     "test:integration": "jest tests/integration",
+    "test:db": "jest --config jest.db.config.js --runInBand",
     "test:integration:goals": "jest --runInBand --testPathIgnorePatterns=/node_modules/ --testPathPattern='integration/goals'",
     "prisma:generate": "npx prisma generate",
     "prepare": "husky || true",

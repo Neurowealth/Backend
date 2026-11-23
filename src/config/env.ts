@@ -594,6 +594,14 @@ export const config = {
       .map((s) => s.trim())
       .filter(Boolean),
     internalServiceToken: process.env.INTERNAL_SERVICE_TOKEN || '',
+    /**
+     * ADMIN_API_TOKEN: admin bearer token accepted on internal endpoints such
+     * as /metrics (#797). Optional so existing deployments that rely on IP
+     * allowlisting keep booting; when unset, admin-token auth is simply not
+     * offered. Reads are centralised here so the value is loaded once and
+     * every consumer sees the same configuration.
+     */
+    adminApiToken: process.env.ADMIN_API_TOKEN || '',
   },
   whatsapp: {
     twilioSid: process.env.TWILIO_ACCOUNT_SID || '',
