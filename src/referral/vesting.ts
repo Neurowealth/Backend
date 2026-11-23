@@ -30,10 +30,7 @@ export const REFERRAL_VESTING_DISCLOSURE_COPY =
 
 export type TrancheLeg = 'referrer' | 'referred'
 export type TrancheStatus =
-  | 'PENDING'
-  | 'VESTED_PAID'
-  | 'FORFEITED'
-  | 'CLAWED_BACK'
+  'PENDING' | 'VESTED_PAID' | 'FORFEITED' | 'CLAWED_BACK'
 export type ClawbackStatus = 'OPEN' | 'OFFSET_COMPLETE' | 'WRITTEN_OFF'
 
 export interface PlannedVestingTranche {
@@ -192,8 +189,7 @@ export async function evaluateReferredBalanceCheckpoint(params: {
       config.referral.vestingConsecutiveSnapshots ??
       3
   )
-  const graceHours =
-    params.graceHours ?? config.referral.vestingGraceHours ?? 6
+  const graceHours = params.graceHours ?? config.referral.vestingGraceHours ?? 6
   const upperBound = new Date(
     Math.max(
       params.vestsAt.getTime() + graceHours * 3600_000,
@@ -578,7 +574,10 @@ export async function recordEarlyWithdrawalClawback(params: {
       )
     : new Decimal(0)
 
-  const capRoom = Decimal.max(new Decimal(0), maxPerReferrer.minus(currentOpenSum))
+  const capRoom = Decimal.max(
+    new Decimal(0),
+    maxPerReferrer.minus(currentOpenSum)
+  )
   const collectibleAmount = Decimal.min(rawClawbackTotal, capRoom)
   const immediateWriteOff = rawClawbackTotal.minus(collectibleAmount)
   const writeoffDays = config.referral.clawbackWriteoffDays ?? 90
@@ -737,7 +736,9 @@ async function payVestingTrancheOnChain(params: {
     })
 
     if (!succeeded && !stillPending) {
-      throw new Error('On-chain tranche reward submission returned status=failed')
+      throw new Error(
+        'On-chain tranche reward submission returned status=failed'
+      )
     }
 
     return {
@@ -914,9 +915,7 @@ export async function sweepVestingTranchesAndClawbacks(
           const cbRes = await recordEarlyWithdrawalClawback({
             conversionId: conversion.id,
             referrerUserId: ownerUserId,
-            reason:
-              checkpoint.reason ??
-              'EARLY_WITHDRAWAL_BEFORE_VESTING_END',
+            reason: checkpoint.reason ?? 'EARLY_WITHDRAWAL_BEFORE_VESTING_END',
             now,
             database,
           })
@@ -932,7 +931,8 @@ export async function sweepVestingTranchesAndClawbacks(
           data: {
             status: 'FORFEITED',
             forfeitReason:
-              checkpoint.reason ?? 'INSUFFICIENT_DEPOSITED_BALANCE_AT_CHECKPOINT',
+              checkpoint.reason ??
+              'INSUFFICIENT_DEPOSITED_BALANCE_AT_CHECKPOINT',
             evaluatedAt: now,
           },
         })
@@ -950,7 +950,8 @@ export async function sweepVestingTranchesAndClawbacks(
             seq: tranche.seq,
             amount: String(tranche.amount),
             reason:
-              checkpoint.reason ?? 'INSUFFICIENT_DEPOSITED_BALANCE_AT_CHECKPOINT',
+              checkpoint.reason ??
+              'INSUFFICIENT_DEPOSITED_BALANCE_AT_CHECKPOINT',
             evaluatedAt: now.toISOString(),
           }
         )

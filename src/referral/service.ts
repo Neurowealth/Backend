@@ -1205,10 +1205,7 @@ export async function referralLeaderboard(
  * and status per conversion, upcoming `vestsAt`, and clawback offsets — without
  * ever exposing the referred user's balance.
  */
-export async function getReferralMeSummary(
-  userId: string,
-  database: Db = db
-) {
+export async function getReferralMeSummary(userId: string, database: Db = db) {
   const [referralCode, clawbacks] = await Promise.all([
     (database as any).referralCode.findUnique({
       where: { ownerUserId: userId },
@@ -1275,7 +1272,7 @@ export async function getReferralMeSummary(
         resolvedAt:
           cb.resolvedAt instanceof Date
             ? cb.resolvedAt.toISOString()
-            : cb.resolvedAt ?? null,
+            : (cb.resolvedAt ?? null),
       })),
     },
     conversions: conversions.map((c) => {
@@ -1297,7 +1294,7 @@ export async function getReferralMeSummary(
         activatedAt:
           c.activatedAt instanceof Date
             ? c.activatedAt.toISOString()
-            : c.activatedAt ?? null,
+            : (c.activatedAt ?? null),
         createdAt:
           c.createdAt instanceof Date
             ? c.createdAt.toISOString()
@@ -1318,7 +1315,7 @@ export async function getReferralMeSummary(
           evaluatedAt:
             t.evaluatedAt instanceof Date
               ? t.evaluatedAt.toISOString()
-              : t.evaluatedAt ?? null,
+              : (t.evaluatedAt ?? null),
         })),
         clawbacks: (Array.isArray(c.clawbacks) ? c.clawbacks : []).map(
           (cb: any) => ({
