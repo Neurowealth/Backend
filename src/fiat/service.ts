@@ -414,6 +414,8 @@ async function resolveOrderProvider(
   providerQuoteId: string | null
   rateLockExpiresAt: Date | null
   lockId: string | null
+  /** Timestamp written by the atomic claim; used to release it on failure. */
+  lockClaimAt: Date | null
 }> {
   if (input.quoteId) {
     const lock = await (database as any).fiatQuoteLock.findUnique({
@@ -451,6 +453,29 @@ async function resolveOrderProvider(
       )
     }
 
+    // Claim the lock atomically before touching the provider. The plain read
+    // above validates parameters, but only this conditional write enforces
+    // single use: concurrent callers with the same quoteId and different
+    // Idempotency-Keys all pass validation, yet only one can claim it (#786).
+    const claimAt = new Date()
+    const claim = await (database as any).fiatQuoteLock.updateMany({
+      where: {
+        id: lock.id,
+        userId: input.userId,
+        consumedAt: null,
+        expiresAt: { gt: claimAt },
+      },
+      data: { consumedAt: claimAt },
+    })
+
+    if (claim.count === 0) {
+      throw new FiatOrderError(
+        'quote_already_used',
+        409,
+        'This quote has already been used to create an order'
+      )
+    }
+
     return {
       providerName: lock.provider,
       quoteRate: lock.rate != null ? Number(lock.rate) : null,
@@ -459,6 +484,7 @@ async function resolveOrderProvider(
       providerQuoteId: lock.providerQuoteId,
       rateLockExpiresAt: lock.expiresAt,
       lockId: lock.id,
+      lockClaimAt: claimAt,
     }
   }
 
@@ -485,6 +511,7 @@ async function resolveOrderProvider(
       providerQuoteId: quote.providerQuoteId ?? null,
       rateLockExpiresAt: new Date(Date.now() + QUOTE_LOCK_TTL_MS),
       lockId: null,
+      lockClaimAt: null,
     }
   } catch (err) {
     recordProviderFailure(provider.name)
@@ -591,6 +618,24 @@ export async function createFiatOrder(
   } catch (err) {
     recordProviderFailure(provider.name)
     recordFiatOrder(provider.name, 'CREATE_FAILED')
+    if (resolved.lockId && resolved.lockClaimAt) {
+      // Release the atomic claim only while it is still ours (#786). Matching
+      // the exact claim timestamp means a claim we no longer own is untouched.
+      await (database as any).fiatQuoteLock
+        .updateMany({
+          where: { id: resolved.lockId, consumedAt: resolved.lockClaimAt },
+          data: { consumedAt: null },
+        })
+        .catch((releaseErr: unknown) => {
+          logger.error('[Fiat] Failed to release quote lock claim', {
+            quoteId: resolved.lockId,
+            error:
+              releaseErr instanceof Error
+                ? releaseErr.message
+                : String(releaseErr),
+          })
+        })
+    }
     throw err
   }
 
@@ -616,23 +661,6 @@ export async function createFiatOrder(
       rateLockExpiresAt: resolved.rateLockExpiresAt,
     },
   })
-
-  if (resolved.lockId) {
-    await (database as any).fiatQuoteLock
-      .update({
-        where: { id: resolved.lockId },
-        data: { consumedAt: new Date() },
-      })
-      .catch((err: unknown) => {
-        // Non-fatal: the order is already created. Worst case the same quote
-        // could be raced onto a second order — logged for investigation.
-        logger.error('[Fiat] Failed to mark quote lock consumed', {
-          quoteId: resolved.lockId,
-          orderId: order.id,
-          error: err instanceof Error ? err.message : String(err),
-        })
-      })
-  }
 
   recordFiatOrder(provider.name, initialStatus)
 
@@ -881,47 +909,77 @@ export async function processProviderWebhook(
     data.failureReason = parsed.reason ?? 'Provider refunded the payment'
   }
 
-  const updated = await (database as any).fiatOrder.update({
-    where: { id: order.id },
+  // Forward-only (#785): a late PENDING or KYC_REQUIRED delivery must not
+  // regress an order that a confirmed-payment webhook already advanced.
+  if (!isForwardStatus(order.status, nextStatus)) {
+    return {
+      handled: true,
+      reason: 'out-of-order status',
+      orderId: order.id,
+      status: order.status,
+    }
+  }
+
+  // Conditional on the status we observed, so a concurrent writer advancing
+  // the order between the read and this write wins and we act on neither the
+  // stale snapshot nor an event built from it.
+  const claim = await (database as any).fiatOrder.updateMany({
+    where: { id: order.id, status: order.status },
     data,
   })
 
+  if (claim.count === 0) {
+    logger.info('[Fiat] Webhook lost a concurrent status write', {
+      orderId: order.id,
+      observedStatus: order.status,
+      attemptedStatus: nextStatus,
+    })
+    return {
+      handled: true,
+      reason: 'status changed concurrently',
+      orderId: order.id,
+      status: order.status,
+    }
+  }
+
   // Emit outbound webhook for terminal failure/refund so subscribers react.
-  if (updated.status === 'FAILED' || updated.status === 'REFUNDED') {
-    recordFiatOrder(providerName, updated.status)
+  // The payload uses only the fields we wrote plus the observed order; there
+  // is no updated row to read back from updateMany.
+  if (nextStatus === 'FAILED' || nextStatus === 'REFUNDED') {
+    recordFiatOrder(providerName, nextStatus)
     recordFiatLimitHeadroomRelease?.(
-      updated.status as 'FAILED' | 'REFUNDED',
-      updated.direction ?? 'ON_RAMP'
+      nextStatus as 'FAILED' | 'REFUNDED',
+      order.direction ?? 'ON_RAMP'
     )
     publishUserEvent(
-      updated.userId,
+      order.userId,
       EVENT_TYPE_TOPIC['fiat.order.failed'],
       'fiat.order.failed',
       {
-        orderId: updated.id,
+        orderId: order.id,
         provider: providerName,
-        direction: updated.direction,
-        status: updated.status,
-        failureReason: updated.failureReason,
-        userId: updated.userId,
+        direction: order.direction,
+        status: nextStatus,
+        failureReason: data.failureReason ?? order.failureReason,
+        userId: order.userId,
       }
     ).catch(() => {})
   }
 
   // If the provider handed us a tx hash, try an immediate reconciliation pass
   // for this single order so settlement isn't delayed to the next sweep.
-  if (updated.providerTxHash && updated.status === 'PROCESSING') {
-    await reconcileSingleOrder(updated.id, updated.providerTxHash, database).catch(
+  if (parsed.txHash && nextStatus === 'PROCESSING') {
+    await reconcileSingleOrder(order.id, parsed.txHash, database).catch(
       (err) => {
         logger.error('[Fiat] Inline reconciliation failed', {
-          orderId: updated.id,
+          orderId: order.id,
           error: err instanceof Error ? err.message : String(err),
         })
       }
     )
   }
 
-  return { handled: true, orderId: updated.id, status: updated.status }
+  return { handled: true, orderId: order.id, status: nextStatus }
 }
 
 /** Check whether this provider has already delivered the exact signed body. */
@@ -1326,19 +1384,26 @@ export async function ageOutStaleFiatOrders(
     take: 500,
   })
 
-  let failed = 0
-  for (const { id } of stale) {
-    await (database as any).fiatOrder.update({
-      where: { id },
-      data: {
-        status: 'FAILED',
-        failureReason: 'Order expired before payment was completed',
-        updatedAt: new Date(),
-      },
-    })
-    failed++
+  if (stale.length === 0) {
+    return { failed: 0 }
   }
 
+  // Conditional on the status selected above: if a webhook advanced an order
+  // to PROCESSING after the scan, it is excluded from both the write and the
+  // count. One batched write replaces up to 500 individual updates (#785).
+  const claimed = await (database as any).fiatOrder.updateMany({
+    where: {
+      id: { in: stale.map((order: { id: string }) => order.id) },
+      status: 'PENDING',
+    },
+    data: {
+      status: 'FAILED',
+      failureReason: 'Order expired before payment was completed',
+      updatedAt: new Date(),
+    },
+  })
+
+  const failed = claimed.count ?? 0
   if (failed > 0) {
     logger.info('[Fiat] Aged out stale PENDING orders', { failed })
   }
@@ -1365,8 +1430,32 @@ function mapToOrderStatus(status: NormalizedWebhookStatus): string {
   }
 }
 
+/**
+ * Forward-only ordering for provider-driven status changes (#785). Webhook
+ * deliveries are not ordered, so a late PENDING/KYC_REQUIRED body must never
+ * pull a PROCESSING order back into the reconcile/age-out scan.
+ */
+const STATUS_RANK: Readonly<Record<string, number>> = Object.freeze({
+  PENDING: 0,
+  PROCESSING: 1,
+  SETTLED: 2,
+  FAILED: 2,
+  REFUNDED: 2,
+})
+
+const TERMINAL_RANK = STATUS_RANK.SETTLED
+
+function rankOf(status: string): number {
+  return STATUS_RANK[status] ?? -1
+}
+
 function isTerminal(status: string): boolean {
-  return status === 'SETTLED' || status === 'FAILED' || status === 'REFUNDED'
+  return rankOf(status) >= TERMINAL_RANK
+}
+
+/** Equal rank is allowed so late KYC links and amounts still enrich an order. */
+function isForwardStatus(current: string, next: string): boolean {
+  return rankOf(next) >= rankOf(current)
 }
 
 function isStaleNonTerminalTransition(

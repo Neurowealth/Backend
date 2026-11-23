@@ -78,6 +78,28 @@ describe('on-chain amount boundary', () => {
     )
   })
 
+  // #787 - IEEE-754 multiplication wrongly rejected values such as
+  // 19.99 * 1e7 === 199899999.99999997.
+  it.each([19.99, 1.0000036, 0.1234567])(
+    'accepts 7-decimal amount %s',
+    (amount) => {
+      expect(onChainAmountSchema.safeParse(amount).success).toBe(true)
+    }
+  )
+
+  it.each([0.12345678, 1.00000001])(
+    'rejects amount %s with more than 7 decimal places',
+    (amount) => {
+      const parsed = onChainAmountSchema.safeParse(amount)
+      expect(parsed.success).toBe(false)
+      if (!parsed.success) {
+        expect(parsed.error.issues[0].message).toBe(
+          'amount supports at most 7 decimal places'
+        )
+      }
+    }
+  )
+
   it.each([0, -1, Infinity, NaN, MAX_CONTRACT_AMOUNT + 1])(
     'rejects unsafe on-chain amount %s',
     (amount) => {
