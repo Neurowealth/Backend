@@ -65,6 +65,8 @@ export async function runMessageDeliverySweep(): Promise<void> {
         error: errorMessage,
         correlationId,
       })
+      // Rethrow so resilientScheduler retries and records the run as failed (#772)
+      throw error
     }
   })
 }

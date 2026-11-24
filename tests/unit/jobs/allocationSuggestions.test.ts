@@ -136,10 +136,10 @@ describe('computeAllocationSuggestions', () => {
     expect(recordJobFailure).not.toHaveBeenCalled()
   })
 
-  it('never rethrows — a job-level failure is logged as failed', async () => {
+  it('rethrows a job-level failure after logging it as failed (#772)', async () => {
     mockDb.position.findMany.mockRejectedValue(new Error('db is down'))
 
-    await expect(computeAllocationSuggestions(NOW)).resolves.toBeUndefined()
+    await expect(computeAllocationSuggestions(NOW)).rejects.toThrow('db is down')
 
     expect(recordJobFailure).toHaveBeenCalledWith(
       'allocation_suggestions',

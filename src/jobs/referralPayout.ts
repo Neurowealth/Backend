@@ -52,6 +52,8 @@ export async function runReferralPayout(): Promise<void> {
 
       recordBackgroundJob(jobName, 'failed', duration)
       recordJobFailure(jobName, durationMs, error)
+      // Rethrow so resilientScheduler retries and records the run as failed (#772)
+      throw error
     }
   })
 }

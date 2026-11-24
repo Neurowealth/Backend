@@ -581,6 +581,10 @@ export async function runAllRetentionJobs(): Promise<void> {
           `Retention sweep incomplete (${failures.length} job(s)): ${errorMessage}`
         )
       )
+      // Rethrow so resilientScheduler retries and records the run as failed (#772)
+      throw new Error(
+        `Retention sweep incomplete (${failures.length} job(s)): ${errorMessage}`
+      )
     }
 
     logBackgroundJob(jobName, 'success', duration, correlationId)
