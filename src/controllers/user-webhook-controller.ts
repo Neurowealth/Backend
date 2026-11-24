@@ -378,6 +378,7 @@ export async function replayEvents(req: Request, res: Response): Promise<void> {
             endpointId: id,
             userEventSeq: Number(evt.seq),
             eventType: evt.type,
+            payload: evt.payload as any,
             status: 'PENDING',
             attempts: 0,
             nextAttemptAt: new Date(),

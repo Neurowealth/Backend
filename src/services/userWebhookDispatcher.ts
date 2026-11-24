@@ -124,6 +124,7 @@ export async function enqueueUserWebhooks(
             endpointId: endpoint.id,
             userEventSeq: seq,
             eventType: type,
+            payload: redactedPayload,
             status: 'PENDING',
             attempts: 0,
             nextAttemptAt: new Date(),
@@ -150,4 +151,254 @@ export async function enqueueUserWebhooks(
       error: error instanceof Error ? error.message : String(error),
     })
   }
+}
+
+export interface ProcessUserWebhooksResult {
+  processed: number
+  delivered: number
+  retried: number
+  failed: number
+}
+
+async function handleDeliveryFailure(
+  delivery: { id: string; attempts: number },
+  endpoint: { id: string; consecutiveFailures: number },
+  error: string,
+  responseCode?: number
+): Promise<boolean> {
+  const nextAttempts = delivery.attempts + 1
+
+  if (nextAttempts >= USER_WEBHOOK_MAX_ATTEMPTS) {
+    // Terminal failure for this delivery
+    await db.userWebhookDelivery.update({
+      where: { id: delivery.id },
+      data: {
+        status: 'FAILED',
+        attempts: nextAttempts,
+        responseCode: responseCode || null,
+        error,
+      },
+    })
+
+    // Increment consecutive failures on endpoint and check auto-disable
+    const nextFailures = endpoint.consecutiveFailures + 1
+    const shouldDisable = nextFailures >= USER_WEBHOOK_MAX_CONSECUTIVE_FAILURES
+
+    await db.userWebhookEndpoint.update({
+      where: { id: endpoint.id },
+      data: {
+        consecutiveFailures: nextFailures,
+        ...(shouldDisable
+          ? {
+              status: 'PAUSED',
+              isActive: false,
+            }
+          : {}),
+      },
+    })
+
+    if (shouldDisable) {
+      logger.warn(
+        `[UserWebhookDispatcher] Endpoint ${endpoint.id} auto-disabled after ${nextFailures} consecutive failures`
+      )
+    }
+
+    return true
+  }
+
+  // Backoff retry: 1s, 2s, 4s, 8s, 16s...
+  const delayMs = Math.min(1000 * Math.pow(2, nextAttempts - 1), 60000)
+  const nextAttemptAt = new Date(Date.now() + delayMs)
+
+  await db.userWebhookDelivery.update({
+    where: { id: delivery.id },
+    data: {
+      status: 'PENDING',
+      attempts: nextAttempts,
+      nextAttemptAt,
+      responseCode: responseCode || null,
+      error,
+    },
+  })
+
+  return false
+}
+
+/**
+ * Claims and processes pending user-scoped webhook deliveries.
+ * Applies compare-and-set concurrency control, HMAC signing, timeout,
+ * exponential backoff, and endpoint auto-disable.
+ */
+export async function processUserWebhookDeliveries(
+  batchSize: number = 50,
+  now: Date = new Date()
+): Promise<ProcessUserWebhooksResult> {
+  const result: ProcessUserWebhooksResult = {
+    processed: 0,
+    delivered: 0,
+    retried: 0,
+    failed: 0,
+  }
+
+  // 1. Fetch pending rows ready for delivery
+  const pendingDeliveries = await db.userWebhookDelivery.findMany({
+    where: {
+      status: 'PENDING',
+      OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
+    },
+    include: {
+      endpoint: true,
+    },
+    take: batchSize,
+    orderBy: { createdAt: 'asc' },
+  })
+
+  if (!pendingDeliveries || pendingDeliveries.length === 0) {
+    return result
+  }
+
+  for (const delivery of pendingDeliveries) {
+    // 2. Compare-and-set claim: PENDING -> PROCESSING
+    const claim = await db.userWebhookDelivery.updateMany({
+      where: {
+        id: delivery.id,
+        status: 'PENDING',
+      },
+      data: {
+        status: 'PROCESSING',
+      },
+    })
+
+    if (claim.count === 0) {
+      // Already claimed by a concurrent worker
+      continue
+    }
+
+    result.processed++
+
+    const endpoint = delivery.endpoint
+    if (!endpoint || endpoint.status !== 'ACTIVE' || !endpoint.isActive) {
+      await db.userWebhookDelivery.update({
+        where: { id: delivery.id },
+        data: {
+          status: 'FAILED',
+          error: 'Endpoint is not active or paused',
+        },
+      })
+      result.failed++
+      continue
+    }
+
+    // 3. Re-check URL against SSRF rules at send time
+    try {
+      validateSsrfUrl(endpoint.url)
+    } catch (ssrfErr: any) {
+      const errorMsg =
+        ssrfErr instanceof Error ? ssrfErr.message : String(ssrfErr)
+      await handleDeliveryFailure(delivery, endpoint, errorMsg, 0)
+      result.failed++
+      continue
+    }
+
+    // 4. Prepare payload
+    let payloadObj = delivery.payload as Record<string, any> | null
+    if (!payloadObj && delivery.userEventSeq) {
+      const userEvent = await db.userEvent.findFirst({
+        where: {
+          userId: endpoint.userId,
+          seq: delivery.userEventSeq,
+        },
+      })
+      if (userEvent?.payload) {
+        payloadObj = userEvent.payload as Record<string, any>
+      }
+    }
+
+    const payloadString = JSON.stringify(
+      payloadObj ?? {
+        id: delivery.id,
+        eventType: delivery.eventType,
+        seq: delivery.userEventSeq ? Number(delivery.userEventSeq) : undefined,
+      }
+    )
+
+    // 5. Sign payload with signUserWebhookPayload
+    const timestamp = Math.floor(Date.now() / 1000)
+    const secret = endpoint.secret || ''
+    const signature = signUserWebhookPayload(payloadString, secret, timestamp)
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-User-Webhook-Timestamp': String(timestamp),
+      'X-User-Webhook-Signature': signature,
+      'X-Neurowealth-Signature': signature,
+      'User-Agent': 'Neurowealth-UserWebhook/1.0',
+    }
+
+    // 6. Send with timeout
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), USER_WEBHOOK_TIMEOUT_MS)
+
+    try {
+      const res = await fetch(endpoint.url, {
+        method: 'POST',
+        headers,
+        body: payloadString,
+        signal: controller.signal,
+      })
+      clearTimeout(timer)
+
+      if (res.ok) {
+        await db.userWebhookDelivery.update({
+          where: { id: delivery.id },
+          data: {
+            status: 'DELIVERED',
+            responseCode: res.status,
+            attempts: delivery.attempts + 1,
+            error: null,
+          },
+        })
+
+        await db.userWebhookEndpoint.update({
+          where: { id: endpoint.id },
+          data: {
+            consecutiveFailures: 0,
+            lastDeliveryAt: new Date(),
+          },
+        })
+
+        result.delivered++
+      } else {
+        const errorMsg = `HTTP ${res.status}: ${res.statusText || 'Delivery failed'}`
+        const isTerminal = await handleDeliveryFailure(
+          delivery,
+          endpoint,
+          errorMsg,
+          res.status
+        )
+        if (isTerminal) {
+          result.failed++
+        } else {
+          result.retried++
+        }
+      }
+    } catch (sendErr: any) {
+      clearTimeout(timer)
+      const errorMsg =
+        sendErr instanceof Error ? sendErr.message : String(sendErr)
+      const isTerminal = await handleDeliveryFailure(
+        delivery,
+        endpoint,
+        errorMsg,
+        0
+      )
+      if (isTerminal) {
+        result.failed++
+      } else {
+        result.retried++
+      }
+    }
+  }
+
+  return result
 }
