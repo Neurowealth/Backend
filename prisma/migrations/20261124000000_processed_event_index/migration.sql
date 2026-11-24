@@ -12,3 +12,13 @@ DROP INDEX "processed_events_contractId_txHash_eventType_ledger_key";
 
 CREATE UNIQUE INDEX "processed_events_contractId_txHash_eventType_ledger_eventIndex_key"
   ON "processed_events"("contractId", "txHash", "eventType", "ledger", "eventIndex");
+
+-- A pre-migration row doesn't record which real eventIndex was actually
+-- processed (the old key ignored it), so backfilling it to 0 is a label,
+-- not a fact. If any ledger at or below this cutover is ever replayed
+-- (manual backfill, DLQ retry), handleEvent must keep ignoring eventIndex
+-- for it and treat any 4-tuple match as a duplicate — otherwise an event
+-- whose real index wasn't 0 would be re-processed as if new, double-
+-- crediting/debiting a financial event that already happened.
+ALTER TABLE "event_cursors" ADD COLUMN "legacyIdempotencyCutoverLedger" INTEGER;
+UPDATE "event_cursors" SET "legacyIdempotencyCutoverLedger" = "lastProcessedLedger";

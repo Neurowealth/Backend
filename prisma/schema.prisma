@@ -923,6 +923,15 @@ model EventCursor {
   lastProcessedLedger Int
   lastProcessedAt     DateTime @default(now())
   updatedAt           DateTime @updatedAt
+  // Ledgers at or below this were already live when the eventIndex
+  // idempotency key (#821) shipped, backfilled from lastProcessedLedger at
+  // migration time. Rows already recorded under the old 4-tuple key don't
+  // know which real eventIndex was actually processed, so handleEvent
+  // treats any match on that 4-tuple as a duplicate for these ledgers
+  // instead of risking double-processing a financial event on replay/
+  // backfill. Null (fresh deployments with no prior history) means every
+  // ledger uses the strict per-index key.
+  legacyIdempotencyCutoverLedger Int?
 
   @@map("event_cursors")
 }
