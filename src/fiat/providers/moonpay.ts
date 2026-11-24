@@ -108,14 +108,16 @@ export class MoonPayProvider implements FiatRampProvider {
   async getQuote(req: QuoteRequest): Promise<QuoteResult> {
     const isBuy = req.direction === 'ON_RAMP'
     const currencyCode = req.assetSymbol.toLowerCase()
-    const baseCurrencyCode = req.fiatCurrency.toLowerCase()
-    const amountParam = isBuy ? 'baseCurrencyAmount' : 'quoteCurrencyAmount'
+    const amountParams = isBuy
+      ? `baseCurrencyCode=${encodeURIComponent(req.fiatCurrency.toLowerCase())}` +
+        `&baseCurrencyAmount=${encodeURIComponent(String(req.fiatAmount))}`
+      : `quoteCurrencyCode=${encodeURIComponent(req.fiatCurrency.toLowerCase())}` +
+        `&baseCurrencyAmount=${encodeURIComponent(String(req.fiatAmount))}`
 
     const url =
       `${this.baseUrl}/v3/currencies/${encodeURIComponent(currencyCode)}/${isBuy ? 'buy_quote' : 'sell_quote'}` +
       `?apiKey=${encodeURIComponent(this.apiKey)}` +
-      `&baseCurrencyCode=${encodeURIComponent(baseCurrencyCode)}` +
-      `&${amountParam}=${encodeURIComponent(String(req.fiatAmount))}`
+      `&${amountParams}`
 
     const data = await this.http.execute(async () => {
       const res = await fetch(url, {
@@ -129,7 +131,9 @@ export class MoonPayProvider implements FiatRampProvider {
     }, 'moonpay.getQuote')
 
     const cryptoAmount = Number(
-      data.quoteCurrencyAmount ?? data.cryptoAmount ?? 0
+      (isBuy ? data.quoteCurrencyAmount : data.baseCurrencyAmount) ??
+        data.cryptoAmount ??
+        0
     )
     const feeAmount = Number(data.feeAmount ?? 0) || undefined
     const networkFeeAmount = Number(data.networkFeeAmount ?? 0) || undefined
@@ -172,9 +176,16 @@ export class MoonPayProvider implements FiatRampProvider {
     const body = JSON.stringify({
       apiKey: this.apiKey,
       flow: isBuy ? 'buy' : 'sell',
-      baseCurrencyCode: req.fiatCurrency.toLowerCase(),
       currencyCode: req.assetSymbol.toLowerCase(),
-      baseCurrencyAmount: req.fiatAmount,
+      ...(isBuy
+        ? {
+            baseCurrencyCode: req.fiatCurrency.toLowerCase(),
+            baseCurrencyAmount: req.fiatAmount,
+          }
+        : {
+            quoteCurrencyCode: req.fiatCurrency.toLowerCase(),
+            baseCurrencyAmount: req.fiatAmount,
+          }),
       walletAddress: req.walletAddress,
       externalCustomerId: req.userId,
     })
@@ -207,7 +218,10 @@ export class MoonPayProvider implements FiatRampProvider {
         undefined,
       kycUrl: (data.kycRedirectUrl as string) ?? undefined,
       status: normalizeStatus(data.status as string | undefined),
-      cryptoAmount: Number(data.quoteCurrencyAmount ?? 0) || undefined,
+      cryptoAmount:
+        Number(
+          (isBuy ? data.quoteCurrencyAmount : data.baseCurrencyAmount) ?? 0
+        ) || undefined,
     }
   }
 
