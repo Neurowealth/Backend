@@ -1,10 +1,11 @@
 import { EventEmitter } from 'node:events'
 import { handleSseConnection } from '../../../src/sse/handler'
 import {
-  publishToHub,
+  deliverToLocalSubscribers,
   countLocalSubscribers,
   resetHub,
 } from '../../../src/events/hub'
+import type { UserEventEnvelope } from '../../../src/events/types'
 import db from '../../../src/db'
 
 jest.mock('../../../src/db', () => ({
@@ -30,6 +31,23 @@ jest.mock('../../../src/middleware/streamAuth', () => ({
 }))
 
 const mockDb = db as any
+
+function envelope(partial: {
+  seq: number
+  type: string
+  payload: Record<string, unknown>
+}): UserEventEnvelope {
+  return {
+    streamUserId: 'user-1',
+    authorizedViewers: ['user-1'],
+    seq: partial.seq,
+    topic: 'transfers' as UserEventEnvelope['topic'],
+    type: partial.type as UserEventEnvelope['type'],
+    payload: partial.payload,
+    emittedAt: '2026-01-01T00:00:00.000Z',
+    originId: 'test',
+  }
+}
 
 describe('SSE Handler lifecycle and gap-free replay', () => {
   beforeEach(() => {
@@ -116,34 +134,39 @@ describe('SSE Handler lifecycle and gap-free replay', () => {
       resolveReplay = resolve
     })
 
+    let replayEntered: () => void
+    const replayEnteredPromise = new Promise<void>((resolve) => {
+      replayEntered = resolve
+    })
+
     mockDb.userEvent.findMany.mockImplementation(async () => {
+      // Subscription is registered before replay starts.
+      expect(countLocalSubscribers()).toBe(1)
+      replayEntered!()
+
       // Mid-replay: hub receives an envelope that overlaps with replay (seq 11)
       // and a new live envelope (seq 12)
-      publishToHub({
-        streamUserId: 'user-1',
-        viewerUserId: 'user-1',
-        seq: 11,
-        topic: 'transfers',
-        type: 'transfer.created',
-        payload: { id: 't-1' },
-      })
+      deliverToLocalSubscribers(
+        envelope({
+          seq: 11,
+          type: 'transfer.created',
+          payload: { id: 't-1' },
+        })
+      )
 
-      publishToHub({
-        streamUserId: 'user-1',
-        viewerUserId: 'user-1',
-        seq: 12,
-        topic: 'transfers',
-        type: 'transfer.settled',
-        payload: { id: 't-2' },
-      })
+      deliverToLocalSubscribers(
+        envelope({
+          seq: 12,
+          type: 'transfer.settled',
+          payload: { id: 't-2' },
+        })
+      )
 
       return replayDeferred
     })
 
     const handlerPromise = handleSseConnection(req, res)
-
-    // Hub subscription was established before replay
-    expect(countLocalSubscribers()).toBe(1)
+    await replayEnteredPromise
 
     // Replay returns retained event seq 11
     resolveReplay!([
