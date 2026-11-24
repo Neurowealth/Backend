@@ -17,6 +17,11 @@ export const eventIdParamSchema = z.object({
   eventId: z.string().uuid(),
 })
 
+// #758 — claim ids are uuids (CoverageClaim.id @default(uuid())).
+export const claimIdParamSchema = z.object({
+  claimId: z.string().uuid(),
+})
+
 export const recordContributionSchema = z.object({
   source: z.string().min(1).max(100),
   assetSymbol: z.string().min(1).max(20),
