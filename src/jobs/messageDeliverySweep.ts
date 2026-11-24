@@ -65,6 +65,7 @@ export async function runMessageDeliverySweep(): Promise<void> {
         error: errorMessage,
         correlationId,
       })
+      throw error
     }
   })
 }
