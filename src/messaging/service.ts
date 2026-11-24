@@ -504,6 +504,213 @@ export class MessageDeliveryService {
   }
 
   /**
+   * Reclaim stale SENDING deliveries after crashes/timeouts.
+   * Rows older than the sending lease are moved to PENDING (with an extra attempt)
+   * or DEAD_LETTER when attempts are exhausted.
+   */
+  public async reclaimStaleSendingMessages(): Promise<{
+    reclaimed: number
+    deadLettered: number
+  }> {
+    const now = new Date()
+    const cutoff = new Date(now.getTime() - config.messaging.sendingLeaseMs)
+    let reclaimed = 0
+    let deadLettered = 0
+
+    if (shouldQueryDb()) {
+      try {
+        const stale = await (db as any).messageDelivery.findMany({
+          where: {
+            status: 'SENDING',
+            updatedAt: { lt: cutoff },
+          },
+          select: {
+            id: true,
+            attempts: true,
+            maxAttempts: true,
+            channel: true,
+            category: true,
+            recipient: true,
+          },
+        })
+
+        const toPending: string[] = []
+        const toDeadLetter: Array<{
+          id: string
+          channel: MessageChannel
+          category: string
+          recipient: string
+          attempts: number
+        }> = []
+
+        for (const row of stale) {
+          const nextAttempts = row.attempts + 1
+          if (nextAttempts >= row.maxAttempts) {
+            toDeadLetter.push({
+              id: row.id,
+              channel: row.channel,
+              category: row.category,
+              recipient: row.recipient,
+              attempts: nextAttempts,
+            })
+          } else {
+            toPending.push(row.id)
+          }
+        }
+
+        if (toPending.length > 0) {
+          const updated = await (db as any).messageDelivery.updateMany({
+            where: { id: { in: toPending }, status: 'SENDING' },
+            data: {
+              status: 'PENDING',
+              attempts: { increment: 1 },
+              nextAttemptAt: now,
+              lastError: 'Reclaimed stale SENDING lease',
+              updatedAt: now,
+            },
+          })
+          reclaimed = updated?.count ?? 0
+        }
+
+        if (toDeadLetter.length > 0) {
+          const results = await Promise.all(
+            toDeadLetter.map(async (row) => {
+              const updated = await (db as any).messageDelivery.updateMany({
+                where: { id: row.id, status: 'SENDING' },
+                data: {
+                  status: 'DEAD_LETTER',
+                  attempts: { increment: 1 },
+                  nextAttemptAt: null,
+                  lastError:
+                    'Reclaimed stale SENDING lease; attempts exhausted',
+                  updatedAt: now,
+                },
+              })
+
+              if ((updated?.count ?? 0) < 1) {
+                return false
+              }
+
+              recordMessageDeadLetter(row.channel)
+              recordMessageDelivery(row.channel, 'DEAD_LETTER', row.category)
+
+              logger.error(
+                '[Messaging] Stale SENDING message reclaimed to DEAD_LETTER',
+                {
+                  id: row.id,
+                  channel: row.channel,
+                  recipient: sanitizeRecipient(row.recipient),
+                  attempts: row.attempts,
+                }
+              )
+
+              await alertingService
+                .emit(
+                  {
+                    title: `Message Delivery Dead-Lettered (${row.channel})`,
+                    description: `Message ${row.id} to ${sanitizeRecipient(
+                      row.recipient
+                    )} was reclaimed after a stale SENDING lease with ${row.attempts} attempts exhausted.`,
+                    severity: 'warning',
+                    component: 'messaging',
+                    metadata: {
+                      messageId: row.id,
+                      channel: row.channel,
+                      category: row.category,
+                      attempts: row.attempts,
+                      recipient: sanitizeRecipient(row.recipient),
+                      reason: 'stale_sending_lease',
+                    },
+                  },
+                  `dead_letter:${row.id}`
+                )
+                .catch(() => {})
+
+              return true
+            })
+          )
+
+          deadLettered = results.filter(Boolean).length
+        }
+      } catch (error) {
+        logger.warn(
+          '[Messaging] Could not reclaim stale SENDING messages from DB, trying memory store',
+          { error: error instanceof Error ? error.message : String(error) }
+        )
+      }
+    }
+
+    // In-memory fallback / test store reclaim
+    if (reclaimed === 0 && deadLettered === 0) {
+      for (const msg of inMemoryStore.values()) {
+        if (msg.status !== 'SENDING') continue
+        const updatedAt = msg.updatedAt?.getTime?.() ?? msg.createdAt.getTime()
+        if (updatedAt >= cutoff.getTime()) continue
+
+        const nextAttempts = msg.attempts + 1
+        msg.attempts = nextAttempts
+        msg.updatedAt = now
+        if (nextAttempts >= msg.maxAttempts) {
+          msg.status = 'DEAD_LETTER'
+          msg.nextAttemptAt = null
+          msg.lastError = 'Reclaimed stale SENDING lease; attempts exhausted'
+          deadLettered += 1
+
+          recordMessageDeadLetter(msg.channel)
+          recordMessageDelivery(msg.channel, 'DEAD_LETTER', msg.category)
+
+          logger.error(
+            '[Messaging] Stale SENDING message reclaimed to DEAD_LETTER',
+            {
+              id: msg.id,
+              channel: msg.channel,
+              recipient: sanitizeRecipient(msg.recipient),
+              attempts: msg.attempts,
+            }
+          )
+
+          void alertingService
+            .emit(
+              {
+                title: `Message Delivery Dead-Lettered (${msg.channel})`,
+                description: `Message ${msg.id} to ${sanitizeRecipient(
+                  msg.recipient
+                )} was reclaimed after a stale SENDING lease with ${msg.attempts} attempts exhausted.`,
+                severity: 'warning',
+                component: 'messaging',
+                metadata: {
+                  messageId: msg.id,
+                  channel: msg.channel,
+                  category: msg.category,
+                  attempts: msg.attempts,
+                  recipient: sanitizeRecipient(msg.recipient),
+                  reason: 'stale_sending_lease',
+                },
+              },
+              `dead_letter:${msg.id}`
+            )
+            .catch(() => {})
+        } else {
+          msg.status = 'PENDING'
+          msg.nextAttemptAt = now
+          msg.lastError = 'Reclaimed stale SENDING lease'
+          reclaimed += 1
+        }
+      }
+    }
+
+    if (reclaimed > 0 || deadLettered > 0) {
+      logger.warn('[Messaging] Reclaimed stale SENDING deliveries', {
+        reclaimed,
+        deadLettered,
+        leaseMs: config.messaging.sendingLeaseMs,
+      })
+    }
+
+    return { reclaimed, deadLettered }
+  }
+
+  /**
    * Process pending/retrying messages in the queue whose nextAttemptAt <= now.
    */
   public async processPendingQueue(batchSize: number = 50): Promise<{
@@ -512,6 +719,8 @@ export class MessageDeliveryService {
     retried: number
     deadLettered: number
   }> {
+    await this.reclaimStaleSendingMessages().catch(() => {})
+
     const now = new Date()
     let candidates: MessageDeliveryRecord[] = []
 

@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express'
 import { handleTelegramMessage } from '../telegram/handler'
 import { messageDeliveryService } from '../messaging'
 import { logger } from '../utils/logger'
+import { safeEqual } from '../utils/safeCompare'
 
 const router = express.Router()
 
@@ -9,7 +10,7 @@ function verifyTelegramRequest(req: Request): boolean {
   const header = req.header('x-telegram-bot-api-secret-token')
   const botToken = process.env.TELEGRAM_BOT_TOKEN || ''
   const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET || ''
-  return Boolean(botToken && webhookSecret && header === webhookSecret)
+  return Boolean(botToken && webhookSecret && safeEqual(header, webhookSecret))
 }
 
 router.get('/health', (_req: Request, res: Response) => {

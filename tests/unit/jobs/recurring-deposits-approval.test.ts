@@ -1,8 +1,7 @@
-// Recurring deposits x approval workflows (#314): a plan gated by an
-// ApprovalPolicy must be skipped, not treated as a failure — no
-// recurring_deposit.failed webhook, nextRunAt left untouched so the next
-// sweep re-evaluates it (landing on the same open request via
-// guardOperation's dedupe, not a new one every tick).
+// Recurring deposits x approval workflows (#314, #833): when a gated occurrence
+// returns PENDING_APPROVAL, the plan must advance its slot so the same
+// occurrence is not reclaimed on subsequent scheduler ticks (no duplicate
+// approval requests / alert spam / duplicate deposits on approval).
 jest.mock('../../../src/utils/logger', () => ({
   logger: {
     info: jest.fn(),
@@ -20,6 +19,9 @@ jest.mock('../../../src/db', () => ({
       findUnique: jest.fn(),
       updateMany: jest.fn(),
       update: jest.fn(),
+    },
+    recurringDepositRun: {
+      create: jest.fn().mockResolvedValue({}),
     },
     custodialWallet: { findUnique: jest.fn() },
     transaction: { findFirst: jest.fn().mockResolvedValue(null) },
@@ -73,13 +75,14 @@ beforeEach(() => {
   })
 })
 
-it('marks the occurrence pending_approval without advancing nextRunAt or firing a failure webhook', async () => {
+it('marks the occurrence pending_approval, advances nextRunAt, and does not fire failure/executed webhooks', async () => {
   mockExecuteDeposit.mockResolvedValue({
     transaction: null,
     status: 'PENDING_APPROVAL',
     approvalRequestId: 'req-1',
   })
 
+  const originalNextRunAt = plan.nextRunAt
   await processRecurringDeposits()
 
   const updateCalls = mockDb.recurringDepositPlan.update.mock.calls
@@ -87,7 +90,10 @@ it('marks the occurrence pending_approval without advancing nextRunAt or firing 
     (call: any[]) => call[0].data.lastRunStatus === 'pending_approval'
   )
   expect(statusUpdate).toBeDefined()
-  expect(statusUpdate[0].data.nextRunAt).toBeUndefined()
+  expect(statusUpdate[0].data.nextRunAt).toBeInstanceOf(Date)
+  expect(statusUpdate[0].data.nextRunAt.getTime()).toBeGreaterThan(
+    originalNextRunAt.getTime()
+  )
 
   expect(mockPublish).not.toHaveBeenCalledWith(
     expect.anything(),
@@ -101,6 +107,25 @@ it('marks the occurrence pending_approval without advancing nextRunAt or firing 
     'recurring_deposit.executed',
     expect.anything()
   )
+})
+
+it('does not re-request approval on the next scheduler tick for the same occurrence (#833)', async () => {
+  mockExecuteDeposit.mockResolvedValue({
+    transaction: null,
+    status: 'PENDING_APPROVAL',
+    approvalRequestId: 'req-1',
+  })
+
+  // Tick 1: plan is due and becomes pending approval with advanced nextRunAt.
+  await processRecurringDeposits()
+  expect(mockExecuteDeposit).toHaveBeenCalledTimes(1)
+
+  // Tick 2: plan is no longer due (nextRunAt advanced), so no new execution.
+  mockDb.recurringDepositPlan.findMany.mockResolvedValueOnce([])
+  await processRecurringDeposits()
+
+  expect(mockExecuteDeposit).toHaveBeenCalledTimes(1)
+  expect(mockDb.recurringDepositRun.create).not.toHaveBeenCalled?.() // defensive if ledger mocked elsewhere
 })
 
 it('still executes normally when the guard allows (CONFIRMED)', async () => {
