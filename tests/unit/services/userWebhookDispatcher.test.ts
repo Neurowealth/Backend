@@ -1,3 +1,4 @@
+import dns from 'node:dns'
 import {
   enqueueUserWebhooks,
   processUserWebhookDeliveries,
@@ -5,6 +6,12 @@ import {
   USER_WEBHOOK_MAX_CONSECUTIVE_FAILURES,
 } from '../../../src/services/userWebhookDispatcher'
 import db from '../../../src/db'
+
+jest.mock('node:dns', () => ({
+  promises: {
+    lookup: jest.fn().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
+  },
+}))
 
 jest.mock('../../../src/db', () => ({
   __esModule: true,

@@ -1,55 +1,14 @@
 import crypto from 'node:crypto'
-import URL from 'node:url'
 import db from '../db'
 import { logger } from '../utils/logger'
 import { evaluateFilterPredicate } from '../utils/userWebhookFilter'
+import { validateSsrfUrl } from '../utils/ssrfGuard'
 
 export const USER_WEBHOOK_MAX_ATTEMPTS = 5
 export const USER_WEBHOOK_MAX_CONSECUTIVE_FAILURES = 5
 export const USER_WEBHOOK_TIMEOUT_MS = 5000
 
-/**
- * Validates a webhook URL against SSRF (Server-Side Request Forgery) attacks (#368).
- * Enforces HTTPS scheme and rejects private / loopback / link-local IP addresses and hosts.
- */
-export function validateSsrfUrl(urlString: string): void {
-  let parsed: URL.UrlWithParsedQuery
-  try {
-    parsed = URL.parse(urlString, true)
-  } catch {
-    throw new Error('Invalid webhook URL format')
-  }
-
-  if (parsed.protocol !== 'https:') {
-    throw new Error('Webhook URL must use the https:// protocol')
-  }
-
-  const hostname = (parsed.hostname || '').toLowerCase().trim()
-  if (!hostname) {
-    throw new Error('Webhook URL hostname is missing')
-  }
-
-  // Reject local/private hostnames & IPs
-  const privateHostPatterns = [
-    /^localhost$/i,
-    /^127\.\d+\.\d+\.\d+$/,
-    /^10\.\d+\.\d+\.\d+$/,
-    /^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$/,
-    /^192\.168\.\d+\.\d+$/,
-    /^169\.254\.\d+\.\d+$/,
-    /^0\.0\.0\.0$/,
-    /^::1$/,
-    /^fe80:/i,
-    /^fc00:/i,
-    /^fd00:/i,
-  ]
-
-  if (privateHostPatterns.some((pattern) => pattern.test(hostname))) {
-    throw new Error(
-      `Forbidden webhook URL: hostname "${hostname}" resolves to a private or loopback range`
-    )
-  }
-}
+export { validateSsrfUrl }
 
 /**
  * Signs a payload using HMAC-SHA256 with timestamp header format `t=timestamp,v1=signature`.
@@ -291,7 +250,7 @@ export async function processUserWebhookDeliveries(
 
     // 3. Re-check URL against SSRF rules at send time
     try {
-      validateSsrfUrl(endpoint.url)
+      await validateSsrfUrl(endpoint.url)
     } catch (ssrfErr: any) {
       const errorMsg =
         ssrfErr instanceof Error ? ssrfErr.message : String(ssrfErr)
@@ -335,7 +294,7 @@ export async function processUserWebhookDeliveries(
       'User-Agent': 'Neurowealth-UserWebhook/1.0',
     }
 
-    // 6. Send with timeout
+    // 6. Send with timeout and manual redirect handling (SSRF guard)
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), USER_WEBHOOK_TIMEOUT_MS)
 
@@ -345,8 +304,25 @@ export async function processUserWebhookDeliveries(
         headers,
         body: payloadString,
         signal: controller.signal,
+        redirect: 'manual',
       })
       clearTimeout(timer)
+
+      if (res.status >= 300 && res.status < 400) {
+        const errorMsg = 'SSRF: redirect from webhook destination is not allowed'
+        const isTerminal = await handleDeliveryFailure(
+          delivery,
+          endpoint,
+          errorMsg,
+          res.status
+        )
+        if (isTerminal) {
+          result.failed++
+        } else {
+          result.retried++
+        }
+        continue
+      }
 
       if (res.ok) {
         await db.userWebhookDelivery.update({

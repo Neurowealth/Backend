@@ -33,7 +33,7 @@ export async function createEndpoint(
   }
 
   try {
-    validateSsrfUrl(url)
+    await validateSsrfUrl(url)
   } catch (err: any) {
     res.status(400).json({ error: err.message })
     return
@@ -188,7 +188,12 @@ export async function updateEndpoint(
     }
 
     if (url) {
-      validateSsrfUrl(url)
+      try {
+        await validateSsrfUrl(url)
+      } catch (err: any) {
+        res.status(400).json({ error: err.message })
+        return
+      }
     }
 
     if (filterJson) {
