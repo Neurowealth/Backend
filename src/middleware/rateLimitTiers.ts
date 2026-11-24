@@ -360,6 +360,15 @@ export const RATE_LIMIT_MATRIX: readonly RateLimitMatrixEntry[] = [
     tier: 'admin',
     note: 'Dead-letter queue inspection and replay.',
   },
+  // #758 — the protection-fund router is mounted behind adminRateLimiter
+  // in src/routes/registry.ts, so the whole mount (including the public
+  // status and per-user coverage reads) is in the admin tier.
+  {
+    path: '/api/v1/protection-fund',
+    prefix: true,
+    tier: 'admin',
+    note: 'Protection fund admin writes — declaring/reviewing coverage events, recording contributions, executing payouts.',
+  },
 
   // ── Erasure (erasure tier) ──────────────────────────────────────────────
   // Irreversible, so these are held far below the general admin budget.
