@@ -231,7 +231,10 @@ export async function rotateRefreshToken(
       refreshTokenHash: pair.refreshTokenHash,
       refreshTokenPrefix: pair.refreshTokenPrefix,
       refreshTokenExpiresAt: pair.refreshExpiresAt,
-      refreshTokenUsedAt: now,
+      // This is a newly issued replacement token. Only the consumed token is
+      // marked as used; marking this row would reject the client's next valid
+      // refresh as a replay.
+      refreshTokenUsedAt: null,
       refreshTokenRotations: { increment: 1 },
       lastSeenAt: now,
       ...(reqContext?.ip

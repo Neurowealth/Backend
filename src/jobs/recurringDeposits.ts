@@ -460,6 +460,22 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
           txHash: result.transaction!.txHash,
         }
       ).catch(() => {})
+    } else if (result.status === 'PENDING') {
+      // A dispatch may still settle after this job returns. Advance the plan so
+      // the next five-minute worker tick cannot submit the same deposit again.
+      await db.recurringDepositPlan.update({
+        where: { id: plan.id },
+        data: {
+          lastRunStatus: 'pending_confirmation',
+          nextRunAt: addCadence(plan.cadence, now),
+          consecutiveFailures: 0,
+        },
+      })
+      logger.info('[RecurringDeposit] Deposit pending confirmation', {
+        planId: plan.id,
+        userId: plan.userId,
+        txHash: result.transaction?.txHash,
+      })
     } else if (result.status === 'PENDING_APPROVAL') {
       await db.recurringDepositPlan.update({
         where: { id: plan.id },
@@ -485,6 +501,23 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : 'unknown_error'
+    const txHash = (err as { txHash?: unknown })?.txHash
+    if (typeof txHash === 'string' && txHash.length > 0) {
+      await db.recurringDepositPlan.update({
+        where: { id: plan.id },
+        data: {
+          lastRunStatus: 'pending_confirmation',
+          nextRunAt: addCadence(plan.cadence, now),
+          consecutiveFailures: 0,
+        },
+      })
+      logger.warn('[RecurringDeposit] Dispatch error carries an in-flight hash', {
+        planId: plan.id,
+        userId: plan.userId,
+        txHash,
+      })
+      return
+    }
     const isInsufficientFunds =
       reason.toLowerCase().includes('insufficient') ||
       reason.toLowerCase().includes('balance')

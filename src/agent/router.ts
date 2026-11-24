@@ -47,6 +47,23 @@ const DEFAULT_THRESHOLDS: RebalanceThresholds = {
   maxGasPercent: 0.1,
 }
 
+/** Converts a decimal token value to the integer stroops used by contract calls. */
+function decimalTokenValueToStroops(value: string): bigint {
+  const normalized = value.trim()
+  if (!/^\d+(?:\.\d+)?$/.test(normalized)) {
+    throw new Error(`Invalid decimal position value: ${value}`)
+  }
+  const [whole, fraction = ''] = normalized.split('.')
+  const decimalPlaces = String(STROOPS_PER_TOKEN).length - 1
+  if (fraction.length > decimalPlaces) {
+    throw new Error(`Position value has more than ${decimalPlaces} decimal places: ${value}`)
+  }
+  return (
+    BigInt(whole) * BigInt(STROOPS_PER_TOKEN) +
+    BigInt(fraction.padEnd(decimalPlaces, '0'))
+  )
+}
+
 /**
  * Load current protocol risk scores keyed by protocol name.
  *
@@ -535,10 +552,16 @@ export async function executeRebalanceIfNeeded(
   batchContext?: RebalanceBatchContext
 ): Promise<RebalanceDetails | null> {
   try {
-    let totalAmount = userPositions
+    // Position values arrive as Decimal strings. Normalize once at the boundary
+    // so every subsequent liquidity comparison uses contract-unit stroops.
+    const positionsInStroops = userPositions.map((position) => ({
+      ...position,
+      amount: decimalTokenValueToStroops(position.amount).toString(),
+    }))
+    let totalAmount = positionsInStroops
       .reduce((sum, pos) => sum + BigInt(pos.amount), BigInt(0))
       .toString()
-    let positionsToMove = userPositions
+    let positionsToMove = positionsInStroops
     let liquidityRestoreTargets: Set<string> | null = null
 
     const effectiveThresholds = thresholds ?? getThresholds()
@@ -734,7 +757,7 @@ export async function executeRebalanceIfNeeded(
             plannedByPosition.set(item.positionId, amount)
             remainingRestore -= amount
           }
-          positionsToMove = userPositions.filter((position) =>
+          positionsToMove = positionsInStroops.filter((position) =>
             plannedByPosition.has(position.id)
           )
           const restoreUsd = Array.from(plannedByPosition.values()).reduce(
@@ -787,7 +810,7 @@ export async function executeRebalanceIfNeeded(
         } else {
           const instantLiquidIds = new Set(floorStatus.instantLiquidPositionIds)
           const lockedIds = new Set(floorStatus.lockedPositionIds)
-          positionsToMove = userPositions.filter(
+          positionsToMove = positionsInStroops.filter(
             (position) =>
               !instantLiquidIds.has(position.id) && !lockedIds.has(position.id)
           )
