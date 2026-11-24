@@ -2,23 +2,23 @@
 --
 -- The dedupe key was (contractId, txHash, eventType, ledger), so two
 -- same-type events emitted by one transaction collided and the second was
--- silently treated as an already-processed duplicate. Existing rows get
--- eventIndex=0 (they were recorded one-per-row already, so this is a safe
--- backfill), and new rows carry the real position parsed from the RPC
--- event id.
+-- silently treated as an already-processed duplicate. New rows carry the
+-- real position parsed from the RPC event id.
 ALTER TABLE "processed_events" ADD COLUMN "eventIndex" INTEGER NOT NULL DEFAULT 0;
+
+-- Every row that exists at this point in the migration was written before
+-- the eventIndex key existed and never recorded which real index was
+-- actually processed — backfilling it to eventIndex=0 above is a label,
+-- not a fact. isLegacy marks exactly these rows (every row created after
+-- this migration defaults to false). handleEvent treats ANY legacy row
+-- matching (contractId, txHash, eventType, ledger) as a duplicate
+-- regardless of eventIndex, so replaying a historical range (manual
+-- backfill, DLQ retry) can never double-process a financial event whose
+-- real index wasn't the backfilled placeholder.
+ALTER TABLE "processed_events" ADD COLUMN "isLegacy" BOOLEAN NOT NULL DEFAULT false;
+UPDATE "processed_events" SET "isLegacy" = true;
 
 DROP INDEX "processed_events_contractId_txHash_eventType_ledger_key";
 
 CREATE UNIQUE INDEX "processed_events_contractId_txHash_eventType_ledger_eventIndex_key"
   ON "processed_events"("contractId", "txHash", "eventType", "ledger", "eventIndex");
-
--- A pre-migration row doesn't record which real eventIndex was actually
--- processed (the old key ignored it), so backfilling it to 0 is a label,
--- not a fact. If any ledger at or below this cutover is ever replayed
--- (manual backfill, DLQ retry), handleEvent must keep ignoring eventIndex
--- for it and treat any 4-tuple match as a duplicate — otherwise an event
--- whose real index wasn't 0 would be re-processed as if new, double-
--- crediting/debiting a financial event that already happened.
-ALTER TABLE "event_cursors" ADD COLUMN "legacyIdempotencyCutoverLedger" INTEGER;
-UPDATE "event_cursors" SET "legacyIdempotencyCutoverLedger" = "lastProcessedLedger";

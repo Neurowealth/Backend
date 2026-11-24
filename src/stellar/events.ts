@@ -496,44 +496,25 @@ export async function handleEvent(
       // caller omits it (#821), so the dedupe key below is never undefined.
       const { eventIndex } = ContractEventSchema.parse(event)
 
-      // A row recorded before the eventIndex key shipped never captured
-      // which real index was processed, so for ledgers at/below the
-      // migration's cutover any match on the old 4-tuple means "already
-      // handled" regardless of eventIndex — replaying that range (manual
+      // A legacy row (written before the eventIndex key existed, flagged by
+      // the #821 migration) never recorded which real index was processed,
+      // so ANY legacy row matching the 4-tuple means "already handled"
+      // regardless of eventIndex — replaying a historical range (manual
       // backfill, DLQ retry) must not risk double-processing a financial
-      // event whose real index wasn't the backfilled placeholder.
-      const cursor = await timedDbOperation(() =>
-        tx.eventCursor.findUnique({ where: { contractId: event.contractId } })
+      // event whose real index wasn't the backfilled placeholder. Rows
+      // written after the migration always carry a real eventIndex and are
+      // matched on the full 5-tuple.
+      const existingEvent = await timedDbOperation(() =>
+        tx.processedEvent.findFirst({
+          where: {
+            contractId: event.contractId,
+            txHash: event.txHash,
+            eventType: event.type,
+            ledger: event.ledger,
+            OR: [{ isLegacy: true }, { eventIndex }],
+          },
+        })
       )
-      const isLegacyLedger =
-        cursor?.legacyIdempotencyCutoverLedger != null &&
-        event.ledger <= cursor.legacyIdempotencyCutoverLedger
-
-      // Check if event was already processed (idempotency)
-      const existingEvent = isLegacyLedger
-        ? await timedDbOperation(() =>
-            tx.processedEvent.findFirst({
-              where: {
-                contractId: event.contractId,
-                txHash: event.txHash,
-                eventType: event.type,
-                ledger: event.ledger,
-              },
-            })
-          )
-        : await timedDbOperation(() =>
-            tx.processedEvent.findUnique({
-              where: {
-                contractId_txHash_eventType_ledger_eventIndex: {
-                  contractId: event.contractId,
-                  txHash: event.txHash,
-                  eventType: event.type,
-                  ledger: event.ledger,
-                  eventIndex,
-                },
-              },
-            })
-          )
 
       if (existingEvent) {
         logger.info(
@@ -753,15 +734,29 @@ async function fetchAllEventsInRange(
 
   const contractEvents: ContractEvent[] = []
   let cursor: string | undefined
+  // Belt-and-suspenders against a wedged/misbehaving RPC response: a bounded
+  // ledger range should never need more than a few thousand pages of 100
+  // events, so this caps runaway pagination rather than looping forever.
+  const MAX_PAGES = 1000
 
-  while (true) {
-    const page = await server.getEvents(
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const response = await server.getEvents(
       cursor
         ? { cursor, limit: PAGE_LIMIT, filters }
         : { startLedger, endLedger, limit: PAGE_LIMIT, filters }
     )
 
-    for (const event of page.events) {
+    let crossedBoundary = false
+    for (const event of response.events) {
+      // Cursor-based continuation requests can't also carry endLedger, so
+      // the boundary is enforced client-side. Events come back in ledger
+      // order, so the first one past the boundary means every event after
+      // it is out of range too — stop collecting and stop paginating.
+      if (event.ledger > endLedger) {
+        crossedBoundary = true
+        break
+      }
+
       const topics = event.topic
       const eventType = topics.length > 0 ? scValToNative(topics[0]) : null
 
@@ -781,8 +776,15 @@ async function fetchAllEventsInRange(
       }
     }
 
-    if (page.events.length < PAGE_LIMIT) break // Last page for this range.
-    cursor = page.cursor
+    const nextCursor = response.cursor
+    const donePaginating =
+      crossedBoundary ||
+      response.events.length < PAGE_LIMIT ||
+      !nextCursor ||
+      nextCursor === cursor
+
+    if (donePaginating) break
+    cursor = nextCursor
   }
 
   return contractEvents
