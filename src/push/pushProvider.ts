@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger'
-import { createPrivateKey, createSign } from 'node:crypto'
+import { sign } from 'node:crypto'
+import jwt from 'jsonwebtoken'
 import http2 from 'node:http2'
 
 /**
@@ -34,7 +35,7 @@ export interface PushProvider {
 }
 
 /**
- * Mock Push Provider for local testing & development.
+ * Mock Push Provider for unit tests.
  * Delivers nothing; it records each message so tests can assert on what
  * would have been sent.
  */
@@ -47,68 +48,186 @@ export class MockPushProvider implements PushProvider {
     if (this.sentMessages.length > 1000) this.sentMessages.shift()
     // Timestamp plus a short random suffix keeps IDs unique within a run
     const messageId = `push_mock_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-    logger.info(
-      `[MockPushProvider] Sent push to ${message.deviceToken}: ${message.title}`
-    )
+    logger.info('[MockPushProvider] Recorded push', { messageId })
     return { messageId, provider: this.name, success: true }
   }
 }
 
+const PUSH_TIMEOUT_MS = 10_000
+const FCM_TOKEN_URL = 'https://oauth2.googleapis.com/token'
+export const INVALID_PUSH_TOKEN = 'invalid_token'
+
 export class FcmPushProvider implements PushProvider {
   name = 'fcm'
+  private credentials?: {
+    email: string
+    privateKey: string
+    accessToken: Promise<string>
+    refreshAt: number
+  }
+
+  private getAccessToken(email: string, privateKey: string): Promise<string> {
+    const cached = this.credentials
+    if (
+      cached?.email === email &&
+      cached.privateKey === privateKey &&
+      cached.refreshAt > Date.now()
+    ) {
+      return cached.accessToken
+    }
+
+    const credentials = {
+      email,
+      privateKey,
+      refreshAt: Infinity,
+      accessToken: this.requestAccessToken(email, privateKey).then(
+        ({ accessToken, expiresIn }) => {
+          credentials.refreshAt =
+            Date.now() + Math.max(0, expiresIn - 60) * 1000
+          return accessToken
+        },
+        (error: unknown) => {
+          if (this.credentials === credentials) this.credentials = undefined
+          throw error
+        }
+      ),
+    }
+    this.credentials = credentials
+    return credentials.accessToken
+  }
+
+  private async requestAccessToken(
+    email: string,
+    privateKey: string
+  ): Promise<{ accessToken: string; expiresIn: number }> {
+    const assertion = jwt.sign(
+      { scope: 'https://www.googleapis.com/auth/firebase.messaging' },
+      privateKey,
+      {
+        algorithm: 'RS256',
+        issuer: email,
+        audience: FCM_TOKEN_URL,
+        expiresIn: '1h',
+      }
+    )
+    const response = await fetch(FCM_TOKEN_URL, {
+      method: 'POST',
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion,
+      }),
+      signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
+      redirect: 'error',
+    })
+    if (!response.ok) {
+      await response.body?.cancel()
+      throw new Error('FCM authentication failed')
+    }
+    const result = (await response.json()) as {
+      access_token?: string
+      expires_in?: number
+    }
+    if (
+      typeof result.access_token !== 'string' ||
+      !result.access_token ||
+      typeof result.expires_in !== 'number' ||
+      !Number.isFinite(result.expires_in)
+    ) {
+      throw new Error('FCM authentication returned an invalid response')
+    }
+    return { accessToken: result.access_token, expiresIn: result.expires_in }
+  }
 
   async send(message: PushMessage): Promise<PushSendResult> {
-    // A missing credential is a deployment problem, not a delivery failure,
-    // so it throws instead of returning success: false.
-    const serverKey = process.env.FCM_SERVER_KEY
-    if (!serverKey) {
-      throw new Error('FCM provider not configured: FCM_SERVER_KEY missing')
+    const projectId = process.env.FCM_PROJECT_ID
+    const email = process.env.FCM_CLIENT_EMAIL
+    const privateKey = process.env.FCM_PRIVATE_KEY?.replace(/\\n/g, '\n')
+    if (!projectId || !email || !privateKey) {
+      throw new Error(
+        'FCM requires FCM_PROJECT_ID, FCM_CLIENT_EMAIL, and FCM_PRIVATE_KEY'
+      )
     }
 
     try {
-      const response = await fetch('https://fcm.googleapis.com/fcm/send', {
-        method: 'POST',
-        headers: {
-          Authorization: `key=${serverKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          to: message.deviceToken,
-          notification: { title: message.title, body: message.body },
-          ...(message.data ? { data: message.data } : {}),
-        }),
-      })
-      const result = (await response.json()) as {
-        message_id?: string
-        error?: string
-      }
-      if (!response.ok || !result.message_id) {
-        throw new Error(
-          result.error ||
-            `FCM returned HTTP ${response.status} without a message ID`
-        )
-      }
-
-      const messageId = result.message_id
-      logger.info(
-        `[FcmPushProvider] Sent push via FCM to ${message.deviceToken}`,
+      const accessToken = await this.getAccessToken(email, privateKey)
+      const response = await fetch(
+        `https://fcm.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/messages:send`,
         {
-          messageId,
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            message: {
+              token: message.deviceToken,
+              notification: { title: message.title, body: message.body },
+              data:
+                message.data &&
+                Object.fromEntries(
+                  Object.entries(message.data).map(([key, value]) => [
+                    key,
+                    typeof value === 'string' ? value : JSON.stringify(value),
+                  ])
+                ),
+            },
+          }),
+          signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
+          redirect: 'error',
         }
       )
-
-      return { messageId, provider: this.name, success: true }
-    } catch (err) {
-      logger.error('[FcmPushProvider] Failed to send push via FCM', {
-        error: err instanceof Error ? err.message : String(err),
-      })
-      return {
-        messageId: `push_fcm_${Date.now()}`,
-        provider: this.name,
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
+      const result = (await response.json().catch(() => null)) as {
+        name?: string
+        error?: {
+          message?: string
+          details?: {
+            '@type'?: string
+            errorCode?: string
+            fieldViolations?: { field?: string }[]
+          }[]
+        }
+      } | null
+      if (response.ok && typeof result?.name === 'string' && result.name) {
+        return { messageId: result.name, provider: this.name, success: true }
       }
+
+      const invalidToken =
+        Array.isArray(result?.error?.details) &&
+        result.error.details.some((detail) => {
+          if (
+            detail?.['@type'] ===
+            'type.googleapis.com/google.firebase.fcm.v1.FcmError'
+          ) {
+            return (
+              (response.status === 404 &&
+                detail.errorCode === 'UNREGISTERED') ||
+              (response.status === 400 &&
+                detail.errorCode === 'INVALID_ARGUMENT' &&
+                result.error?.message ===
+                  'The registration token is not a valid FCM registration token')
+            )
+          }
+          return (
+            response.status === 400 &&
+            detail?.['@type'] === 'type.googleapis.com/google.rpc.BadRequest' &&
+            Array.isArray(detail.fieldViolations) &&
+            detail.fieldViolations.some(
+              (violation) => violation?.field === 'message.token'
+            )
+          )
+        })
+      return this.failure(
+        invalidToken
+          ? INVALID_PUSH_TOKEN
+          : `FCM send failed (HTTP ${response.status})`
+      )
+    } catch {
+      return this.failure('FCM push request failed')
     }
+  }
+
+  private failure(error: string): PushSendResult {
+    return { messageId: '', provider: this.name, success: false, error }
   }
 }
 
@@ -142,34 +261,30 @@ export class ApnsPushProvider implements PushProvider {
           'content-type': 'application/json',
         },
         {
+          ...message.data,
           aps: { alert: { title: message.title, body: message.body } },
-          ...(message.data ?? {}),
         }
       )
-      if (result.status < 200 || result.status >= 300 || !result.apnsId) {
-        throw new Error(
-          result.reason || `APNs returned HTTP ${result.status} without an ID`
-        )
+      if (result.status >= 200 && result.status < 300 && result.apnsId) {
+        return { messageId: result.apnsId, provider: this.name, success: true }
       }
-
-      const messageId = result.apnsId
-      logger.info(
-        `[ApnsPushProvider] Sent push via APNs to ${message.deviceToken}`,
-        {
-          messageId,
-        }
-      )
-
-      return { messageId, provider: this.name, success: true }
-    } catch (err) {
-      logger.error('[ApnsPushProvider] Failed to send push via APNs', {
-        error: err instanceof Error ? err.message : String(err),
-      })
+      const invalidToken =
+        (result.status === 410 && result.reason === 'Unregistered') ||
+        (result.status === 400 && result.reason === 'BadDeviceToken')
       return {
-        messageId: `push_apns_${Date.now()}`,
+        messageId: '',
         provider: this.name,
         success: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: invalidToken
+          ? INVALID_PUSH_TOKEN
+          : `APNs send failed (HTTP ${result.status})`,
+      }
+    } catch {
+      return {
+        messageId: '',
+        provider: this.name,
+        success: false,
+        error: 'APNs push request failed',
       }
     }
   }
@@ -185,11 +300,12 @@ export class PushRegistry {
   private providers: Map<string, PushProvider> = new Map()
 
   constructor() {
-    const mockProvider = new MockPushProvider()
     const fcmProvider = new FcmPushProvider()
     const apnsProvider = new ApnsPushProvider()
 
-    this.providers.set('mock', mockProvider)
+    if (process.env.NODE_ENV === 'test') {
+      this.providers.set('mock', new MockPushProvider())
+    }
     // Android and web both go through FCM, so they share one instance
     this.providers.set('android', fcmProvider)
     this.providers.set('web', fcmProvider)
@@ -201,9 +317,7 @@ export class PushRegistry {
   }
 
   /**
-   * Find the provider for a platform (case-insensitive). Unknown platforms
-   * fall back to the mock provider with a warning, so nothing is really
-   * delivered to them. Make sure that is acceptable in production.
+   * Find the provider for a supported platform (case-insensitive).
    */
   getProvider(platform: string): PushProvider {
     const provider = this.providers.get(platform.toLowerCase())
@@ -237,32 +351,11 @@ function createApnsToken(
   const payload = Buffer.from(
     JSON.stringify({ iss: teamId, iat: Math.floor(Date.now() / 1000) })
   ).toString('base64url')
-  const signer = createSign('SHA256')
-  signer.update(`${header}.${payload}`)
-  const signature = derSignatureToJose(
-    signer.sign(createPrivateKey(privateKey))
-  ).toString('base64url')
+  const signature = sign('SHA256', Buffer.from(`${header}.${payload}`), {
+    key: privateKey,
+    dsaEncoding: 'ieee-p1363',
+  }).toString('base64url')
   return `${header}.${payload}.${signature}`
-}
-
-function derSignatureToJose(signature: Buffer): Buffer {
-  let offset = 2
-  if (signature[1] & 0x80) offset += signature[1] & 0x7f
-  if (signature[offset++] !== 0x02) throw new Error('Invalid APNs signature')
-  const rLength = signature[offset++]
-  const r = signature.subarray(offset, offset + rLength)
-  offset += rLength
-  if (signature[offset++] !== 0x02) throw new Error('Invalid APNs signature')
-  const sLength = signature[offset++]
-  const s = signature.subarray(offset, offset + sLength)
-  const normalize = (value: Buffer): Buffer => {
-    let normalized = value
-    while (normalized.length > 32 && normalized[0] === 0) {
-      normalized = normalized.subarray(1)
-    }
-    return Buffer.concat([Buffer.alloc(32 - normalized.length), normalized])
-  }
-  return Buffer.concat([normalize(r), normalize(s)])
 }
 
 function sendApnsRequest(
@@ -273,39 +366,53 @@ function sendApnsRequest(
 ): Promise<{ status: number; apnsId?: string; reason?: string }> {
   return new Promise((resolve, reject) => {
     const client = http2.connect(`https://${host}`)
-    client.once('error', reject)
-    const request = client.request({
-      ':method': 'POST',
-      ':path': `/3/device/${encodeURIComponent(deviceToken)}`,
-      ...headers,
-    })
-    let responseBody = ''
-    request.setEncoding('utf8')
-    request.on('data', (chunk: string) => {
-      responseBody += chunk
-    })
-    request.on('response', (responseHeaders) => {
-      request.on('end', () => {
+    const timer = setTimeout(
+      () => fail(new Error('APNs request timed out')),
+      PUSH_TIMEOUT_MS
+    )
+    function fail(error: Error): void {
+      clearTimeout(timer)
+      client.destroy()
+      reject(error)
+    }
+
+    client.once('error', fail)
+    try {
+      const request = client.request({
+        ':method': 'POST',
+        ':path': `/3/device/${encodeURIComponent(deviceToken)}`,
+        ...headers,
+      })
+      let responseBody = ''
+      let responseHeaders: http2.IncomingHttpHeaders | undefined
+      request.setEncoding('utf8')
+      request.on('data', (chunk: string) => {
+        responseBody += chunk
+      })
+      request.once('response', (headers) => {
+        responseHeaders = headers
+      })
+      request.once('error', fail)
+      request.once('aborted', () => fail(new Error('APNs request aborted')))
+      request.once('end', () => {
+        clearTimeout(timer)
         client.close()
-        let parsed: { reason?: string } = {}
-        if (responseBody) {
-          try {
-            parsed = JSON.parse(responseBody) as { reason?: string }
-          } catch {
-            parsed = {}
-          }
+        let reason: string | undefined
+        try {
+          reason = (JSON.parse(responseBody) as { reason?: string } | null)
+            ?.reason
+        } catch {
+          // APNs acknowledgements have an empty body.
         }
         resolve({
-          status: Number(responseHeaders[':status']),
-          apnsId: responseHeaders['apns-id']?.toString(),
-          reason: parsed.reason,
+          status: Number(responseHeaders?.[':status']),
+          apnsId: responseHeaders?.['apns-id']?.toString(),
+          reason,
         })
       })
-    })
-    request.on('error', (error) => {
-      client.close()
-      reject(error)
-    })
-    request.end(JSON.stringify(body))
+      request.end(JSON.stringify(body))
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error('APNs request failed'))
+    }
   })
 }

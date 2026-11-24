@@ -5,6 +5,7 @@ import { mailWebhookRejectionsTotal } from '../utils/metrics'
 import {
   createSnsSignatureVerifier,
   isSnsEnvelope,
+  confirmSnsSubscription,
   type SnsRejectionReason,
   type SnsSignatureVerifier,
 } from './snsSignature'
@@ -57,12 +58,14 @@ export interface MailSendResult {
   provider: string
 }
 
-export interface MailWebhookEvent {
-  type: 'bounce' | 'complaint' | 'delivery'
-  messageId: string
-  recipient: string
-  reason?: string
-}
+export type MailWebhookEvent =
+  | {
+      type: 'bounce' | 'complaint' | 'delivery'
+      messageId: string
+      recipient: string
+      reason?: string
+    }
+  | { type: 'subscription_confirmation' | 'unsubscribe_confirmation' }
 
 export interface MailProvider {
   name: string
@@ -77,21 +80,22 @@ function verifySmtpWebhookSignature(
   signature: string | undefined,
   payload: string
 ): boolean {
-  if (!signature) return false
+  if (typeof signature !== 'string') return false
   const signingSecret = process.env.SMTP_WEBHOOK_SECRET
   if (!signingSecret) return false
   // Reject non-hex or wrong-length signatures up front — `timingSafeEqual`
   // throws on a buffer-length mismatch, which previously surfaced as a 500
   // instead of a clean 401/400 (#835).
   if (!/^[0-9a-f]+$/i.test(signature)) return false
-  const computed = crypto
+  const expected = crypto
     .createHmac('sha256', signingSecret)
     .update(payload)
-    .digest('hex')
-  if (signature.length !== computed.length) return false
-  return crypto.timingSafeEqual(
-    Buffer.from(signature, 'hex'),
-    Buffer.from(computed, 'hex')
+    .digest()
+  if (signature.length !== expected.length * 2) return false
+  const provided = Buffer.from(signature, 'hex')
+  return (
+    provided.length === expected.length &&
+    crypto.timingSafeEqual(provided, expected)
   )
 }
 
@@ -207,16 +211,23 @@ export class SmtpMailProvider implements MailProvider {
   }
 
   parseWebhook(rawPayload: any, signature?: string): MailWebhookEvent | null {
-    if (!rawPayload || !rawPayload.event) return null
-
     // A signature is mandatory whenever SMTP is the active webhook provider
     // (#835) — an unauthenticated caller must never be able to mutate email
     // identity status by POSTing a bounce/complaint payload with no header.
-    const payload = JSON.stringify(rawPayload)
+    const payload = JSON.stringify(rawPayload ?? null)
     if (!verifySmtpWebhookSignature(signature, payload)) {
-      logger.warn('[SmtpMailProvider] Rejected webhook: missing or invalid signature')
+      logger.warn(
+        '[SmtpMailProvider] Rejected webhook: missing or invalid signature'
+      )
       throw new SmtpSignatureVerificationError()
     }
+
+    if (
+      !rawPayload ||
+      typeof rawPayload.email !== 'string' ||
+      !rawPayload.event
+    )
+      return null
 
     return {
       type:
@@ -317,6 +328,13 @@ export class SesMailProvider implements MailProvider {
     rawPayload: any,
     signature?: string
   ): Promise<MailWebhookEvent | null> {
+    if (typeof rawPayload === 'string') {
+      try {
+        rawPayload = JSON.parse(rawPayload)
+      } catch {
+        throw new SesSignatureVerificationError('missing_signing_fields')
+      }
+    }
     if (!rawPayload || typeof rawPayload !== 'object') return null
 
     // SES never posts its notification JSON directly — it posts an SNS
@@ -333,6 +351,14 @@ export class SesMailProvider implements MailProvider {
       this.rejectWebhook(outcome.reason)
       throw new SesSignatureVerificationError(outcome.reason)
     }
+    if (rawPayload.Type === 'SubscriptionConfirmation') {
+      await confirmSnsSubscription(rawPayload)
+      return { type: 'subscription_confirmation' }
+    }
+    if (rawPayload.Type === 'UnsubscribeConfirmation') {
+      return { type: 'unsubscribe_confirmation' }
+    }
+
     // The SNS envelope's `Message` carries the SES notification JSON: the
     // pieces we map from (notificationType, mail, bounce/complaint) live
     // there, not on the envelope itself.
@@ -502,28 +528,16 @@ export class MailRegistry {
     rawPayload: any,
     signature?: string
   ): Promise<MailWebhookEvent | null> {
-    try {
-      const primary = await this.primaryProvider.parseWebhook(
+    const allowMock = process.env.NODE_ENV === 'test'
+    if (allowMock || this.primaryProvider.name !== 'mock') {
+      const event = await this.primaryProvider.parseWebhook(
         rawPayload,
         signature
       )
-      if (primary) return primary
-    } catch (err) {
-      if (
-        err instanceof SesSignatureVerificationError ||
-        err instanceof SmtpSignatureVerificationError
-      )
-        throw err
-      // A provider error that is not an authentication failure must not fail
-      // the whole path on a delivery the fallback might understand.
-      logger.warn('[MailRegistry] Mail webhook error on primary provider', {
-        provider: this.primaryProvider.name,
-        error: err instanceof Error ? err.message : String(err),
-      })
+      if (event) return event
     }
-    return (
-      (await this.fallbackProvider.parseWebhook(rawPayload, signature)) ?? null
-    )
+    if (!allowMock && this.fallbackProvider.name === 'mock') return null
+    return this.fallbackProvider.parseWebhook(rawPayload, signature)
   }
 }
 
