@@ -150,7 +150,14 @@ router.get(
 
 /**
  * GET /transactions/:id/events
- * Returns the ordered event history for a transaction (admin only).
+ * Returns the ordered event history for a transaction owned by the
+ * authenticated user (#757).
+ *
+ * #757 — this was commented "(admin only)" but used only requireAuth +
+ * requireScope('transactions:read') with no ownership check, so any
+ * authenticated user/key could read another user's event timeline by
+ * guessing a transaction id (IDOR). It now checks ownership exactly like
+ * GET /detail/:txHash above and returns 404 for other users' transactions.
  */
 router.get(
   '/:id/events',
@@ -162,7 +169,9 @@ router.get(
     const id = String(req.params.id) // ← String() cast fixes the string | string[] error
 
     const tx = await db.transaction.findUnique({ where: { id } })
-    if (!tx) return sendNotFound(res, 'Transaction')
+    if (!tx || tx.userId !== req.auth?.userId) {
+      return sendNotFound(res, 'Transaction')
+    }
 
     const events = await (db as any).transactionEvent.findMany({
       where: { transactionId: id },
