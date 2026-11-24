@@ -461,9 +461,17 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
         }
       ).catch(() => {})
     } else if (result.status === 'PENDING_APPROVAL') {
+      // Advance the slot so the same occurrence is not reclaimed every sweep.
+      // Approval resolution (execute/reject/cancel/expire) is handled by the
+      // approvals workflow; rescheduling here ensures the plan remains on its
+      // cadence without duplicate approval requests for this occurrence.
+      const nextRunAt = addCadence(plan.cadence, now)
       await db.recurringDepositPlan.update({
         where: { id: plan.id },
-        data: { lastRunStatus: 'pending_approval' },
+        data: {
+          lastRunStatus: 'pending_approval',
+          nextRunAt,
+        },
       })
       await createRunLedger({
         planId: plan.id,
@@ -479,6 +487,7 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
         planId: plan.id,
         userId: plan.userId,
         approvalRequestId: result.approvalRequestId,
+        nextRunAt,
       })
     } else {
       await failPlan(plan, 'transaction_failed', decision)
