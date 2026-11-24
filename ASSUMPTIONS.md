@@ -28,11 +28,7 @@ riskCeiling? }`** — the three keys `src/agent/loop.ts` actually reads.
    follower and would have to be copied for the strategy to work at all.
    Followers with their own goal already get goal precedence.
 
-6. **`POST /strategies/publish` accepts an explicit `strategyConfig`, and
-   snapshots the caller's `User.rebalanceStrategy` / `User.strategyConfig` when
-   it is omitted.** Nothing in `src/` currently _writes_ those User columns, so
-   an explicit body is the only way the feature is usable today; the snapshot
-   path is there for when a "set my strategy" endpoint lands.
+6.1\. `POST /strategies/publish`**&#x20;accepts an explicit&#x20;**`strategyConfig`**&#x20;or falls back to a snapshot of the caller's&#x20;**`User.rebalanceStrategy`**&#x20;and&#x20;**`User.strategyConfig`**&#x20;when omitted.** Since no code in `src/` currently updates these User columns, providing an explicit configuration is required to use the feature today. The snapshot mechanism supports future integration with a dedicated strategy configuration endpoint.
 
 7. **`TARGET_ALLOCATION` weights must sum to 100.** Followers inherit them
    verbatim, so a set that does not sum to 100 would quietly under- or
