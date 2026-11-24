@@ -326,7 +326,7 @@ describe('src/lending/liquidation — performing the sale', () => {
       interestAccrued: 0,
       status: 'ACTIVE',
       lastValuedCollateral: 5_000,
-      liquidationOutboxOpId: 'tx-1',
+      liquidationOutboxOpId: 'outbox-op-1',
     })
 
     // Everything above happened inside the single $transaction that also holds
