@@ -933,9 +933,14 @@ model ProcessedEvent {
   txHash      String
   eventType   String
   ledger      Int
+  // Position of this event within its ledger, from the RPC event `id`
+  // (`{ledgerSeq}-{eventIndex}`). Two same-type events in one transaction
+  // previously collided on (contractId, txHash, eventType, ledger) alone and
+  // the second was silently dropped as a "duplicate" (#821).
+  eventIndex  Int      @default(0)
   processedAt DateTime @default(now())
 
-  @@unique([contractId, txHash, eventType, ledger])
+  @@unique([contractId, txHash, eventType, ledger, eventIndex])
   @@index([contractId])
   @@index([txHash])
   @@index([ledger])

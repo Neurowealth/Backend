@@ -8,6 +8,10 @@ export interface ContractEvent {
   contractId: string
   topics: xdr.ScVal[]
   value: xdr.ScVal
+  // Position of this event within its ledger, parsed from the RPC event
+  // `id` (`{ledgerSeq}-{eventIndex}`). Distinguishes two same-type events
+  // emitted by one transaction (#821).
+  eventIndex: number
 }
 
 export interface DepositEvent {

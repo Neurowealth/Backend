@@ -45,12 +45,12 @@ function message(to = 'user@example.com'): MailMessage {
 }
 
 describe('MailRegistry failover (#496)', () => {
-  it('sends via the primary while it is healthy and never touches the fallback', async () => {
+  it('delivers via the primary while it is healthy and never touches the fallback', async () => {
     const primary = makeProvider('primary')
     const fallback = makeProvider('fallback')
     const registry = new MailRegistry(primary, fallback)
 
-    const result = await registry.send(message())
+    const result = await registry.deliverQueued(message())
 
     expect(result.provider).toBe('primary')
     expect(primary.sent).toHaveLength(1)
@@ -66,7 +66,7 @@ describe('MailRegistry failover (#496)', () => {
       const fallback = makeProvider('fallback')
       const registry = new MailRegistry(primary, fallback)
 
-      const result = await registry.send(message('user1@example.com'))
+      const result = await registry.deliverQueued(message('user1@example.com'))
 
       // The user still gets their mail — via the fallback provider.
       expect(result.provider).toBe('fallback')
@@ -90,8 +90,8 @@ describe('MailRegistry failover (#496)', () => {
       const fallback = makeProvider('fallback')
       const registry = new MailRegistry(primary, fallback)
 
-      await registry.send(message()) // flips the registry unhealthy
-      await registry.send(message('second@example.com'))
+      await registry.deliverQueued(message()) // flips the registry unhealthy
+      await registry.deliverQueued(message('second@example.com'))
 
       // Still inside the window: the fallback serves every delivery...
       expect(fallback.sent).toHaveLength(2)
@@ -100,7 +100,7 @@ describe('MailRegistry failover (#496)', () => {
       // ...until the 60s recovery timer restores the primary.
       fail = false
       jest.advanceTimersByTime(61_000)
-      const recovered = await registry.send(message('third@example.com'))
+      const recovered = await registry.deliverQueued(message('third@example.com'))
 
       expect(recovered.provider).toBe('primary')
       // The primary saw the original failure and the post-recovery send.
