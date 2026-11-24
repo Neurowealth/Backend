@@ -1366,6 +1366,7 @@ model FiatOrder {
   transactionId       String? // linked once the resulting on-chain Transaction is matched
   checkoutUrl         String? // provider hosted checkout URL (on-ramp)
   kycUrl              String? // provider KYC next-step link, surfaced to the user when required
+  providerTxHash      String? // tx hash claimed by provider; reconciled against on-chain confirmation
   failureReason       String? // populated on FAILED/REFUNDED for operator/user visibility
   settledAt           DateTime?
   // Best-execution / rate-drift protection (#313). quoteRate/quotedCryptoAmount
