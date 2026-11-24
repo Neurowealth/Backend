@@ -618,6 +618,7 @@ export async function processRecurringDeposits(): Promise<void> {
 
       recordBackgroundJob(jobName, 'failed', durationMs / 1000)
       recordJobFailure(jobName, durationMs, error)
+      throw error
     }
   })
 }
