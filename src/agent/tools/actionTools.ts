@@ -14,6 +14,7 @@
  */
 
 import { z } from 'zod'
+import { Decimal } from '@prisma/client/runtime/library'
 import db from '../../db'
 import { defineTool } from './types'
 import { logger } from '../../utils/logger'
@@ -203,18 +204,28 @@ export const withdrawTool = defineTool({
     if (!walletAddress)
       return { ok: false, error: 'Account is not fully set up yet.' }
 
+    // #767: only positions in the requested asset (and protocol, when given)
+    // count toward the balance. `Position.currentValue` is a Decimal in whole
+    // token units, the same unit executeWithdraw reserves against, so the sum
+    // is done with Decimal and compared with the requested token amount.
     const positions = await db.position.findMany({
-      where: { userId: ctx.userId, status: 'ACTIVE' },
+      where: {
+        userId: ctx.userId,
+        status: 'ACTIVE',
+        assetSymbol: args.assetSymbol,
+        ...(args.protocolName ? { protocolName: args.protocolName } : {}),
+      },
     })
-    const availableBalance = positions.reduce(
-      (sum: number, p: any) => sum + Number(p.currentValue),
-      0
+    const availableDecimal = positions.reduce(
+      (sum: Decimal, p: any) => sum.plus(new Decimal(String(p.currentValue))),
+      new Decimal(0)
     )
+    const availableBalance = availableDecimal.toNumber()
 
-    if (args.amount > availableBalance) {
+    if (availableDecimal.lessThan(new Decimal(String(args.amount)))) {
       return {
         ok: false,
-        error: `Insufficient funds: available balance is ${availableBalance}, requested ${args.amount}.`,
+        error: `Insufficient funds: available ${args.assetSymbol}${args.protocolName ? ` in ${args.protocolName}` : ''} balance is ${availableDecimal.toString()}, requested ${args.amount}.`,
       }
     }
 
