@@ -48,6 +48,12 @@ export interface ValuePoint {
   timestampMs: number
   /** Total portfolio value (principal + yield), must be > 0 to be useful */
   value: number
+  /** Optional net external cash flow in this period (deposits minus withdrawals) */
+  netFlow?: number
+  /** Optional yieldAmount component */
+  yieldAmount?: number
+  /** Optional principalAmount component */
+  principalAmount?: number
 }
 
 /** Returned by computeAllMetrics */
@@ -227,7 +233,20 @@ export function computePeriodReturns(points: ValuePoint[]): number[] {
     const curr = sorted[i]!
     // Skip intervals where the portfolio was un-funded (deposit-from-empty artefact)
     if (prev.value <= 0) continue
-    returns.push((curr.value - prev.value) / prev.value)
+
+    if (curr.yieldAmount !== undefined && prev.yieldAmount !== undefined) {
+      returns.push((curr.yieldAmount - prev.yieldAmount) / prev.value)
+    } else if (curr.netFlow !== undefined) {
+      returns.push((curr.value - prev.value - curr.netFlow) / prev.value)
+    } else if (
+      curr.principalAmount !== undefined &&
+      prev.principalAmount !== undefined
+    ) {
+      const flow = curr.principalAmount - prev.principalAmount
+      returns.push((curr.value - prev.value - flow) / prev.value)
+    } else {
+      returns.push((curr.value - prev.value) / prev.value)
+    }
   }
   return returns
 }
@@ -244,7 +263,11 @@ export function annualisedVolatility(
 ): number | null {
   if (returns.length < MIN_SAMPLES) return null
   const variance = sampleVariance(returns)
-  if (variance === null || variance <= 0) return null
+  if (variance === null || variance < 0) return null
+  if (variance === 0) {
+    if (returns.every((r) => r === 0)) return 0
+    return null
+  }
   return Math.sqrt(variance * periodsPerYear)
 }
 
@@ -304,6 +327,35 @@ export interface DrawdownResult {
 }
 
 /**
+ * Maximum drawdown and its duration computed from period returns via cumulative wealth index.
+ */
+export function maxDrawdownFromReturns(returns: number[]): DrawdownResult {
+  if (returns.length === 0) {
+    return { maxDrawdown: 0, maxDrawdownDuration: 0 }
+  }
+  let cum = 1
+  let peak = 1
+  let maxDD = 0
+  let maxDuration = 0
+  let peakIdx = 0
+
+  for (let i = 0; i < returns.length; i++) {
+    cum *= 1 + returns[i]!
+    if (cum > peak) {
+      peak = cum
+      peakIdx = i + 1
+    }
+    const dd = peak > 0 ? (peak - cum) / peak : 0
+    if (dd > maxDD) {
+      maxDD = dd
+      maxDuration = i + 1 - peakIdx
+    }
+  }
+
+  return { maxDrawdown: maxDD, maxDrawdownDuration: maxDuration }
+}
+
+/**
  * Maximum drawdown and its duration from a portfolio-value series.
  *
  * Returns null if:
@@ -317,6 +369,19 @@ export function maxDrawdownFromValues(
 ): DrawdownResult | null {
   if (points.length < 2) return null
   const sorted = [...points].sort((a, b) => a.timestampMs - b.timestampMs)
+
+  const hasFlows = sorted.some(
+    (p) =>
+      p.yieldAmount !== undefined ||
+      p.netFlow !== undefined ||
+      p.principalAmount !== undefined
+  )
+
+  if (hasFlows) {
+    const returns = computePeriodReturns(sorted)
+    return maxDrawdownFromReturns(returns)
+  }
+
   const values = sorted.map((p) => p.value)
 
   let peak = values[0]!
@@ -398,6 +463,52 @@ export interface RollingDrawdownPoint {
 export function rollingDrawdown(points: ValuePoint[]): RollingDrawdownPoint[] {
   if (points.length === 0) return []
   const sorted = [...points].sort((a, b) => a.timestampMs - b.timestampMs)
+
+  const hasFlows = sorted.some(
+    (p) =>
+      p.yieldAmount !== undefined ||
+      p.netFlow !== undefined ||
+      p.principalAmount !== undefined
+  )
+
+  if (hasFlows) {
+    let cum = 1
+    let peak = 1
+    const result: RollingDrawdownPoint[] = []
+    for (let i = 0; i < sorted.length; i++) {
+      if (i === 0) {
+        result.push({ timestampMs: sorted[0]!.timestampMs, drawdown: 0 })
+        continue
+      }
+      const prev = sorted[i - 1]!
+      const curr = sorted[i]!
+      let r = 0
+      if (prev.value > 0) {
+        if (curr.yieldAmount !== undefined && prev.yieldAmount !== undefined) {
+          r = (curr.yieldAmount - prev.yieldAmount) / prev.value
+        } else if (curr.netFlow !== undefined) {
+          r = (curr.value - prev.value - curr.netFlow) / prev.value
+        } else if (
+          curr.principalAmount !== undefined &&
+          prev.principalAmount !== undefined
+        ) {
+          r =
+            (curr.value -
+              prev.value -
+              (curr.principalAmount - prev.principalAmount)) /
+            prev.value
+        } else {
+          r = (curr.value - prev.value) / prev.value
+        }
+      }
+      cum *= 1 + r
+      if (cum > peak) peak = cum
+      const dd = peak > 0 ? Math.max(0, (peak - cum) / peak) : 0
+      result.push({ timestampMs: curr.timestampMs, drawdown: dd })
+    }
+    return result
+  }
+
   let peak = sorted[0]!.value
   return sorted.map((p) => {
     if (p.value > peak) peak = p.value
