@@ -5,6 +5,7 @@ import db from '../db'
 import { logger } from '../utils/logger'
 import { USER_EVENT_TOPICS, type UserEventTopic } from '../events/types'
 import { verifySessionToken } from '../ws/auth'
+import { safeEqual } from '../utils/safeCompare'
 
 const STREAM_TICKET_SECRET = config.jwt.seed
 const usedTicketIds = new Set<string>()
@@ -64,7 +65,7 @@ export function verifyStreamTicket(
       .update(payloadStr)
       .digest('base64url')
 
-    if (signature !== expectedSig) return null
+    if (!safeEqual(signature, expectedSig)) return null
 
     const payload: StreamTicketPayload = JSON.parse(payloadStr)
 
