@@ -50,6 +50,12 @@ export interface TransactionResult {
   hash: string
   status: 'success' | 'failed' | 'pending'
   ledger?: number
+  /**
+   * The op resolved without moving anything (e.g. a liquidation whose loan
+   * healed or was already settled, #823). The outbox op still confirms, but
+   * the linked Transaction must not be reported as a completed movement.
+   */
+  skipped?: boolean
 }
 
 export class TransactionConfirmationTimeoutError extends Error {

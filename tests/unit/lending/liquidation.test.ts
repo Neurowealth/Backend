@@ -33,12 +33,16 @@ jest.mock('../../../src/db', () => {
   const loanLiquidationEventCreate = jest.fn()
   const platformBadDebtCreate = jest.fn()
   const transactionUpdate = jest.fn()
+  const transactionUpdateMany = jest.fn()
   const tx: any = {
     collateralLoan: { findUnique, update: collateralLoanUpdate },
     position: { update: positionUpdate },
     loanLiquidationEvent: { create: loanLiquidationEventCreate },
     platformBadDebt: { create: platformBadDebtCreate },
-    transaction: { update: transactionUpdate },
+    transaction: {
+      update: transactionUpdate,
+      updateMany: transactionUpdateMany,
+    },
   }
   const client: any = {
     $transaction: jest.fn(async (fn: (t: any) => unknown) => fn(tx)),
@@ -53,6 +57,7 @@ jest.mock('../../../src/db', () => {
     __mockEventCreate: loanLiquidationEventCreate,
     __mockBadDebtCreate: platformBadDebtCreate,
     __mockTransactionUpdate: transactionUpdate,
+    __mockTransactionUpdateMany: transactionUpdateMany,
   }
 })
 
@@ -82,6 +87,7 @@ const mockLoanUpdate: jest.Mock = dbMock.__mockCollateralLoanUpdate
 const mockEventCreate: jest.Mock = dbMock.__mockEventCreate
 const mockBadDebtCreate: jest.Mock = dbMock.__mockBadDebtCreate
 const mockTransactionUpdate: jest.Mock = dbMock.__mockTransactionUpdate
+const mockTransactionUpdateMany: jest.Mock = dbMock.__mockTransactionUpdateMany
 const mockPublish = publishUserEvent as jest.Mock
 const mockWebhook = dispatchWebhookEvent as jest.Mock
 const mockEmit = alertingService.emit as jest.Mock
@@ -216,6 +222,85 @@ describe('src/lending/liquidation — refusing to act', () => {
 
     await applyLoanLiquidationSale(payload())
     expect(mockPositionUpdate).not.toHaveBeenCalled()
+  })
+})
+
+describe('src/lending/liquidation — no sale is never reported as one (#823)', () => {
+  const cancelled = (reason: string) => ({
+    where: { id: 'tx-1', status: 'PENDING' },
+    data: {
+      status: 'CANCELLED',
+      memo: `Collateral liquidation skipped: ${reason} (loan:loan-1)`,
+    },
+  })
+
+  it('cancels the queued ledger row when the position healed', async () => {
+    mockFindUnique.mockResolvedValue(
+      loan({
+        principalAmount: 1_000,
+        position: { ...loan().position, currentValue: 10_000 },
+      })
+    )
+
+    const result = await applyLoanLiquidationSale(payload())
+
+    expect(result).toMatchObject({ status: 'success', skipped: true })
+    expect(mockTransactionUpdateMany).toHaveBeenCalledWith(
+      cancelled('position healed')
+    )
+    expect(mockTransactionUpdate).not.toHaveBeenCalled()
+    expect(mockEventCreate).not.toHaveBeenCalled()
+  })
+
+  it('cancels the queued ledger row when the loan was settled elsewhere', async () => {
+    mockFindUnique.mockResolvedValue(
+      loan({ status: 'REPAID', liquidationOutboxOpId: null })
+    )
+
+    const result = await applyLoanLiquidationSale(payload())
+
+    expect(result.skipped).toBe(true)
+    expect(mockTransactionUpdateMany).toHaveBeenCalledWith(
+      cancelled('loan is no longer active')
+    )
+    expect(mockTransactionUpdate).not.toHaveBeenCalled()
+  })
+
+  it('cancels the queued ledger row when the plan sells nothing', async () => {
+    mockFindUnique.mockResolvedValue(
+      loan({
+        principalAmount: 0.01,
+        position: { ...loan().position, currentValue: 10_000 },
+      })
+    )
+
+    const result = await applyLoanLiquidationSale(payload())
+
+    expect(result.skipped).toBe(true)
+    expect(mockTransactionUpdateMany).toHaveBeenCalledTimes(1)
+    expect(mockEventCreate).not.toHaveBeenCalled()
+  })
+
+  it('treats a replay of its own completed sale as done, not skipped', async () => {
+    // The sale ran, confirmed the ledger row and closed the loan; the outbox
+    // then redelivered the same op. The row must stay CONFIRMED.
+    mockFindUnique.mockResolvedValue(
+      loan({ status: 'LIQUIDATED', liquidationOutboxOpId: 'outbox-op-1' })
+    )
+
+    const result = await applyLoanLiquidationSale(payload())
+
+    expect(result.status).toBe('success')
+    expect(result.skipped).toBeUndefined()
+    expect(mockTransactionUpdateMany).not.toHaveBeenCalled()
+    expect(mockEventCreate).not.toHaveBeenCalled()
+  })
+
+  it('does not mark a real sale as skipped', async () => {
+    const result = await applyLoanLiquidationSale(payload())
+
+    expect(result.skipped).toBeUndefined()
+    expect(mockTransactionUpdateMany).not.toHaveBeenCalled()
   })
 })
 

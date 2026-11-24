@@ -7,6 +7,7 @@
  */
 
 import { Prisma } from '@prisma/client'
+import { StrKey } from '@stellar/stellar-sdk'
 import { db } from '../db'
 import { config } from '../config/env'
 import { logger } from '../utils/logger'
@@ -306,6 +307,12 @@ export async function executePayout(claimId: string) {
   })
   if (!user?.walletAddress)
     throw new Error(`User ${claim.userId} has no wallet address`)
+  // The payout is sent to exactly this address (#825), so refuse to queue
+  // one that could never be delivered.
+  if (!StrKey.isValidEd25519PublicKey(user.walletAddress))
+    throw new Error(
+      `User ${claim.userId} wallet address is not a valid Stellar public key`
+    )
 
   const outboxOp = await enqueueOutboxOp(db, {
     userId: claim.userId,

@@ -183,11 +183,16 @@ export async function claimOp(
 /**
  * The network confirmed the op: SUBMITTED -> CONFIRMED. Stores the final
  * txHash and timestamp and clears any error left over from earlier retries.
+ *
+ * Returns whether THIS call made the transition. Callers mirror the outcome
+ * onto linked rows only when it returns true, so a confirmation that another
+ * path already applied (the events oracle, the stuck-op sweep, a replay) has
+ * no second side effect (#824).
  */
 export async function markConfirmed(
   opId: string,
   txHash: string
-): Promise<void> {
+): Promise<boolean> {
   assertTransition('SUBMITTED', 'CONFIRMED')
   // Guarded on SUBMITTED: if the op already moved on (e.g. a stale in-flight
   // execution finishing after a reconciler re-queued it), don't overwrite.
@@ -205,6 +210,7 @@ export async function markConfirmed(
       opId,
     })
   }
+  return result.count === 1
 }
 
 /**
@@ -546,19 +552,32 @@ export async function findStuckSubmittedOps(
  */
 export async function mirrorLinkedTransaction(
   payload: OutboxPayload,
-  outcome: { txHash?: string; status: 'CONFIRMED' | 'FAILED' }
+  outcome: { txHash?: string; status: 'CONFIRMED' | 'FAILED' | 'CANCELLED' }
 ): Promise<void> {
   // Protection fund payouts have no Transaction row but need balance/claim
   // updates on confirmed delivery (#651).
   if (payload.method === 'protection_fund_payout') {
     if (outcome.status === 'CONFIRMED') {
-      await db.protectionFundBalance.updateMany({
-        where: { assetSymbol: payload.assetSymbol },
-        data: { amount: { decrement: payload.amount } },
-      })
-      await db.coverageClaim.updateMany({
-        where: { id: payload.claimId },
-        data: { status: 'PAID' },
+      // Exactly once per claim (#824): the claim's move to PAID is the
+      // receipt. Only the call that makes that move debits the fund, and both
+      // happen in one transaction, so a replayed or concurrent confirmation
+      // finds the claim already PAID and changes nothing.
+      await db.$transaction(async (tx) => {
+        const claim = await tx.coverageClaim.updateMany({
+          where: { id: payload.claimId, status: { not: 'PAID' } },
+          data: { status: 'PAID' },
+        })
+        if (claim.count !== 1) {
+          logger.warn(
+            '[Outbox] Protection fund payout already settled — not debiting again',
+            { claimId: payload.claimId }
+          )
+          return
+        }
+        await tx.protectionFundBalance.updateMany({
+          where: { assetSymbol: payload.assetSymbol },
+          data: { amount: { decrement: payload.amount } },
+        })
       })
     }
     return
@@ -566,8 +585,13 @@ export async function mirrorLinkedTransaction(
   // Some payload kinds have no linked Transaction row; nothing to mirror.
   if (!('transactionId' in payload)) return
   // updateMany (not update) so a missing row is a silent no-op, not a throw.
+  // A FAILED or CANCELLED outcome never overwrites a row that is already
+  // CONFIRMED: a replayed or late failure must not undo a settled one (#822).
   await db.transaction.updateMany({
-    where: { id: payload.transactionId },
+    where:
+      outcome.status === 'CONFIRMED'
+        ? { id: payload.transactionId }
+        : { id: payload.transactionId, status: { not: 'CONFIRMED' } },
     data: {
       txHash: outcome.txHash, // undefined -> Prisma leaves the column untouched
       status: outcome.status,

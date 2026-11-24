@@ -50,6 +50,26 @@ function isPlatformReference(hash: string): boolean {
 }
 
 /**
+ * Close the ledger row the monitor queued for a sale that did not happen
+ * (#823). It becomes CANCELLED, never CONFIRMED, so statements, audit and tax
+ * reporting show no collateral sale. Guarded on PENDING so it never touches a
+ * row a real sale already settled.
+ */
+async function cancelSkippedLiquidation(
+  tx: { transaction: { updateMany: (args: any) => Promise<unknown> } },
+  payload: { loanId: string; transactionId: string },
+  reason: string
+): Promise<void> {
+  await tx.transaction.updateMany({
+    where: { id: payload.transactionId, status: 'PENDING' },
+    data: {
+      status: 'CANCELLED',
+      memo: `Collateral liquidation skipped: ${reason} (loan:${payload.loanId})`,
+    },
+  })
+}
+
+/**
  * Execute a planned protective sale. Called from src/outbox/executors.ts —
  * the single submission site for every money movement in the platform — and
  * directly from the test suite.
@@ -93,6 +113,7 @@ export async function applyLoanLiquidationSale(
       interestAccruedTo: Date
       interestRateApy: unknown
       liquidationLtvThreshold: unknown
+      liquidationOutboxOpId?: string | null
       position: {
         id: string
         status: string
@@ -103,13 +124,20 @@ export async function applyLoanLiquidationSale(
       }
     } | null
 
-    // Already handled: the op was replayed, or a concurrent sweep got here
-    // first. Report success — the end state the caller wanted is true.
+    // Nothing to sell any more. Two very different cases (#823):
+    //  - this op's own sale already ran and the op is being replayed: the
+    //    ledger row was confirmed by that sale, so report it as done;
+    //  - the loan was repaid or settled by something else: no collateral was
+    //    sold, so the queued ledger row is cancelled, never confirmed.
     if (!loan || loan.status !== 'ACTIVE') {
-      return {
-        outcome: 'NOOP' as const,
-        reference: liquidationReference(payload.loanId, payload.sequence),
-      }
+      const ownSale =
+        !!loan &&
+        loan.liquidationOutboxOpId ===
+          (payload.outboxOpId ?? payload.transactionId)
+      const reference = liquidationReference(payload.loanId, payload.sequence)
+      if (ownSale) return { outcome: 'REPLAYED' as const, reference }
+      await cancelSkippedLiquidation(tx, payload, 'loan is no longer active')
+      return { outcome: 'NOOP' as const, reference }
     }
 
     // Level interest with the clock before valuing, so the decision is made
@@ -134,6 +162,7 @@ export async function applyLoanLiquidationSale(
     const ltv = currentLtv({ debt, collateralValue })
 
     if (!options.force && !isLiquidationTriggered(ltv, threshold)) {
+      await cancelSkippedLiquidation(tx, payload, 'position healed')
       return {
         outcome: 'HEALED' as const,
         reference: liquidationReference(payload.loanId, payload.sequence),
@@ -157,6 +186,7 @@ export async function applyLoanLiquidationSale(
     })
 
     if (plan.collateralToSell <= 0 && plan.shortfall <= 0) {
+      await cancelSkippedLiquidation(tx, payload, 'nothing to sell')
       return {
         outcome: 'HEALED' as const,
         reference: liquidationReference(payload.loanId, payload.sequence),
@@ -284,13 +314,22 @@ export async function applyLoanLiquidationSale(
     }
   })
 
+  if (outcome.outcome === 'REPLAYED') {
+    logger.info('[Lending] Liquidation op replayed after its sale', {
+      loanId: payload.loanId,
+    })
+    return { hash: outcome.reference, status: 'success' }
+  }
+
   if (outcome.outcome === 'NOOP' || outcome.outcome === 'HEALED') {
     logger.info('[Lending] Liquidation op found nothing to do', {
       loanId: payload.loanId,
       outcome: outcome.outcome,
       ltv: outcome.outcome === 'HEALED' ? outcome.ltv : undefined,
     })
-    return { hash: outcome.reference, status: 'success' }
+    // The op itself is done (it confirms), but nothing was sold: `skipped`
+    // tells the dispatcher not to mirror the ledger row as CONFIRMED (#823).
+    return { hash: outcome.reference, status: 'success', skipped: true }
   }
 
   // ── Notify, outside the transaction ────────────────────────────────────────
