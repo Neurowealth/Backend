@@ -359,6 +359,8 @@ export async function triggerRebalance(
     deviationTrigger?: string
     /** PublishedStrategy this config was copied from (#285). Attribution only. */
     followedStrategyId?: string | null
+    /** Skip every write. Used by the assistant dry-run preview. */
+    dryRun?: boolean
   }
 ): Promise<RebalanceDetails | null> {
   const startTime = Date.now()
@@ -377,6 +379,16 @@ export async function triggerRebalance(
       amount,
       expectedApyBasisPoints,
     })
+
+    if (strategyInfo?.dryRun) {
+      return {
+        fromProtocol,
+        toProtocol,
+        amount,
+        timestamp: new Date(),
+        improvedBy: comparison.improvement,
+      }
+    }
 
     // #325: a rebalance is a LOW-priority, durable, NON-BLOCKING outbox op —
     // the loop enqueues the intent (transactionally with the Transaction row)
@@ -518,11 +530,13 @@ export async function triggerRebalance(
       duration,
     })
 
-    await logAgentAction('REBALANCE', 'FAILED', {
-      fromProtocol,
-      toProtocol,
-      error: errorMessage,
-    })
+    if (!strategyInfo?.dryRun) {
+      await logAgentAction('REBALANCE', 'FAILED', {
+        fromProtocol,
+        toProtocol,
+        error: errorMessage,
+      })
+    }
 
     return null
   }
@@ -538,6 +552,11 @@ export interface RebalanceBatchContext {
    * targets so a broken protocol is never moved INTO.
    */
   blockedProtocols?: string[]
+  /**
+   * Preview only. The decision is computed and returned, but no outbox op,
+   * transaction, agent log, or decision row is written.
+   */
+  dryRun?: boolean
 }
 
 /**
@@ -602,6 +621,7 @@ export async function executeRebalanceIfNeeded(
       trace: DecisionTrace
       outboxOpId?: string | null
     }): Promise<string | null> => {
+      if (batchContext?.dryRun) return null
       return persistRebalanceDecision({
         batchKey: ctxBatchKey,
         fromProtocol: currentProtocol,
@@ -1018,7 +1038,7 @@ export async function executeRebalanceIfNeeded(
 
         if (moves.length === 0) {
           // Either already on target or the caps made every allocation zero.
-          if (plan.unplacedFraction > 0) {
+          if (plan.unplacedFraction > 0 && !batchContext?.dryRun) {
             await logAgentAction('REBALANCE', 'SKIPPED', {
               input: {
                 currentProtocol,
@@ -1071,6 +1091,7 @@ export async function executeRebalanceIfNeeded(
             reasoning: decision.reasoning,
             deviationTrigger: decision.deviationTrigger,
             followedStrategyId: userStrategyPreferences[0]?.followedStrategyId,
+            dryRun: batchContext?.dryRun === true,
           }
         )
         if (rebalanceResult) {
@@ -1201,6 +1222,7 @@ export async function executeRebalanceIfNeeded(
         name: 'MAX_YIELD',
         reasoning: `Moving from ${currentProtocol} to ${comparison.best.name} — net gain ${comparison.improvement.toFixed(2)}% after costs`,
         deviationTrigger: `APY delta: ${(comparison.best.apy - comparison.current.apy).toFixed(2)}%`,
+        dryRun: batchContext?.dryRun === true,
       }
     )
     if (defaultRebalanceResult && comparison.trace) {

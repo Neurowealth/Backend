@@ -21,7 +21,11 @@ import {
   executeDeposit,
   executeWithdraw,
 } from '../../controllers/transaction-controller'
-import { executeRebalanceIfNeeded, getThresholds, compareProtocols } from '../router'
+import {
+  executeRebalanceIfNeeded,
+  getThresholds,
+  compareProtocols,
+} from '../router'
 import {
   resolveEffectiveConfig,
   isKnownStrategyName,
@@ -30,6 +34,7 @@ import {
   loadActiveFollowsForUsers,
   followStrategy,
   unfollowStrategy,
+  getActiveFollow,
 } from '../../strategy/service'
 import { addCadence } from '../../utils/cadence'
 import { createAlertRuleSchema } from '../../validators/alert-validators'
@@ -355,15 +360,13 @@ export const rebalanceTool = defineTool({
       if (breakerStatus.global !== null) {
         return {
           ok: false,
-          error:
-            `Rebalancing is currently halted by a global circuit breaker (${breakerStatus.global}). Please try again later.`,
+          error: `Rebalancing is currently halted by a global circuit breaker (${breakerStatus.global}). Please try again later.`,
         }
       }
       if (breakerStatus.affectingYou.length > 0) {
         return {
           ok: false,
-          error:
-            `Rebalancing is currently paused for your account: ${breakerStatus.affectingYou[0]}`,
+          error: `Rebalancing is currently paused for your account: ${breakerStatus.affectingYou[0]}`,
         }
       }
       // blockedTargetProtocols is derived from protocol-level open breakers;
@@ -372,10 +375,13 @@ export const rebalanceTool = defineTool({
       // via its own protocol-breaker check when preferences are present.
       blockedTargetProtocols = []
     } catch (err) {
-      logger.error('[rebalanceTool] Breaker check failed; blocking rebalance (fail-closed)', {
-        userId: ctx.userId,
-        error: err instanceof Error ? err.message : String(err),
-      })
+      logger.error(
+        '[rebalanceTool] Breaker check failed; blocking rebalance (fail-closed)',
+        {
+          userId: ctx.userId,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      )
       return {
         ok: false,
         error:
@@ -404,13 +410,16 @@ export const rebalanceTool = defineTool({
       }
     }
 
-    const follow = (await loadActiveFollowsForUsers([ctx.userId])).get(ctx.userId)
+    const follow = (await loadActiveFollowsForUsers([ctx.userId])).get(
+      ctx.userId
+    )
 
     // #763: include exposureCaps and defaultMaxFraction that the loop passes but
     // the tool previously omitted, so the router's exposure-cap guard applies.
     const own = {
       strategyName: (user.rebalanceStrategy || null) as any,
-      targetAllocations: (user.strategyConfig as any)?.targetAllocations || undefined,
+      targetAllocations:
+        (user.strategyConfig as any)?.targetAllocations || undefined,
       riskCeiling: (user.strategyConfig as any)?.riskCeiling,
       exposureCaps: (user.strategyConfig as any)?.exposureCaps,
       defaultMaxFraction: (user.strategyConfig as any)?.defaultMaxFraction,
@@ -472,7 +481,11 @@ export const rebalanceTool = defineTool({
         // (MAX_YIELD default). For users with strategy context use executeRebalanceIfNeeded
         // in read-only mode (no positions array mutation, no outbox) for correctness.
         if (!hasStrategyContext) {
-          const comparison = await compareProtocols(protocol, totalAmount, thresholds)
+          const comparison = await compareProtocols(
+            protocol,
+            totalAmount,
+            thresholds
+          )
           previews.push({
             protocol,
             wouldRebalance: comparison?.shouldRebalance ?? false,
@@ -796,7 +809,12 @@ export const unfollowStrategyTool = defineTool({
     }
 
     try {
-      await unfollowStrategy(ctx.userId)
+      const follow = await getActiveFollow(ctx.userId)
+      const strategyId = follow?.publishedStrategyId ?? follow?.id
+      if (!strategyId) {
+        return { ok: false, error: 'Active follow not found.' }
+      }
+      await unfollowStrategy(ctx.userId, strategyId)
       return { ok: true, data: { unfollowed: true } }
     } catch (err) {
       return {
@@ -807,3 +825,14 @@ export const unfollowStrategyTool = defineTool({
     }
   },
 })
+
+export const ACTION_TOOLS = [
+  depositTool,
+  withdrawTool,
+  rebalanceTool,
+  createRecurringDepositTool,
+  createAlertRuleTool,
+  adjustStrategyTool,
+  followStrategyTool,
+  unfollowStrategyTool,
+] as const
