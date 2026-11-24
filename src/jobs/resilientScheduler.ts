@@ -35,27 +35,31 @@ export type JobRunGuard = (
 ) => Promise<void>
 
 /**
- * Per-tick cross-pod lock (#636). `pg_try_advisory_xact_lock` is used rather
- * than session-scoped `pg_advisory_lock` because Prisma hands pooled
- * connections back between calls — a session lock would leak across queries.
- * The xact lock is released when the transaction commits or rolls back.
+ * Per-tick cross-pod lock (#636). A short transaction acquires the lock and
+ * releases it when the transaction ends, allowing the task to run outside the
+ * transaction. This prevents database errors from aborting all retries and
+ * avoids holding the lock across backoff sleeps or long-running tasks that
+ * might exceed the transaction timeout.
  */
 export const withPostgresJobLock: JobRunGuard = async (jobName, task) => {
-  await db.$transaction(
+  const locked = await db.$transaction(
     async (tx) => {
       const rows: Array<{ locked: boolean }> = await tx.$queryRaw`
         SELECT pg_try_advisory_xact_lock(hashtext(${jobName})) AS locked
       `
-      if (!rows[0]?.locked) {
-        logger.info(
-          `[JobScheduler] ${jobName} skipped; another replica holds the tick lock`
-        )
-        return
-      }
-      await task()
+      return rows[0]?.locked ?? false
     },
-    { timeout: 600_000, maxWait: 2_000 }
+    { timeout: 10_000, maxWait: 2_000 }
   )
+
+  if (!locked) {
+    logger.info(
+      `[JobScheduler] ${jobName} skipped; another replica holds the tick lock`
+    )
+    return
+  }
+
+  await task()
 }
 
 /** Escape hatch for tests and single-replica local runs. */
