@@ -24,16 +24,18 @@ jest.mock('../../../src/db', () => {
   const create = jest.fn()
   const update = jest.fn()
   const upsert = jest.fn()
-  const $transaction = jest.fn()
+  const $queryRaw = jest.fn()
+  const aggregate = jest.fn()
   const userFindUnique = jest.fn()
   const client: any = {
     user: { findUnique: userFindUnique },
     protectionFundBalance: { findUnique, upsert, update },
     protectionFundContribution: { create, findMany },
     coverageEvent: { create, findUnique, update, findMany },
-    coverageClaim: { create, findUnique, update, findMany },
+    coverageClaim: { create, findUnique, update, findMany, aggregate },
     position: { findMany },
-    $transaction,
+    $queryRaw,
+    $transaction: jest.fn(async (callback) => callback(client)),
   }
   return {
     __esModule: true,
@@ -45,6 +47,8 @@ jest.mock('../../../src/db', () => {
     __mockUpdate: update,
     __mockUpsert: upsert,
     __mockUserFindUnique: userFindUnique,
+    __mockQueryRaw: $queryRaw,
+    __mockClaimAggregate: aggregate,
   }
 })
 
@@ -66,10 +70,14 @@ const mockFindMany: jest.Mock = dbMock.__mockFindMany
 const mockCreate: jest.Mock = dbMock.__mockCreate
 const mockUpdate: jest.Mock = dbMock.__mockUpdate
 const mockUpsert: jest.Mock = dbMock.__mockUpsert
+const mockQueryRaw: jest.Mock = dbMock.__mockQueryRaw
+const mockClaimAggregate: jest.Mock = dbMock.__mockClaimAggregate
 
 describe('src/protectionFund/service', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    mockQueryRaw.mockResolvedValue([])
+    mockClaimAggregate.mockResolvedValue({ _sum: { payoutAmount: null } })
   })
 
   describe('getCoverageTerms', () => {
@@ -198,6 +206,55 @@ describe('src/protectionFund/service', () => {
       expect(coverage.totalPositions).toBe(1)
       expect(coverage.coveredProtocols).toContain('Blend')
       expect(coverage.exposure[0].eligibleForCoverage).toBe(true)
+    })
+  })
+
+  describe('computeClaimsForEvent', () => {
+    it('allocates only the balance not already reserved by pending claims', async () => {
+      mockFindUnique
+        .mockResolvedValueOnce({
+          id: 'event-2',
+          protocolName: 'Blend',
+          lossWindowStart: '2026-09-01T00:00:00Z',
+          lossWindowEnd: '2026-09-02T00:00:00Z',
+        })
+        .mockResolvedValueOnce({ amount: new Prisma.Decimal(100) })
+      mockClaimAggregate.mockResolvedValue({
+        _sum: { payoutAmount: new Prisma.Decimal(70) },
+      })
+      mockFindMany.mockResolvedValue([
+        {
+          id: 'position-2',
+          userId: 'user-2',
+          protocolName: 'Blend',
+          status: 'ACTIVE',
+          openedAt: new Date('2026-08-01T00:00:00Z'),
+          currentValue: new Prisma.Decimal(0),
+          transactions: [
+            {
+              type: 'DEPOSIT',
+              amount: new Prisma.Decimal(100),
+              createdAt: new Date('2026-09-01T12:00:00Z'),
+            },
+          ],
+        },
+      ])
+      mockCreate.mockResolvedValue({ id: 'claim-2', status: 'PENDING' })
+
+      const claims = await computeClaimsForEvent('event-2')
+
+      expect(claims).toEqual([
+        expect.objectContaining({
+          payoutAmount: 30,
+          coverageType: 'PRORATED',
+          status: 'PENDING',
+        }),
+      ])
+      expect(mockClaimAggregate).toHaveBeenCalledWith({
+        where: { status: 'PENDING' },
+        _sum: { payoutAmount: true },
+      })
+      expect(mockQueryRaw).toHaveBeenCalled()
     })
   })
 
