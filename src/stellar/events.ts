@@ -738,6 +738,7 @@ async function fetchAllEventsInRange(
   // ledger range should never need more than a few thousand pages of 100
   // events, so this caps runaway pagination rather than looping forever.
   const MAX_PAGES = 1000
+  let donePaginating = false
 
   for (let page = 0; page < MAX_PAGES; page++) {
     const response = await server.getEvents(
@@ -777,7 +778,7 @@ async function fetchAllEventsInRange(
     }
 
     const nextCursor = response.cursor
-    const donePaginating =
+    donePaginating =
       crossedBoundary ||
       response.events.length < PAGE_LIMIT ||
       !nextCursor ||
@@ -785,6 +786,18 @@ async function fetchAllEventsInRange(
 
     if (donePaginating) break
     cursor = nextCursor
+  }
+
+  // Hitting MAX_PAGES without a terminating condition means this range is
+  // not fully fetched — returning what was collected so far as if it were
+  // complete would let the caller advance the cursor past unprocessed
+  // events (#820). Fail loudly instead: both callers already propagate a
+  // thrown error up to a catch that skips persisting the cursor and retries
+  // the same range on the next poll.
+  if (!donePaginating) {
+    throw new Error(
+      `[Event Listener] Exceeded ${MAX_PAGES} pages fetching events for ledgers ${startLedger}-${endLedger}; aborting without treating the range as complete`
+    )
   }
 
   return contractEvents
