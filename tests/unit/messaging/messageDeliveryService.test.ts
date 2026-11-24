@@ -8,6 +8,8 @@ import {
   MessageDeliveryService,
   messageDeliveryService,
 } from '../../../src/messaging/service'
+import db from '../../../src/db'
+import type { MessageDeliveryRecord } from '../../../src/messaging/types'
 import * as telegramClient from '../../../src/utils/telegram-client'
 import * as twilioClient from '../../../src/utils/twilio-client'
 import { alertingService } from '../../../src/services/alerting'
@@ -267,5 +269,132 @@ describe('MessageDeliveryService (#493)', () => {
       expect(onlyAlerts.total).toBe(1)
       expect(onlyAlerts.messages[0].category).toBe('ALERT')
     })
+  })
+})
+
+describe('Message delivery queue claims', () => {
+  type Delegate = typeof db.messageDelivery
+  const delegate: {
+    [Method in 'create' | 'findMany' | 'findUnique' | 'updateMany']: (
+      ...args: Parameters<Delegate[Method]>
+    ) => Promise<Awaited<ReturnType<Delegate[Method]>>>
+  } = db.messageDelivery
+  let rows: Map<string, MessageDeliveryRecord>
+  const input = {
+    channel: 'TELEGRAM' as const,
+    recipient: 'chat-id',
+    body: 'queued message',
+  }
+
+  beforeEach(() => {
+    rows = new Map()
+    messageDeliveryService.clearStoreForTests()
+    jest.spyOn(delegate, 'create').mockImplementation(async ({ data }) => {
+      const row = { ...data } as MessageDeliveryRecord
+      rows.set(row.id, row)
+      return row as Awaited<ReturnType<typeof delegate.create>>
+    })
+    jest
+      .spyOn(delegate, 'findMany')
+      .mockImplementation(
+        async () =>
+          [...rows.values()]
+            .filter((row) => row.status === 'PENDING')
+            .map((row) => ({ ...row })) as Awaited<
+            ReturnType<typeof delegate.findMany>
+          >
+      )
+    jest.spyOn(delegate, 'findUnique').mockResolvedValue(null)
+    jest
+      .spyOn(delegate, 'updateMany')
+      .mockImplementation(async ({ where, data }) => {
+        let count = 0
+        for (const row of rows.values()) {
+          if (where?.id !== undefined && row.id !== where.id) continue
+          if (row.status !== where?.status) continue
+          if (
+            where?.updatedAt instanceof Date &&
+            row.updatedAt.getTime() !== where.updatedAt.getTime()
+          )
+            continue
+          if (
+            where?.updatedAt &&
+            typeof where.updatedAt === 'object' &&
+            'lt' in where.updatedAt &&
+            where.updatedAt.lt instanceof Date &&
+            row.updatedAt >= where.updatedAt.lt
+          )
+            continue
+          Object.assign(row, data)
+          count++
+        }
+        return { count }
+      })
+    jest
+      .spyOn(messageDeliveryService, 'refreshQueueMetrics')
+      .mockResolvedValue(undefined)
+  })
+
+  afterEach(() => jest.restoreAllMocks())
+
+  it('sends each queued message once when two sweeps read the same rows', async () => {
+    const send = jest
+      .spyOn(telegramClient, 'sendTelegramMessage')
+      .mockResolvedValue({ ok: true, messageId: 'provider-id' })
+    await messageDeliveryService.send(input, { immediate: false })
+    const results = await Promise.all([
+      messageDeliveryService.processPendingQueue(),
+      messageDeliveryService.processPendingQueue(),
+    ])
+
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(results.map(({ processed }) => processed).sort()).toEqual([0, 1])
+  })
+
+  it('retries a stale claim and leaves a recent claim in flight', async () => {
+    const send = jest
+      .spyOn(telegramClient, 'sendTelegramMessage')
+      .mockResolvedValue({ ok: true, messageId: 'provider-id' })
+    const stale = await messageDeliveryService.send(input, { immediate: false })
+    const fresh = await messageDeliveryService.send(input, { immediate: false })
+    rows.set(stale.id, {
+      ...stale,
+      status: 'SENDING',
+      updatedAt: new Date(Date.now() - 6 * 60_000),
+    })
+    rows.set(fresh.id, { ...fresh, status: 'SENDING' })
+
+    await expect(
+      messageDeliveryService.processPendingQueue()
+    ).resolves.toMatchObject({
+      processed: 1,
+      delivered: 1,
+    })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(rows.get(stale.id)?.status).toBe('DELIVERED')
+    expect(rows.get(fresh.id)?.status).toBe('SENDING')
+  })
+
+  it('keeps production messages out of the in-memory store', async () => {
+    jest
+      .spyOn(telegramClient, 'sendTelegramMessage')
+      .mockResolvedValue({ ok: true, messageId: 'provider-id' })
+    const env = process.env
+    process.env = { ...env, NODE_ENV: 'production' }
+    try {
+      const messages = await Promise.all(
+        Array.from({ length: 100 }, () => messageDeliveryService.send(input))
+      )
+      expect(rows.size).toBe(100)
+      expect(messages.every((record) => record.status === 'DELIVERED')).toBe(
+        true
+      )
+      const results = await Promise.all(
+        messages.map(({ id }) => messageDeliveryService.getMessage(id))
+      )
+      expect(results.every((record) => record === null)).toBe(true)
+    } finally {
+      process.env = env
+    }
   })
 })

@@ -32,8 +32,11 @@ jest.mock('../../../src/utils/metrics', () => ({
   mailWebhookRejectionsTotal: { inc: jest.fn() },
 }))
 
+const TIMESTAMP = '2025-01-01T00:00:00.000Z'
+const NOW = Date.parse(TIMESTAMP)
+const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:ses-webhook'
 const PUBLIC_KEY = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 })
-// SPKI PEM is what AWS publishes at SigningCertUrl and what createPublicKey
+// SPKI PEM is what AWS publishes at SigningCertURL and what createPublicKey
 // accepts as the certificate's public key.
 const PUBLIC_PEM = PUBLIC_KEY.publicKey
   .export({ type: 'spki', format: 'pem' })
@@ -49,8 +52,8 @@ function makeEnvelope(partial: PartialEnvelope = {}): SnsMessage {
     Message: 'hello-from-sns',
     Timestamp: '2025-01-01T00:00:00.000Z',
     SignatureVersion: '2',
-    SigningCertUrl:
-      'https://sns.us-east-1.amazonaws.com/simple-notification-certificate.pem',
+    SigningCertURL:
+      'https://sns.us-east-1.amazonaws.com/SimpleNotificationService-123abc.pem',
     ...partial,
   }
 }
@@ -98,7 +101,8 @@ function makeVerifier(
     jest.fn().mockResolvedValue(PUBLIC_PEM)) as jest.Mock
   const verifier = createSnsSignatureVerifier({
     fetchCert,
-    now: options.now,
+    now: options.now ?? (() => NOW),
+    topicArns: [TOPIC_ARN],
     cacheTtlMs: options.cacheTtlMs,
   })
   return { verifier, fetchCert }
@@ -118,13 +122,13 @@ describe('buildSignableString (#524)', () => {
     )
   })
 
-  it('prepends Subject only when present', () => {
+  it('includes Subject after MessageId when present', () => {
     const withSubject = buildSignableString(
       makeEnvelope({ Subject: 'You have alert' })
     )
-    expect(withSubject.startsWith('Subject\nYou have alert\n')).toBe(true)
-    // Notification ordering: Subject first, then Message and the rest.
-    expect(withSubject).toMatch(/^Subject\n[^\n]+\nMessage\nhello-from-sns\n/)
+    expect(withSubject).toMatch(
+      /^Message\nhello-from-sns\nMessageId\nmessage-id-1\nSubject\nYou have alert\nTimestamp\n/
+    )
   })
 
   it('omits absent fields rather than emitting empty values', () => {
@@ -202,7 +206,32 @@ describe('createSnsSignatureVerifier (#524)', () => {
     ).resolves.toEqual({
       ok: true,
     })
-    expect(fetchCert).toHaveBeenCalledWith(makeEnvelope().SigningCertUrl)
+    expect(fetchCert).toHaveBeenCalledWith(makeEnvelope().SigningCertURL)
+  })
+
+  it('rejects a signed notification from a different topic before fetching its cert', async () => {
+    const { verifier, fetchCert } = makeVerifier()
+    const message = signEnvelope(
+      makeEnvelope({ TopicArn: TOPIC_ARN + '-other' })
+    )
+    await expect(verifier.verify(message)).resolves.toEqual({
+      ok: false,
+      reason: 'unexpected_topic',
+    })
+    expect(fetchCert).not.toHaveBeenCalled()
+  })
+
+  it('rejects a signed notification older than 15 minutes', async () => {
+    const { verifier, fetchCert } = makeVerifier({
+      now: () => NOW + 15 * 60_000 + 1,
+    })
+    await expect(
+      verifier.verify(signEnvelope(makeEnvelope()))
+    ).resolves.toEqual({
+      ok: false,
+      reason: 'invalid_timestamp',
+    })
+    expect(fetchCert).not.toHaveBeenCalled()
   })
 
   it('accepts a signature built with SHA-1 (SignatureVersion 1)', async () => {
@@ -242,8 +271,8 @@ describe('createSnsSignatureVerifier (#524)', () => {
     const { verifier, fetchCert } = makeVerifier()
     const message = signEnvelope(
       makeEnvelope({
-        SigningCertUrl:
-          'https://attacker.example.com/simple-notification-certificate.pem',
+        SigningCertURL:
+          'https://attacker.example.com/SimpleNotificationService-123abc.pem',
       })
     )
     await expect(verifier.verify(message)).resolves.toEqual({
@@ -261,7 +290,7 @@ describe('createSnsSignatureVerifier (#524)', () => {
     'rejects a certificate URL with %s before fetching',
     async (_label, url) => {
       const { verifier, fetchCert } = makeVerifier()
-      const message = signEnvelope(makeEnvelope({ SigningCertUrl: url }))
+      const message = signEnvelope(makeEnvelope({ SigningCertURL: url }))
       await expect(verifier.verify(message)).resolves.toEqual({
         ok: false,
         reason: 'bad_cert_url',
@@ -308,8 +337,8 @@ describe('createSnsSignatureVerifier (#524)', () => {
       Timestamp: '2025-01-01T00:00:00.000Z',
       Token: 'token-abc',
       SubscribeURL: 'https://sns.us-east-1.amazonaws.com/confirm/sub?token=abc',
-      SigningCertUrl:
-        'https://sns.us-east-1.amazonaws.com/simple-notification-certificate.pem',
+      SigningCertURL:
+        'https://sns.us-east-1.amazonaws.com/SimpleNotificationService-123abc.pem',
     })
     await expect(verifier.verify(confirmation)).resolves.toEqual({ ok: true })
   })
@@ -324,13 +353,13 @@ describe('createSnsSignatureVerifier (#524)', () => {
       Timestamp: '2025-01-01T00:00:00.000Z',
       Token: 'token-abc',
       SubscribeURL: 'https://sns.us-east-1.amazonaws.com/confirm/sub?token=abc',
-      SigningCertUrl:
-        'https://sns.us-east-1.amazonaws.com/simple-notification-certificate.pem',
+      SigningCertURL:
+        'https://sns.us-east-1.amazonaws.com/SimpleNotificationService-123abc.pem',
     })
     delete (confirmation as Partial<SnsMessage>).Token
     await expect(verifier.verify(confirmation)).resolves.toEqual({
       ok: false,
-      reason: 'invalid_signature',
+      reason: 'missing_signing_fields',
     })
   })
 
@@ -369,12 +398,13 @@ describe('createSnsSignatureVerifier (#524)', () => {
   })
 
   it('caches the certificate per URL within the TTL and refetches after expiry', async () => {
-    let now = 0
+    let now = NOW
     const fetchCert = jest.fn().mockResolvedValue(PUBLIC_PEM)
     const verifier = createSnsSignatureVerifier({
       fetchCert,
       now: () => now,
       cacheTtlMs: 1000,
+      topicArns: [TOPIC_ARN],
     })
     const first = signEnvelope(makeEnvelope({ Message: 'one' }))
     const second = signEnvelope(makeEnvelope({ Message: 'two' }))
@@ -383,13 +413,44 @@ describe('createSnsSignatureVerifier (#524)', () => {
     await verifier.verify(second)
     expect(fetchCert).toHaveBeenCalledTimes(1)
 
-    now = 1500
+    now += 1500
     await verifier.verify(signEnvelope(makeEnvelope({ Message: 'three' })))
     expect(fetchCert).toHaveBeenCalledTimes(2)
   })
 })
 
 describe('SesMailProvider.parseWebhook (#524)', () => {
+  it('confirms a verified SNS subscription without parsing the message as a bounce', async () => {
+    const envelope = signEnvelope(
+      makeEnvelope({
+        Type: 'SubscriptionConfirmation',
+        Message: sesNotificationJson(),
+        Token: 'confirmation-token',
+        SubscribeURL: 'https://sns.us-east-1.amazonaws.com/',
+      })
+    )
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 200 }))
+    try {
+      const provider = new SesMailProvider({
+        snsVerifier: makeVerifier().verifier,
+      })
+      await expect(
+        provider.parseWebhook(JSON.stringify(envelope))
+      ).resolves.toEqual({
+        type: 'subscription_confirmation',
+      })
+      const url = fetchMock.mock.calls[0][0] as URL
+      expect(url.origin).toBe('https://sns.us-east-1.amazonaws.com')
+      expect(url.searchParams.get('Action')).toBe('ConfirmSubscription')
+      expect(url.searchParams.get('TopicArn')).toBe(TOPIC_ARN)
+      expect(url.searchParams.get('Token')).toBe('confirmation-token')
+    } finally {
+      fetchMock.mockRestore()
+    }
+  })
+
   it('maps a signed SES bounce notification to a bounce event', async () => {
     const envelope = signEnvelope(
       makeEnvelope({ Message: sesNotificationJson() })
@@ -450,7 +511,7 @@ describe('SesMailProvider.parseWebhook (#524)', () => {
     const envelope = signEnvelope(
       makeEnvelope({
         Message: sesNotificationJson(),
-        SigningCertUrl: 'https://evil.example.com/cert.pem',
+        SigningCertURL: 'https://evil.example.com/cert.pem',
       })
     )
     const { verifier, fetchCert } = makeVerifier()

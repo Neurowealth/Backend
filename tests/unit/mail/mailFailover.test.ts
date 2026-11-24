@@ -100,7 +100,9 @@ describe('MailRegistry failover (#496)', () => {
       // ...until the 60s recovery timer restores the primary.
       fail = false
       jest.advanceTimersByTime(61_000)
-      const recovered = await registry.deliverQueued(message('third@example.com'))
+      const recovered = await registry.deliverQueued(
+        message('third@example.com')
+      )
 
       expect(recovered.provider).toBe('primary')
       // The primary saw the original failure and the post-recovery send.
@@ -158,5 +160,19 @@ describe('MailRegistry failover (#496)', () => {
       registry.parseWebhook({ notificationType: 'Bounce' })
     ).rejects.toMatchObject({ code: 'SES_WEBHOOK_SIGNATURE_INVALID' })
     expect(fallback.parseWebhook).not.toHaveBeenCalled()
+  })
+  it('skips a mock inbound fallback outside test even when the primary yields no event', async () => {
+    const fallback = makeProvider('mock')
+    const registry = new MailRegistry(makeProvider('smtp'), fallback)
+    const previous = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    try {
+      await expect(
+        registry.parseWebhook({ type: 'bounce' })
+      ).resolves.toBeNull()
+      expect(fallback.parseWebhook).not.toHaveBeenCalled()
+    } finally {
+      process.env.NODE_ENV = previous
+    }
   })
 })

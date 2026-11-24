@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, text } from 'express'
 import { z } from 'zod'
 import db from '../db'
 import { requireAuth } from '../middleware/authenticate'
@@ -370,7 +370,7 @@ import {
 import { handleMailWebhook } from '../controllers/email-identity-controller'
 
 // Unauthenticated provider mail webhook callback (#367)
-router.post('/mail', handleMailWebhook)
+router.post('/mail', text({ type: 'text/plain' }), handleMailWebhook)
 
 // User-scoped outbound webhook management endpoints (#368)
 router.post(

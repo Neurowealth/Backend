@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import type { Prisma } from '@prisma/client'
 import db from '../db'
 import { config } from '../config'
 import { logger } from '../utils/logger'
@@ -30,8 +31,15 @@ import type {
   MessageStats,
 } from './types'
 
-// In-memory fallback cache to ensure zero-loss delivery if DB is temporarily unavailable or mocked in tests
+// Storage for unit tests that run without a database.
 const inMemoryStore = new Map<string, MessageDeliveryRecord>()
+const SENDING_TIMEOUT_MS = 5 * 60 * 1000
+
+class DeliveryPersistenceError extends Error {
+  constructor(readonly cause: unknown) {
+    super('Could not persist the message delivery outcome')
+  }
+}
 
 function sanitizeRecipient(recipient: string): string {
   if (recipient.length <= 6) return '***'
@@ -48,7 +56,7 @@ function shouldQueryDb(): boolean {
       process.env.USE_REAL_DB_FOR_TESTS === 'true'
     )
   }
-  return Boolean((db as any)?.messageDelivery)
+  return true
 }
 
 export class MessageDeliveryService {
@@ -75,89 +83,102 @@ export class MessageDeliveryService {
   }
 
   /**
-   * Persist a delivery record to DB (with memory fallback).
+   * Persist a delivery record before making a provider request.
    */
-  private async persistRecord(
-    record: MessageDeliveryRecord
-  ): Promise<MessageDeliveryRecord> {
-    inMemoryStore.set(record.id, { ...record })
-
+  private async persistRecord(record: MessageDeliveryRecord): Promise<void> {
     if (shouldQueryDb()) {
-      try {
-        await (db as any).messageDelivery.create({
-          data: {
-            id: record.id,
-            channel: record.channel,
-            recipient: record.recipient,
-            userId: record.userId,
-            category: record.category,
-            body: record.body,
-            status: record.status,
-            priority: record.priority,
-            attempts: record.attempts,
-            maxAttempts: record.maxAttempts,
-            nextAttemptAt: record.nextAttemptAt,
-            lastError: record.lastError,
-            providerMessageId: record.providerMessageId,
-            metadata: record.metadata ?? undefined,
-            fallbackChannel: record.fallbackChannel,
-            fallbackRecipient: record.fallbackRecipient,
-            fallbackTriggered: record.fallbackTriggered,
-            deliveredAt: record.deliveredAt,
-          },
-        })
-      } catch (error) {
-        logger.warn(
-          '[Messaging] Could not write message delivery to DB, retained in memory',
-          {
-            id: record.id,
-            error: error instanceof Error ? error.message : String(error),
-          }
-        )
-      }
+      const { metadata, ...data } = record
+      await db.messageDelivery.create({
+        data: {
+          ...data,
+          metadata: (metadata as Prisma.InputJsonObject | null) ?? undefined,
+        },
+      })
+    } else {
+      inMemoryStore.set(record.id, { ...record })
     }
-
-    return record
   }
 
-  /**
-   * Update an existing delivery record in DB and memory.
-   */
   private async updateRecord(
-    record: MessageDeliveryRecord
-  ): Promise<MessageDeliveryRecord> {
+    record: MessageDeliveryRecord,
+    claimTime?: Date
+  ): Promise<void> {
     record.updatedAt = new Date()
-    inMemoryStore.set(record.id, { ...record })
-
-    if (shouldQueryDb()) {
-      try {
-        await (db as any).messageDelivery.update({
-          where: { id: record.id },
-          data: {
-            status: record.status,
-            attempts: record.attempts,
-            nextAttemptAt: record.nextAttemptAt,
-            lastError: record.lastError,
-            providerMessageId: record.providerMessageId,
-            fallbackChannel: record.fallbackChannel,
-            fallbackRecipient: record.fallbackRecipient,
-            fallbackTriggered: record.fallbackTriggered,
-            deliveredAt: record.deliveredAt,
-            updatedAt: record.updatedAt,
-          },
-        })
-      } catch (error) {
-        logger.warn(
-          '[Messaging] Could not update message delivery in DB, updated in memory',
-          {
-            id: record.id,
-            error: error instanceof Error ? error.message : String(error),
-          }
-        )
-      }
+    if (!shouldQueryDb()) {
+      inMemoryStore.set(record.id, { ...record })
+      return
     }
 
-    return record
+    const {
+      status,
+      attempts,
+      nextAttemptAt,
+      lastError,
+      providerMessageId,
+      fallbackChannel,
+      fallbackRecipient,
+      fallbackTriggered,
+      deliveredAt,
+      updatedAt,
+    } = record
+    const data = {
+      status,
+      attempts,
+      nextAttemptAt,
+      lastError,
+      providerMessageId,
+      fallbackChannel,
+      fallbackRecipient,
+      fallbackTriggered,
+      deliveredAt,
+      updatedAt,
+    }
+
+    try {
+      if (claimTime) {
+        const result = await db.messageDelivery.updateMany({
+          where: { id: record.id, status: 'SENDING', updatedAt: claimTime },
+          data,
+        })
+        if (result.count !== 1)
+          throw new Error('Message delivery claim expired')
+      } else {
+        await db.messageDelivery.update({ where: { id: record.id }, data })
+      }
+    } catch (error) {
+      throw new DeliveryPersistenceError(error)
+    }
+  }
+
+  private async claimRecord(
+    record: MessageDeliveryRecord,
+    claimedAt: Date
+  ): Promise<boolean> {
+    if (shouldQueryDb()) {
+      const result = await db.messageDelivery.updateMany({
+        where: {
+          id: record.id,
+          status: 'PENDING',
+          updatedAt: record.updatedAt,
+          OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: claimedAt } }],
+        },
+        data: { status: 'SENDING', updatedAt: claimedAt },
+      })
+      return result.count === 1
+    }
+    const current = inMemoryStore.get(record.id)
+    if (
+      current?.status !== 'PENDING' ||
+      current.updatedAt.getTime() !== record.updatedAt.getTime() ||
+      (current.nextAttemptAt && current.nextAttemptAt > claimedAt)
+    )
+      return false
+    inMemoryStore.set(record.id, {
+      ...current,
+      status: 'SENDING',
+      updatedAt: claimedAt,
+    })
+    return true
   }
 
   /**
@@ -226,8 +247,19 @@ export class MessageDeliveryService {
   public async dispatchSingle(
     record: MessageDeliveryRecord
   ): Promise<MessageDeliveryRecord> {
-    record.status = 'SENDING'
-    await this.updateRecord(record)
+    return (
+      (await this.dispatchPending(record)) ??
+      (await this.getMessage(record.id)) ??
+      record
+    )
+  }
+
+  private async dispatchPending(
+    record: MessageDeliveryRecord
+  ): Promise<MessageDeliveryRecord | null> {
+    const claimedAt = new Date()
+    if (!(await this.claimRecord(record, claimedAt))) return null
+    record = { ...record, status: 'SENDING', updatedAt: claimedAt }
 
     const startTime = Date.now()
 
@@ -262,7 +294,7 @@ export class MessageDeliveryService {
       record.lastError = null
       record.nextAttemptAt = null
 
-      await this.updateRecord(record)
+      await this.updateRecord(record, claimedAt)
       recordMessageDelivery(
         record.channel,
         'DELIVERED',
@@ -281,6 +313,7 @@ export class MessageDeliveryService {
 
       return record
     } catch (error) {
+      if (error instanceof DeliveryPersistenceError) throw error
       const durationSeconds = (Date.now() - startTime) / 1000
       record.attempts += 1
       const errorMessage =
@@ -315,7 +348,7 @@ export class MessageDeliveryService {
         record.status = 'PENDING'
         record.nextAttemptAt = new Date(Date.now() + delayMs)
 
-        await this.updateRecord(record)
+        await this.updateRecord(record, claimedAt)
         recordMessageDelivery(
           record.channel,
           'RETRYING',
@@ -370,7 +403,7 @@ export class MessageDeliveryService {
             record.lastError = null
             record.nextAttemptAt = null
 
-            await this.updateRecord(record)
+            await this.updateRecord(record, claimedAt)
             recordMessageDelivery(
               fallback.channel,
               'DELIVERED_FALLBACK',
@@ -388,6 +421,8 @@ export class MessageDeliveryService {
 
             return record
           } catch (fallbackError) {
+            if (fallbackError instanceof DeliveryPersistenceError)
+              throw fallbackError
             logger.error('[Messaging] Fallback delivery also failed', {
               id: record.id,
               fallbackChannel: fallback.channel,
@@ -408,7 +443,7 @@ export class MessageDeliveryService {
       // No fallback or fallback failed — move to DEAD_LETTER
       record.status = 'DEAD_LETTER'
       record.nextAttemptAt = null
-      await this.updateRecord(record)
+      await this.updateRecord(record, claimedAt)
 
       recordMessageDeadLetter(record.channel)
       recordMessageDelivery(
@@ -513,33 +548,34 @@ export class MessageDeliveryService {
     deadLettered: number
   }> {
     const now = new Date()
-    let candidates: MessageDeliveryRecord[] = []
+    const staleBefore = new Date(now.getTime() - SENDING_TIMEOUT_MS)
+    let candidates: MessageDeliveryRecord[]
 
     if (shouldQueryDb()) {
-      try {
-        candidates = await (db as any).messageDelivery.findMany({
-          where: {
-            status: 'PENDING',
-            OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
-          },
-          orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
-          take: batchSize,
-        })
-      } catch {
-        // Fallback to in-memory store
-      }
-    }
-
-    if (!candidates || candidates.length === 0) {
+      await db.messageDelivery.updateMany({
+        where: { status: 'SENDING', updatedAt: { lt: staleBefore } },
+        data: { status: 'PENDING', nextAttemptAt: null, updatedAt: now },
+      })
+      const rows = await db.messageDelivery.findMany({
+        where: {
+          status: 'PENDING',
+          OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
+        },
+        orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+        take: batchSize,
+      })
+      candidates = rows as MessageDeliveryRecord[]
+    } else {
       candidates = Array.from(inMemoryStore.values())
         .filter(
           (m) =>
             m.status === 'PENDING' &&
-            (!m.nextAttemptAt || m.nextAttemptAt.getTime() <= now.getTime())
+            (!m.nextAttemptAt || m.nextAttemptAt <= now)
         )
         .slice(0, batchSize)
     }
 
+    let processed = 0
     let delivered = 0
     let retried = 0
     let deadLettered = 0
@@ -550,7 +586,9 @@ export class MessageDeliveryService {
       const chunk = candidates.slice(i, i + concurrency)
       await Promise.all(
         chunk.map(async (msg) => {
-          const result = await this.dispatchSingle(msg)
+          const result = await this.dispatchPending(msg)
+          if (!result) return
+          processed++
           if (result.status === 'DELIVERED') delivered++
           else if (result.status === 'PENDING') retried++
           else if (result.status === 'DEAD_LETTER') deadLettered++
@@ -562,7 +600,7 @@ export class MessageDeliveryService {
     await this.refreshQueueMetrics().catch(() => {})
 
     return {
-      processed: candidates.length,
+      processed,
       delivered,
       retried,
       deadLettered,

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import db from '../db'
 import { logger } from '../utils/logger'
-import { pushRegistry } from '../push/pushProvider'
+import { INVALID_PUSH_TOKEN, pushRegistry } from '../push/pushProvider'
 
 const registerPushSchema = z.object({
   token: z.string().min(1),
@@ -136,19 +136,19 @@ export async function sendPushNotification(
       })
 
       if (!result.success) {
-        logger.warn(`Failed to send push to ${deviceToken.token}`, {
+        logger.warn('Failed to send push', {
+          deviceTokenId: deviceToken.id,
           error: result.error,
         })
 
-        if (
-          result.error?.includes('InvalidRegistration') ||
-          result.error?.includes('Unregistered')
-        ) {
-          await db.pushDeviceToken.update({
-            where: { id: deviceToken.id },
+        if (result.error === INVALID_PUSH_TOKEN) {
+          await db.pushDeviceToken.updateMany({
+            where: { id: deviceToken.id, token: deviceToken.token },
             data: { isActive: false },
           })
-          logger.info(`Deactivated invalid push token ${deviceToken.token}`)
+          logger.info('Deactivated invalid push token', {
+            deviceTokenId: deviceToken.id,
+          })
         }
       }
     }

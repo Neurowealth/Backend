@@ -492,6 +492,47 @@ describe('handleMailWebhook (#524)', () => {
     expect(logger.warn).toHaveBeenCalled()
   })
 
+  it.each([
+    [{ event: 'bounce', email: 'user@example.com' }, undefined],
+    [{ type: 'bounce', recipient: 'user@example.com' }, undefined],
+    [{ event: 'bounce', email: 'user@example.com' }, 'ab'],
+  ])(
+    'returns 401 for unauthenticated SMTP payload %j',
+    async (body, signature) => {
+      const { MailRegistry, SmtpMailProvider, MockMailProvider } =
+        jest.requireActual<typeof import('../../../src/mail/mailProvider')>(
+          '../../../src/mail/mailProvider'
+        )
+      const registry = new MailRegistry(
+        new SmtpMailProvider(),
+        new MockMailProvider()
+      )
+      const env = process.env
+      process.env = {
+        ...env,
+        NODE_ENV: 'development',
+        SMTP_WEBHOOK_SECRET: 'test-secret',
+      }
+      mockParseWebhook.mockImplementation(registry.parseWebhook.bind(registry))
+      try {
+        const res = makeRes()
+        await handleMailWebhook(
+          makeReq({
+            body,
+            headers: signature ? { 'x-signature': signature } : {},
+          }),
+          res
+        )
+        expect(res.status).toHaveBeenCalledWith(401)
+        expect(mockFindFirst).not.toHaveBeenCalled()
+        expect(mockUpdate).not.toHaveBeenCalled()
+        expect(mockPublish).not.toHaveBeenCalled()
+      } finally {
+        process.env = env
+      }
+    }
+  )
+
   it('500s on an unexpected registry failure', async () => {
     mockParseWebhook.mockRejectedValue(new Error('db down'))
     const res = makeRes()
