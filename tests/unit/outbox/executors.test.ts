@@ -9,6 +9,10 @@ import {
   executeOutboxPayload,
 } from '../../../src/outbox/executors'
 import { OutboxPayload } from '../../../src/outbox/types'
+import { InvalidOutboxPayloadError } from '../../../src/outbox/errors'
+import { Keypair } from '@stellar/stellar-sdk'
+
+const CLAIM_RECIPIENT = Keypair.random().publicKey()
 
 jest.mock('../../../src/db', () => ({
   __esModule: true,
@@ -278,15 +282,17 @@ describe('executeOutboxPayload — table-driven dispatch (#693)', () => {
       payload: {
         method: 'protection_fund_payout',
         userId: 'u1',
+        userAddress: CLAIM_RECIPIENT,
         amount: 500,
         assetSymbol: 'USDC',
         claimId: 'claim-1',
         eventId: 'event-1',
       } as any,
       expectedCall: () => {
+        // The claim's own address (#825), not the user's custodial wallet.
         expect(withdrawForUser).toHaveBeenCalledWith(
           'u1',
-          'GCUSTODIAL_WALLET',
+          CLAIM_RECIPIENT,
           500,
           'USDC',
           1,
@@ -326,6 +332,31 @@ describe('executeOutboxPayload — table-driven dispatch (#693)', () => {
     expect(result.hash).toBe('platform:liquidation:loan-1:1')
     expect(onSubmitted).toHaveBeenCalledWith(result.hash)
   })
+
+  it.each([
+    ['missing', undefined],
+    ['empty', ''],
+    ['malformed', 'GNOTAKEY'],
+  ])(
+    'refuses a protection_fund_payout with a %s recipient address (#825)',
+    async (_label, userAddress) => {
+      ;(withdrawForUser as jest.Mock).mockClear()
+      const payload = {
+        method: 'protection_fund_payout',
+        userId: 'u1',
+        userAddress,
+        amount: 500,
+        assetSymbol: 'USDC',
+        claimId: 'claim-1',
+        eventId: 'event-1',
+      } as any
+
+      await expect(
+        executeOutboxPayload(payload, 1, onSubmitted)
+      ).rejects.toBeInstanceOf(InvalidOutboxPayloadError)
+      expect(withdrawForUser).not.toHaveBeenCalled()
+    }
+  )
 
   it('throws explicitly for unhandled outbox payload method', async () => {
     await expect(

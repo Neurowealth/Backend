@@ -141,6 +141,27 @@ crash-recovery case: if the original synchronous caller already returned
 (possibly with an error) before the background sweep independently resubmits
 and confirms the same op, the Transaction row still gets updated.
 
+Rules for mirroring:
+
+- **Every terminal path mirrors.** On-chain rejection, retries running out,
+  and the fee-bump cap all set the linked `Transaction` to `FAILED`.
+- **A confirmation mirrors only once.** `markConfirmed` returns whether this
+  call moved the op to `CONFIRMED`, and the outcome is mirrored only when it
+  did. If another path got there first (the events oracle, the stuck-op sweep,
+  a replay), it already mirrored the op.
+- **A failure never undoes a settled row.** A `FAILED` or `CANCELLED` mirror
+  never overwrites a `Transaction` that is already `CONFIRMED`.
+- **Protection fund payouts debit the fund once per claim.** There is no
+  `Transaction` row for a payout. Instead, the claim's move to `PAID` and the
+  fund debit happen in one database transaction, and only the call that moves
+  the claim to `PAID` debits the fund. The payout goes to the claim's
+  `userAddress`. If that address is missing or is not a valid Stellar public
+  key, the op fails on its first attempt and the claim stays `PENDING`.
+- **A liquidation with nothing to sell is not reported as a sale.** The loan
+  may have healed or been settled by the time its op runs. The executor then
+  returns `skipped: true` and sets the queued ledger row to `CANCELLED`, and
+  the dispatcher confirms the op without mirroring `CONFIRMED`.
+
 ## Per-signer serialization & concurrency caps
 
 The custodial/agent wallet submits transactions using that account's Stellar
