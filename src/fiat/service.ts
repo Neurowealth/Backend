@@ -988,13 +988,64 @@ export async function reconcileSingleOrder(
   })
   if (!tx || tx.status !== 'CONFIRMED') return false
   if (tx.userId !== order.userId) {
-    // Hash belongs to a different user — never cross-link funds.
     logger.error('[Fiat] Claimed txHash user mismatch — refusing to link', {
       orderId,
       txHash,
       orderUser: order.userId,
       txUser: tx.userId,
     })
+    return false
+  }
+
+  if (tx.assetSymbol !== order.assetSymbol) {
+    logger.error('[Fiat] Asset symbol mismatch — refusing to link', {
+      orderId,
+      txHash,
+      orderAsset: order.assetSymbol,
+      txAsset: tx.assetSymbol,
+    })
+    return false
+  }
+
+  const isOnRamp = order.direction === 'ON_RAMP'
+  const isInboundTx =
+    tx.type === 'DEPOSIT' ||
+    tx.type === 'INBOUND_TRANSFER' ||
+    tx.type === 'CLAIMABLE_BALANCE_CLAIM'
+
+  if (isOnRamp && !isInboundTx) {
+    logger.error(
+      '[Fiat] ON_RAMP order cannot be settled with outbound transaction — refusing to link',
+      {
+        orderId,
+        txHash,
+        transactionType: tx.type,
+      }
+    )
+    return false
+  }
+
+  if (!isOnRamp && isInboundTx) {
+    logger.error(
+      '[Fiat] OFF_RAMP order cannot be settled with inbound transaction — refusing to link',
+      {
+        orderId,
+        txHash,
+        transactionType: tx.type,
+      }
+    )
+    return false
+  }
+
+  if (!isOnRamp && tx.type !== 'WITHDRAWAL') {
+    logger.error(
+      '[Fiat] OFF_RAMP order must be settled with WITHDRAWAL transaction — refusing to link',
+      {
+        orderId,
+        txHash,
+        transactionType: tx.type,
+      }
+    )
     return false
   }
 
@@ -1006,6 +1057,43 @@ export async function reconcileSingleOrder(
         ? Number(order.cryptoAmount)
         : null
   const fiatAmount = Number(order.fiatAmount)
+
+  if (quotedCryptoAmount && quotedCryptoAmount > 0) {
+    const driftFromQuote =
+      Math.abs(settledCryptoAmount - quotedCryptoAmount) / quotedCryptoAmount
+    if (driftFromQuote > RECONCILE_AMOUNT_TOLERANCE_PCT) {
+      logger.error(
+        '[Fiat] Transaction amount exceeds tolerance — refusing to link',
+        {
+          orderId,
+          txHash,
+          quotedCryptoAmount,
+          settledCryptoAmount,
+          driftPct: driftFromQuote,
+          tolerancePct: RECONCILE_AMOUNT_TOLERANCE_PCT,
+        }
+      )
+      return false
+    }
+  }
+
+  const existingLink = await (database as any).fiatOrder.findFirst({
+    where: {
+      transactionId: tx.id,
+      id: { not: orderId },
+    },
+  })
+  if (existingLink) {
+    logger.error(
+      '[Fiat] Transaction already linked to another order — refusing to link',
+      {
+        orderId,
+        txHash,
+        existingOrderId: existingLink.id,
+      }
+    )
+    return false
+  }
 
   let settledRate: number | null = null
   let driftPct: number | null = null
