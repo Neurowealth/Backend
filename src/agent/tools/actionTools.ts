@@ -160,6 +160,32 @@ export const depositTool = defineTool({
       actingAsUserId: ctx.actingAsUserId ?? null,
     })
 
+    if (result.status === 'PENDING_APPROVAL') {
+      return {
+        ok: true,
+        data: {
+          status: result.status,
+          approvalRequestId: result.approvalRequestId,
+          message:
+            'Your deposit is pending approval. The approval request has been created; no second deposit is needed.',
+        },
+      }
+    }
+
+    if (result.status === 'PENDING' && result.transaction) {
+      return {
+        ok: true,
+        data: {
+          txHash: result.transaction.txHash,
+          status: result.transaction.status,
+          amount: Number(result.transaction.amount),
+          assetSymbol: result.transaction.assetSymbol,
+          message:
+            'Your deposit has been submitted and is pending confirmation. We will update you when it is confirmed.',
+        },
+      }
+    }
+
     if (result.status !== 'CONFIRMED' || !result.transaction) {
       return {
         ok: false,
@@ -249,6 +275,32 @@ export const withdrawTool = defineTool({
       memo: 'assistant withdrawal',
       actingAsUserId: ctx.actingAsUserId ?? null,
     })
+
+    if (result.status === 'PENDING_APPROVAL') {
+      return {
+        ok: true,
+        data: {
+          status: result.status,
+          approvalRequestId: result.approvalRequestId,
+          message:
+            'Your withdrawal is pending approval. The approval request has been created; no second withdrawal is needed.',
+        },
+      }
+    }
+
+    if (result.status === 'PENDING' && result.transaction) {
+      return {
+        ok: true,
+        data: {
+          txHash: result.transaction.txHash,
+          status: result.transaction.status,
+          amount: Number(result.transaction.amount),
+          assetSymbol: result.transaction.assetSymbol,
+          message:
+            'Your withdrawal has been submitted and is pending confirmation. We will update you when it is confirmed.',
+        },
+      }
+    }
 
     if (result.status !== 'CONFIRMED' || !result.transaction) {
       return {
