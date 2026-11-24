@@ -507,6 +507,52 @@ export async function attributeSignup(
 }
 
 /**
+ * #364/#840 — create the vesting tranche schedule for an activated conversion.
+ * Shared by normal activation and FLAGGED approval so an admin-approved
+ * conversion is never left ACTIVATED with zero tranches (and therefore never
+ * silently skipped by the vesting sweep). `createMany` with `skipDuplicates`
+ * keeps retries and repeated approvals idempotent.
+ */
+async function createVestingTranchesForConversion(
+  database: Db,
+  conversion: {
+    id: string
+    calculatedOwnerReward?: unknown
+    calculatedReferredReward?: unknown
+  },
+  activatedAt: Date
+): Promise<void> {
+  if (
+    typeof (database as any).referralRewardTranche?.createMany !== 'function'
+  ) {
+    return
+  }
+
+  const plannedTranches = buildVestingTrancheSchedule({
+    conversionId: conversion.id,
+    activatedAt,
+    ownerRewardTotal: Number(
+      (conversion as any).calculatedOwnerReward ??
+        config.referral.ownerReward ??
+        0
+    ),
+    referredRewardTotal: Number(
+      (conversion as any).calculatedReferredReward ??
+        config.referral.referredReward ??
+        0
+    ),
+    requiresBalanceAtLeast: config.referral.minActivationDeposit,
+  })
+
+  if (plannedTranches.length > 0) {
+    await (database as any).referralRewardTranche.createMany({
+      data: plannedTranches,
+      skipDuplicates: true,
+    })
+  }
+}
+
+/**
  * Called from the confirmed-deposit path (handleDepositEvent) INSIDE the deposit
  * DB transaction. If the depositing user has a PENDING conversion and this
  * confirmed deposit crosses the activation threshold on its own (single-deposit
@@ -603,33 +649,7 @@ export async function checkAndActivateOnDeposit(
       },
     })
 
-    // #364 — Create scheduled vesting tranches when tranche table is available
-    if (
-      typeof (database as any).referralRewardTranche?.createMany === 'function'
-    ) {
-      const plannedTranches = buildVestingTrancheSchedule({
-        conversionId: conversion.id,
-        activatedAt,
-        ownerRewardTotal: Number(
-          (conversion as any).calculatedOwnerReward ??
-            config.referral.ownerReward ??
-            0
-        ),
-        referredRewardTotal: Number(
-          (conversion as any).calculatedReferredReward ??
-            config.referral.referredReward ??
-            0
-        ),
-        requiresBalanceAtLeast: config.referral.minActivationDeposit,
-      })
-
-      if (plannedTranches.length > 0) {
-        await (database as any).referralRewardTranche.createMany({
-          data: plannedTranches,
-          skipDuplicates: true,
-        })
-      }
-    }
+    await createVestingTranchesForConversion(database, conversion, activatedAt)
 
     logger.info('[Referral] Conversion activated by confirmed deposit', {
       conversionId: conversion.id,
@@ -675,16 +695,23 @@ export async function resolveFlaggedConversion(
   }
 
   if (decision === 'approve') {
-    await db.referralConversion.update({
-      where: { id: conversionId },
-      data: {
-        status: ReferralStatus.ACTIVATED,
-        activatedAt: new Date(),
-        reviewedAt: new Date(),
-        reviewedBy: reviewerId ?? null,
-        reviewDecision: 'approved',
-      },
+    const activatedAt = new Date()
+    // #840 — approval is activation: status and tranches commit together, so a
+    // failure can never leave a conversion ACTIVATED with no payout schedule.
+    await db.$transaction(async (tx) => {
+      await tx.referralConversion.update({
+        where: { id: conversionId },
+        data: {
+          status: ReferralStatus.ACTIVATED,
+          activatedAt,
+          reviewedAt: new Date(),
+          reviewedBy: reviewerId ?? null,
+          reviewDecision: 'approved',
+        },
+      })
+      await createVestingTranchesForConversion(tx, conversion, activatedAt)
     })
+
     logger.info('[Referral] Flagged conversion approved by reviewer', {
       conversionId,
       reviewerId,
@@ -822,22 +849,23 @@ export async function payoutActivatedConversions(): Promise<{
   scanned: number
   rewarded: number
 }> {
+  let vestRes: Awaited<
+    ReturnType<typeof sweepVestingTranchesAndClawbacks>
+  > | null = null
   if (typeof (db as any).referralRewardTranche?.findMany === 'function') {
-    const vestRes = await sweepVestingTranchesAndClawbacks(new Date(), db)
-    if (vestRes.conversionsScanned > 0) {
-      return {
-        scanned: vestRes.conversionsScanned,
-        rewarded: vestRes.conversionsRewarded,
-      }
-    }
+    vestRes = await sweepVestingTranchesAndClawbacks(new Date(), db)
   }
 
+  // #840 — the vesting sweep handles conversions that have tranches. The
+  // direct payout path must still scan ACTIVATED rows with NO tranches;
+  // returning early after the sweep stranded those rows forever.
   const pending = await db.referralConversion.findMany({
     where: {
       status: ReferralStatus.ACTIVATED,
       // Skip conversions that require manual review or were rejected (#490)
       manualReviewRequired: false,
       manualReviewRejected: false,
+      tranches: { none: {} },
     },
     orderBy: { activatedAt: 'asc' },
     take: 200,
@@ -975,7 +1003,10 @@ export async function payoutActivatedConversions(): Promise<{
     })
   }
 
-  return { scanned: pending.length, rewarded }
+  return {
+    scanned: pending.length + (vestRes?.conversionsScanned ?? 0),
+    rewarded: rewarded + (vestRes?.conversionsRewarded ?? 0),
+  }
 }
 
 async function recordPayoutFailure(
@@ -1205,10 +1236,7 @@ export async function referralLeaderboard(
  * and status per conversion, upcoming `vestsAt`, and clawback offsets — without
  * ever exposing the referred user's balance.
  */
-export async function getReferralMeSummary(
-  userId: string,
-  database: Db = db
-) {
+export async function getReferralMeSummary(userId: string, database: Db = db) {
   const [referralCode, clawbacks] = await Promise.all([
     (database as any).referralCode.findUnique({
       where: { ownerUserId: userId },
@@ -1275,7 +1303,7 @@ export async function getReferralMeSummary(
         resolvedAt:
           cb.resolvedAt instanceof Date
             ? cb.resolvedAt.toISOString()
-            : cb.resolvedAt ?? null,
+            : (cb.resolvedAt ?? null),
       })),
     },
     conversions: conversions.map((c) => {
@@ -1297,7 +1325,7 @@ export async function getReferralMeSummary(
         activatedAt:
           c.activatedAt instanceof Date
             ? c.activatedAt.toISOString()
-            : c.activatedAt ?? null,
+            : (c.activatedAt ?? null),
         createdAt:
           c.createdAt instanceof Date
             ? c.createdAt.toISOString()
@@ -1318,7 +1346,7 @@ export async function getReferralMeSummary(
           evaluatedAt:
             t.evaluatedAt instanceof Date
               ? t.evaluatedAt.toISOString()
-              : t.evaluatedAt ?? null,
+              : (t.evaluatedAt ?? null),
         })),
         clawbacks: (Array.isArray(c.clawbacks) ? c.clawbacks : []).map(
           (cb: any) => ({

@@ -39,6 +39,18 @@ jest.mock('../../../src/utils/logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }))
 
+// #837 — bot withdrawals are delegated to the real withdrawal service; the
+// helper is mocked here so these confirmation tests stay about the gate.
+const mockExecuteBotWithdrawal = jest.fn()
+jest.mock('../../../src/botWithdrawals', () => ({
+  executeBotWithdrawal: (...args: unknown[]) =>
+    mockExecuteBotWithdrawal(...args),
+}))
+
+jest.mock('../../../src/agent/assistant/assistant', () => ({
+  handleAssistantMessage: jest.fn(),
+}))
+
 // Stub the custodial-wallet creation the chat store triggers, so tests don't
 // touch Stellar/crypto.
 jest.mock('../../../src/stellar/wallet', () => ({
@@ -85,6 +97,11 @@ async function linkedAndFundedChat(
 
 beforeEach(() => {
   jest.clearAllMocks()
+  mockExecuteBotWithdrawal.mockResolvedValue({
+    ok: false,
+    body: 'Withdrawals are temporarily unavailable. No funds have been moved.',
+    reference: null,
+  })
   clearTelegramUsersForTests()
   clearAllPendingConfirmations()
 })
@@ -102,14 +119,20 @@ describe('Telegram financial confirmation (#402)', () => {
     expect(getTelegramUser(String(CHAT))!.balance).toBe(500)
   })
 
-  it('executes the withdrawal only after an affirmative reply', async () => {
+  it('uses the real withdrawal path only after an affirmative reply, and never fakes success', async () => {
     await linkedAndFundedChat(CHAT, 500)
 
     await handleTelegramMessage(CHAT, 'withdraw 50') // parks confirmation
+    expect(mockExecuteBotWithdrawal).not.toHaveBeenCalled()
+
     const res = await handleTelegramMessage(CHAT, 'yes')
 
-    expect(res).toMatch(/withdrawal request received/i)
-    expect(getTelegramUser(String(CHAT))!.balance).toBe(450)
+    expect(mockExecuteBotWithdrawal).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'telegram', amount: 50 })
+    )
+    expect(res).toMatch(/unavailable/i)
+    expect(res).not.toMatch(/withdrawal request received/i)
+    expect(getTelegramUser(String(CHAT))!.balance).toBe(500)
   })
 
   it('cancels the pending action on a negative reply without executing', async () => {
@@ -133,8 +156,8 @@ describe('Telegram financial confirmation (#402)', () => {
     expect(getTelegramUser(String(CHAT))!.balance).toBe(500)
 
     const confirmed = await handleTelegramMessage(CHAT, 'yes')
-    expect(confirmed).toMatch(/withdrawal request received/i)
-    expect(getTelegramUser(String(CHAT))!.balance).toBe(450)
+    expect(confirmed).toMatch(/unavailable/i)
+    expect(getTelegramUser(String(CHAT))!.balance).toBe(500)
   })
 
   it('does not require confirmation for a read-only balance command', async () => {
@@ -146,7 +169,7 @@ describe('Telegram financial confirmation (#402)', () => {
     expect(getTelegramUser(String(CHAT))!.balance).toBe(500)
   })
 
-  it('confirms "withdraw all" before emptying the balance', async () => {
+  it('confirms "withdraw all" but refuses it because the in-memory balance is not authoritative', async () => {
     await linkedAndFundedChat(CHAT, 500)
 
     const parked = await handleTelegramMessage(CHAT, 'withdraw all')
@@ -155,8 +178,11 @@ describe('Telegram financial confirmation (#402)', () => {
     expect(getTelegramUser(String(CHAT))!.balance).toBe(500)
 
     const res = await handleTelegramMessage(CHAT, 'yes')
-    expect(res).toMatch(/withdrawal request received/i)
-    expect(getTelegramUser(String(CHAT))!.balance).toBe(0)
+    expect(mockExecuteBotWithdrawal).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'telegram', all: true })
+    )
+    expect(res).not.toMatch(/withdrawal request received/i)
+    expect(getTelegramUser(String(CHAT))!.balance).toBe(500)
   })
 
   it('confirms a deposit command before showing deposit instructions', async () => {

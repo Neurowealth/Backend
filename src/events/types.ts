@@ -149,7 +149,7 @@ export interface EventFrame {
  */
 export interface GapFrame {
   type: 'gap'
-  reason: 'retention' | 'backpressure' | 'unknown_stream'
+  reason: 'retention' | 'backpressure' | 'unknown_stream' | 'replay_failed'
   /** The seq the client asked to resume after, when it asked. */
   afterSeq: number | null
   /** Newest seq that exists for this user right now. */

@@ -29,7 +29,6 @@ import {
   getUserWalletAddress,
   getPortfolioYieldSummary,
   getGoalStatus,
-  decrementBalance,
 } from './userManager'
 import db from '../db'
 import {
@@ -44,6 +43,7 @@ import {
   formatGoalProgressReply,
 } from './formatters'
 import { logger } from '../utils/logger'
+import { executeBotWithdrawal } from '../botWithdrawals'
 import { config } from '../config'
 import { downloadTwilioMedia } from './mediaDownloader'
 import { getDefaultTranscriptionProvider } from './transcription/registry'
@@ -138,19 +138,6 @@ function formatDepositInstruction(amount: number, address: string): string {
   return `To deposit, send ${amount.toFixed(2)} XLM to your wallet address:\n${address}\n\nOnce the transaction is confirmed, reply "balance" to see your updated balance.`
 }
 
-/** Acknowledges a withdrawal and shows the balance that will result from it. */
-function formatWithdrawConfirmation(
-  amount: number,
-  newBalance: number
-): string {
-  return `Withdrawal request received for ${amount.toFixed(2)} XLM.\nYour new balance will be ${newBalance.toFixed(2)} XLM once processed.`
-}
-
-/** Shown when a withdrawal request exceeds the available balance. */
-function formatInsufficientFunds(balance: number, requested: number): string {
-  return `You only have ${balance.toFixed(2)} XLM available, but you requested ${requested.toFixed(2)} XLM.\nTry a smaller amount or deposit more funds.`
-}
-
 /**
  * Earnings summary in plain text. `averageApy` is a fraction (0.05) and is
  * shown as a percentage. The "30 days" wording is fixed, so `periodEarnings`
@@ -214,23 +201,15 @@ async function executeIntent(
     }
 
     case 'withdraw': {
-      const balance = getBalance(normalizedPhone) ?? 0
-      // "withdraw all" uses the full balance; otherwise the parsed amount.
-      // (With a zero balance, "withdraw all" falls into the "specify an
-      // amount" reply below because the amount is 0.)
-      const amount = intent.all ? balance : intent.amount
-      if (!amount || amount <= 0) {
-        return {
-          body: 'Please specify a withdrawal amount, e.g. "withdraw 5" or "withdraw all".',
-        }
-      }
-      if (amount > balance) {
-        return { body: formatInsufficientFunds(balance, amount) }
-      }
-      // The balance is reduced immediately, and the reply says the request
-      // is "received" with the new balance applying "once processed".
-      const newBalance = decrementBalance(normalizedPhone, amount)
-      return { body: formatWithdrawConfirmation(amount, newBalance) }
+      // #837 — a confirmed bot withdrawal must create a persisted outbox op
+      // and may only report success with a real transaction reference.
+      const result = await executeBotWithdrawal({
+        channel: 'whatsapp',
+        identity: normalizedPhone,
+        amount: intent.all ? 0 : (intent.amount ?? 0),
+        all: intent.all,
+      })
+      return { body: result.body }
     }
 
     case 'goal': {
