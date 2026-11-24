@@ -1,5 +1,5 @@
 /**
- * Consent Policy Express Middleware (#510)
+ * Consent Policy Express Middleware (#510, #819)
  */
 
 import { Request, Response, NextFunction } from 'express'
@@ -16,6 +16,22 @@ import {
 
 export interface ConsentRequest extends Request {
   userConsents?: UserConsents
+  consentBypass?: {
+    reason: AuditableBypassReason
+    justification: string
+  }
+}
+
+function isAuthorizedBypassCaller(req: Request, res: Response): boolean {
+  if (res.locals?.adminAuth) return true
+  const auth = (req as any).auth || (req as any).user
+  if (
+    auth &&
+    (auth.role === 'admin' || auth.role === 'operator' || auth.isAdmin === true)
+  ) {
+    return true
+  }
+  return false
 }
 
 /**
@@ -31,19 +47,45 @@ export function requireConsentPolicy(
     const userId = (req as any).user?.id || (req as any).userId || 'anonymous'
     const userConsents = req.userConsents || (req as any).user?.consents || {}
 
+    // Check for server-side or header-based bypass (#819)
+    const serverBypass = req.consentBypass || (res.locals as any)?.consentBypass
+
     const bypassReasonHeader = req.headers['x-consent-bypass-reason'] as
       AuditableBypassReason | undefined
     const bypassJustificationHeader = req.headers[
       'x-consent-bypass-justification'
     ] as string | undefined
 
+    let bypassReason: AuditableBypassReason | undefined
+    let bypassJustification: string | undefined
+
+    if (serverBypass) {
+      bypassReason = serverBypass.reason
+      bypassJustification = serverBypass.justification
+    } else if (bypassReasonHeader) {
+      // Ordinary users cannot bypass consent with headers; only verified admin/operator callers
+      if (!isAuthorizedBypassCaller(req, res)) {
+        res.status(403).json({
+          error: 'Consent Policy Violation',
+          code: 'CONSENT_BYPASS_UNAUTHORIZED',
+          workflow,
+          requiredScope,
+          reason:
+            'Header-based consent bypass is forbidden for non-admin callers',
+        })
+        return
+      }
+      bypassReason = bypassReasonHeader
+      bypassJustification = bypassJustificationHeader
+    }
+
     const validation = validateWorkflowConsent({
       userId,
       workflow,
       requiredScope,
       userConsents,
-      bypassReason: bypassReasonHeader,
-      bypassJustification: bypassJustificationHeader,
+      bypassReason,
+      bypassJustification,
     })
 
     if (!validation.allowed && validation.reconsentRequired) {

@@ -68,4 +68,89 @@ describe('requireConsentPolicy re-consent (#668)', () => {
       expect.objectContaining({ code: 'CONSENT_POLICY_DENIED' })
     )
   })
+
+  describe('consent bypass authorization (#819)', () => {
+    it('blocks ordinary callers from bypassing consent using headers', () => {
+      const req = {
+        headers: {
+          'x-consent-bypass-reason': 'LEGAL_OBLIGATION',
+          'x-consent-bypass-justification':
+            'Audit compliance justification of sufficient length',
+        },
+        userConsents: {},
+        user: { id: 'user-1', role: 'user' },
+      } as unknown as ConsentRequest
+
+      requireConsentPolicy('NOTIFICATIONS_MARKETING')(
+        req,
+        res as Response,
+        next
+      )
+
+      expect(next).not.toHaveBeenCalled()
+      expect(res.status).toHaveBeenCalledWith(403)
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: 'CONSENT_BYPASS_UNAUTHORIZED',
+          error: 'Consent Policy Violation',
+        })
+      )
+    })
+
+    it('allows verified admin caller to supply bypass headers', () => {
+      const req = {
+        headers: {
+          'x-consent-bypass-reason': 'LEGAL_OBLIGATION',
+          'x-consent-bypass-justification':
+            'Court order audit justification exceeding ten chars',
+        },
+        userConsents: {},
+        user: { id: 'admin-1', role: 'admin' },
+      } as unknown as ConsentRequest
+
+      requireConsentPolicy('NOTIFICATIONS_MARKETING')(
+        req,
+        res as Response,
+        next
+      )
+
+      expect(next).toHaveBeenCalled()
+      expect(res.status).not.toHaveBeenCalled()
+      expect(res.locals!.consentValidation).toEqual(
+        expect.objectContaining({
+          allowed: true,
+          bypassed: true,
+          bypassReason: 'LEGAL_OBLIGATION',
+        })
+      )
+    })
+
+    it('allows server-side caller to supply consentBypass directly', () => {
+      const req = {
+        headers: {},
+        consentBypass: {
+          reason: 'FRAUD_PREVENTION',
+          justification:
+            'Internal fraud investigation justification exceeding ten chars',
+        },
+        userConsents: {},
+      } as unknown as ConsentRequest
+
+      requireConsentPolicy('NOTIFICATIONS_MARKETING')(
+        req,
+        res as Response,
+        next
+      )
+
+      expect(next).toHaveBeenCalled()
+      expect(res.status).not.toHaveBeenCalled()
+      expect(res.locals!.consentValidation).toEqual(
+        expect.objectContaining({
+          allowed: true,
+          bypassed: true,
+          bypassReason: 'FRAUD_PREVENTION',
+        })
+      )
+    })
+  })
 })

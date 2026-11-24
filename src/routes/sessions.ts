@@ -226,7 +226,7 @@ router.post('/challenge', async (req: Request, res: Response) => {
 
 router.post(
   '/2fa/disable',
-  requireFreshSignature(),
+  requireFreshSignature('2fa:disable'),
   validate({ body: disable2faBody }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -237,14 +237,16 @@ router.post(
       return res.status(401).json({ error: 'Step-up authentication failed' })
     }
 
-    const isValid = await verifyAndConsumeStepUpChallenge(
-      stellarPubKey,
-      nonce,
-      signature,
-      '2fa:disable'
-    )
-    if (!isValid) {
-      return res.status(401).json({ error: 'Step-up authentication failed' })
+    if (!res.locals.stepUp?.verified) {
+      const isValid = await verifyAndConsumeStepUpChallenge(
+        stellarPubKey,
+        nonce,
+        signature,
+        '2fa:disable'
+      )
+      if (!isValid) {
+        return res.status(401).json({ error: 'Step-up authentication failed' })
+      }
     }
 
     const credential = await prisma.totpCredential.findUnique({
@@ -274,7 +276,7 @@ router.post(
 /** POST /api/v1/sessions/revoke-others - revoke all except current (step-up) */
 router.post(
   '/revoke-others',
-  requireFreshSignature(),
+  requireFreshSignature('sessions:revoke-others'),
   validate({ body: revokeOthersBody }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
@@ -286,14 +288,16 @@ router.post(
       return res.status(401).json({ error: 'Step-up authentication failed' })
     }
 
-    const isValid = await verifyAndConsumeStepUpChallenge(
-      stellarPubKey,
-      nonce,
-      signature,
-      'sessions:revoke-others'
-    )
-    if (!isValid) {
-      return res.status(401).json({ error: 'Step-up authentication failed' })
+    if (!res.locals.stepUp?.verified) {
+      const isValid = await verifyAndConsumeStepUpChallenge(
+        stellarPubKey,
+        nonce,
+        signature,
+        'sessions:revoke-others'
+      )
+      if (!isValid) {
+        return res.status(401).json({ error: 'Step-up authentication failed' })
+      }
     }
 
     // #472: revoke every other session's refresh material too, not just the
