@@ -178,6 +178,8 @@ export interface ScoringConfig {
   structuring: {
     /** The reporting-style amount being structured under (e.g. a CTR-style threshold). */
     threshold: number
+    /** Optional asset-native thresholds; unspecified assets use `threshold`. */
+    thresholdByAsset?: Record<string, number>
     /** Fraction below `threshold` considered "just under" it (e.g. 0.10 = 90%-100% of threshold). */
     bandPct: number
     windowMs: number
@@ -187,6 +189,8 @@ export interface ScoringConfig {
   newDestination: {
     /** Amount at/above which a first-time destination scores at its maximum. */
     largeAmountThreshold: number
+    /** Optional asset-native thresholds; unspecified assets use the base threshold. */
+    largeAmountThresholdByAsset?: Record<string, number>
     /** Destination account age below which it's treated as elevated risk. */
     youngAccountMs: number
   }
@@ -203,6 +207,8 @@ export interface ScoringConfig {
   referralGraph: {
     /** Amount at/above which a referred user's first-action withdrawal saturates at 100. */
     firstActionLargeWithdrawalThreshold: number
+    /** Optional asset-native thresholds; unspecified assets use the base threshold. */
+    firstActionLargeWithdrawalThresholdByAsset?: Record<string, number>
   }
 }
 
@@ -239,12 +245,16 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
     // Loosely modeled on the classic $10,000 CTR-style reporting threshold;
     // operator-configurable per environment/asset, not a legal determination.
     threshold: 10_000,
+    // Defaults assume roughly $0.10/XLM. Operators may override this per
+    // asset in scoring config without relying on a live FX service.
+    thresholdByAsset: { XLM: 100_000 },
     bandPct: 0.1,
     windowMs: 7 * 24 * 60 * 60 * 1000, // 7d
     minOccurrences: 3,
   },
   newDestination: {
     largeAmountThreshold: 5_000,
+    largeAmountThresholdByAsset: { XLM: 50_000 },
     youngAccountMs: 7 * 24 * 60 * 60 * 1000, // 7d
   },
   accountAge: {
@@ -256,6 +266,7 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
   },
   referralGraph: {
     firstActionLargeWithdrawalThreshold: 2_000,
+    firstActionLargeWithdrawalThresholdByAsset: { XLM: 20_000 },
   },
 }
 
@@ -529,16 +540,19 @@ export function computeStructuringFeature(
     )
   }
 
-  const bandLow = cfg.threshold * (1 - cfg.bandPct)
+  const threshold =
+    cfg.thresholdByAsset?.[transaction.assetSymbol.toUpperCase()] ??
+    cfg.threshold
+  const bandLow = threshold * (1 - cfg.bandPct)
   const isJustUnder = (amount: number) =>
-    amount >= bandLow && amount < cfg.threshold
+    amount >= bandLow && amount < threshold
 
   if (!isJustUnder(transaction.amount)) {
     return featureResult(
       'STRUCTURING',
       0,
       [],
-      `Amount is outside the structuring band (${bandLow}-${cfg.threshold}).`
+      `Amount is outside the structuring band (${bandLow}-${threshold}).`
     )
   }
 
@@ -560,7 +574,7 @@ export function computeStructuringFeature(
     'STRUCTURING',
     score,
     score > 0 ? ['STRUCTURING_SUB_THRESHOLD_PATTERN'] : [],
-    `${occurrences} ${transaction.type.toLowerCase()}(s) between ${bandLow} and ${cfg.threshold} within the last ${cfg.windowMs}ms.`
+    `${occurrences} ${transaction.type.toLowerCase()}(s) between ${bandLow} and ${threshold} within the last ${cfg.windowMs}ms.`
   )
 }
 
@@ -591,7 +605,10 @@ export function computeNewDestinationFeature(
     )
   }
 
-  let score = transaction.amount >= cfg.largeAmountThreshold ? 100 : 60
+  const largeAmountThreshold =
+    cfg.largeAmountThresholdByAsset?.[transaction.assetSymbol.toUpperCase()] ??
+    cfg.largeAmountThreshold
+  let score = transaction.amount >= largeAmountThreshold ? 100 : 60
   const reasonCodes = ['NEW_DESTINATION_NO_HISTORY']
 
   const destAge = account.destinationAccountAgeMs
@@ -693,10 +710,14 @@ export function computeReferralGraphFeature(
     )
   }
 
+  const amountThreshold =
+    cfg.firstActionLargeWithdrawalThresholdByAsset?.[
+      transaction.assetSymbol.toUpperCase()
+    ] ?? cfg.firstActionLargeWithdrawalThreshold
   const score = linearRamp(
     transaction.amount,
-    cfg.firstActionLargeWithdrawalThreshold * 0.5,
-    cfg.firstActionLargeWithdrawalThreshold
+    amountThreshold * 0.5,
+    amountThreshold
   )
 
   return featureResult(
