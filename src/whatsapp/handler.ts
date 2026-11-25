@@ -76,13 +76,24 @@ export type InboundMedia = {
   contentType: string
 }
 
-const FINANCIAL_ACTIONS: ReadonlySet<Intent['action']> = new Set([
-  'deposit',
-  'withdraw',
-])
+const IS_FINANCIAL_ACTION: Record<Intent['action'], boolean> = {
+  deposit: true,
+  withdraw: true,
+  create_recurring_deposit: true,
+  balance: false,
+  earnings: false,
+  help: false,
+  goal: false,
+  pause_recurring_deposit: false,
+  alert_create: false,
+  alert_list: false,
+  alert_delete: false,
+  clarification: false,
+  unknown: false,
+}
 
 function isFinancialIntent(intent: Intent): boolean {
-  return FINANCIAL_ACTIONS.has(intent.action)
+  return IS_FINANCIAL_ACTION[intent.action]
 }
 
 function isAffirmative(message: string): boolean {
@@ -111,6 +122,15 @@ function summarizeIntent(intent: Intent): string {
       return intent.amount !== undefined
         ? `withdraw ${intent.amount} ${asset}`
         : `withdraw ${asset}`
+    }
+    case 'create_recurring_deposit': {
+      const asset = 'USDC'
+      const cadence = intent.cadence
+        ? intent.cadence.toLowerCase()
+        : 'unspecified schedule'
+      return intent.amount !== undefined
+        ? `recurring deposit ${intent.amount} ${asset} ${cadence}`
+        : `recurring deposit ${asset} ${cadence}`
     }
     default:
       return intent.action
@@ -618,6 +638,18 @@ export async function handleWhatsAppMessage(
       if (!assetResolution.ok) {
         return {
           body: formatUnsupportedAssetMessage(assetResolution.assetSymbol),
+        }
+      }
+    }
+    if (intent.action === 'create_recurring_deposit') {
+      if (!intent.amount || intent.amount <= 0) {
+        return {
+          body: 'Please specify an amount, e.g. "recurring deposit 50 weekly".',
+        }
+      }
+      if (!intent.cadence) {
+        return {
+          body: 'Please specify a schedule: weekly, biweekly, or monthly.',
         }
       }
     }

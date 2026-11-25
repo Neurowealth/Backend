@@ -36,6 +36,20 @@ jest.mock('../../../src/agent/assistant/assistant', () => ({
   handleAssistantMessage: jest.fn(),
 }))
 
+const mockUserFindFirst = jest.fn()
+const mockRecurringPlanCreate = jest.fn()
+jest.mock('../../../src/db', () => ({
+  __esModule: true,
+  default: {
+    user: {
+      findFirst: (...args: unknown[]) => mockUserFindFirst(...args),
+    },
+    recurringDepositPlan: {
+      create: (...args: unknown[]) => mockRecurringPlanCreate(...args),
+    },
+  },
+}))
+
 jest.mock('../../../src/stellar/wallet', () => ({
   createCustodialWallet: jest
     .fn()
@@ -68,6 +82,8 @@ beforeEach(() => {
     body: 'Withdrawal submitted for 50.00 XLM.\nTransaction reference: tx-hash',
     reference: 'tx-hash',
   })
+  mockUserFindFirst.mockResolvedValue({ id: 'user-1' })
+  mockRecurringPlanCreate.mockResolvedValue({ id: 'plan-1' })
   clearUsersForTests()
   clearAllPendingConfirmations()
 })
@@ -156,5 +172,37 @@ describe('WhatsApp typed & LLM financial confirmations', () => {
     expect(mockExecuteBotWithdrawal).toHaveBeenCalledWith(
       expect.objectContaining({ channel: 'whatsapp', amount: 50 })
     )
+  })
+
+  it('gates LLM-parsed create_recurring_deposit intents behind confirmation showing amount, asset, and cadence', async () => {
+    await verifiedUser(PHONE, 500)
+    mockCreate.mockResolvedValue({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            action: 'create_recurring_deposit',
+            amount: 50,
+            cadence: 'WEEKLY',
+          }),
+        },
+      ],
+    })
+
+    const prompt = await handleWhatsAppMessage(
+      PHONE,
+      'automatically put in fifty dollars every seven days'
+    )
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(mockRecurringPlanCreate).not.toHaveBeenCalled()
+    expect(prompt.body).toMatch(/confirm/i)
+    expect(prompt.body).toMatch(/50/)
+    expect(prompt.body).toMatch(/USDC/i)
+    expect(prompt.body).toMatch(/weekly/i)
+
+    const confirmed = await handleWhatsAppMessage(PHONE, 'yes')
+    expect(mockRecurringPlanCreate).toHaveBeenCalledTimes(1)
+    expect(confirmed.body).toMatch(/Recurring deposit created/i)
   })
 })

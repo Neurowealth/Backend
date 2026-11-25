@@ -47,6 +47,20 @@ jest.mock('../../../src/agent/assistant/assistant', () => ({
   handleAssistantMessage: jest.fn(),
 }))
 
+const mockUserFindFirst = jest.fn()
+const mockRecurringPlanCreate = jest.fn()
+jest.mock('../../../src/db', () => ({
+  __esModule: true,
+  default: {
+    user: {
+      findFirst: (...args: unknown[]) => mockUserFindFirst(...args),
+    },
+    recurringDepositPlan: {
+      create: (...args: unknown[]) => mockRecurringPlanCreate(...args),
+    },
+  },
+}))
+
 // Stub the custodial-wallet creation the user store triggers, so tests don't
 // touch Stellar/crypto.
 jest.mock('../../../src/stellar/wallet', () => ({
@@ -104,6 +118,8 @@ beforeEach(() => {
     body: 'Withdrawals are temporarily unavailable. No funds have been moved.',
     reference: null,
   })
+  mockUserFindFirst.mockResolvedValue({ id: 'user-1' })
+  mockRecurringPlanCreate.mockResolvedValue({ id: 'plan-1' })
   clearUsersForTests()
   clearAllPendingConfirmations()
   mockDownload.mockResolvedValue({ buffer: FIXTURE, contentType: 'audio/ogg' })
@@ -274,5 +290,50 @@ describe('WhatsApp voice notes (#288)', () => {
     )
     expect(res.body).toMatch(/unavailable/i)
     expect(getUserForTests(PHONE)!.balance).toBe(500)
+  })
+
+  it('does NOT create a recurring deposit plan from voice on the first pass — requires "yes"', async () => {
+    await verifiedUser(PHONE, 500)
+    useProvider(async () => ({
+      text: 'recurring deposit 50 weekly',
+      confidence: 0.95,
+    }))
+
+    const parked = await handleWhatsAppMessage(PHONE, '', MEDIA)
+
+    expect(mockRecurringPlanCreate).not.toHaveBeenCalled()
+    expect(parked.body).toMatch(/confirm/i)
+    expect(parked.body).toMatch(/50/)
+    expect(parked.body).toMatch(/USDC/i)
+    expect(parked.body).toMatch(/weekly/i)
+
+    const confirmed = await handleWhatsAppMessage(PHONE, 'yes')
+
+    expect(mockRecurringPlanCreate).toHaveBeenCalledTimes(1)
+    expect(mockRecurringPlanCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: 'user-1',
+          amount: 50,
+          assetSymbol: 'USDC',
+          cadence: 'WEEKLY',
+        }),
+      })
+    )
+    expect(confirmed.body).toMatch(/Recurring deposit created/i)
+  })
+
+  it('cancels a voice-originated recurring deposit plan when the user replies "no"', async () => {
+    await verifiedUser(PHONE, 500)
+    useProvider(async () => ({
+      text: 'recurring deposit 50 weekly',
+      confidence: 0.95,
+    }))
+
+    await handleWhatsAppMessage(PHONE, '', MEDIA)
+    const cancelled = await handleWhatsAppMessage(PHONE, 'no')
+
+    expect(mockRecurringPlanCreate).not.toHaveBeenCalled()
+    expect(cancelled.body).toMatch(/cancel/i)
   })
 })
