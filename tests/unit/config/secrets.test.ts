@@ -4,6 +4,8 @@ import {
   getSecretsProvider,
 } from '../../../src/config/secrets'
 import { logger } from '../../../src/utils/logger'
+import { decryptSecretWithFallback } from '../../../src/stellar/wallet'
+import * as crypto from 'crypto'
 
 jest.mock('../../../src/utils/logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
@@ -140,13 +142,40 @@ describe('bootstrapSecrets()', () => {
 
   it('populates process.env from SSM when SECRET_BACKEND=aws-ssm', async () => {
     setEnv({ SECRET_BACKEND: 'aws-ssm', SSM_PREFIX: '/neurowealth' })
-    // Return a valid value for every SECRET_KEY.
-    mockSend.mockResolvedValue({ Parameter: { Value: 'fetched-secret' } })
+    const oldKey = 'b'.repeat(64)
+    const values: Record<string, string> = {
+      JWT_SEED: 'j'.repeat(32),
+      WALLET_ENCRYPTION_KEY: 'a'.repeat(64),
+      WALLET_ENCRYPTION_KEY_OLD: oldKey,
+      STELLAR_AGENT_SECRET_KEY: `S${'A'.repeat(55)}`,
+      ANTHROPIC_API_KEY: 'sk-ant-test',
+      TWILIO_AUTH_TOKEN: 't'.repeat(32),
+      DATABASE_URL: 'postgresql://user:pass@localhost/db',
+    }
+    mockSend.mockImplementation(async (command: any) => ({
+      Parameter: { Value: values[command.input.Name.split('/').pop()] },
+    }))
+
+    const iv = crypto.randomBytes(16)
+    const cipher = crypto.createCipheriv(
+      'aes-256-gcm',
+      Buffer.from(oldKey, 'hex'),
+      iv
+    )
+    let encrypted = cipher.update('legacy-wallet-secret', 'utf8', 'hex')
+    encrypted += cipher.final('hex')
+    const authTag = cipher.getAuthTag()
 
     await bootstrapSecrets()
 
-    expect(process.env['JWT_SEED']).toBe('fetched-secret')
-    expect(process.env['WALLET_ENCRYPTION_KEY']).toBe('fetched-secret')
+    expect(process.env['WALLET_ENCRYPTION_KEY_OLD']).toBe(oldKey)
+    expect(
+      decryptSecretWithFallback(
+        encrypted,
+        iv.toString('hex'),
+        authTag.toString('hex')
+      )
+    ).toEqual({ secret: 'legacy-wallet-secret', keyUsed: 'fallback' })
   })
 })
 

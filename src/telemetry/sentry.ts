@@ -17,6 +17,84 @@ import * as Sentry from '@sentry/node'
 import { nodeProfilingIntegration } from '@sentry/profiling-node'
 import { config } from '../config/env'
 
+const SENSITIVE_FIELD =
+  /pass|secret|token|key|mnemonic|seed|code|signature|authorization|cookie/i
+
+function scrubValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(scrubValue)
+  if (!value || typeof value !== 'object') return value
+  const result: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(value)) {
+    result[key] = SENSITIVE_FIELD.test(key) ? '[Filtered]' : scrubValue(child)
+  }
+  return result
+}
+
+function scrubQueryString(query: string): string {
+  return query
+    .split('&')
+    .map((part) => {
+      const prefix = part.startsWith('?') ? '?' : ''
+      const parameter = prefix ? part.slice(1) : part
+      const equals = parameter.indexOf('=')
+      const rawKey = equals < 0 ? parameter : parameter.slice(0, equals)
+      let key = rawKey
+      try {
+        key = decodeURIComponent(rawKey.replace(/\+/g, ' '))
+      } catch {}
+      if (!SENSITIVE_FIELD.test(key)) return part
+      return `${prefix}${rawKey}=[Filtered]`
+    })
+    .join('&')
+}
+
+function scrubQueryValue(query: unknown): unknown {
+  if (typeof query === 'string') return scrubQueryString(query)
+  if (Array.isArray(query)) {
+    return query.map(([key, value]) =>
+      SENSITIVE_FIELD.test(String(key)) ? [key, '[Filtered]'] : [key, value]
+    )
+  }
+  return scrubValue(query)
+}
+
+export function beforeSend(event: Sentry.ErrorEvent, hint?: Sentry.EventHint) {
+  const err = hint?.originalException
+  if (err && typeof err === 'object' && 'status' in err) {
+    const status = (err as { status?: number }).status
+    if (status !== undefined && status >= 400 && status < 500) return null
+  }
+  if (err && typeof err === 'object' && 'statusCode' in err) {
+    const statusCode = (err as { statusCode?: number }).statusCode
+    if (statusCode !== undefined && statusCode >= 400 && statusCode < 500)
+      return null
+  }
+  if (
+    err &&
+    typeof err === 'object' &&
+    'isClientError' in err &&
+    (err as { isClientError?: boolean }).isClientError
+  )
+    return null
+
+  if (event.request?.data && typeof event.request.data === 'object') {
+    event.request.data = scrubValue(
+      event.request.data
+    ) as typeof event.request.data
+  }
+  if (event.request?.headers) {
+    event.request.headers = scrubValue(
+      event.request.headers
+    ) as typeof event.request.headers
+  }
+  if (event.request?.query_string) {
+    event.request.query_string = scrubQueryValue(
+      event.request.query_string
+    ) as typeof event.request.query_string
+  }
+  return event
+}
+
 // ---------------------------------------------------------------------------
 // Guard: no-op when DSN is not configured
 // ---------------------------------------------------------------------------
@@ -68,51 +146,7 @@ if (!SENTRY_DSN) {
      *  2. Drop specific noisy non-actionable errors.
      *  3. Strip sensitive fields before the event leaves the server.
      */
-    beforeSend(event, hint) {
-      const err = hint?.originalException
-
-      // Rule 1 — filter 4xx HTTP errors
-      if (err && typeof err === 'object' && 'status' in err) {
-        const status = (err as { status?: number }).status
-        if (status !== undefined && status >= 400 && status < 500) {
-          return null // drop
-        }
-      }
-
-      // Also check statusCode (some frameworks use that name)
-      if (err && typeof err === 'object' && 'statusCode' in err) {
-        const statusCode = (err as { statusCode?: number }).statusCode
-        if (statusCode !== undefined && statusCode >= 400 && statusCode < 500) {
-          return null
-        }
-      }
-
-      // Rule 2 — drop intentionally thrown validation errors tagged with isClientError
-      if (err && typeof err === 'object' && 'isClientError' in err) {
-        if ((err as { isClientError?: boolean }).isClientError === true) {
-          return null
-        }
-      }
-
-      // Rule 3 — scrub sensitive fields from the request body
-      if (event.request?.data && typeof event.request.data === 'object') {
-        const sensitiveKeys = [
-          'password',
-          'secret',
-          'token',
-          'pin',
-          'mnemonic',
-          'privateKey',
-        ]
-        const data = { ...(event.request.data as Record<string, unknown>) }
-        for (const key of sensitiveKeys) {
-          if (key in data) data[key] = '[Filtered]'
-        }
-        event.request.data = data
-      }
-
-      return event
-    },
+    beforeSend,
   })
 
   // eslint-disable-next-line no-console -- telemetry bootstraps before the winston logger can be instrumented
