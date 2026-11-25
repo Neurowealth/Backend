@@ -9,16 +9,27 @@ import { Network } from '@prisma/client'
 import db from '../db'
 import { logger } from '../utils/logger'
 import { randomBytes, createHmac, timingSafeEqual } from 'crypto'
+import { encryptSecret, decryptSecret } from '../keys/registry'
+import {
+  storeChallenge,
+  getChallenge,
+  deleteChallenge,
+  getAttemptRecord,
+  recordFailedAttempt as storeRecordFailedAttempt,
+  clearAttemptRecord as storeClearAttemptRecord,
+  unlockTotpCredential as storeUnlockTotpCredential,
+  isStepAlreadyUsed,
+  startMemoryCleanup,
+  type TotpChallenge,
+} from './totp-state-store'
+
+// Start memory cleanup for in-memory fallback (no-op if Redis is available)
+startMemoryCleanup()
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
-export interface TotpChallenge {
-  challengeToken: string
-  expiresAt: Date
-  userId: string
-  stellarPubKey: string
-  referralCode?: string | null
-}
+// Re-export type from state store for backwards compatibility
+export type { TotpChallenge } from './totp-state-store'
 
 export interface TotpChallengeResult {
   ok: true
@@ -39,63 +50,13 @@ export interface TotpChallengeFailure {
   reason: 'expired' | 'invalid_code' | 'not_found' | 'locked'
 }
 
-// In-memory challenge store (sufficient for single-instance deployments;
-// Redis-backed variant would be needed for multi-instance).
-const pendingChallenges = new Map<string, TotpChallenge>()
 const CHALLENGE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
-// ── Per-account brute-force protection ────────────────────────────────────────
-
-const MAX_ATTEMPTS = 5
-const LOCKOUT_DURATION_MS = 15 * 60 * 1000 // 15 minutes
-
-interface TotpAttemptRecord {
-  count: number
-  lockedUntil: Date | null
-  /** Time step used on last successful verification — prevents replay within the same window. */
-  lastUsedStep: number | null
-}
-
-const totpAttempts = new Map<string, TotpAttemptRecord>()
-
-function getAttemptRecord(userId: string): TotpAttemptRecord {
-  return (
-    totpAttempts.get(userId) ?? {
-      count: 0,
-      lockedUntil: null,
-      lastUsedStep: null,
-    }
-  )
-}
-
-function recordFailedAttempt(userId: string): void {
-  const record = getAttemptRecord(userId)
-  const count = record.count + 1
-  const lockedUntil =
-    count >= MAX_ATTEMPTS
-      ? new Date(Date.now() + LOCKOUT_DURATION_MS)
-      : record.lockedUntil
-  totpAttempts.set(userId, { ...record, count, lockedUntil })
-  logger.warn('[TOTP] Failed verification attempt', {
-    userId,
-    count,
-    locked: count >= MAX_ATTEMPTS,
-  })
-}
-
-function clearAttemptRecord(userId: string, usedStep: number): void {
-  totpAttempts.set(userId, {
-    count: 0,
-    lockedUntil: null,
-    lastUsedStep: usedStep,
-  })
-}
+// ── Admin API ──────────────────────────────────────────────────────────────
 
 /** Admin-facing: clear lockout for a user so they can retry TOTP. */
-export function unlockTotpCredential(userId: string): void {
-  const record = getAttemptRecord(userId)
-  totpAttempts.set(userId, { ...record, count: 0, lockedUntil: null })
-  logger.info('[TOTP] Lockout cleared by admin', { userId })
+export async function unlockTotpCredential(userId: string): Promise<void> {
+  await storeUnlockTotpCredential(userId)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -103,12 +64,12 @@ export function unlockTotpCredential(userId: string): void {
 /**
  * Derive a TOTP code from a shared secret and a time step.
  * Uses HMAC-SHA1 per RFC 6238.
+ * @param secretBuf - The raw secret bytes (not base64 or encrypted)
  */
-function computeTotp(secret: string, timeStep: number): string {
+function computeTotp(secretBuf: Buffer, timeStep: number): string {
   const buf = Buffer.alloc(8)
   buf.writeBigInt64BE(BigInt(timeStep))
 
-  const secretBuf = Buffer.from(secret, 'base64')
   const hmac = createHmac('sha1', secretBuf).update(buf).digest()
 
   const offset = hmac[hmac.length - 1] & 0x0f
@@ -126,19 +87,34 @@ function currentTimeStep(): number {
 }
 
 /**
- * Verify a TOTP code against a secret, allowing ±1 time-step drift.
+ * Verify a TOTP code against an encrypted secret, allowing ±1 time-step drift.
  * Uses constant-time comparison to prevent timing oracle attacks.
  * Returns the matched time step so callers can prevent replay, or null on failure.
+ * @param encryptedSecret - The encrypted secret payload from the database
+ * @param code - The TOTP code to verify
  */
-export function verifyTotpCode(secret: string, code: string): number | null {
-  const step = currentTimeStep()
-  for (const delta of [-1, 0, 1]) {
-    const expected = computeTotp(secret, step + delta)
-    const a = Buffer.from(expected.padStart(6, '0'))
-    const b = Buffer.from(code.padStart(6, '0'))
-    if (a.length === b.length && timingSafeEqual(a, b)) return step + delta
+export function verifyTotpCode(
+  encryptedSecret: string,
+  code: string
+): number | null {
+  try {
+    // Decrypt the secret; this will throw if tampered with
+    const decrypted = decryptSecret(encryptedSecret)
+    const secretBuf = Buffer.from(decrypted, 'base64')
+
+    const step = currentTimeStep()
+    for (const delta of [-1, 0, 1]) {
+      const expected = computeTotp(secretBuf, step + delta)
+      const a = Buffer.from(expected.padStart(6, '0'))
+      const b = Buffer.from(code.padStart(6, '0'))
+      if (a.length === b.length && timingSafeEqual(a, b)) return step + delta
+    }
+    return null
+  } catch (err) {
+    // Tampered ciphertext or invalid encryption will fail here
+    logger.error('[TOTP] Failed to decrypt or verify TOTP secret', { err })
+    return null
   }
-  return null
 }
 
 // ── Public API ────────────────────────────────────────────────────────────
@@ -185,11 +161,24 @@ export async function beginTotpEnrollment(
     throw new Error('2FA is already enabled')
   }
 
+  // Generate 20 random bytes as the TOTP shared secret
   const raw = randomBytes(20)
-  const secretEncrypted = raw.toString('base64')
+  
+  // Store the base64 representation as plaintext for encryption
+  const secretBase64 = raw.toString('base64')
+  
+  // Encrypt the base64 secret using AES-256-GCM
+  const secretEncrypted = encryptSecret(secretBase64)
+  
   await db.totpCredential.upsert({
     where: { userId },
-    create: { userId, secretEncrypted, iv: '', authTag: '' },
+    create: { 
+      userId, 
+      secretEncrypted,
+      // iv and authTag are now embedded in secretEncrypted payload
+      iv: '', 
+      authTag: '' 
+    },
     update: { secretEncrypted, verifiedAt: null },
   })
 
@@ -236,18 +225,15 @@ export async function issueTotpChallenge(
   const token = randomBytes(32).toString('hex')
   const expiresAt = new Date(Date.now() + CHALLENGE_TTL_MS)
 
-  pendingChallenges.set(token, {
+  const challenge: TotpChallenge = {
     challengeToken: token,
     expiresAt,
     userId,
     stellarPubKey: meta.stellarPubKey,
     referralCode: meta.referralCode ?? null,
-  })
-
-  // Evict expired challenges opportunistically on issue.
-  for (const [k, v] of pendingChallenges) {
-    if (v.expiresAt < new Date()) pendingChallenges.delete(k)
   }
+
+  await storeChallenge(challenge)
 
   logger.debug('[TOTP] Challenge issued', { userId })
   return { token, expiresAt }
@@ -261,20 +247,20 @@ export async function completeTotpChallenge(
   challengeToken: string,
   code: string
 ): Promise<TotpChallengeResult | TotpChallengeFailure> {
-  const challenge = pendingChallenges.get(challengeToken)
+  const challenge = await getChallenge(challengeToken)
   if (!challenge) {
     return { ok: false, reason: 'not_found' }
   }
 
   if (challenge.expiresAt < new Date()) {
-    pendingChallenges.delete(challengeToken)
+    await deleteChallenge(challengeToken)
     return { ok: false, reason: 'expired' }
   }
 
   const { userId } = challenge
 
   // Check per-account lockout before touching the credential
-  const attemptRecord = getAttemptRecord(userId)
+  const attemptRecord = await getAttemptRecord(userId)
   if (attemptRecord.lockedUntil && attemptRecord.lockedUntil > new Date()) {
     logger.warn('[TOTP] Account locked out', {
       userId,
@@ -289,26 +275,26 @@ export async function completeTotpChallenge(
   })
 
   if (!credential?.verifiedAt) {
-    recordFailedAttempt(userId)
+    await storeRecordFailedAttempt(userId)
     return { ok: false, reason: 'invalid_code' }
   }
 
   const matchedStep = verifyTotpCode(credential.secretEncrypted, code)
 
   if (matchedStep === null) {
-    recordFailedAttempt(userId)
+    await storeRecordFailedAttempt(userId)
     return { ok: false, reason: 'invalid_code' }
   }
 
   // Prevent replay: reject if this time step was already consumed
-  if (attemptRecord.lastUsedStep === matchedStep) {
-    recordFailedAttempt(userId)
+  if (await isStepAlreadyUsed(userId, matchedStep)) {
+    await storeRecordFailedAttempt(userId)
     logger.warn('[TOTP] Time-step replay rejected', { userId, matchedStep })
     return { ok: false, reason: 'invalid_code' }
   }
 
-  clearAttemptRecord(userId, matchedStep)
-  pendingChallenges.delete(challengeToken)
+  await storeClearAttemptRecord(userId, matchedStep)
+  await deleteChallenge(challengeToken)
 
   const user = await db.user.findUniqueOrThrow({
     where: { id: userId },
