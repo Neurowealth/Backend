@@ -42,6 +42,20 @@ function getVaultContract(): Contract {
 }
 
 /**
+ * Compute the transaction fee (in stroops, as a string) for a given
+ * multiplier over BASE_FEE. Shared by all transaction builders so fee-bump
+ * retries behave identically across contract calls, treasury sweeps, and
+ * sponsored-reserve transactions.
+ */
+export function computeFee(feeMultiplier: number = 1): string {
+  return feeMultiplier === 1
+    ? BASE_FEE
+    : String(
+        BigInt(BASE_FEE) * BigInt(Math.max(1, Math.round(feeMultiplier)))
+      )
+}
+
+/**
  * Build contract invocation transaction.
  *
  * `feeMultiplier` scales the base fee (default 1x). The outbox dispatcher
@@ -57,12 +71,7 @@ async function buildContractCall(
   const server = getRpcServer()
   const contract = getVaultContract()
   const account = await getAccount(sourcePublicKey)
-  const fee =
-    feeMultiplier === 1
-      ? BASE_FEE
-      : String(
-          BigInt(BASE_FEE) * BigInt(Math.max(1, Math.round(feeMultiplier)))
-        )
+  const fee = computeFee(feeMultiplier)
 
   const tx = new TransactionBuilder(account, {
     fee,
@@ -413,11 +422,10 @@ export async function buildUnsignedVaultTransaction(
   }
   if (!simulation.result) {
     throw new Error(
-      `Transaction simulation failed for ${method}: No result returned from simulation`
+      `Transaction simulation failed for ${method}`
     )
   }
 
   const prepared = await prepareTransaction(tx)
-
   return prepared.toXDR()
 }

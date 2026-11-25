@@ -31,6 +31,16 @@ export class SponsorCapacityExhaustedError extends Error {
   }
 }
 
+/**
+ * Stroop fee for a sponsored transaction: BASE_FEE scaled by the dispatcher's
+ * fee multiplier (same rule as buildContractCall in src/stellar/contract.ts).
+ */
+function sponsoredFee(feeMultiplier: number = 1): string {
+  return feeMultiplier === 1
+    ? BASE_FEE
+    : String(BigInt(BASE_FEE) * BigInt(Math.max(1, Math.round(feeMultiplier))))
+}
+
 function getSponsorSecretKeys(): string[] {
   const raw =
     process.env.STELLAR_SPONSOR_KEYS ||
@@ -86,6 +96,8 @@ export function buildSponsoredCreateAccount(params: {
   startingBalance?: string
   /** Live sequence number of the sponsor account (from getAccount). */
   sponsorSequence?: string
+  /** Dispatcher fee multiplier (congestion bump on retry). */
+  feeMultiplier?: number
 }): ReturnType<typeof TransactionBuilder.prototype.build> {
   const { newAccountId, sponsorKeypair, startingBalance = '0' } = params
   const sponsorAccount = new Account(
@@ -94,7 +106,7 @@ export function buildSponsoredCreateAccount(params: {
   )
 
   const tx = new TransactionBuilder(sponsorAccount, {
-    fee: BASE_FEE,
+    fee: sponsoredFee(params.feeMultiplier),
     networkPassphrase: getNetworkPassphrase(),
   })
     .addOperation(
@@ -152,6 +164,8 @@ export function buildSponsoredTrustline(params: {
   sponsorKeypair: Keypair
   /** Live sequence number of the sponsor account (from getAccount). */
   sponsorSequence?: string
+  /** Dispatcher fee multiplier (congestion bump on retry). */
+  feeMultiplier?: number
 }): ReturnType<typeof TransactionBuilder.prototype.build> {
   const { accountId, asset, sponsorKeypair } = params
   const sponsorAccount = new Account(
@@ -160,7 +174,7 @@ export function buildSponsoredTrustline(params: {
   )
 
   const tx = new TransactionBuilder(sponsorAccount, {
-    fee: BASE_FEE,
+    fee: sponsoredFee(params.feeMultiplier),
     networkPassphrase: getNetworkPassphrase(),
   })
     .addOperation(
@@ -198,6 +212,8 @@ export function buildRevokeSponsorship(params: {
   ledgerKey: string
   /** Live sequence number of the sponsor account (from getAccount). */
   sponsorSequence?: string
+  /** Dispatcher fee multiplier (congestion bump on retry). */
+  feeMultiplier?: number
 }): ReturnType<typeof TransactionBuilder.prototype.build> {
   const { sponsorKeypair, ledgerKey, accountId } = params
   const sponsorAccount = new Account(
@@ -254,7 +270,7 @@ export function buildRevokeSponsorship(params: {
   }
 
   const tx = new TransactionBuilder(sponsorAccount, {
-    fee: BASE_FEE,
+    fee: sponsoredFee(params.feeMultiplier),
     networkPassphrase: getNetworkPassphrase(),
   })
     .addOperation(revokeOp)
