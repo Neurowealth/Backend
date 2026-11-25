@@ -227,19 +227,22 @@ export async function decide(
   if (request.status !== ApprovalStatus.PENDING) {
     throw new AppError(409, `Request is already ${request.status}`)
   }
+  // #783: reject decisions once the request's deadline has passed, even if the
+  // periodic expiry sweep has not flipped its status to EXPIRED yet.
+  const now = new Date()
+  if (request.expiresAt <= now) {
+    throw new AppError(409, 'Approval request has expired')
+  }
 
   const eligible = await getEligibleApproverIds(request.policy, database)
   if (!eligible.has(approverUserId)) {
     throw new AppError(403, 'Not an eligible approver for this request')
   }
 
-  // Self-approval default (issue's documented recommendation): the
-  // requester cannot count toward their own multi-signature threshold.
-  if (approverUserId === request.actingAsUserId && request.minApprovers > 1) {
-    throw new AppError(
-      403,
-      'Self-approval does not count when more than one approver is required'
-    )
+  // #783: the requester can never count toward the approval threshold,
+  // regardless of minApprovers (including minApprovers === 1).
+  if (approverUserId === request.actingAsUserId) {
+    throw new AppError(403, 'Requester cannot approve their own request')
   }
 
   if (!approved) {
@@ -296,7 +299,11 @@ export async function decide(
   }).catch(() => {})
 
   const approvalCount = await database.approval.count({
-    where: { requestId, approved: true },
+    where: {
+      requestId,
+      approved: true,
+      approverUserId: { not: request.actingAsUserId },
+    },
   })
   if (approvalCount < request.minApprovers) {
     return { status: ApprovalStatus.PENDING, approvalCount }
@@ -305,8 +312,14 @@ export async function decide(
   // Threshold crossed. Only the decision that wins this conditional update
   // proceeds to execute — a second approval arriving concurrently (or a
   // racing expiry sweep) will see count === 0 and stop here.
+  // #783: require expiresAt > now atomically so a request that expires between
+  // the initial read and the claim cannot be approved or executed.
   const claimed = await database.approvalRequest.updateMany({
-    where: { id: requestId, status: ApprovalStatus.PENDING },
+    where: {
+      id: requestId,
+      status: ApprovalStatus.PENDING,
+      expiresAt: { gt: new Date() },
+    },
     data: { status: ApprovalStatus.APPROVED },
   })
   if (claimed.count === 0) {
