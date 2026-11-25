@@ -61,14 +61,25 @@ function pruneHandshakeWindows(): void {
   }
 }
 
+/**
+ * Whether the immediate peer is a trusted proxy. Mirrors the TRUST_PROXY env
+ * flag: unset or falsy means X-Forwarded-For is ignored entirely.
+ */
+function proxyIsTrusted(): boolean {
+  const raw = (process.env.TRUST_PROXY ?? '').trim().toLowerCase()
+  return raw !== '' && raw !== 'false' && raw !== '0' && raw !== 'no'
+}
+
 function clientIp(req: IncomingMessage): string {
-  // Behind the same proxies the REST surface sits behind; TRUST_PROXY governs
-  // whether X-Forwarded-For is meaningful, so honour the first hop when present.
+  // X-Forwarded-For is only meaningful when TRUST_PROXY says the immediate
+  // peer is a proxy we control. Otherwise any client can forge it, so key on
+  // the socket address instead.
+  const remote = req.socket.remoteAddress ?? 'unknown'
   const forwarded = req.headers['x-forwarded-for']
-  if (typeof forwarded === 'string' && forwarded.length > 0) {
+  if (proxyIsTrusted() && typeof forwarded === 'string' && forwarded.length > 0) {
     return forwarded.split(',')[0].trim()
   }
-  return req.socket.remoteAddress ?? 'unknown'
+  return remote
 }
 
 function rejectUpgrade(socket: Duplex, status: number, message: string): void {
