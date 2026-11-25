@@ -104,6 +104,24 @@ describe('processProviderWebhook', () => {
     expect(mockDb.fiatOrder.update).not.toHaveBeenCalled()
   })
 
+  it('does not regress a PROCESSING order when a late PENDING webhook arrives', async () => {
+    mockDb.fiatOrder.findUnique.mockResolvedValue(
+      baseOrder({ status: 'PROCESSING' })
+    )
+
+    const res = await processProviderWebhook('moonpay', {
+      providerOrderId: 'mp_1',
+      status: 'PENDING',
+    })
+
+    expect(res).toMatchObject({
+      handled: true,
+      reason: 'stale status',
+      status: 'PROCESSING',
+    })
+    expect(mockDb.fiatOrder.update).not.toHaveBeenCalled()
+  })
+
   it('acknowledges but does not act on an unknown order', async () => {
     mockDb.fiatOrder.findUnique.mockResolvedValue(null)
 
@@ -176,6 +194,26 @@ describe('processProviderWebhook', () => {
     )
     expect(settleCall).toBeDefined()
     expect(settleCall[0].data.transactionId).toBe('tx-1')
+  })
+
+  it('persists a provider-claimed transaction hash for later reconciliation', async () => {
+    mockDb.fiatOrder.findUnique.mockResolvedValue(baseOrder())
+    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({
+      ...baseOrder(),
+      ...data,
+    }))
+
+    await processProviderWebhook('moonpay', {
+      providerOrderId: 'mp_1',
+      status: 'PROCESSING',
+      txHash: '0xclaimed',
+    })
+
+    expect(mockDb.fiatOrder.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ providerTxHash: '0xclaimed' }),
+      })
+    )
   })
 })
 
@@ -400,6 +438,37 @@ describe('reconcileSingleOrder — quoted-vs-settled drift (#313)', () => {
 })
 
 describe('reconcileFiatOrders', () => {
+  it('reuses a persisted provider transaction hash after a restart', async () => {
+    const order = baseOrder({
+      status: 'PROCESSING',
+      providerTxHash: '0xclaimed',
+      fiatAmount: 100,
+    })
+    mockDb.fiatOrder.findMany.mockResolvedValue([order])
+    mockDb.fiatOrder.findUnique.mockResolvedValue(order)
+    mockDb.transaction.findUnique.mockResolvedValue({
+      id: 'tx-1',
+      txHash: '0xclaimed',
+      status: 'CONFIRMED',
+      userId: 'user-1',
+      assetSymbol: 'USDC',
+      type: 'DEPOSIT',
+      amount: 100,
+    })
+    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({
+      ...order,
+      ...data,
+    }))
+
+    const result = await reconcileFiatOrders()
+
+    expect(result).toEqual({ scanned: 1, settled: 1 })
+    expect(mockDb.transaction.findUnique).toHaveBeenCalledWith({
+      where: { txHash: '0xclaimed' },
+    })
+    expect(mockDb.transaction.findMany).not.toHaveBeenCalled()
+  })
+
   it('settles PROCESSING orders that now have a confirmed on-chain match', async () => {
     mockDb.fiatOrder.findMany.mockResolvedValue([
       baseOrder({ status: 'PROCESSING' }),

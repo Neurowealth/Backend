@@ -850,6 +850,16 @@ export async function processProviderWebhook(
     }
   }
 
+  const nextStatus = mapToOrderStatus(parsed.status)
+  if (isStaleNonTerminalTransition(order.status, nextStatus)) {
+    return {
+      handled: true,
+      reason: 'stale status',
+      orderId: order.id,
+      status: order.status,
+    }
+  }
+
   const data: Record<string, unknown> = { updatedAt: new Date() }
 
   if (parsed.cryptoAmount != null && order.cryptoAmount == null) {
@@ -858,30 +868,17 @@ export async function processProviderWebhook(
   if (parsed.kycUrl) {
     data.kycUrl = parsed.kycUrl
   }
+  if (parsed.txHash) {
+    // Retain the provider's claim for the reconciliation sweep if the
+    // corresponding on-chain transaction is not visible yet.
+    data.providerTxHash = parsed.txHash
+  }
 
-  switch (parsed.status) {
-    case 'KYC_REQUIRED':
-      // Still open; surface the KYC link but keep the order actionable.
-      data.status = 'PENDING'
-      break
-    case 'PENDING':
-      data.status = 'PENDING'
-      break
-    case 'PROCESSING':
-    case 'SETTLED':
-      // Provider claims payment success. Do NOT mark SETTLED here — on-chain
-      // confirmation is authoritative. Advance to PROCESSING and stash the
-      // claimed tx hash so reconciliation can match it.
-      data.status = 'PROCESSING'
-      break
-    case 'FAILED':
-      data.status = 'FAILED'
-      data.failureReason = parsed.reason ?? 'Provider reported failure'
-      break
-    case 'REFUNDED':
-      data.status = 'REFUNDED'
-      data.failureReason = parsed.reason ?? 'Provider refunded the payment'
-      break
+  data.status = nextStatus
+  if (nextStatus === 'FAILED') {
+    data.failureReason = parsed.reason ?? 'Provider reported failure'
+  } else if (nextStatus === 'REFUNDED') {
+    data.failureReason = parsed.reason ?? 'Provider refunded the payment'
   }
 
   const updated = await (database as any).fiatOrder.update({
@@ -913,8 +910,8 @@ export async function processProviderWebhook(
 
   // If the provider handed us a tx hash, try an immediate reconciliation pass
   // for this single order so settlement isn't delayed to the next sweep.
-  if (parsed.txHash && updated.status === 'PROCESSING') {
-    await reconcileSingleOrder(updated.id, parsed.txHash, database).catch(
+  if (updated.providerTxHash && updated.status === 'PROCESSING') {
+    await reconcileSingleOrder(updated.id, updated.providerTxHash, database).catch(
       (err) => {
         logger.error('[Fiat] Inline reconciliation failed', {
           orderId: updated.id,
@@ -1202,25 +1199,40 @@ export async function reconcileFiatOrders(database: Db = db): Promise<{
 
   let settled = 0
   for (const order of processing) {
+    // A claimed hash identifies this order's provider-side payment. Keep
+    // using it after a process restart instead of falling back to the generic
+    // matching heuristic, which could link an unrelated transaction.
+    if (order.providerTxHash) {
+      const ok = await reconcileSingleOrder(
+        order.id,
+        order.providerTxHash,
+        database
+      ).catch(() => false)
+      if (ok) {
+        settled++
+        continue
+      }
+    }
+
     // Match against unlinked CONFIRMED transactions for this user + asset.
-    // Provider-claimed hashes are handled inline at webhook time; here we
-    // catch lost-webhook / async-settlement. With multiple providers able to
-    // have concurrent PROCESSING orders for the same user + asset, matching
-    // on "most recent unlinked" alone can cross-link an order to a
-    // transaction that actually belongs to a *different* provider's order —
-    // so once an order has a quoted crypto amount on record, only a
-    // transaction whose amount falls within RECONCILE_AMOUNT_TOLERANCE_PCT of
-    // that quote is eligible (#313).
-    const candidates = await (database as any).transaction.findMany({
-      where: {
-        userId: order.userId,
-        assetSymbol: order.assetSymbol,
-        status: 'CONFIRMED',
-        fiatOrders: { none: {} },
-      },
-      orderBy: { confirmedAt: 'desc' },
-      take: 20,
-    })
+    // With multiple providers able to have concurrent PROCESSING orders for
+    // the same user + asset, matching on "most recent unlinked" alone can
+    // cross-link an order to a transaction that actually belongs to a
+    // different provider's order — so once an order has a quoted crypto
+    // amount on record, only a transaction whose amount falls within
+    // RECONCILE_AMOUNT_TOLERANCE_PCT of that quote is eligible (#313).
+    const candidates = order.providerTxHash
+      ? []
+      : await (database as any).transaction.findMany({
+          where: {
+            userId: order.userId,
+            assetSymbol: order.assetSymbol,
+            status: 'CONFIRMED',
+            fiatOrders: { none: {} },
+          },
+          orderBy: { confirmedAt: 'desc' },
+          take: 20,
+        })
 
     const expectedAmount =
       order.quotedCryptoAmount != null
@@ -1355,6 +1367,13 @@ function mapToOrderStatus(status: NormalizedWebhookStatus): string {
 
 function isTerminal(status: string): boolean {
   return status === 'SETTLED' || status === 'FAILED' || status === 'REFUNDED'
+}
+
+function isStaleNonTerminalTransition(
+  currentStatus: string,
+  nextStatus: string
+): boolean {
+  return currentStatus === 'PROCESSING' && nextStatus === 'PENDING'
 }
 
 export { getProvider, getDefaultProvider }
