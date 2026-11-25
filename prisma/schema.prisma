@@ -47,6 +47,22 @@ enum TransactionStatus {
   CANCELLED
 }
 
+enum RecoveryGuardianStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  REMOVED
+}
+
+enum AccountRecoveryStatus {
+  PENDING
+  COOLING_OFF
+  COMPLETED
+  CANCELLED
+  EXPIRED
+  FAILED
+}
+
 enum PositionStatus {
   ACTIVE
   CLOSED
@@ -403,6 +419,9 @@ model User {
   webAuthnCredentials     WebAuthnCredential[]
   digestSubscriptions     DigestSubscription[]
   kycProfile              KycProfile?
+  recoveryPolicy           RecoveryPolicy?
+  recoveryGuardiansMade    RecoveryGuardian[]       @relation("RecoveryGuardianUser")
+  recoveryRequests         AccountRecoveryRequest[]
 
   @@map("users")
 }
@@ -540,6 +559,84 @@ model Session {
   @@index([revokedAt])
   @@index([refreshTokenPrefix])
   @@map("sessions")
+}
+
+model RecoveryPolicy {
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  requiredApprovals  Int
+  recoveryDelayHours Int      @default(72)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user      User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  guardians RecoveryGuardian[]
+  requests  AccountRecoveryRequest[]
+
+  @@map("recovery_policies")
+}
+
+model RecoveryGuardian {
+  id             String                 @id @default(uuid())
+  policyId       String
+  guardianUserId String
+  status         RecoveryGuardianStatus @default(PENDING)
+  invitedAt      DateTime               @default(now())
+  acceptedAt     DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  policy    RecoveryPolicy     @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  guardian  User               @relation("RecoveryGuardianUser", fields: [guardianUserId], references: [id], onDelete: Cascade)
+  approvals RecoveryApproval[]
+
+  @@unique([policyId, guardianUserId])
+  @@index([guardianUserId, status])
+  @@map("recovery_guardians")
+}
+
+model AccountRecoveryRequest {
+  id                   String                @id @default(uuid())
+  policyId             String
+  userId               String
+  currentWalletAddress String
+  newWalletAddress     String
+  status               AccountRecoveryStatus @default(PENDING)
+  requiredApprovals    Int
+  recoveryDelayHours   Int                   @default(72)
+  quorumReachedAt      DateTime?
+  completesAt          DateTime?
+  expiresAt            DateTime
+  completedAt          DateTime?
+  cancelledAt          DateTime?
+  cancelTokenHash      String?
+  cancelTokenExpiresAt DateTime?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+
+  policy    RecoveryPolicy     @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  approvals RecoveryApproval[]
+
+  @@index([userId, status])
+  @@index([status, completesAt])
+  @@index([expiresAt])
+  @@index([cancelTokenHash])
+  @@map("account_recovery_requests")
+}
+
+model RecoveryApproval {
+  id         String   @id @default(uuid())
+  requestId  String
+  guardianId String
+  approvedAt DateTime @default(now())
+
+  request  AccountRecoveryRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  guardian RecoveryGuardian       @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, guardianId])
+  @@index([guardianId])
+  @@map("recovery_approvals")
 }
 
 model AdminApiKey {

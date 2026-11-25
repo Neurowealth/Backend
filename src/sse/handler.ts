@@ -140,6 +140,10 @@ export async function handleSseConnection(
         `id: ${envelope.seq}\nevent: ${envelope.type}\ndata: ${JSON.stringify(envelope.payload)}\n\n`
       )
     },
+    close: () => {
+      cleanup()
+      if (!res.destroyed && !res.writableEnded) res.end()
+    },
   })
 
   // Perform replay if requested

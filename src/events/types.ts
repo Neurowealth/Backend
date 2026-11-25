@@ -38,6 +38,7 @@ export function isUserEventTopic(value: unknown): value is UserEventTopic {
 export const SOCKET_ONLY_EVENT_TYPES = [
   'security.passkey_changed',
   'security.passkey_anomaly',
+  'security.account_recovery',
   'recurring_withdrawal.executed',
   'recurring_withdrawal.held',
   'recurring_withdrawal.skipped',
@@ -81,6 +82,7 @@ export type UserEventType = WebhookEvent | SocketOnlyEventType
 export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'security.passkey_changed': 'alerts',
   'security.passkey_anomaly': 'alerts',
+  'security.account_recovery': 'alerts',
   'recurring_withdrawal.executed': 'transactions',
   'recurring_withdrawal.held': 'alerts',
   'recurring_withdrawal.skipped': 'alerts',

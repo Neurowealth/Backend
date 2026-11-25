@@ -69,7 +69,12 @@ TOTP verification uses a standard ±1 time-step tolerance window. A code that ha
 
 When a backup code is used, it is consumed and cannot be used again. Regenerating the set invalidates all previous codes.
 
-If a user loses both their authenticator device and their backup codes, the guardian-based social recovery flow (#\#535) is the primary path once it lands. Until then, recovery is a manual, clearly-logged admin-assisted process with strong identity re-verification. This is a real, acknowledged friction point: 2FA that can always be silently bypassed isn't 2FA.
+If a user loses both their authenticator device and their backup codes, the
+guardian-based account recovery flow (#535) is the supported recovery path.
+Recovery requires explicitly accepted guardians, a quorum of at least two, a
+fixed 72-hour delay, and owner cancellation through an active session or a
+single-use token sent to the verified account email. Successful recovery
+removes the old TOTP credential; the owner must enroll 2FA again.
 
 ## Security Notes
 
