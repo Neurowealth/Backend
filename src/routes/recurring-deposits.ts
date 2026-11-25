@@ -56,7 +56,8 @@ router.post(
         doubleOnDrawdown,
         allocationMap,
       } = req.body
-      const nextRunAt = computeNextRunAt(cadence, new Date())
+      const anchor = new Date()
+      const nextRunAt = computeNextRunAt(cadence, anchor)
 
       const plan = await db.recurringDepositPlan.create({
         data: {
@@ -64,6 +65,7 @@ router.post(
           amount,
           assetSymbol,
           cadence,
+          cadenceAnchorDay: anchor.getUTCDate(),
           nextRunAt,
           policy: policy ?? 'FIXED',
           catchUpMode: catchUpMode ?? 'RETRY',
@@ -168,13 +170,22 @@ router.patch(
       allocationMap,
     } = req.body
 
+    const now = new Date()
     const updateData: Record<string, unknown> = {}
     if (amount !== undefined) updateData.amount = amount
     if (cadence !== undefined) {
       updateData.cadence = cadence
-      updateData.nextRunAt = computeNextRunAt(cadence, new Date())
+      updateData.nextRunAt = computeNextRunAt(cadence, now)
+      updateData.cadenceAnchorDay = now.getUTCDate()
     }
     if (status !== undefined) updateData.status = status
+    if (plan.status === 'PAUSED' && status === 'ACTIVE') {
+      updateData.consecutiveFailures = 0
+      updateData.autoPauseReason = null
+      if (cadence === undefined && plan.nextRunAt < now) {
+        updateData.nextRunAt = now
+      }
+    }
     if (policy !== undefined) updateData.policy = policy
     if (catchUpMode !== undefined) updateData.catchUpMode = catchUpMode
     if (pauseOnDrawdownPct !== undefined)

@@ -33,12 +33,28 @@ describe('recurringDeposits — addCadence', () => {
     expect(result.toISOString()).toBe('2026-02-15T00:00:00.000Z')
   })
 
-  it('MONTHLY handles end-of-month overflow (Jan 31 → Mar 3, since Feb has no day 31)', () => {
-    const from = new Date('2026-01-31T00:00:00Z')
-    const result = addCadence('MONTHLY', from)
-    // setMonth(1) on day 31 overflows: Feb 31 → Mar 3
-    expect(result.getMonth()).toBe(2) // March
-    expect(result.getDate()).toBe(3)
+  it.each([2026, 2028])(
+    'clamps February and restores the anchor day in %i',
+    (year: number) => {
+      const from = new Date(`${year}-01-31T12:00:00Z`)
+      const feb = addCadence('MONTHLY', from, 31)
+      expect(feb.toISOString()).toBe(
+        `${year}-02-${year === 2028 ? 29 : 28}T12:00:00.000Z`
+      )
+      expect(addCadence('MONTHLY', feb, 31).toISOString()).toBe(
+        `${year}-03-31T12:00:00.000Z`
+      )
+    }
+  )
+
+  it('keeps the UTC hour across daylight saving transitions', () => {
+    const from = new Date('2026-03-04T12:00:00Z')
+    expect(addCadence('WEEKLY', from).toISOString()).toBe(
+      '2026-03-11T12:00:00.000Z'
+    )
+    expect(addCadence('MONTHLY', from).toISOString()).toBe(
+      '2026-04-04T12:00:00.000Z'
+    )
   })
 
   it('does not mutate the original date', () => {

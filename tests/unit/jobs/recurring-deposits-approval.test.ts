@@ -24,6 +24,9 @@ jest.mock('../../../src/db', () => ({
       create: jest.fn().mockResolvedValue({}),
     },
     custodialWallet: { findUnique: jest.fn() },
+    user: { findUnique: jest.fn() },
+    protocolRate: { findFirst: jest.fn(), findMany: jest.fn() },
+    position: { findMany: jest.fn() },
     transaction: { findFirst: jest.fn().mockResolvedValue(null) },
   },
 }))
@@ -125,7 +128,7 @@ it('does not re-request approval on the next scheduler tick for the same occurre
   await processRecurringDeposits()
 
   expect(mockExecuteDeposit).toHaveBeenCalledTimes(1)
-  expect(mockDb.recurringDepositRun.create).not.toHaveBeenCalled?.() // defensive if ledger mocked elsewhere
+  expect(mockDb.recurringDepositRun.create).toHaveBeenCalledTimes(1)
 })
 
 it('still executes normally when the guard allows (CONFIRMED)', async () => {
@@ -216,4 +219,100 @@ it('treats a missing lastRunAt on an executing plan as stale', () => {
   expect(
     isExecutingClaimStale({ lastRunStatus: null, lastRunAt: null }, new Date())
   ).toBe(false)
+})
+
+it('keeps the scheduled UTC slot when execution is two hours late', async () => {
+  const scheduled = new Date(Date.now() - 2 * 60 * 60 * 1000)
+  const late = { ...plan, nextRunAt: scheduled }
+  mockDb.recurringDepositPlan.findMany.mockResolvedValue([late])
+  mockDb.recurringDepositPlan.findUnique.mockResolvedValue(late)
+  mockExecuteDeposit.mockResolvedValue({
+    status: 'CONFIRMED',
+    transaction: { txHash: 'hash' },
+  })
+  await processRecurringDeposits()
+  expect(mockDb.recurringDepositPlan.update).toHaveBeenCalledWith(
+    expect.objectContaining({
+      data: expect.objectContaining({
+        nextRunAt: new Date(scheduled.getTime() + 7 * 86400000),
+      }),
+    })
+  )
+})
+
+it('uses only one protocol on the planned asset and user network', async () => {
+  const adaptive = { ...plan, policy: 'ADAPTIVE' }
+  mockDb.recurringDepositPlan.findMany.mockResolvedValue([adaptive])
+  mockDb.recurringDepositPlan.findUnique.mockResolvedValue(adaptive)
+  mockDb.user.findUnique.mockResolvedValue({ network: 'TESTNET' })
+  mockDb.protocolRate.findFirst.mockResolvedValue({ protocolName: 'Blend' })
+  const rates = Array.from({ length: 6 }, (_, i) => [
+    {
+      assetSymbol: 'USDC',
+      network: 'TESTNET',
+      protocolName: 'Blend',
+      supplyApy: 0.05,
+    },
+    {
+      assetSymbol: 'XLM',
+      network: 'TESTNET',
+      protocolName: 'Blend',
+      supplyApy: i % 2 ? 0.01 : 0.2,
+    },
+    {
+      assetSymbol: 'USDC',
+      network: 'MAINNET',
+      protocolName: 'Blend',
+      supplyApy: 0.2,
+    },
+    {
+      assetSymbol: 'USDC',
+      network: 'TESTNET',
+      protocolName: 'Other',
+      supplyApy: 0.2,
+    },
+  ]).flat()
+  mockDb.protocolRate.findMany.mockImplementation(async ({ where }: any) =>
+    rates.filter(
+      (rate) =>
+        rate.assetSymbol === where.assetSymbol &&
+        rate.network === where.network &&
+        rate.protocolName === where.protocolName
+    )
+  )
+  mockDb.position.findMany.mockResolvedValue([])
+  mockExecuteDeposit.mockResolvedValue({
+    status: 'CONFIRMED',
+    transaction: { txHash: 'hash' },
+  })
+  await processRecurringDeposits()
+  expect(mockDb.recurringDepositRun.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      data: expect.objectContaining({
+        regimeSnapshot: expect.objectContaining({
+          regime: 'NORMAL',
+          regimeInput: expect.objectContaining({ recentValuesCount: 6 }),
+        }),
+      }),
+    })
+  )
+})
+
+it('records one skipped run for a plan three cadences overdue', async () => {
+  const overdue = {
+    ...plan,
+    amount: 0,
+    catchUpMode: 'SKIP',
+    nextRunAt: new Date(Date.now() - 22 * 86400000),
+  }
+  mockDb.recurringDepositPlan.findMany.mockResolvedValue([overdue])
+  mockDb.recurringDepositPlan.findUnique.mockResolvedValue(overdue)
+  mockDb.recurringDepositPlan.update.mockImplementation(async ({ data }: any) =>
+    Object.assign(overdue, data)
+  )
+  await processRecurringDeposits()
+  expect(overdue.nextRunAt.getTime()).toBeGreaterThan(Date.now())
+  await processRecurringDeposits()
+  expect(mockDb.recurringDepositRun.create).toHaveBeenCalledTimes(1)
+  expect(mockExecuteDeposit).not.toHaveBeenCalled()
 })
