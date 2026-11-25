@@ -20,6 +20,7 @@ export interface HubSubscriber {
   /** Identity that authenticated at handshake — matched against the viewer set. */
   viewerUserId: string
   deliver: (envelope: UserEventEnvelope) => void
+  close?: (reason: string) => void
 }
 
 const subscribersByStream = new Map<string, Set<HubSubscriber>>()
@@ -75,6 +76,25 @@ export function deliverToLocalSubscribers(envelope: UserEventEnvelope): number {
 /** Every subscriber currently bound to a stream (used to close revoked sockets). */
 export function getLocalSubscribers(streamUserId: string): HubSubscriber[] {
   return Array.from(subscribersByStream.get(streamUserId) ?? [])
+}
+
+export function closeLocalUserStreams(userId: string, reason: string): number {
+  const subscribers = getLocalSubscribers(userId).filter(
+    (subscriber) => subscriber.viewerUserId === userId && subscriber.close
+  )
+  let closed = 0
+  for (const subscriber of subscribers) {
+    try {
+      subscriber.close!(reason)
+      closed++
+    } catch (error) {
+      logger.warn('[EventHub] Failed to close revoked owner stream', {
+        streamUserId: userId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+  return closed
 }
 
 /** Total live subscribers — the source for the ws_connections_active gauge. */

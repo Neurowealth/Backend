@@ -21,6 +21,8 @@ tags:
     description: Portfolio performance and risk analytics
   - name: TwoFactorAuth
     description: TOTP-based two-factor authentication enrollment and login verification (#2FA)
+  - name: AccountRecovery
+    description: Guardian-based account access recovery with quorum, alerts, and a fixed 72-hour delay (#535)
   - name: Assistant
     description: |
       Tool-calling conversational assistant (#318). Replaces the rule-based
@@ -2795,6 +2797,156 @@ paths:
         '401':
           description: Invalid or expired challenge token.
 
+  # ── Guardian-based account recovery (#535) ──────────────────────────────────
+
+  /recovery/guardians:
+    get:
+      operationId: listRecoveryGuardians
+      summary: List configured guardians and pending invitations
+      tags: [AccountRecovery]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Guardian policy and invitations }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: configureRecoveryGuardians
+      summary: Nominate platform users as recovery guardians
+      description: Requires 3 to 5 distinct users with verified email. Each guardian must accept explicitly. Quorum must be at least 2; the 72-hour recovery delay is fixed.
+      tags: [AccountRecovery]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [guardianUserIds, requiredApprovals]
+              properties:
+                guardianUserIds:
+                  type: array
+                  minItems: 3
+                  maxItems: 5
+                  uniqueItems: true
+                  items: { type: string, format: uuid }
+                requiredApprovals:
+                  type: integer
+                  minimum: 2
+                  maximum: 5
+      responses:
+        '201': { description: Invitations created; nominations are not active until accepted }
+        '400': { description: Invalid guardian list or quorum }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { description: Verified owner email required or an active request prevents policy changes }
+
+  /recovery/guardians/{id}/accept:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: acceptRecoveryGuardianInvitation
+      summary: Explicitly accept a guardian invitation
+      tags: [AccountRecovery]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Invitation accepted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: Invitation not found for the authenticated guardian }
+
+  /recovery/initiate:
+    post:
+      operationId: initiateAccountRecovery
+      summary: Start a guardian-approved wallet identity recovery
+      description: Public because the claimant may be locked out. Notifies the account's verified email and all accepted guardians immediately. Completion requires quorum and the fixed 72-hour delay.
+      tags: [AccountRecovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentWalletAddress, newWalletAddress]
+              properties:
+                currentWalletAddress: { type: string, description: Stellar public key currently associated with the account }
+                newWalletAddress: { type: string, description: Claimant's new Stellar public key }
+      responses:
+        '202':
+          description: Recovery request opened; guardians must independently approve
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requestId, status, recoveryDelayHours]
+                properties:
+                  requestId: { type: string, format: uuid }
+                  status: { type: string, enum: [PENDING] }
+                  recoveryDelayHours: { type: integer, enum: [72] }
+        '400': { description: Invalid Stellar public key or identical new and current wallet }
+        '404': { description: Recovery is unavailable for this account }
+        '409':
+          description: Recovery requires a verified contact, accepted guardians, and an eligible account state.
+
+  /recovery/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: getAccountRecoveryRequest
+      summary: Get recovery status as the owner or an accepted guardian
+      tags: [AccountRecovery]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Request status, quorum progress, and scheduled completion.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: Recovery request not found or not visible to caller }
+
+  /recovery/{id}/approve:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: approveAccountRecovery
+      summary: Record one explicit approval from an accepted guardian
+      tags: [AccountRecovery]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Approval recorded; reaching quorum starts the 72-hour cooling-off period }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: Request is not pending or caller is not an accepted guardian }
+
+  /recovery/{id}/cancel:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: cancelAccountRecovery
+      summary: Immediately cancel a pending or cooling-off recovery as the account owner
+      tags: [AccountRecovery]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Recovery cancelled without requiring guardian approval }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: Active recovery request not found for the authenticated owner }
+
+  /recovery/{id}/cancel-email:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: cancelAccountRecoveryByEmailToken
+      summary: Cancel recovery using the one-time token sent to the registered email
+      description: Public endpoint. The token is single-use, expires no later than the maximum cooling-off interval, and is stored only as a hash.
+      tags: [AccountRecovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, minLength: 32, maxLength: 128 }
+      responses:
+        '200': { description: Recovery cancelled without guardian approval }
+        '404': { description: Invalid token or no active recovery request }
+
   # ── Assistant endpoints (#318) ────────────────────────────────────────────────
 
   /assistant/chat:
@@ -5255,6 +5407,7 @@ paths:
     post:
       tags:
         - KYC
+      security: []
       operationId: kycProviderWebhook
       summary: Signature-verified provider KYC callback setting KycProfile.tier (#362)
       parameters:

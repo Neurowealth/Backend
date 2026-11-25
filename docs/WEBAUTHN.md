@@ -1,6 +1,9 @@
 # Optional passkeys
 
-Wallet-signature login remains the account identity and recovery mechanism.
+Wallet-signature login remains the account identity. If the owner loses access
+to that wallet, guardian-based account recovery (#535) can rotate the account
+to a new wallet after an independent guardian quorum and a fixed 72-hour
+cooling-off period; see [ACCOUNT_RECOVERY.md](./ACCOUNT_RECOVERY.md).
 Only an active session can enroll, list or remove passkeys. API keys cannot
 enroll credentials. Enrollment never creates a user or replaces a wallet.
 
