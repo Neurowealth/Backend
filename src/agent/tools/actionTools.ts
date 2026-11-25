@@ -38,6 +38,11 @@ import {
 } from '../../strategy/service'
 import { addCadence } from '../../utils/cadence'
 import { createAlertRuleSchema } from '../../validators/alert-validators'
+import {
+  PUBLISHABLE_STRATEGIES,
+  publishableConfigSchema,
+  refineStrategyConfig,
+} from '../../validators/strategy-validators'
 import { mapFollowToResponse } from '../../utils/api-formatters'
 import { onChainAmountSchema } from '../../validators/common-validators'
 import { getBreakerStatusForUser } from '../breakerService'
@@ -698,15 +703,19 @@ export const createAlertRuleTool = defineTool({
 
 // -- adjust_strategy ------------------------------------------------------
 
+// #766: align with publishableConfigSchema so adjust_strategy cannot write
+// invalid targetAllocations (missing entries on TARGET_ALLOCATION or weights
+// not summing to 100), non-finite weights, or non-integer riskCeiling.
 const adjustStrategyArgs = z
   .object({
-    strategyName: z.enum(['MAX_YIELD', 'TARGET_ALLOCATION']),
+    strategyName: z.enum(PUBLISHABLE_STRATEGIES),
     targetAllocations: z
-      .record(z.string(), z.number().min(0).max(100))
+      .record(z.string().min(1).max(100), z.number().finite().min(0).max(100))
       .optional(),
-    riskCeiling: z.number().min(0).max(100).optional(),
+    riskCeiling: z.number().int().min(0).max(100).optional(),
   })
   .strict()
+  .superRefine(refineStrategyConfig)
 
 export const adjustStrategyTool = defineTool({
   name: 'adjust_strategy',
@@ -722,13 +731,44 @@ export const adjustStrategyTool = defineTool({
       return { ok: false, error: 'Unknown strategy name.' }
     }
 
-    const strategyConfig = {
-      strategyName: args.strategyName,
-      ...(args.targetAllocations
-        ? { targetAllocations: args.targetAllocations }
+    // #766: validate against publishableConfigSchema so direct execute() calls
+    // (as well as planner calls) cannot persist an unpublishable strategy config.
+    const parsed = publishableConfigSchema.safeParse(args)
+    if (!parsed.success) {
+      const detail = parsed.error.issues[0]?.message
+      return {
+        ok: false,
+        error: detail
+          ? `Invalid strategy configuration: ${detail}`
+          : 'Invalid strategy configuration.',
+      }
+    }
+
+    // #766: load and merge into the existing strategyConfig so keys this tool
+    // does not own (such as exposureCaps and defaultMaxFraction) are preserved.
+    const user = await db.user.findUnique({
+      where: { id: ctx.userId },
+      select: { strategyConfig: true },
+    })
+    if (!user) {
+      return { ok: false, error: 'User not found.' }
+    }
+
+    const existingConfig =
+      user.strategyConfig &&
+      typeof user.strategyConfig === 'object' &&
+      !Array.isArray(user.strategyConfig)
+        ? (user.strategyConfig as Record<string, unknown>)
+        : {}
+
+    const strategyConfig: Record<string, unknown> = {
+      ...existingConfig,
+      strategyName: parsed.data.strategyName,
+      ...(parsed.data.targetAllocations !== undefined
+        ? { targetAllocations: parsed.data.targetAllocations }
         : {}),
-      ...(args.riskCeiling !== undefined
-        ? { riskCeiling: args.riskCeiling }
+      ...(parsed.data.riskCeiling !== undefined
+        ? { riskCeiling: parsed.data.riskCeiling }
         : {}),
     }
 
@@ -739,14 +779,14 @@ export const adjustStrategyTool = defineTool({
     await db.user.update({
       where: { id: ctx.userId },
       data: {
-        rebalanceStrategy: args.strategyName,
+        rebalanceStrategy: parsed.data.strategyName,
         strategyConfig: strategyConfig as any,
       },
     })
 
     logger.info('[Assistant] Strategy adjusted', {
       userId: ctx.userId,
-      strategyName: args.strategyName,
+      strategyName: parsed.data.strategyName,
     })
 
     return { ok: true, data: { strategyConfig } }

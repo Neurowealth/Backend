@@ -85,6 +85,44 @@ const exposureCapOverrideSchema = z
   })
 
 /**
+ * Shared refinement for strategy configs (#285, #766):
+ * - TARGET_ALLOCATION must have at least one targetAllocations entry.
+ * - Whenever targetAllocations is non-empty, its weights must sum to 100
+ *   (within a 0.01 floating-point tolerance).
+ */
+export function refineStrategyConfig(
+  data: {
+    strategyName: (typeof PUBLISHABLE_STRATEGIES)[number]
+    targetAllocations?: Record<string, number>
+  },
+  ctx: z.RefinementCtx
+): void {
+  const entries = Object.entries(data.targetAllocations ?? {})
+  if (data.strategyName === 'TARGET_ALLOCATION' && entries.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['targetAllocations'],
+      message:
+        'targetAllocations is required when strategyName is TARGET_ALLOCATION',
+    })
+    return
+  }
+
+  if (entries.length > 0) {
+    // Followers inherit these weights verbatim, so a set that does not sum to
+    // 100 would quietly under- or over-allocate someone else's funds.
+    const total = entries.reduce((sum, [, weight]) => sum + weight, 0)
+    if (Math.abs(total - 100) > 0.01) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['targetAllocations'],
+        message: `targetAllocations must sum to 100 (got ${total})`,
+      })
+    }
+  }
+}
+
+/**
  * The exact three keys the agent loop reads. Nothing else is copied to a
  * follower — notably `riskTolerance`, which stays personal to each user.
  * `exposureCaps` and `defaultMaxFraction` (#346) are per-user risk controls and
@@ -107,30 +145,7 @@ export const publishableConfigSchema = z
       .record(z.string().min(1).max(100), exposureCapOverrideSchema)
       .optional(),
   })
-  .superRefine((data, ctx) => {
-    if (data.strategyName === 'TARGET_ALLOCATION') {
-      const entries = Object.entries(data.targetAllocations ?? {})
-      if (entries.length === 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['targetAllocations'],
-          message:
-            'targetAllocations is required when strategyName is TARGET_ALLOCATION',
-        })
-        return
-      }
-      // Followers inherit these weights verbatim, so a set that does not sum to
-      // 100 would quietly under- or over-allocate someone else's funds.
-      const total = entries.reduce((sum, [, weight]) => sum + weight, 0)
-      if (Math.abs(total - 100) > 0.01) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['targetAllocations'],
-          message: `targetAllocations must sum to 100 (got ${total})`,
-        })
-      }
-    }
-  })
+  .superRefine(refineStrategyConfig)
 
 /**
  * POST /strategies/publish
