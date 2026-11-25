@@ -588,7 +588,8 @@ export const createRecurringDepositTool = defineTool({
   summarize: (args) =>
     `Set up a ${args.cadence.toLowerCase()} recurring deposit of ${args.amount} ${args.assetSymbol ?? 'USDC'}`,
   execute: async (args, ctx) => {
-    const nextRunAt = addCadence(args.cadence, new Date())
+    const anchor = new Date()
+    const nextRunAt = addCadence(args.cadence, anchor)
 
     if (ctx.dryRun) {
       return {
@@ -617,6 +618,7 @@ export const createRecurringDepositTool = defineTool({
         amount: args.amount,
         assetSymbol: args.assetSymbol,
         cadence: args.cadence,
+        cadenceAnchorDay: anchor.getUTCDate(),
         nextRunAt,
       },
     })

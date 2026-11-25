@@ -12,6 +12,7 @@ import express from 'express'
 jest.mock('../../src/middleware/authenticate', () => {
   const requireAuth = jest.fn((req: any, _res: any, next: any) => {
     req.userId = mockUserId
+    req.authScopes = ['*']
     req.auth = {
       userId: mockUserId,
       walletAddress: 'GWALLET_USER_1',
@@ -51,7 +52,8 @@ jest.mock('../../src/db', () => ({
   default: {
     recurringDepositPlan: {
       create: jest.fn(async ({ data }: any) => {
-        const id = `plan-${++planSeq}`
+        const id =
+          mockUserId.slice(0, -12) + String(++planSeq).padStart(12, '0')
         const plan = {
           ...data,
           id,
@@ -64,6 +66,14 @@ jest.mock('../../src/db', () => ({
         plans.set(id, plan)
         return plan
       }),
+      count: jest.fn(
+        async ({ where }: any) =>
+          Array.from(plans.values()).filter(
+            (p) =>
+              p.userId === where.userId &&
+              (!where.status || p.status === where.status)
+          ).length
+      ),
       findMany: jest.fn(async ({ where, orderBy }: any) => {
         const result = []
         for (const p of plans.values()) {
@@ -170,6 +180,12 @@ describe('E2E integration — recurring deposits', () => {
     expect(pauseRes.status).toBe(200)
     expect(pauseRes.body.plan.status).toBe('PAUSED')
 
+    const paused = plans.get(planId)
+    paused.consecutiveFailures = 5
+    paused.autoPauseReason = 'Auto-paused'
+    paused.nextRunAt = new Date(Date.now() - 86400000)
+    const beforeResume = Date.now()
+
     // Resume
     const resumeRes = await request(app)
       .patch(`/api/v1/deposit/recurring/${planId}`)
@@ -177,6 +193,11 @@ describe('E2E integration — recurring deposits', () => {
 
     expect(resumeRes.status).toBe(200)
     expect(resumeRes.body.plan.status).toBe('ACTIVE')
+    expect(resumeRes.body.plan.consecutiveFailures).toBe(0)
+    expect(resumeRes.body.plan.autoPauseReason).toBeNull()
+    expect(
+      new Date(resumeRes.body.plan.nextRunAt).getTime()
+    ).toBeGreaterThanOrEqual(beforeResume)
   })
 
   it('ownership check: user B cannot modify user A plan', async () => {
@@ -199,6 +220,7 @@ describe('E2E integration — recurring deposits', () => {
     authModule.requireAuth.mockImplementation(
       (req: any, _res: any, next: any) => {
         req.userId = mockOtherUserId
+        req.authScopes = ['*']
         req.auth = {
           userId: mockOtherUserId,
           walletAddress: 'GWALLET_USER_2',

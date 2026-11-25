@@ -1603,6 +1603,7 @@ model RecurringDepositPlan {
   amount        Decimal                    @db.Decimal(36, 18)
   assetSymbol   String
   cadence       DepositCadence
+  cadenceAnchorDay Int?
   nextRunAt     DateTime
   status        RecurringDepositPlanStatus @default(ACTIVE)
   lastRunAt     DateTime?
@@ -2767,6 +2768,7 @@ model RecurringWithdrawalPlan {
   amount             Decimal?                      @db.Decimal(36, 18)
   percentage         Decimal?                      @db.Decimal(12, 6)
   cadence            DepositCadence
+  cadenceAnchorDay   Int?
   nextRunAt          DateTime
   status             RecurringWithdrawalPlanStatus @default(ACTIVE)
   minAmount          Decimal?                      @db.Decimal(36, 18)
