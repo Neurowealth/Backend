@@ -15,6 +15,7 @@
 import db from './db'
 import { executeWithdraw } from './controllers/transaction-controller'
 import { logger } from './utils/logger'
+import { formatUnsupportedAssetMessage, resolveBotAsset } from './botAssets'
 
 export type BotWithdrawalChannel = 'telegram' | 'whatsapp'
 
@@ -65,6 +66,7 @@ export async function executeBotWithdrawal(params: {
   channel: BotWithdrawalChannel
   identity: string
   amount: number
+  assetSymbol?: string
   /** "withdraw all" relies on the fake in-memory balance and is not allowed. */
   all?: boolean
 }): Promise<BotWithdrawalResult> {
@@ -85,6 +87,16 @@ export async function executeBotWithdrawal(params: {
     }
   }
 
+  const assetResolution = resolveBotAsset(params.assetSymbol)
+  if (!assetResolution.ok) {
+    return {
+      ok: false,
+      body: formatUnsupportedAssetMessage(assetResolution.assetSymbol),
+      reference: null,
+    }
+  }
+  const { assetSymbol } = assetResolution
+
   try {
     const user = await resolveWithdrawalUser(channel, identity)
     if (!user) {
@@ -95,14 +107,14 @@ export async function executeBotWithdrawal(params: {
       userId: user.id,
       walletAddress: user.walletAddress,
       amount,
-      assetSymbol: 'XLM',
+      assetSymbol,
       memo: `${channel} bot withdrawal`,
     })
 
     if (result.status === 'CONFIRMED' && result.transaction?.txHash) {
       return {
         ok: true,
-        body: `Withdrawal submitted for ${amount.toFixed(2)} XLM.\nTransaction reference: ${result.transaction.txHash}`,
+        body: `Withdrawal submitted for ${amount.toFixed(2)} ${assetSymbol}.\nTransaction reference: ${result.transaction.txHash}`,
         reference: result.transaction.txHash,
       }
     }
@@ -112,7 +124,7 @@ export async function executeBotWithdrawal(params: {
     if (result.status === 'PENDING' && result.transaction) {
       return {
         ok: false,
-        body: `Withdrawal queued for ${amount.toFixed(2)} XLM under reference ${result.transaction.id}. It is not confirmed yet.`,
+        body: `Withdrawal queued for ${amount.toFixed(2)} ${assetSymbol} under reference ${result.transaction.id}. It is not confirmed yet.`,
         reference: result.transaction.id,
       }
     }

@@ -43,6 +43,11 @@ import {
 } from './formatters'
 import { logger } from '../utils/logger'
 import { executeBotWithdrawal } from '../botWithdrawals'
+import {
+  DEFAULT_BOT_ASSET,
+  formatUnsupportedAssetMessage,
+  resolveBotAsset,
+} from '../botAssets'
 import { config } from '../config'
 import { downloadTwilioMedia } from './mediaDownloader'
 import { getDefaultTranscriptionProvider } from './transcription/registry'
@@ -94,12 +99,19 @@ function isNegative(message: string): boolean {
 
 function summarizeIntent(intent: Intent): string {
   switch (intent.action) {
-    case 'deposit':
-      return `deposit ${intent.amount ?? ''}`.trim()
-    case 'withdraw':
-      return intent.all
-        ? 'withdraw all'
-        : `withdraw ${intent.amount ?? ''}`.trim()
+    case 'deposit': {
+      const asset = intent.currency?.trim().toUpperCase() || DEFAULT_BOT_ASSET
+      return intent.amount !== undefined
+        ? `deposit ${intent.amount} ${asset}`
+        : `deposit ${asset}`
+    }
+    case 'withdraw': {
+      if (intent.all) return 'withdraw all'
+      const asset = intent.currency?.trim().toUpperCase() || DEFAULT_BOT_ASSET
+      return intent.amount !== undefined
+        ? `withdraw ${intent.amount} ${asset}`
+        : `withdraw ${asset}`
+    }
     default:
       return intent.action
   }
@@ -133,8 +145,12 @@ function formatBalanceMessage(balance: number, address: string): string {
 }
 
 /** Tells the user where to send funds; the deposit itself happens on-chain. */
-function formatDepositInstruction(amount: number, address: string): string {
-  return `To deposit, send ${amount.toFixed(2)} XLM to your wallet address:\n${address}\n\nOnce the transaction is confirmed, reply "balance" to see your updated balance.`
+function formatDepositInstruction(
+  amount: number,
+  address: string,
+  assetSymbol: string = DEFAULT_BOT_ASSET
+): string {
+  return `To deposit, send ${amount.toFixed(2)} ${assetSymbol} to your wallet address:\n${address}\n\nOnce the transaction is confirmed, reply "balance" to see your updated balance.`
 }
 
 /**
@@ -195,8 +211,20 @@ async function executeIntent(
       if (!amount || amount <= 0) {
         return { body: 'Please specify a deposit amount, e.g. "deposit 10".' }
       }
+      const assetResolution = resolveBotAsset(intent.currency)
+      if (!assetResolution.ok) {
+        return {
+          body: formatUnsupportedAssetMessage(assetResolution.assetSymbol),
+        }
+      }
       const address = getUserWalletAddress(normalizedPhone)
-      return { body: formatDepositInstruction(amount, address ?? 'unknown') }
+      return {
+        body: formatDepositInstruction(
+          amount,
+          address ?? 'unknown',
+          assetResolution.assetSymbol
+        ),
+      }
     }
 
     case 'withdraw': {
@@ -206,6 +234,7 @@ async function executeIntent(
         channel: 'whatsapp',
         identity: normalizedPhone,
         amount: intent.all ? 0 : (intent.amount ?? 0),
+        assetSymbol: intent.currency,
         all: intent.all,
       })
       return { body: result.body }
@@ -581,6 +610,17 @@ export async function handleWhatsAppMessage(
   // LLM-parsed), matching Telegram. A mistyped or misclassified command must
   // never move funds in a single step.
   if (isFinancialIntent(intent)) {
+    if (
+      (intent.action === 'deposit' || intent.action === 'withdraw') &&
+      intent.currency
+    ) {
+      const assetResolution = resolveBotAsset(intent.currency)
+      if (!assetResolution.ok) {
+        return {
+          body: formatUnsupportedAssetMessage(assetResolution.assetSymbol),
+        }
+      }
+    }
     const summary = summarizeIntent(intent)
     setPendingConfirmation(normalizedPhone, intent, summary)
     const prefix = fromVoice ? 'I heard' : 'Please confirm'
