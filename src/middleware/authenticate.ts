@@ -216,8 +216,8 @@ export async function requireAuth(
       (req.ip && session.lastSeenIp !== req.ip)
 
     if (shouldUpdateHeartbeat) {
-      db.session
-        .update({
+      try {
+        await db.session.update({
           where: { id: session.id },
           data: {
             lastSeenAt: new Date(nowTime),
@@ -225,9 +225,12 @@ export async function requireAuth(
             approxLocation: resolveApproxLocation(req.ip),
           },
         })
-        .catch((err) =>
-          logger.warn('[Auth] Async session heartbeat update failed', { err })
-        )
+      } catch (err) {
+        logger.error('[Auth] Session heartbeat update failed', { err })
+        // Fail open: continue request even if heartbeat persistence fails.
+        // This prevents legitimate users from being blocked by transient DB issues
+        // while still attempting to persist fresh state for anomaly detection.
+      }
     }
 
     next()
