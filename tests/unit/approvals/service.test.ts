@@ -2,7 +2,8 @@
 //   * zero-friction path is preserved when no policy applies / below threshold
 //   * threshold-met creates a PENDING request and dispatches approval.requested
 //   * repeated identical gated calls dedupe onto the same open request
-//   * self-approval never counts toward minApprovers > 1
+//   * self-approval never counts toward any minApprovers threshold (#783)
+//   * expired PENDING requests are rejected even before the expiry sweep runs (#783)
 //   * only an eligible approver (policy owner + its ACTIVE children) may decide
 //   * a race for the threshold-crossing decision executes exactly once
 //   * cancellation is requester-only unless explicitly called as admin
@@ -217,6 +218,7 @@ describe('decide', () => {
     actingAsUserId: PARENT,
     status: 'PENDING',
     minApprovers: 2,
+    expiresAt: new Date(Date.now() + 3_600_000),
     policy: basePolicy,
   }
 
@@ -236,6 +238,79 @@ describe('decide', () => {
     await expect(
       decide('req-1', PARENT, true, undefined)
     ).rejects.toMatchObject({ statusCode: 403 })
+    expect(mockDb.approval.create).not.toHaveBeenCalled()
+    expect(mockRunApprovedPayload).not.toHaveBeenCalled()
+  })
+
+  it('rejects self-approval with 403 even when minApprovers === 1 (#783)', async () => {
+    const singleApproverRequest = {
+      ...pendingRequest,
+      minApprovers: 1,
+      policy: { ...basePolicy, minApprovers: 1 },
+    }
+    mockDb.approvalRequest.findUnique.mockResolvedValue(singleApproverRequest)
+    mockDb.subAccount.findMany.mockResolvedValue([{ childUserId: CHILD }])
+
+    await expect(
+      decide('req-1', PARENT, true, undefined)
+    ).rejects.toMatchObject({ statusCode: 403 })
+    expect(mockDb.approval.create).not.toHaveBeenCalled()
+    expect(mockDb.approvalRequest.updateMany).not.toHaveBeenCalled()
+    expect(mockRunApprovedPayload).not.toHaveBeenCalled()
+  })
+
+  it('rejects own-account self-approval with 403 when minApprovers === 1 (#783)', async () => {
+    const ownAccountPolicy = {
+      ...basePolicy,
+      principalUserId: PARENT,
+      scopedToChildUserId: null,
+      minApprovers: 1,
+    }
+    mockDb.approvalRequest.findUnique.mockResolvedValue({
+      ...pendingRequest,
+      userId: PARENT,
+      actingAsUserId: PARENT,
+      minApprovers: 1,
+      policy: ownAccountPolicy,
+    })
+    mockDb.subAccount.findMany.mockResolvedValue([{ childUserId: CHILD }])
+
+    await expect(
+      decide('req-1', PARENT, true, undefined)
+    ).rejects.toMatchObject({ statusCode: 403 })
+    expect(mockDb.approval.create).not.toHaveBeenCalled()
+    expect(mockRunApprovedPayload).not.toHaveBeenCalled()
+  })
+
+  it('rejects approving a PENDING request whose expiresAt is in the past with 409 and runs no executor (#783)', async () => {
+    mockDb.approvalRequest.findUnique.mockResolvedValue({
+      ...pendingRequest,
+      status: 'PENDING',
+      expiresAt: new Date(Date.now() - 1000),
+    })
+    mockDb.subAccount.findMany.mockResolvedValue([{ childUserId: CHILD }])
+
+    await expect(decide('req-1', CHILD, true, undefined)).rejects.toMatchObject(
+      { statusCode: 409 }
+    )
+    expect(mockDb.approval.create).not.toHaveBeenCalled()
+    expect(mockDb.approvalRequest.updateMany).not.toHaveBeenCalled()
+    expect(mockRunApprovedPayload).not.toHaveBeenCalled()
+  })
+
+  it('rejects denying a PENDING request whose expiresAt is in the past with 409 (#783)', async () => {
+    mockDb.approvalRequest.findUnique.mockResolvedValue({
+      ...pendingRequest,
+      status: 'PENDING',
+      expiresAt: new Date(Date.now() - 1000),
+    })
+    mockDb.subAccount.findMany.mockResolvedValue([{ childUserId: CHILD }])
+
+    await expect(
+      decide('req-1', CHILD, false, 'too late')
+    ).rejects.toMatchObject({ statusCode: 409 })
+    expect(mockDb.approval.create).not.toHaveBeenCalled()
+    expect(mockDb.approvalRequest.updateMany).not.toHaveBeenCalled()
   })
 
   it('requires a reason to reject', async () => {
@@ -296,6 +371,14 @@ describe('decide', () => {
     const result = await decide('req-1', CHILD, true, undefined)
 
     expect(result.status).toBe('EXECUTED')
+    expect(mockDb.approvalRequest.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'req-1',
+        status: 'PENDING',
+        expiresAt: { gt: expect.any(Date) },
+      },
+      data: { status: 'APPROVED' },
+    })
     expect(mockRunApprovedPayload).toHaveBeenCalledTimes(1)
     expect(mockDb.approvalRequest.update).toHaveBeenCalledWith({
       where: { id: 'req-1' },
