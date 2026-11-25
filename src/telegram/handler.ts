@@ -15,6 +15,11 @@ import {
 } from './formatters'
 import { logger } from '../utils/logger'
 import { executeBotWithdrawal } from '../botWithdrawals'
+import {
+  DEFAULT_BOT_ASSET,
+  formatUnsupportedAssetMessage,
+  resolveBotAsset,
+} from '../botAssets'
 import { config } from '../config'
 import db from '../db'
 import { handleAssistantMessage } from '../agent/assistant/assistant'
@@ -79,12 +84,19 @@ function isNegative(message: string): boolean {
 /** Human-readable echo of a financial intent for the confirmation prompt. */
 function summarizeIntent(intent: Intent): string {
   switch (intent.action) {
-    case 'deposit':
-      return `deposit ${intent.amount ?? ''}`.trim()
-    case 'withdraw':
-      return intent.all
-        ? 'withdraw all'
-        : `withdraw ${intent.amount ?? ''}`.trim()
+    case 'deposit': {
+      const asset = intent.currency?.trim().toUpperCase() || DEFAULT_BOT_ASSET
+      return intent.amount !== undefined
+        ? `deposit ${intent.amount} ${asset}`
+        : `deposit ${asset}`
+    }
+    case 'withdraw': {
+      if (intent.all) return 'withdraw all'
+      const asset = intent.currency?.trim().toUpperCase() || DEFAULT_BOT_ASSET
+      return intent.amount !== undefined
+        ? `withdraw ${intent.amount} ${asset}`
+        : `withdraw ${asset}`
+    }
     default:
       return intent.action
   }
@@ -146,8 +158,20 @@ async function executeIntent(
       if (!amount || amount <= 0) {
         return { body: 'Please specify a deposit amount, e.g. "/deposit 10".' }
       }
+      const assetResolution = resolveBotAsset(intent.currency)
+      if (!assetResolution.ok) {
+        return {
+          body: formatUnsupportedAssetMessage(assetResolution.assetSymbol),
+        }
+      }
       const address = getUserWalletAddress(chatId) ?? 'unknown'
-      return { body: formatDepositInstruction(amount, address) }
+      return {
+        body: formatDepositInstruction(
+          amount,
+          address,
+          assetResolution.assetSymbol
+        ),
+      }
     }
     case 'withdraw': {
       // #837 — never trust the in-memory balance or claim success without a
@@ -157,6 +181,7 @@ async function executeIntent(
         channel: 'telegram',
         identity: chatId,
         amount: intent.all ? 0 : (intent.amount ?? 0),
+        assetSymbol: intent.currency,
         all: intent.all,
       })
       return { body: result.body }
@@ -267,6 +292,15 @@ export async function handleTelegramMessage(
   // Confirm-before-execute for financial commands (#402). Every Telegram
   // deposit/withdraw parks a confirmation first — see FINANCIAL_ACTIONS.
   if (isFinancialIntent(intent)) {
+    if (
+      (intent.action === 'deposit' || intent.action === 'withdraw') &&
+      intent.currency
+    ) {
+      const assetResolution = resolveBotAsset(intent.currency)
+      if (!assetResolution.ok) {
+        return formatUnsupportedAssetMessage(assetResolution.assetSymbol)
+      }
+    }
     const summary = summarizeIntent(intent)
     setPendingConfirmation(normalizedChatId, intent, summary)
     return `I heard: *${summary}*.\nReply "yes" to confirm or "no" to cancel.`

@@ -198,7 +198,7 @@ export class MessageDeliveryService {
       priority: input.priority || 'NORMAL',
       attempts: 0,
       maxAttempts: input.maxAttempts || config.messaging.maxRetries || 5,
-      nextAttemptAt: null,
+      nextAttemptAt: input.nextAttemptAt ?? null,
       lastError: null,
       providerMessageId: null,
       metadata: input.metadata || null,
@@ -212,7 +212,9 @@ export class MessageDeliveryService {
 
     await this.persistRecord(record)
 
-    const shouldSendImmediate = options?.immediate ?? true
+    const shouldSendImmediate =
+      options?.immediate ??
+      (record.nextAttemptAt ? record.nextAttemptAt.getTime() <= now.getTime() : true)
     if (shouldSendImmediate) {
       return await this.dispatchSingle(record)
     }

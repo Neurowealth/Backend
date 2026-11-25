@@ -6,7 +6,11 @@ import {
 } from '../utils/metrics'
 
 export type OutboundNotificationChannel =
-  'email' | 'sms' | 'whatsapp' | 'telegram'
+  | 'email'
+  | 'sms'
+  | 'whatsapp'
+  | 'telegram'
+  | 'push'
 
 const MAX_ATTEMPTS = Math.max(
   1,
@@ -31,17 +35,27 @@ type NotificationRecord = {
 
 export async function enqueueOutboundNotification(
   channel: OutboundNotificationChannel,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  options?: { nextAttemptAt?: Date }
 ): Promise<string> {
+  const nextAttemptAt = options?.nextAttemptAt
   const notification = await (db as any).outboundNotification.create({
-    data: { channel, payload },
+    data: {
+      channel,
+      payload,
+      ...(nextAttemptAt ? { nextAttemptAt } : {}),
+    },
   })
-  void dispatchOutboundNotifications().catch((error) =>
-    logger.error('[Notifications] Immediate dispatch failed', {
-      notificationId: notification.id,
-      error: error instanceof Error ? error.message : String(error),
-    })
-  )
+  const isDeferred =
+    nextAttemptAt !== undefined && nextAttemptAt.getTime() > Date.now()
+  if (!isDeferred) {
+    void dispatchOutboundNotifications().catch((error) =>
+      logger.error('[Notifications] Immediate dispatch failed', {
+        notificationId: notification.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    )
+  }
   return notification.id
 }
 
@@ -79,6 +93,24 @@ async function deliver(notification: NotificationRecord): Promise<string> {
         result?: { message_id?: number }
       }
       return String(result.result?.message_id ?? 'accepted')
+    }
+    case 'push': {
+      const { sendPushNotification } = await import(
+        '../controllers/push-controller'
+      )
+      const pushPayload = payload as {
+        userId: string
+        title: string
+        body: string
+        data?: Record<string, unknown>
+      }
+      await sendPushNotification(
+        pushPayload.userId,
+        pushPayload.title,
+        pushPayload.body,
+        pushPayload.data
+      )
+      return 'sent'
     }
   }
   throw new Error(

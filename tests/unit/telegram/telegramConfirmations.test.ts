@@ -203,6 +203,35 @@ describe('Telegram financial confirmation (#402)', () => {
 
     expect(res).toMatch(/Welcome to NeuroWealth/i)
   })
+
+  it('includes USDC in the confirmation prompt and forwards assetSymbol to executeBotWithdrawal', async () => {
+    await linkedAndFundedChat(CHAT, 500)
+
+    const parked = await handleTelegramMessage(CHAT, 'withdraw 50 USDC')
+    expect(parked).toMatch(/withdraw 50 USDC/i)
+    expect(mockExecuteBotWithdrawal).not.toHaveBeenCalled()
+
+    await handleTelegramMessage(CHAT, 'yes')
+    expect(mockExecuteBotWithdrawal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: 'telegram',
+        amount: 50,
+        assetSymbol: 'USDC',
+      })
+    )
+  })
+
+  it('rejects unsupported assets like DOGE without parking confirmation or calling executeBotWithdrawal', async () => {
+    await linkedAndFundedChat(CHAT, 500)
+
+    const res = await handleTelegramMessage(CHAT, 'withdraw 50 DOGE')
+    expect(res).toMatch(/unsupported asset/i)
+    expect(res).toContain('DOGE')
+    expect(mockExecuteBotWithdrawal).not.toHaveBeenCalled()
+
+    await handleTelegramMessage(CHAT, 'yes')
+    expect(mockExecuteBotWithdrawal).not.toHaveBeenCalled()
+  })
 })
 
 describe('Telegram pending-confirmation store (#402)', () => {

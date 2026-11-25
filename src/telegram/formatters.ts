@@ -26,9 +26,10 @@ export function formatBalanceMessage(balance: number, address: string): string {
 
 export function formatDepositInstruction(
   amount: number,
-  address: string
+  address: string,
+  assetSymbol: string = 'XLM'
 ): string {
-  return `To deposit, send ${amount.toFixed(2)} XLM to your wallet address:\n${address}`
+  return `To deposit, send ${amount.toFixed(2)} ${assetSymbol} to your wallet address:\n${address}`
 }
 
 export function formatWithdrawConfirmation(

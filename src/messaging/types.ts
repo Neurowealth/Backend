@@ -37,6 +37,7 @@ export interface SendMessageInput {
   priority?: MessagePriority
   maxAttempts?: number
   metadata?: Record<string, unknown>
+  nextAttemptAt?: Date | null
   fallbackChannel?: MessageChannel
   fallbackRecipient?: string
 }

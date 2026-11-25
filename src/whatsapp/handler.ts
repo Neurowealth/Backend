@@ -8,8 +8,7 @@
  *      6-digit code) and stops there;
  *   3. if the message is a voice note, transcribes it (asking the user to
  *      repeat or type if that fails or confidence is low);
- *   4. resolves any pending yes/no confirmation for a voice-originated
- *      financial action;
+ *   4. resolves any pending yes/no confirmation for a financial action;
  *   5. otherwise parses the text into an intent (balance, deposit, withdraw,
  *      earnings, goal, recurring deposits, alerts, help) and returns the
  *      matching reply, optionally handing unrecognised requests to the
@@ -44,6 +43,11 @@ import {
 } from './formatters'
 import { logger } from '../utils/logger'
 import { executeBotWithdrawal } from '../botWithdrawals'
+import {
+  DEFAULT_BOT_ASSET,
+  formatUnsupportedAssetMessage,
+  resolveBotAsset,
+} from '../botAssets'
 import { config } from '../config'
 import { downloadTwilioMedia } from './mediaDownloader'
 import { getDefaultTranscriptionProvider } from './transcription/registry'
@@ -72,13 +76,24 @@ export type InboundMedia = {
   contentType: string
 }
 
-const FINANCIAL_ACTIONS: ReadonlySet<Intent['action']> = new Set([
-  'deposit',
-  'withdraw',
-])
+const IS_FINANCIAL_ACTION: Record<Intent['action'], boolean> = {
+  deposit: true,
+  withdraw: true,
+  create_recurring_deposit: true,
+  balance: false,
+  earnings: false,
+  help: false,
+  goal: false,
+  pause_recurring_deposit: false,
+  alert_create: false,
+  alert_list: false,
+  alert_delete: false,
+  clarification: false,
+  unknown: false,
+}
 
 function isFinancialIntent(intent: Intent): boolean {
-  return FINANCIAL_ACTIONS.has(intent.action)
+  return IS_FINANCIAL_ACTION[intent.action]
 }
 
 function isAffirmative(message: string): boolean {
@@ -95,12 +110,28 @@ function isNegative(message: string): boolean {
 
 function summarizeIntent(intent: Intent): string {
   switch (intent.action) {
-    case 'deposit':
-      return `deposit ${intent.amount ?? ''}`.trim()
-    case 'withdraw':
-      return intent.all
-        ? 'withdraw all'
-        : `withdraw ${intent.amount ?? ''}`.trim()
+    case 'deposit': {
+      const asset = intent.currency?.trim().toUpperCase() || DEFAULT_BOT_ASSET
+      return intent.amount !== undefined
+        ? `deposit ${intent.amount} ${asset}`
+        : `deposit ${asset}`
+    }
+    case 'withdraw': {
+      if (intent.all) return 'withdraw all'
+      const asset = intent.currency?.trim().toUpperCase() || DEFAULT_BOT_ASSET
+      return intent.amount !== undefined
+        ? `withdraw ${intent.amount} ${asset}`
+        : `withdraw ${asset}`
+    }
+    case 'create_recurring_deposit': {
+      const asset = 'USDC'
+      const cadence = intent.cadence
+        ? intent.cadence.toLowerCase()
+        : 'unspecified schedule'
+      return intent.amount !== undefined
+        ? `recurring deposit ${intent.amount} ${asset} ${cadence}`
+        : `recurring deposit ${asset} ${cadence}`
+    }
     default:
       return intent.action
   }
@@ -134,8 +165,12 @@ function formatBalanceMessage(balance: number, address: string): string {
 }
 
 /** Tells the user where to send funds; the deposit itself happens on-chain. */
-function formatDepositInstruction(amount: number, address: string): string {
-  return `To deposit, send ${amount.toFixed(2)} XLM to your wallet address:\n${address}\n\nOnce the transaction is confirmed, reply "balance" to see your updated balance.`
+function formatDepositInstruction(
+  amount: number,
+  address: string,
+  assetSymbol: string = DEFAULT_BOT_ASSET
+): string {
+  return `To deposit, send ${amount.toFixed(2)} ${assetSymbol} to your wallet address:\n${address}\n\nOnce the transaction is confirmed, reply "balance" to see your updated balance.`
 }
 
 /**
@@ -196,8 +231,20 @@ async function executeIntent(
       if (!amount || amount <= 0) {
         return { body: 'Please specify a deposit amount, e.g. "deposit 10".' }
       }
+      const assetResolution = resolveBotAsset(intent.currency)
+      if (!assetResolution.ok) {
+        return {
+          body: formatUnsupportedAssetMessage(assetResolution.assetSymbol),
+        }
+      }
       const address = getUserWalletAddress(normalizedPhone)
-      return { body: formatDepositInstruction(amount, address ?? 'unknown') }
+      return {
+        body: formatDepositInstruction(
+          amount,
+          address ?? 'unknown',
+          assetResolution.assetSymbol
+        ),
+      }
     }
 
     case 'withdraw': {
@@ -207,6 +254,7 @@ async function executeIntent(
         channel: 'whatsapp',
         identity: normalizedPhone,
         amount: intent.all ? 0 : (intent.amount ?? 0),
+        assetSymbol: intent.currency,
         all: intent.all,
       })
       return { body: result.body }
@@ -557,8 +605,8 @@ export async function handleWhatsAppMessage(
   }
   const { text, fromVoice } = resolved
 
-  // If a voice-originated financial action is awaiting confirmation, the next
-  // message (voice OR text) is interpreted as the yes/no reply.
+  // If a financial action is awaiting confirmation, the next message
+  // (voice OR text) is interpreted as the yes/no reply.
   const pending = getPendingConfirmation(normalizedPhone)
   if (pending) {
     if (isAffirmative(text)) {
@@ -578,13 +626,38 @@ export async function handleWhatsAppMessage(
 
   const intent = await parseIntent(text)
 
-  // Confirm-before-execute for financial intents that came from voice. This is
-  // a security control against misrecognition and must not be bypassable.
-  if (fromVoice && isFinancialIntent(intent)) {
+  // Confirm-before-execute for all financial intents (typed, voice, or
+  // LLM-parsed), matching Telegram. A mistyped or misclassified command must
+  // never move funds in a single step.
+  if (isFinancialIntent(intent)) {
+    if (
+      (intent.action === 'deposit' || intent.action === 'withdraw') &&
+      intent.currency
+    ) {
+      const assetResolution = resolveBotAsset(intent.currency)
+      if (!assetResolution.ok) {
+        return {
+          body: formatUnsupportedAssetMessage(assetResolution.assetSymbol),
+        }
+      }
+    }
+    if (intent.action === 'create_recurring_deposit') {
+      if (!intent.amount || intent.amount <= 0) {
+        return {
+          body: 'Please specify an amount, e.g. "recurring deposit 50 weekly".',
+        }
+      }
+      if (!intent.cadence) {
+        return {
+          body: 'Please specify a schedule: weekly, biweekly, or monthly.',
+        }
+      }
+    }
     const summary = summarizeIntent(intent)
     setPendingConfirmation(normalizedPhone, intent, summary)
+    const prefix = fromVoice ? 'I heard' : 'Please confirm'
     return {
-      body: `I heard: *${summary}*.\nReply "yes" to confirm or "no" to cancel.`,
+      body: `${prefix}: *${summary}*.\nReply "yes" to confirm or "no" to cancel.`,
     }
   }
 

@@ -151,4 +151,58 @@ describe('executeBotWithdrawal (#837)', () => {
     expect(result.ok).toBe(false)
     expect(mockExecuteWithdraw).not.toHaveBeenCalled()
   })
+
+  it('passes an explicit supported assetSymbol such as USDC through to executeWithdraw and reply text', async () => {
+    const result = await executeBotWithdrawal({
+      channel: 'whatsapp',
+      identity: '+15550000000',
+      amount: 50,
+      assetSymbol: 'usdc',
+    })
+
+    expect(mockExecuteWithdraw).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        walletAddress: 'GDESTINATION',
+        amount: 50,
+        assetSymbol: 'USDC',
+      })
+    )
+    expect(result.ok).toBe(true)
+    expect(result.body).toContain('50.00 USDC')
+    expect(result.body).not.toContain('XLM')
+  })
+
+  it('reports the requested asset in PENDING withdrawal replies', async () => {
+    mockExecuteWithdraw.mockResolvedValue({
+      status: 'PENDING',
+      transaction: { id: 'tx-usdc', txHash: null },
+    })
+
+    const result = await executeBotWithdrawal({
+      channel: 'whatsapp',
+      identity: '+15550000000',
+      amount: 50,
+      assetSymbol: 'USDC',
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.body).toContain('50.00 USDC')
+    expect(result.body).not.toContain('XLM')
+  })
+
+  it('rejects unsupported assets explicitly without calling executeWithdraw', async () => {
+    const result = await executeBotWithdrawal({
+      channel: 'whatsapp',
+      identity: '+15550000000',
+      amount: 50,
+      assetSymbol: 'DOGE',
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.reference).toBeNull()
+    expect(result.body).toMatch(/unsupported asset/i)
+    expect(result.body).toContain('DOGE')
+    expect(mockExecuteWithdraw).not.toHaveBeenCalled()
+  })
 })

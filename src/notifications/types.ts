@@ -3,7 +3,12 @@
  * Supports Telegram, WhatsApp, Email, and SMS channels
  */
 
-export type NotificationChannel = 'telegram' | 'whatsapp' | 'email' | 'sms'
+export type NotificationChannel =
+  | 'telegram'
+  | 'whatsapp'
+  | 'email'
+  | 'sms'
+  | 'push'
 
 export type NotificationCategory =
   | 'portfolio_updates'
