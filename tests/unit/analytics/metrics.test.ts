@@ -297,5 +297,23 @@ describe('Analytics Metrics Pure Module', () => {
       expect(res!.annualisedVolatility).toBeNull()
       expect(res!.maxDrawdown).toBeNull()
     })
+
+    it('reports 0 volatility and 0 drawdown for a series with a mid-window deposit and zero yield', () => {
+      // User starts with 100 principal at t0, deposits 100 at t1 (total 200), and maintains 200 at t2.
+      // Yield earned is 0 throughout.
+      const seriesWithMidWindowDeposit: ValuePoint[] = [
+        { timestampMs: 0, value: 100, principalAmount: 100, yieldAmount: 0 },
+        { timestampMs: DAY_MS, value: 200, principalAmount: 200, yieldAmount: 0 },
+        { timestampMs: 2 * DAY_MS, value: 200, principalAmount: 200, yieldAmount: 0 },
+      ]
+
+      const returns = computePeriodReturns(seriesWithMidWindowDeposit)
+      expect(returns).toEqual([0, 0])
+
+      const metrics = computeAllMetrics(seriesWithMidWindowDeposit)
+      expect(metrics).not.toBeNull()
+      expect(metrics!.annualisedVolatility).toBe(0)
+      expect(metrics!.maxDrawdown).toBe(0)
+    })
   })
 })

@@ -29,6 +29,20 @@ export class SesSignatureVerificationError extends Error {
   }
 }
 
+/**
+ * Raised when the active SMTP mail webhook receives a missing, malformed, or
+ * incorrect `x-signature` (#835). Mirrors `SesSignatureVerificationError` so
+ * the controller's existing code-based 401 mapping covers both providers.
+ */
+export class SmtpSignatureVerificationError extends Error {
+  readonly code = 'SMTP_WEBHOOK_SIGNATURE_INVALID'
+
+  constructor() {
+    super('SMTP webhook failed signature verification')
+    this.name = 'SmtpSignatureVerificationError'
+  }
+}
+
 export interface MailMessage {
   to: string
   subject: string
@@ -66,11 +80,19 @@ function verifySmtpWebhookSignature(
   if (!signature) return false
   const signingSecret = process.env.SMTP_WEBHOOK_SECRET
   if (!signingSecret) return false
+  // Reject non-hex or wrong-length signatures up front — `timingSafeEqual`
+  // throws on a buffer-length mismatch, which previously surfaced as a 500
+  // instead of a clean 401/400 (#835).
+  if (!/^[0-9a-f]+$/i.test(signature)) return false
   const computed = crypto
     .createHmac('sha256', signingSecret)
     .update(payload)
     .digest('hex')
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computed))
+  if (signature.length !== computed.length) return false
+  return crypto.timingSafeEqual(
+    Buffer.from(signature, 'hex'),
+    Buffer.from(computed, 'hex')
+  )
 }
 
 /**
@@ -187,12 +209,13 @@ export class SmtpMailProvider implements MailProvider {
   parseWebhook(rawPayload: any, signature?: string): MailWebhookEvent | null {
     if (!rawPayload || !rawPayload.event) return null
 
-    if (signature) {
-      const payload = JSON.stringify(rawPayload)
-      if (!verifySmtpWebhookSignature(signature, payload)) {
-        logger.warn('[SmtpMailProvider] Invalid webhook signature')
-        return null
-      }
+    // A signature is mandatory whenever SMTP is the active webhook provider
+    // (#835) — an unauthenticated caller must never be able to mutate email
+    // identity status by POSTing a bounce/complaint payload with no header.
+    const payload = JSON.stringify(rawPayload)
+    if (!verifySmtpWebhookSignature(signature, payload)) {
+      logger.warn('[SmtpMailProvider] Rejected webhook: missing or invalid signature')
+      throw new SmtpSignatureVerificationError()
     }
 
     return {
@@ -397,28 +420,38 @@ export class MailRegistry {
     fallback: MailProvider
   } {
     // Priority: SES > SMTP > Mock
-    let primary: MailProvider
-    let fallback: MailProvider
-
     const smtpProvider = new SmtpMailProvider()
     const sesProvider = new SesMailProvider()
-    const mockProvider = new MockMailProvider()
+
+    let primary: MailProvider | null
+    let fallback: MailProvider | null
 
     if (process.env.AWS_REGION && process.env.SES_FROM_EMAIL) {
       primary = sesProvider
       fallback =
-        process.env.SMTP_HOST && process.env.SMTP_USER
-          ? smtpProvider
-          : mockProvider
+        process.env.SMTP_HOST && process.env.SMTP_USER ? smtpProvider : null
     } else if (process.env.SMTP_HOST && process.env.SMTP_USER) {
       primary = smtpProvider
-      fallback = mockProvider
+      fallback = null
     } else {
-      primary = mockProvider
-      fallback = mockProvider
+      primary = null
+      fallback = null
     }
 
-    return { primary, fallback }
+    // The mock provider records a message and reports success without
+    // delivering anything — fine in dev/test, but in production it would let
+    // delivery go silently missing (#836). Never select it outside tests.
+    if ((!primary || !fallback) && process.env.NODE_ENV === 'production') {
+      throw new Error(
+        '[MailRegistry] Production requires a real primary and fallback mail provider ' +
+          '(configure SES and/or SMTP) — refusing to silently fall back to the mock provider.'
+      )
+    }
+
+    return {
+      primary: primary ?? new MockMailProvider(),
+      fallback: fallback ?? new MockMailProvider(),
+    }
   }
 
   refreshProviders(): void {
@@ -476,7 +509,11 @@ export class MailRegistry {
       )
       if (primary) return primary
     } catch (err) {
-      if (err instanceof SesSignatureVerificationError) throw err
+      if (
+        err instanceof SesSignatureVerificationError ||
+        err instanceof SmtpSignatureVerificationError
+      )
+        throw err
       // A provider error that is not an authentication failure must not fail
       // the whole path on a delivery the fallback might understand.
       logger.warn('[MailRegistry] Mail webhook error on primary provider', {

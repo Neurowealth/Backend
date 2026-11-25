@@ -86,16 +86,23 @@ export async function getPortfolioRiskMetrics(
     orderBy: { snapshotAt: 'asc' },
   })
 
-  const buckets = new Map<number, number>()
+  const buckets = new Map<number, { principal: number; yield: number }>()
   for (const s of snapshots) {
     const key = s.snapshotAt.getTime()
-    const val = Number(s.principalAmount) + Number(s.yieldAmount)
-    buckets.set(key, (buckets.get(key) ?? 0) + val)
+    const entry = buckets.get(key) ?? { principal: 0, yield: 0 }
+    entry.principal += Number(s.principalAmount)
+    entry.yield += Number(s.yieldAmount)
+    buckets.set(key, entry)
   }
 
   const series: ValuePoint[] = Array.from(buckets.entries())
     .sort(([a], [b]) => a - b)
-    .map(([timestampMs, value]) => ({ timestampMs, value }))
+    .map(([timestampMs, { principal, yield: yieldAmount }]) => ({
+      timestampMs,
+      value: principal + yieldAmount,
+      principalAmount: principal,
+      yieldAmount,
+    }))
 
   const metrics = computeAllMetrics(series)
   const insufficientHistory = series.length < 30
@@ -147,33 +154,45 @@ export async function getPortfolioRiskTimeseries(
     orderBy: { snapshotAt: 'asc' },
   })
 
-  const buckets = new Map<number, number>()
+  const buckets = new Map<number, { principal: number; yield: number }>()
   for (const s of snapshots) {
     const key = s.snapshotAt.getTime()
-    const val = Number(s.principalAmount) + Number(s.yieldAmount)
-    buckets.set(key, (buckets.get(key) ?? 0) + val)
+    const entry = buckets.get(key) ?? { principal: 0, yield: 0 }
+    entry.principal += Number(s.principalAmount)
+    entry.yield += Number(s.yieldAmount)
+    buckets.set(key, entry)
   }
 
-  const rawSeries = Array.from(buckets.entries()).sort(([a], [b]) => a - b)
+  const rawSeries = Array.from(buckets.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([timestampMs, { principal, yield: yieldAmount }]) => ({
+      timestampMs,
+      portfolioValue: principal + yieldAmount,
+      principalAmount: principal,
+      yieldAmount,
+    }))
 
-  let peak = 0
-  const points = rawSeries.map(([timestampMs, portfolioValue], index) => {
+  let cumIndex = 1
+  let peakIndex = 1
+  const points = rawSeries.map((curr, index) => {
     let dailyReturn: number | null = null
     if (index > 0) {
-      const prevVal = rawSeries[index - 1][1]
-      if (prevVal > 0) {
-        dailyReturn = (portfolioValue - prevVal) / prevVal
+      const prev = rawSeries[index - 1]!
+      if (prev.portfolioValue > 0) {
+        dailyReturn = (curr.yieldAmount - prev.yieldAmount) / prev.portfolioValue
+        cumIndex *= 1 + dailyReturn
       }
     }
-    if (portfolioValue > peak) {
-      peak = portfolioValue
+    if (cumIndex > peakIndex) {
+      peakIndex = cumIndex
     }
-    const drawdown = peak > 0 ? (peak - portfolioValue) / peak : 0
+    const drawdown =
+      peakIndex > 0 ? Math.max(0, (peakIndex - cumIndex) / peakIndex) : 0
 
     return {
-      timestampMs,
-      date: new Date(timestampMs).toISOString().split('T')[0],
-      portfolioValue,
+      timestampMs: curr.timestampMs,
+      date: new Date(curr.timestampMs).toISOString().split('T')[0],
+      portfolioValue: curr.portfolioValue,
       dailyReturn,
       drawdown,
     }
@@ -215,16 +234,23 @@ export async function getStrategyRiskMetrics(
     orderBy: { snapshotAt: 'asc' },
   })
 
-  const buckets = new Map<number, number>()
+  const buckets = new Map<number, { principal: number; yield: number }>()
   for (const s of snapshots) {
     const key = s.snapshotAt.getTime()
-    const val = Number(s.principalAmount) + Number(s.yieldAmount)
-    buckets.set(key, (buckets.get(key) ?? 0) + val)
+    const entry = buckets.get(key) ?? { principal: 0, yield: 0 }
+    entry.principal += Number(s.principalAmount)
+    entry.yield += Number(s.yieldAmount)
+    buckets.set(key, entry)
   }
 
   const series: ValuePoint[] = Array.from(buckets.entries())
     .sort(([a], [b]) => a - b)
-    .map(([timestampMs, value]) => ({ timestampMs, value }))
+    .map(([timestampMs, { principal, yield: yieldAmount }]) => ({
+      timestampMs,
+      value: principal + yieldAmount,
+      principalAmount: principal,
+      yieldAmount,
+    }))
 
   const metrics = computeAllMetrics(series)
   const insufficientHistory = series.length < 30

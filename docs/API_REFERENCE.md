@@ -474,18 +474,28 @@ Response 404:
 - Auth: required (requireAuth + enforceUserAccess)
 - Path params:
   - userId: uuid string
-- Query params:
-  - year: integer (2000–2100), required — calendar year, UTC boundaries
+- Query params (send exactly one of `taxYear` and `year`):
+  - taxYear: string — the canonical tax-year label for the user's
+    jurisdiction: `2025` for US/DE/CA (1 Jan–31 Dec), `2025-26` for UK
+    (6 Apr 2025–5 Apr 2026) and AU (1 Jul 2025–30 Jun 2026). A bare `2025` is
+    rejected for UK/AU with a 400 that suggests `2025-26`.
+  - year: integer (2000–2100) — the calendar year the tax year **starts** in.
+    For UK/AU, `year=2025` selects `2025-26`.
   - format: enum(json, csv), default json
+  - method: optional AccountingMethod confirmation gate
 - Request body: none
 
-Realized gain/loss report computed with FIFO cost-basis lot accounting over
-confirmed on-chain withdrawals. Money fields are decimal strings; null means
+Realized gain/loss report over confirmed on-chain withdrawals, under the
+user's tax jurisdiction and accounting method. The response's
+`taxYearLabel`, `taxYearStart` (inclusive) and `taxYearEnd` (exclusive) are
+the canonical period, always UTC, and `caveats.taxYearNote` states it in
+words. Money fields are decimal strings; null means
 "unpriced" (excluded from totals), never zero. See docs/TAX_REPORT.md for
 methodology and known limitations.
 
-Example request:
+Example requests:
 GET /api/portfolio/550e8400-e29b-41d4-a716-446655440001/tax-report?year=2026
+GET /api/portfolio/550e8400-e29b-41d4-a716-446655440001/tax-report?taxYear=2025-26
 
 Response 200 (json):
 {
@@ -512,7 +522,8 @@ Response 200 (json):
 "caveats": { "unpricedDisposalCount": 0, "unpricedAssets": [], "stablecoinAssumption": "...", "rebalancesNotIncluded": "..." }
 }
 
-Response 200 (format=csv): text/csv attachment (tax-report-2026.csv), header
+Response 200 (format=csv): text/csv attachment named after the tax-year
+label (tax-report-2026.csv, tax-report-2025-26.csv), header
 row plus one row per disposal, formula-injection-safe cells.
 
 Response 401:

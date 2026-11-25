@@ -107,7 +107,7 @@ describe('net-worth and external wallet routes', () => {
     )
   })
 
-  it('keeps and labels stale balances after a failed sync', async () => {
+  it('keeps and labels stale balances after a failed sync, outside the current totals (#843)', async () => {
     const lastSyncedAt = new Date(Date.now() - 60 * 60 * 1000)
     mockDb.linkedExternalWallet.findMany.mockResolvedValue([
       {
@@ -134,7 +134,14 @@ describe('net-worth and external wallet routes', () => {
     const res = await request(app).get('/api/v1/net-worth')
 
     expect(res.status).toBe(200)
-    expect(res.body.totalKnownUsd).toBe(125.5)
+    // The stale 25.5 USDC is not current, so only the platform 100 counts.
+    expect(res.body).toMatchObject({
+      totalKnownUsd: 100,
+      externalKnownValueUsd: 0,
+      staleKnownExternalValueUsd: 25.5,
+      lastKnownTotalUsd: 125.5,
+      staleWalletCount: 1,
+    })
     expect(res.body.valuationComplete).toBe(false)
     expect(res.body.externalWallets[0]).toMatchObject({
       stale: true,
@@ -144,6 +151,56 @@ describe('net-worth and external wallet routes', () => {
       stale: true,
       asOf: lastSyncedAt.toISOString(),
       valueUsd: 25.5,
+    })
+  })
+
+  it('separates fresh and stale wallets when both are linked (#843)', async () => {
+    const wallet = (id: string, amount: string, lastSyncedAt: Date) => ({
+      id,
+      userId: 'user-1',
+      publicKey: Keypair.random().publicKey(),
+      label: id,
+      verificationStatus: 'UNVERIFIED_SELF_REPORTED',
+      balances: [
+        {
+          assetType: 'credit_alphanum4',
+          assetCode: 'USDC',
+          assetIssuer: 'GUSDC_ISSUER',
+          amount,
+        },
+      ],
+      addedAt: new Date('2026-09-01T00:00:00.000Z'),
+      lastSyncedAt,
+      syncError: null,
+    })
+    mockDb.linkedExternalWallet.findMany.mockResolvedValue([
+      wallet('fresh', '10', new Date()),
+      // Older than the 30-minute staleness window, with no sync error.
+      wallet('old', '40', new Date(Date.now() - 2 * 60 * 60 * 1000)),
+    ])
+
+    const res = await request(app).get('/api/v1/net-worth')
+
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({
+      totalKnownUsd: 110,
+      platformValueUsd: 100,
+      externalKnownValueUsd: 10,
+      staleKnownExternalValueUsd: 40,
+      lastKnownTotalUsd: 150,
+      staleWalletCount: 1,
+      valuationComplete: false,
+    })
+  })
+
+  it('reports no stale value when every wallet is fresh', async () => {
+    const res = await request(app).get('/api/v1/net-worth')
+
+    expect(res.body).toMatchObject({
+      totalKnownUsd: 125.5,
+      externalKnownValueUsd: 25.5,
+      staleKnownExternalValueUsd: 0,
+      lastKnownTotalUsd: 125.5,
     })
   })
 

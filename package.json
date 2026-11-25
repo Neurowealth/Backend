@@ -39,7 +39,8 @@
     "docs:scopes": "ts-node scripts/scope-doc-tables.ts",
     "build:spec": "mkdir -p dist/docs && cp docs/openapi.yaml dist/docs/openapi.yaml",
     "prestart": "npm run build",
-    "release:preflight": "bash scripts/release-preflight.sh"
+    "release:preflight": "bash scripts/release-preflight.sh",
+    "release:verify": "bash scripts/release-verify.sh"
   },
   "keywords": [],
   "author": "",

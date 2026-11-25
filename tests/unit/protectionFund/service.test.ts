@@ -4,9 +4,12 @@
 
 process.env.NODE_ENV = 'test'
 
+import { Keypair } from '@stellar/stellar-sdk'
+import { Prisma } from '@prisma/client'
 import {
   computeClaimsForEvent,
   declareCoverageEvent,
+  executePayout,
   getCoverageTerms,
   getFundBalance,
   getMyCoverage,
@@ -22,7 +25,9 @@ jest.mock('../../../src/db', () => {
   const update = jest.fn()
   const upsert = jest.fn()
   const $transaction = jest.fn()
+  const userFindUnique = jest.fn()
   const client: any = {
+    user: { findUnique: userFindUnique },
     protectionFundBalance: { findUnique, upsert, update },
     protectionFundContribution: { create, findMany },
     coverageEvent: { create, findUnique, update, findMany },
@@ -39,6 +44,7 @@ jest.mock('../../../src/db', () => {
     __mockCreate: create,
     __mockUpdate: update,
     __mockUpsert: upsert,
+    __mockUserFindUnique: userFindUnique,
   }
 })
 
@@ -231,5 +237,49 @@ describe('src/protectionFund/service', () => {
       expect(status.recentContributions).toHaveLength(1)
       expect(status.historicalEvents).toHaveLength(1)
     })
+  })
+})
+
+describe('executePayout — recipient address (#825)', () => {
+  const { enqueueOutboxOp } = require('../../../src/outbox/service')
+  const mockUserFindUnique: jest.Mock = dbMock.__mockUserFindUnique
+
+  beforeEach(() => {
+    ;(enqueueOutboxOp as jest.Mock).mockClear()
+    mockFindUnique.mockResolvedValue({
+      id: 'claim-1',
+      userId: 'u1',
+      eventId: 'event-1',
+      status: 'PENDING',
+      payoutAmount: new Prisma.Decimal(250),
+      event: {},
+    })
+  })
+
+  it('queues the payout to the claimant address', async () => {
+    const address = Keypair.random().publicKey()
+    mockUserFindUnique.mockResolvedValue({ walletAddress: address })
+
+    await executePayout('claim-1')
+
+    expect(enqueueOutboxOp).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          method: 'protection_fund_payout',
+          userAddress: address,
+          claimId: 'claim-1',
+        }),
+      })
+    )
+  })
+
+  it('refuses to queue a payout to an invalid address', async () => {
+    mockUserFindUnique.mockResolvedValue({ walletAddress: 'GNOTAKEY' })
+
+    await expect(executePayout('claim-1')).rejects.toThrow(
+      'not a valid Stellar public key'
+    )
+    expect(enqueueOutboxOp).not.toHaveBeenCalled()
   })
 })

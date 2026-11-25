@@ -21,12 +21,14 @@ import { getKeypairForUser, getWalletByUserId } from '../stellar/wallet'
 import { getAgentKeypair } from '../stellar/client'
 import { TransactionResult } from '../stellar/types'
 import { OutboxPayload } from './types'
+import { InvalidOutboxPayloadError } from './errors'
 import {
   Keypair,
   Asset,
   TransactionBuilder,
   Operation,
   BASE_FEE,
+  StrKey,
 } from '@stellar/stellar-sdk'
 import {
   buildSponsoredCreateAccount,
@@ -182,9 +184,18 @@ export async function executeOutboxPayload(
       return result
     }
     case 'protection_fund_payout': {
-      // Disburse protection fund payout to beneficiary
-      const wallet = await getWalletByUserId(payload.userId)
-      const recipientAddress = wallet?.publicKey ?? ''
+      // Pay the address the claim was approved for (#825), never whatever
+      // custodial wallet the user happens to hold now. A missing or malformed
+      // destination fails the op before anything is signed.
+      const recipientAddress = payload.userAddress
+      if (
+        typeof recipientAddress !== 'string' ||
+        !StrKey.isValidEd25519PublicKey(recipientAddress)
+      ) {
+        throw new InvalidOutboxPayloadError(
+          `Protection fund payout for claim ${payload.claimId} has no valid recipient address`
+        )
+      }
       return withdrawForUser(
         payload.userId,
         recipientAddress,

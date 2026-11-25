@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import db from '../db'
 import { logger } from '../utils/logger'
 import { buildSignatureHeader } from '../utils/webhookSignature'
+import { validateSsrfUrl } from '../utils/ssrfGuard'
 import type { WebhookEvent } from '../validators/webhook-validators'
 import {
   isSubscriptionDeliverable,
@@ -41,26 +42,6 @@ function getSigningSecrets(sub: SubscriptionRow): string[] {
   return secrets
 }
 
-function isPrivateOrLocalUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'https:') return true
-    const host = parsed.hostname
-    if (
-      host === 'localhost' ||
-      host === '127.0.0.1' ||
-      host.startsWith('10.') ||
-      host.startsWith('192.168.') ||
-      /^172\.(1[6-9]|2\d|3[01])\./.test(host)
-    ) {
-      return true
-    }
-    return false
-  } catch {
-    return true
-  }
-}
-
 async function moveToDeadLetter(
   sub: SubscriptionRow,
   event: string,
@@ -90,8 +71,13 @@ async function deliverOnce(
   isReplay: boolean,
   occurredAt?: string
 ): Promise<{ ok: boolean; statusCode?: number; error?: string }> {
-  if (isPrivateOrLocalUrl(sub.url)) {
-    return { ok: false, error: 'SSRF: destination URL not allowed' }
+  try {
+    await validateSsrfUrl(sub.url)
+  } catch (err: any) {
+    return {
+      ok: false,
+      error: `SSRF: destination URL not allowed (${err?.message || 'invalid'})`,
+    }
   }
 
   const timestamp = Math.floor(Date.now() / 1000)
@@ -124,8 +110,17 @@ async function deliverOnce(
       headers,
       body: payload,
       signal: controller.signal,
+      redirect: 'manual',
     })
     clearTimeout(timer)
+
+    if (res.status >= 300 && res.status < 400) {
+      return {
+        ok: false,
+        statusCode: res.status,
+        error: 'SSRF: redirect not allowed',
+      }
+    }
 
     if (res.ok) return { ok: true, statusCode: res.status }
     return { ok: false, statusCode: res.status, error: `HTTP ${res.status}` }

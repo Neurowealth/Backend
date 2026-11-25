@@ -155,7 +155,7 @@ export const corsMiddleware = corsHandler
  * Startup CORS validation. Fails fast — before the server accepts traffic — when
  * a production or staging deployment cannot enforce an allowlist.
  *
- * Called by the `src/index.ts` entrypoint (the deployed server).
+ * Called by the server entrypoint, `src/index.ts`, at boot.
  */
 export function validateCorsConfig(
   policy: CorsOriginPolicy = originPolicy
@@ -189,15 +189,6 @@ export function validateCorsConfig(
         'CORS_ORIGINS=https://app.example.com,https://admin.example.com'
     )
   }
-}
-
-/**
- * Legacy CORS setup helper, retained for callers that mount CORS on a bare Express app.
- * The src/index.ts entrypoint wires corsMiddleware directly instead.
- */
-export function setupCors(app: express.Application): void {
-  validateCorsConfig()
-  app.use(corsMiddleware)
 }
 
 // ── Content-type restrictions ────────────────────────────────────────────────────

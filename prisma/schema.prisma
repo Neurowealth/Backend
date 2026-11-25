@@ -933,9 +933,22 @@ model ProcessedEvent {
   txHash      String
   eventType   String
   ledger      Int
+  // Position of this event within its ledger, from the RPC event `id`
+  // (`{ledgerSeq}-{eventIndex}`). Two same-type events in one transaction
+  // previously collided on (contractId, txHash, eventType, ledger) alone and
+  // the second was silently dropped as a "duplicate" (#821).
+  eventIndex  Int      @default(0)
+  // True for every row written before the eventIndex key existed (set in
+  // the #821 migration for all pre-existing rows; every row created after
+  // defaults to false). A legacy row never recorded which real index was
+  // processed, so handleEvent treats ANY legacy row matching the 4-tuple as
+  // a duplicate regardless of eventIndex — replaying a historical ledger
+  // (manual backfill, DLQ retry) must not risk double-processing a
+  // financial event whose real index wasn't the backfilled placeholder.
+  isLegacy    Boolean  @default(false)
   processedAt DateTime @default(now())
 
-  @@unique([contractId, txHash, eventType, ledger])
+  @@unique([contractId, txHash, eventType, ledger, eventIndex])
   @@index([contractId])
   @@index([txHash])
   @@index([ledger])
@@ -1387,6 +1400,7 @@ model FiatOrder {
   transaction Transaction? @relation(fields: [transactionId], references: [id])
 
   @@unique([provider, providerOrderId])
+  @@unique([transactionId])
   @@index([userId])
   @@index([provider, providerOrderId])
   @@index([status])

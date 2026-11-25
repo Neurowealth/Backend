@@ -63,7 +63,6 @@
     "GET /api/v1/portfolio/{userId}/earnings",
     "GET /api/v1/portfolio/{userId}/history",
     "GET /api/v1/portfolio/{userId}/suggestions",
-    "GET /api/v1/portfolio/{userId}/tax-report",
     "GET /api/v1/protection-fund/my-coverage",
     "GET /api/v1/protection-fund/status",
     "GET /api/v1/protocols/agent/status",

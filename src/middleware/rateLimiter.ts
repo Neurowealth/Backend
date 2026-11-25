@@ -7,6 +7,7 @@ import { logger } from '../utils/logger'
 import db from '../db'
 import crypto from 'node:crypto'
 import type { RateLimitTierId } from './rateLimitTiers'
+import { safeEqual } from '../utils/safeCompare'
 
 // ── Trusted-IP / service-token bypass ─────────────────────────────────────
 
@@ -25,14 +26,15 @@ export function trustedIpBypass(
   next: NextFunction
 ): void {
   const ip = req.ip ?? ''
-  const token = req.headers['x-internal-token']
+  const headerToken = req.headers['x-internal-token']
+  const token = Array.isArray(headerToken) ? headerToken[0] : headerToken
 
   const ipTrusted =
     config.security.trustedIps.length > 0 &&
     config.security.trustedIps.includes(ip)
   const tokenTrusted =
     config.security.internalServiceToken.length > 0 &&
-    token === config.security.internalServiceToken
+    safeEqual(token, config.security.internalServiceToken)
 
   if (ipTrusted || tokenTrusted) {
     res.locals['trusted'] = true
@@ -101,7 +103,7 @@ export function resolvePrincipal(req: Request): Principal {
 
   const adminToken = req.header('X-Admin-Token')
   if (adminToken && process.env.ADMIN_API_TOKEN) {
-    if (adminToken === process.env.ADMIN_API_TOKEN) {
+    if (safeEqual(adminToken, process.env.ADMIN_API_TOKEN)) {
       return { type: 'admin', key: 'admin:token' }
     }
   }

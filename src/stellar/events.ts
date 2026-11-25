@@ -463,6 +463,17 @@ async function handleRebalanceEvent(
 }
 
 /**
+ * Soroban RPC event ids are `{ledgerSeq}-{eventIndex}` — parse the stable
+ * per-ledger position out of it (#821). Defaults to 0 if the SDK ever omits
+ * the id, which keeps the dedupe key compatible with pre-#821 rows.
+ */
+function parseEventIndex(rawId: unknown): number {
+  if (typeof rawId !== 'string') return 0
+  const index = Number(rawId.split('-')[1])
+  return Number.isFinite(index) && index >= 0 ? index : 0
+}
+
+/**
  * Handle contract event with persistence, idempotency, and validation (Issue #53)
  */
 export async function handleEvent(
@@ -481,26 +492,33 @@ export async function handleEvent(
         }
       )
 
-      // Issue #53: Event validation
-      ContractEventSchema.parse(event)
+      // Issue #53: Event validation. Also normalizes eventIndex to 0 when a
+      // caller omits it (#821), so the dedupe key below is never undefined.
+      const { eventIndex } = ContractEventSchema.parse(event)
 
-      // Check if event was already processed (idempotency)
+      // A legacy row (written before the eventIndex key existed, flagged by
+      // the #821 migration) never recorded which real index was processed,
+      // so ANY legacy row matching the 4-tuple means "already handled"
+      // regardless of eventIndex — replaying a historical range (manual
+      // backfill, DLQ retry) must not risk double-processing a financial
+      // event whose real index wasn't the backfilled placeholder. Rows
+      // written after the migration always carry a real eventIndex and are
+      // matched on the full 5-tuple.
       const existingEvent = await timedDbOperation(() =>
-        tx.processedEvent.findUnique({
+        tx.processedEvent.findFirst({
           where: {
-            contractId_txHash_eventType_ledger: {
-              contractId: event.contractId,
-              txHash: event.txHash,
-              eventType: event.type,
-              ledger: event.ledger,
-            },
+            contractId: event.contractId,
+            txHash: event.txHash,
+            eventType: event.type,
+            ledger: event.ledger,
+            OR: [{ isLegacy: true }, { eventIndex }],
           },
         })
       )
 
       if (existingEvent) {
         logger.info(
-          `[Event] Skipping duplicate event: ${event.type} at ledger ${event.ledger}`
+          `[Event] Skipping duplicate event: ${event.type} at ledger ${event.ledger}, index ${eventIndex}`
         )
         return
       }
@@ -568,6 +586,7 @@ export async function handleEvent(
             txHash: event.txHash,
             eventType: event.type,
             ledger: event.ledger,
+            eventIndex,
           },
         })
       )
@@ -605,10 +624,16 @@ export async function handleEvent(
 
 /**
  * Process a batch of events in a single transaction (Issue #55)
+ *
+ * Returns whether every event in the batch was actually persisted as
+ * processed. A caller that advances a ledger cursor regardless of this
+ * result would permanently skip a failed deposit/withdraw/rebalance event
+ * (#820) — the cursor must only move past a batch this reports as fully
+ * successful.
  */
 export async function processEventBatch(
   events: ContractEvent[]
-): Promise<void> {
+): Promise<{ success: boolean; failedCount: number }> {
   const start = Date.now()
   let processedCount = 0
 
@@ -628,21 +653,25 @@ export async function processEventBatch(
     logger.info(
       `[Batch Processing] Throughput: Successfully processed batch of ${processedCount} events in ${duration}ms`
     )
+    return { success: true, failedCount: 0 }
   } catch (batchError) {
     logger.error(
       `[Batch Processing Error] Transaction failed, falling back to individual processing:`,
       batchError
     )
     // Fallback: Process individually so robust events succeed
+    let failedCount = 0
     for (const event of events) {
       try {
         await handleEvent(event, db)
       } catch (individualError) {
+        failedCount++
         logger.error(
           `[Batch Fallback Error] Event processing completely failed for ${event.txHash}`
         )
       }
     }
+    return { success: failedCount === 0, failedCount }
   }
 }
 
@@ -687,32 +716,48 @@ async function persistLastProcessedLedger(ledger: number): Promise<void> {
 }
 
 /**
- * Fetch and process events from ledger range with Batching (Issue #55)
+ * Collect every event the RPC has for [startLedger, endLedger] — a single
+ * `getEvents` call is capped at `limit` results and would otherwise
+ * silently truncate a busy range (#820). Pages via the response `cursor`
+ * until a page comes back smaller than the limit, meaning there is nothing
+ * left for this range.
  */
-async function fetchEvents(startLedger: number): Promise<void> {
+async function fetchAllEventsInRange(
+  startLedger: number,
+  endLedger: number
+): Promise<ContractEvent[]> {
   const server = getRpcServer()
+  const PAGE_LIMIT = 100
+  const filters = [
+    { type: 'contract' as const, contractIds: [VAULT_CONTRACT_ID] },
+  ]
 
-  try {
-    const latestLedger = await server.getLatestLedger()
+  const contractEvents: ContractEvent[] = []
+  let cursor: string | undefined
+  // Belt-and-suspenders against a wedged/misbehaving RPC response: a bounded
+  // ledger range should never need more than a few thousand pages of 100
+  // events, so this caps runaway pagination rather than looping forever.
+  const MAX_PAGES = 1000
+  let donePaginating = false
 
-    if (startLedger > latestLedger.sequence) {
-      return // No new ledgers
-    }
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const response = await server.getEvents(
+      cursor
+        ? { cursor, limit: PAGE_LIMIT, filters }
+        : { startLedger, endLedger, limit: PAGE_LIMIT, filters }
+    )
 
-    recordLedgerLag(latestLedger.sequence)
+    let crossedBoundary = false
+    for (const event of response.events) {
+      // Cursor-based continuation requests can't also carry endLedger, so
+      // the boundary is enforced client-side. Events come back in ledger
+      // order, so the first one past the boundary means every event after
+      // it is out of range too — stop collecting and stop paginating.
+      if (event.ledger > endLedger) {
+        crossedBoundary = true
+        break
+      }
 
-    const events = await server.getEvents({
-      startLedger,
-      filters: [
-        {
-          type: 'contract',
-          contractIds: [VAULT_CONTRACT_ID],
-        },
-      ],
-    })
-
-    const contractEvents: ContractEvent[] = []
-    for (const event of events.events) {
       const topics = event.topic
       const eventType = topics.length > 0 ? scValToNative(topics[0]) : null
 
@@ -727,16 +772,87 @@ async function fetchEvents(startLedger: number): Promise<void> {
               : VAULT_CONTRACT_ID,
           topics: topics,
           value: event.value,
+          eventIndex: parseEventIndex((event as { id?: unknown }).id),
         })
       }
     }
 
-    if (contractEvents.length > 0) {
-      // Use batch processing
-      await processEventBatch(contractEvents)
+    const nextCursor = response.cursor
+    donePaginating =
+      crossedBoundary ||
+      response.events.length < PAGE_LIMIT ||
+      !nextCursor ||
+      nextCursor === cursor
+
+    if (donePaginating) break
+    cursor = nextCursor
+  }
+
+  // Hitting MAX_PAGES without a terminating condition means this range is
+  // not fully fetched — returning what was collected so far as if it were
+  // complete would let the caller advance the cursor past unprocessed
+  // events (#820). Fail loudly instead: both callers already propagate a
+  // thrown error up to a catch that skips persisting the cursor and retries
+  // the same range on the next poll.
+  if (!donePaginating) {
+    throw new Error(
+      `[Event Listener] Exceeded ${MAX_PAGES} pages fetching events for ledgers ${startLedger}-${endLedger}; aborting without treating the range as complete`
+    )
+  }
+
+  return contractEvents
+}
+
+/**
+ * Fetch and process events from ledger range with Batching (Issue #55)
+ *
+ * Paginates explicitly with a bounded chunk + endLedger, and within each
+ * chunk pages through every RPC result page (#820) — a single `getEvents`
+ * call is not guaranteed to return every event up to `latestLedger` for a
+ * large or busy range. The cursor is only persisted once every chunk in
+ * the range has processed every event successfully; a failure anywhere in
+ * the range stops pagination and leaves the cursor exactly where it
+ * started, so the next poll retries the same range instead of skipping
+ * past the failed event.
+ */
+async function fetchEvents(startLedger: number): Promise<void> {
+  const server = getRpcServer()
+  const FETCH_CHUNK_SIZE = 100
+
+  try {
+    const latestLedger = await server.getLatestLedger()
+
+    if (startLedger > latestLedger.sequence) {
+      return // No new ledgers
     }
 
-    // Update cursor in database
+    recordLedgerLag(latestLedger.sequence)
+
+    for (
+      let chunkStart = startLedger;
+      chunkStart <= latestLedger.sequence;
+      chunkStart += FETCH_CHUNK_SIZE
+    ) {
+      const chunkEnd = Math.min(
+        chunkStart + FETCH_CHUNK_SIZE - 1,
+        latestLedger.sequence
+      )
+
+      const contractEvents = await fetchAllEventsInRange(chunkStart, chunkEnd)
+
+      if (contractEvents.length > 0) {
+        const result = await processEventBatch(contractEvents)
+        if (!result.success) {
+          logger.warn(
+            `[Event Listener] ${result.failedCount} event(s) failed in ledger range ${chunkStart}-${chunkEnd}; cursor held at ${lastProcessedLedger} for retry`
+          )
+          return
+        }
+      }
+    }
+
+    // Update cursor in database — only reached once every chunk above
+    // processed every event successfully (#820).
     await persistLastProcessedLedger(latestLedger.sequence)
     lastProcessedLedger = latestLedger.sequence
     // Update Prometheus metrics
@@ -775,33 +891,10 @@ export async function backfillEvents(
   ) {
     const chunkEnd = Math.min(current + CHUNK_SIZE - 1, finalLedger)
     try {
-      const events = await server.getEvents({
-        startLedger: current,
-        filters: [{ type: 'contract', contractIds: [VAULT_CONTRACT_ID] }],
-      })
-
-      const contractEvents: ContractEvent[] = []
-      for (const event of events.events) {
-        const topics = event.topic
-        const eventType = topics.length > 0 ? scValToNative(topics[0]) : null
-
-        if (
-          ['deposit', 'withdraw', 'rebalance'].includes(eventType) &&
-          event.ledger <= chunkEnd
-        ) {
-          contractEvents.push({
-            type: eventType as 'deposit' | 'withdraw' | 'rebalance',
-            ledger: event.ledger,
-            txHash: event.txHash,
-            contractId:
-              typeof event.contractId === 'string'
-                ? event.contractId
-                : VAULT_CONTRACT_ID,
-            topics: topics,
-            value: event.value,
-          })
-        }
-      }
+      // Pages through every RPC result page for this chunk (#820) — see
+      // fetchAllEventsInRange's doc comment for why a single getEvents call
+      // isn't enough.
+      const contractEvents = await fetchAllEventsInRange(current, chunkEnd)
 
       if (contractEvents.length > 0) {
         await processEventBatch(contractEvents)
