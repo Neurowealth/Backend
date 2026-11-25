@@ -17,6 +17,8 @@ import { runAlertRules } from '../../../src/jobs/alertRules'
 import db from '../../../src/db'
 import { publishUserEvent } from '../../../src/events/publisher'
 import { sendWhatsAppMessage } from '../../../src/utils/twilio-client'
+import { messageDeliveryService } from '../../../src/messaging'
+import { sendPushNotification } from '../../../src/controllers/push-controller'
 
 jest.mock('../../../src/db', () => ({
   __esModule: true,
@@ -30,6 +32,9 @@ jest.mock('../../../src/events/publisher', () => ({
 jest.mock('../../../src/utils/twilio-client', () => ({
   sendWhatsAppMessage: jest.fn().mockResolvedValue('sid-1'),
 }))
+jest.mock('../../../src/controllers/push-controller', () => ({
+  sendPushNotification: jest.fn().mockResolvedValue(undefined),
+}))
 jest.mock('../../../src/utils/logger', () => ({
   logger: { warn: jest.fn(), error: jest.fn(), info: jest.fn() },
   logBackgroundJob: jest.fn(),
@@ -42,6 +47,7 @@ jest.mock('../../../src/utils/job-metrics', () => ({
 const mockDb = db as any
 const mockPublish = publishUserEvent as jest.Mock
 const mockSendWhatsApp = sendWhatsAppMessage as jest.Mock
+const mockSendPush = sendPushNotification as jest.Mock
 
 /** Build a fresh alertRule mock with sensible default resolved values. */
 function stubDb(rules: any[]): void {
@@ -54,6 +60,15 @@ function stubDb(rules: any[]): void {
   mockDb.yieldSnapshot = { findMany: jest.fn().mockResolvedValue([]) }
   mockDb.user = {
     findUnique: jest.fn().mockResolvedValue({ phone: '+15551230000' }),
+  }
+  mockDb.notificationPreference = {
+    findUnique: jest.fn().mockResolvedValue(null),
+  }
+  mockDb.outboundNotification = {
+    create: jest.fn().mockResolvedValue({ id: 'out-1' }),
+    updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    findMany: jest.fn().mockResolvedValue([]),
+    count: jest.fn().mockResolvedValue(0),
   }
 }
 
@@ -245,5 +260,136 @@ describe('runAlertRules', () => {
     expect(mockDb.alertRule.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: { lastFiredAt: prior } })
     )
+  })
+
+  it('skips messageDeliveryService.send when whatsapp/risk_alerts preference is disabled while still publishing the real-time event', async () => {
+    const sendSpy = jest.spyOn(messageDeliveryService, 'send')
+    stubDb([
+      {
+        id: 'rule-1',
+        userId: 'user-1',
+        metric: 'PORTFOLIO_VALUE',
+        protocolName: null,
+        comparator: 'LT',
+        threshold: 1000,
+        deliveryChannel: 'WHATSAPP',
+        cooldownMinutes: 60,
+        lastFiredAt: null,
+      },
+    ])
+    mockDb.position.findMany.mockResolvedValue([{ currentValue: 500 }])
+    mockDb.notificationPreference.findUnique.mockResolvedValue({
+      userId: 'user-1',
+      channel: 'whatsapp',
+      category: 'risk_alerts',
+      enabled: false,
+    })
+
+    await runAlertRules(NOW)
+
+    expect(mockPublish).toHaveBeenCalledTimes(1)
+    expect(sendSpy).not.toHaveBeenCalled()
+    expect(mockSendWhatsApp).not.toHaveBeenCalled()
+    sendSpy.mockRestore()
+  })
+
+  it('defers WhatsApp alert delivery during quiet hours instead of sending immediately or dropping', async () => {
+    const sendSpy = jest
+      .spyOn(messageDeliveryService, 'send')
+      .mockResolvedValue({} as any)
+    stubDb([
+      {
+        id: 'rule-1',
+        userId: 'user-1',
+        metric: 'PORTFOLIO_VALUE',
+        protocolName: null,
+        comparator: 'LT',
+        threshold: 1000,
+        deliveryChannel: 'WHATSAPP',
+        cooldownMinutes: 60,
+        lastFiredAt: null,
+      },
+    ])
+    mockDb.position.findMany.mockResolvedValue([{ currentValue: 500 }])
+    mockDb.notificationPreference.findUnique.mockResolvedValue({
+      userId: 'user-1',
+      channel: 'whatsapp',
+      category: 'risk_alerts',
+      enabled: true,
+      quietHours: {
+        enabled: true,
+        startHour: 10,
+        endHour: 15,
+        timezone: 'UTC',
+      },
+    })
+
+    // NOW is 12:00 UTC, inside 10:00-15:00 quiet hours.
+    await runAlertRules(NOW)
+
+    expect(mockPublish).toHaveBeenCalledTimes(1)
+    expect(mockSendWhatsApp).not.toHaveBeenCalled()
+    expect(sendSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: 'WHATSAPP',
+        userId: 'user-1',
+        nextAttemptAt: new Date('2026-07-20T15:00:00.000Z'),
+      }),
+      { immediate: false }
+    )
+    sendSpy.mockRestore()
+  })
+
+  it('skips push notification when push/risk_alerts is disabled and defers during quiet hours', async () => {
+    stubDb([
+      {
+        id: 'rule-push',
+        userId: 'user-1',
+        metric: 'PORTFOLIO_VALUE',
+        protocolName: null,
+        comparator: 'LT',
+        threshold: 1000,
+        deliveryChannel: 'PUSH',
+        cooldownMinutes: 60,
+        lastFiredAt: null,
+      },
+    ])
+    mockDb.position.findMany.mockResolvedValue([{ currentValue: 500 }])
+    mockDb.notificationPreference.findUnique.mockResolvedValueOnce({
+      userId: 'user-1',
+      channel: 'push',
+      category: 'risk_alerts',
+      enabled: false,
+    })
+
+    await runAlertRules(NOW)
+
+    expect(mockPublish).toHaveBeenCalledTimes(1)
+    expect(mockSendPush).not.toHaveBeenCalled()
+    expect(mockDb.outboundNotification.create).not.toHaveBeenCalled()
+
+    // Now test quiet hours deferral for push.
+    mockDb.notificationPreference.findUnique.mockResolvedValue({
+      userId: 'user-1',
+      channel: 'push',
+      category: 'risk_alerts',
+      enabled: true,
+      quietHours: {
+        enabled: true,
+        startHour: 10,
+        endHour: 15,
+        timezone: 'UTC',
+      },
+    })
+
+    await runAlertRules(NOW)
+
+    expect(mockSendPush).not.toHaveBeenCalled()
+    expect(mockDb.outboundNotification.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        channel: 'push',
+        nextAttemptAt: new Date('2026-07-20T15:00:00.000Z'),
+      }),
+    })
   })
 })

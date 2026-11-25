@@ -41,7 +41,17 @@ export async function getUserPreference(
   channel: NotificationChannel,
   category: NotificationCategory
 ): Promise<NotificationPreference | null> {
-  const preference = await db.notificationPreference.findUnique({
+  const model = (
+    db as unknown as {
+      notificationPreference?: {
+        findUnique?: (args: unknown) => Promise<unknown>
+      }
+    }
+  )?.notificationPreference
+  if (!model?.findUnique) {
+    return null
+  }
+  const preference = await model.findUnique({
     where: {
       userId_channel_category: {
         userId,
@@ -194,13 +204,26 @@ export async function disableChannel(
   return preferences
 }
 
+function isHourInQuietWindow(
+  hour: number,
+  startHour: number,
+  endHour: number
+): boolean {
+  if (startHour === endHour) return false
+  if (startHour > endHour) {
+    return hour >= startHour || hour < endHour
+  }
+  return hour >= startHour && hour < endHour
+}
+
 /**
  * Check if a notification should be sent based on preferences
  */
 export async function shouldSendNotification(
   userId: string,
   channel: NotificationChannel,
-  category: NotificationCategory
+  category: NotificationCategory,
+  now: Date = new Date()
 ): Promise<boolean> {
   const preference = await getUserPreference(userId, channel, category)
 
@@ -222,23 +245,57 @@ export async function shouldSendNotification(
 
   // Check quiet hours
   if (preference.quietHours?.enabled) {
-    const now = new Date()
     const userHour = getHourInTimezone(now, preference.quietHours.timezone)
     const { startHour, endHour } = preference.quietHours
-
-    // Handle overnight quiet hours (e.g., 22:00 to 06:00)
-    if (startHour > endHour) {
-      if (userHour >= startHour || userHour < endHour) {
-        return false
-      }
-    } else {
-      if (userHour >= startHour && userHour < endHour) {
-        return false
-      }
+    if (isHourInQuietWindow(userHour, startHour, endHour)) {
+      return false
     }
   }
 
   return true
+}
+
+/**
+ * If a notification is enabled for the user/channel/category but currently
+ * suppressed due to quiet hours, returns the Date when the quiet window ends
+ * so callers can defer rather than drop the notification. Returns null when
+ * disabled or not inside quiet hours.
+ */
+export async function getQuietHoursDeferUntil(
+  userId: string,
+  channel: NotificationChannel,
+  category: NotificationCategory,
+  now: Date = new Date()
+): Promise<Date | null> {
+  const preference = await getUserPreference(userId, channel, category)
+  if (!preference || !preference.enabled || !preference.quietHours?.enabled) {
+    return null
+  }
+
+  const { startHour, endHour, timezone } = preference.quietHours
+  const { hour: userHour, minute: userMinute } = getTimePartsInTimezone(
+    now,
+    timezone
+  )
+  if (!isHourInQuietWindow(userHour, startHour, endHour)) {
+    return null
+  }
+
+  // Step hourly starting from the next local top-of-hour (:00 in timezone)
+  // until the quiet window ends (handles DST and half-hour offsets cleanly).
+  const baseMinuteMs = Math.floor(now.getTime() / 60_000) * 60_000
+  const minutesToNextLocalHour = 60 - userMinute
+  let candidate = new Date(baseMinuteMs + minutesToNextLocalHour * 60_000)
+
+  for (let i = 0; i < 24; i++) {
+    const candidateHour = getHourInTimezone(candidate, timezone)
+    if (!isHourInQuietWindow(candidateHour, startHour, endHour)) {
+      return candidate
+    }
+    candidate = new Date(candidate.getTime() + 60 * 60_000)
+  }
+
+  return null
 }
 
 export function generateUnsubscribeToken(userId: string): string {
@@ -401,7 +458,8 @@ export async function getDeliveryStatus(
       lower === 'telegram' ||
       lower === 'whatsapp' ||
       lower === 'email' ||
-      lower === 'sms'
+      lower === 'sms' ||
+      lower === 'push'
     )
       return lower
     return 'email'
@@ -543,15 +601,35 @@ export async function getPreferenceAuditLog(
 }
 
 /**
+ * Get current hour and minute in a specific timezone (0..23, 0..59).
+ */
+function getTimePartsInTimezone(
+  date: Date,
+  timezone: string
+): { hour: number; minute: number } {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hour: 'numeric',
+      minute: 'numeric',
+      hourCycle: 'h23',
+    }).formatToParts(date)
+    const hourPart = parts.find((p) => p.type === 'hour')?.value
+    const minutePart = parts.find((p) => p.type === 'minute')?.value
+    const hour = parseInt(hourPart ?? '', 10)
+    const minute = parseInt(minutePart ?? '', 10)
+    return {
+      hour: Number.isFinite(hour) ? hour % 24 : date.getUTCHours(),
+      minute: Number.isFinite(minute) ? minute % 60 : date.getUTCMinutes(),
+    }
+  } catch {
+    return { hour: date.getUTCHours(), minute: date.getUTCMinutes() }
+  }
+}
+
+/**
  * Get current hour in a specific timezone
  */
 function getHourInTimezone(date: Date, timezone: string): number {
-  return parseInt(
-    new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone,
-      hour: 'numeric',
-      hour12: false,
-    }).format(date),
-    10
-  )
+  return getTimePartsInTimezone(date, timezone).hour
 }

@@ -14,6 +14,11 @@ import { messageDeliveryService } from '../messaging'
 import { formatAlertTriggeredReply } from '../whatsapp/formatters'
 import { sendPushNotification } from '../controllers/push-controller'
 import {
+  getQuietHoursDeferUntil,
+  shouldSendNotification,
+} from '../notifications/service'
+import { enqueueOutboundNotification } from '../services/outboundNotifications'
+import {
   compare,
   cooldownCutoff,
   computeDrawdownPercent,
@@ -182,13 +187,131 @@ async function claimFire(rule: AlertRuleRow, now: Date): Promise<boolean> {
   return result.count === 1
 }
 
+async function deliverAlertWhatsApp(
+  rule: AlertRuleRow,
+  threshold: number,
+  observedValue: number,
+  now: Date
+): Promise<void> {
+  const allowed = await shouldSendNotification(
+    rule.userId,
+    'whatsapp',
+    'risk_alerts',
+    now
+  )
+  let deferUntil: Date | null = null
+  if (!allowed) {
+    deferUntil = await getQuietHoursDeferUntil(
+      rule.userId,
+      'whatsapp',
+      'risk_alerts',
+      now
+    )
+    if (!deferUntil) {
+      logger.info(
+        `[AlertRules] Skipping WhatsApp delivery for rule ${rule.id}: preference disabled for user ${rule.userId}`
+      )
+      return
+    }
+  }
+
+  const user = await db.user.findUnique({
+    where: { id: rule.userId },
+    select: { phone: true },
+  })
+  if (!user?.phone) {
+    logger.warn(
+      `[AlertRules] Rule ${rule.id} requests WhatsApp delivery but user ${rule.userId} has no phone on file — skipping WhatsApp channel`
+    )
+    return
+  }
+
+  const body = formatAlertTriggeredReply({
+    metric: rule.metric,
+    protocolName: rule.protocolName,
+    comparator: rule.comparator,
+    threshold,
+    observedValue,
+  })
+  await messageDeliveryService.send(
+    {
+      channel: 'WHATSAPP',
+      recipient: user.phone,
+      userId: rule.userId,
+      category: 'ALERT',
+      body,
+      ...(deferUntil ? { nextAttemptAt: deferUntil } : {}),
+    },
+    deferUntil ? { immediate: false } : undefined
+  )
+}
+
+async function deliverAlertPush(
+  rule: AlertRuleRow,
+  threshold: number,
+  observedValue: number,
+  data: Record<string, unknown>,
+  now: Date
+): Promise<void> {
+  const allowed = await shouldSendNotification(
+    rule.userId,
+    'push',
+    'risk_alerts',
+    now
+  )
+  let deferUntil: Date | null = null
+  if (!allowed) {
+    deferUntil = await getQuietHoursDeferUntil(
+      rule.userId,
+      'push',
+      'risk_alerts',
+      now
+    )
+    if (!deferUntil) {
+      logger.info(
+        `[AlertRules] Skipping push delivery for rule ${rule.id}: preference disabled for user ${rule.userId}`
+      )
+      return
+    }
+  }
+
+  const title = `Alert: ${rule.metric}`
+  const body = `${rule.metric} is ${observedValue} (threshold: ${threshold})`
+
+  if (deferUntil) {
+    await enqueueOutboundNotification(
+      'push',
+      { userId: rule.userId, title, body, data },
+      { nextAttemptAt: deferUntil }
+    ).catch((err) => {
+      logger.warn(
+        `[AlertRules] Failed to defer push notification for rule ${rule.id}`,
+        {
+          error: err instanceof Error ? err.message : String(err),
+        }
+      )
+    })
+    return
+  }
+
+  await sendPushNotification(rule.userId, title, body, data).catch((err) => {
+    logger.warn(
+      `[AlertRules] Failed to send push notification for rule ${rule.id}`,
+      {
+        error: err instanceof Error ? err.message : String(err),
+      }
+    )
+  })
+}
+
 /**
  * Deliver a triggered alert over the rule's channel(s). Returns true if at
  * least one channel delivered (or was attempted without a hard local failure).
  */
 async function deliverAlert(
   rule: AlertRuleRow,
-  observedValue: number
+  observedValue: number,
+  now: Date = new Date()
 ): Promise<void> {
   const threshold = Number(rule.threshold)
   const data = {
@@ -199,7 +322,7 @@ async function deliverAlert(
     comparator: rule.comparator,
     threshold,
     observedValue,
-    triggeredAt: new Date().toISOString(),
+    triggeredAt: now.toISOString(),
   }
 
   const ch = rule.deliveryChannel as string
@@ -220,43 +343,11 @@ async function deliverAlert(
   )
 
   if (wantsWhatsApp) {
-    const user = await db.user.findUnique({
-      where: { id: rule.userId },
-      select: { phone: true },
-    })
-    if (!user?.phone) {
-      logger.warn(
-        `[AlertRules] Rule ${rule.id} requests WhatsApp delivery but user ${rule.userId} has no phone on file — skipping WhatsApp channel`
-      )
-    } else {
-      const body = formatAlertTriggeredReply({
-        metric: rule.metric,
-        protocolName: rule.protocolName,
-        comparator: rule.comparator,
-        threshold,
-        observedValue,
-      })
-      await messageDeliveryService.send({
-        channel: 'WHATSAPP',
-        recipient: user.phone,
-        userId: rule.userId,
-        category: 'ALERT',
-        body,
-      })
-    }
+    await deliverAlertWhatsApp(rule, threshold, observedValue, now)
   }
 
   if (wantsPush) {
-    const title = `Alert: ${rule.metric}`
-    const body = `${rule.metric} is ${observedValue} (threshold: ${threshold})`
-    await sendPushNotification(rule.userId, title, body, data).catch((err) => {
-      logger.warn(
-        `[AlertRules] Failed to send push notification for rule ${rule.id}`,
-        {
-          error: err instanceof Error ? err.message : String(err),
-        }
-      )
-    })
+    await deliverAlertPush(rule, threshold, observedValue, data, now)
   }
 }
 
@@ -317,7 +408,7 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
           if (!won) continue
 
           try {
-            await deliverAlert(rule, value)
+            await deliverAlert(rule, value, now)
             fired++
           } catch (deliveryError) {
             // Delivery failed after the claim advanced lastFiredAt. Roll the

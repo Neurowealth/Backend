@@ -52,6 +52,10 @@ import {
   nextOccurrence,
   type QuietHours,
 } from '../notifications/schedule'
+import {
+  getQuietHoursDeferUntil,
+  shouldSendNotification,
+} from '../notifications/service'
 
 type DigestChannel = 'WHATSAPP' | 'TELEGRAM' | 'EMAIL' | 'WEBHOOK'
 type Frequency = 'DAILY' | 'WEEKLY' | 'MONTHLY'
@@ -97,56 +101,71 @@ async function deliverDigest(
   sub: DigestSubscriptionRow,
   userId: string,
   model: Record<string, unknown>,
-  text: string | null
-): Promise<{ delivered: string[]; skipped: string[] }> {
+  text: string | null,
+  now: Date
+): Promise<{ delivered: string[]; skipped: string[]; optedOut: string[] }> {
   const delivered: string[] = []
   const skipped: string[] = []
+  const optedOut: string[] = []
 
   const channels = sub.channels
 
   if (channels.includes('WHATSAPP')) {
-    try {
-      const user = await db.user.findUnique({
-        where: { id: userId },
-        select: { phone: true },
-      })
-      if (!user?.phone) {
-        skipped.push('WHATSAPP')
-        logger.warn(
-          `[Digests] Subscription ${sub.id} requests WHATSAPP but user ${userId} has no phone on file — skipping`
-        )
-      } else if (!text) {
-        skipped.push('WHATSAPP')
-        logger.warn(
-          `[Digests] Subscription ${sub.id} WHATSAPP render produced no output — skipping`
-        )
-      } else {
-        await sendWhatsAppMessage({ to: `whatsapp:${user.phone}`, body: text })
-        delivered.push('WHATSAPP')
-      }
-    } catch (error) {
-      // Bounded retry for a transient WhatsApp delivery error.
-      let deliveredOk = false
-      for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt++) {
-        try {
-          await sendWhatsAppMessage({
-            to: `whatsapp:${(await db.user.findUnique({ where: { id: userId }, select: { phone: true } }))?.phone}`,
-            body: text ?? '',
-          })
-          deliveredOk = true
-          break
-        } catch {
-          if (attempt === MAX_DELIVERY_ATTEMPTS) break
+    const allowed = await shouldSendNotification(
+      userId,
+      'whatsapp',
+      'portfolio_updates',
+      now
+    )
+    if (!allowed) {
+      optedOut.push('WHATSAPP')
+      logger.info(
+        `[Digests] Subscription ${sub.id} skipping WHATSAPP: preference disabled for user ${userId}`
+      )
+    } else {
+      try {
+        const user = await db.user.findUnique({
+          where: { id: userId },
+          select: { phone: true },
+        })
+        if (!user?.phone) {
+          skipped.push('WHATSAPP')
+          logger.warn(
+            `[Digests] Subscription ${sub.id} requests WHATSAPP but user ${userId} has no phone on file — skipping`
+          )
+        } else if (!text) {
+          skipped.push('WHATSAPP')
+          logger.warn(
+            `[Digests] Subscription ${sub.id} WHATSAPP render produced no output — skipping`
+          )
+        } else {
+          await sendWhatsAppMessage({ to: `whatsapp:${user.phone}`, body: text })
+          delivered.push('WHATSAPP')
         }
-      }
-      if (deliveredOk) {
-        delivered.push('WHATSAPP')
-      } else {
-        skipped.push('WHATSAPP')
-        logger.error(
-          `[Digests] WHATSAPP delivery failed for subscription ${sub.id}`,
-          { error: error instanceof Error ? error.message : String(error) }
-        )
+      } catch (error) {
+        // Bounded retry for a transient WhatsApp delivery error.
+        let deliveredOk = false
+        for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt++) {
+          try {
+            await sendWhatsAppMessage({
+              to: `whatsapp:${(await db.user.findUnique({ where: { id: userId }, select: { phone: true } }))?.phone}`,
+              body: text ?? '',
+            })
+            deliveredOk = true
+            break
+          } catch {
+            if (attempt === MAX_DELIVERY_ATTEMPTS) break
+          }
+        }
+        if (deliveredOk) {
+          delivered.push('WHATSAPP')
+        } else {
+          skipped.push('WHATSAPP')
+          logger.error(
+            `[Digests] WHATSAPP delivery failed for subscription ${sub.id}`,
+            { error: error instanceof Error ? error.message : String(error) }
+          )
+        }
       }
     }
   }
@@ -171,7 +190,7 @@ async function deliverDigest(
     delivered.push('WEBHOOK')
   }
 
-  return { delivered, skipped }
+  return { delivered, skipped, optedOut }
 }
 
 /**
@@ -216,17 +235,36 @@ export async function runDigests(now: Date = new Date()): Promise<void> {
 
           // Quiet hours gate the CURRENT send time, not the stored slot: if the
           // job fires while the clock is inside the window we defer the whole
-          // occurrence to the next allowed hour (never drop it). The digest is
-          // then picked up again at that deferred time.
-          const slot = deferForQuietHours(now, quiet)
-          if (slot.getTime() !== now.getTime()) {
+          // occurrence to the next allowed hour (never drop it). Check both
+          // subscription quiet hours and user notification preferences.
+          let deferTo = deferForQuietHours(now, quiet)
+          if (sub.channels.includes('WHATSAPP')) {
+            const allowed = await shouldSendNotification(
+              sub.userId,
+              'whatsapp',
+              'portfolio_updates',
+              now
+            )
+            if (!allowed) {
+              const prefDefer = await getQuietHoursDeferUntil(
+                sub.userId,
+                'whatsapp',
+                'portfolio_updates',
+                now
+              )
+              if (prefDefer && prefDefer.getTime() > deferTo.getTime()) {
+                deferTo = prefDefer
+              }
+            }
+          }
+          if (deferTo.getTime() !== now.getTime()) {
             await db.digestSubscription.update({
               where: { id: sub.id },
-              data: { nextRunAt: slot },
+              data: { nextRunAt: deferTo },
             })
             deferred++
             logger.info(
-              `[Digests] Subscription ${sub.id} deferred to ${slot.toISOString()} (quiet hours)`
+              `[Digests] Subscription ${sub.id} deferred to ${deferTo.toISOString()} (quiet hours)`
             )
             continue
           }
@@ -240,16 +278,21 @@ export async function runDigests(now: Date = new Date()): Promise<void> {
           const model = buildDigest(data, sub.frequency)
           const text = renderDigest(model, 'WHATSAPP')
 
-          const { delivered: ok, skipped } = await deliverDigest(
+          const {
+            delivered: ok,
+            skipped,
+            optedOut,
+          } = await deliverDigest(
             sub,
             sub.userId,
             model as unknown as Record<string, unknown>,
-            text
+            text,
+            now
           )
           delivered += ok.length
-          skippedCount += skipped.length
+          skippedCount += skipped.length + optedOut.length
 
-          if (ok.length === 0) {
+          if (ok.length === 0 && optedOut.length === 0) {
             // Hard failure across all channels: roll the claim back so the
             // occurrence is retried on a later tick rather than silently lost.
             await db.digestSubscription
