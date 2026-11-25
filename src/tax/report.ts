@@ -25,7 +25,11 @@ import { AccountingMethod, Prisma, TaxJurisdiction } from '@prisma/client'
 import { Decimal } from '@prisma/client/runtime/library'
 import db from '../db'
 import { CsvValue } from '../utils/csv'
-import { resolveJurisdiction, TaxProfile } from './jurisdictions'
+import {
+  isSplitTaxYear,
+  resolveJurisdiction,
+  TaxProfile,
+} from './jurisdictions'
 
 type Db = typeof db | Prisma.TransactionClient
 
@@ -63,10 +67,19 @@ export interface TaxReportDisposal {
   // null when the profile draws no long/short distinction (e.g. UK).
   holdingPeriodDays: number
   longTerm: boolean | null
+  // #839 — realizedGain after the profile's long-term treatment:
+  // FULL_EXEMPTION long-term disposals contribute 0, FLAT_DISCOUNT long-term
+  // disposals are reduced by the configured percent, everything else is the
+  // raw gain. realizedGain above is left untouched. Null when unpriced.
+  taxableGain: string | null
 }
 
 export interface TaxReport {
   userId: string
+  // #844 — the calendar year the jurisdiction's tax year *starts* in, which is
+  // what the `year` query parameter selects. For UK/AU it is not the year the
+  // tax year ends in: year=2025 is UK 2025-26 and AU FY2025-26. Use
+  // taxYearLabel / taxYearStart / taxYearEnd as the canonical period.
   year: number
   method: AccountingMethod
   // #356 — the jurisdiction this report was built under, and the tax-year
@@ -92,6 +105,16 @@ export interface TaxReport {
     // not create a loss).
     allowanceApplied: string
     realizedGainAfterAllowance: string
+    // #839 — jurisdiction long-term treatment, applied per disposal:
+    // `exemptGain` is long-term gain excluded by FULL_EXEMPTION (DE),
+    // `discountApplied` the amount FLAT_DISCOUNT (AU/CA) took off long-term
+    // gains, and `taxableGain = realizedGain - exemptGain - discountApplied`.
+    // `taxableGainAfterAllowance` is the figure to treat as taxable; the
+    // allowance is applied against `taxableGain`.
+    exemptGain: string
+    discountApplied: string
+    taxableGain: string
+    taxableGainAfterAllowance: string
   }
   caveats: {
     unpricedDisposalCount: number
@@ -105,6 +128,9 @@ export interface TaxReport {
     // #356 — always present: this report is bookkeeping output, not filed
     // tax advice, and jurisdiction rules simplify real-world edge cases.
     jurisdictionDisclaimer: string
+    // #844 — states the exact period covered, in words, so a UK/AU reader
+    // is not left to infer which tax year `year` selected.
+    taxYearNote: string
   }
 }
 
@@ -125,6 +151,47 @@ function isLongTerm(
 
 const str = (value: Decimal | null): string | null =>
   value === null ? null : new Decimal(value).toString()
+
+/**
+ * #839 — a disposal's gain after the jurisdiction's long-term treatment.
+ * Losses get the same treatment as gains: a DE loss on an exempt disposal is
+ * not deductible either, and CA's 50% inclusion rate also halves allowable
+ * losses. (AU applies its discount after netting losses, which this per-
+ * disposal model does not reproduce; see Known limitations.)
+ */
+export function taxableGainFor(
+  profile: TaxProfile,
+  realizedGain: Decimal,
+  longTerm: boolean | null
+): Decimal {
+  const effect = profile.holdingPeriod.longTermEffect
+  if (!longTerm) return realizedGain
+  switch (effect.kind) {
+    case 'FULL_EXEMPTION':
+      return new Decimal(0)
+    case 'FLAT_DISCOUNT':
+      return realizedGain.times(
+        new Decimal(100).minus(effect.discountPercent).dividedBy(100)
+      )
+    default:
+      return realizedGain
+  }
+}
+
+function taxYearNote(
+  profile: TaxProfile,
+  year: number,
+  label: string,
+  start: Date,
+  end: Date
+): string {
+  const day = (d: Date) => d.toISOString().slice(0, 10)
+  const lastDay = new Date(end.getTime() - 24 * 60 * 60 * 1000)
+  const period = `${profile.displayName} tax year ${label}: ${day(start)} to ${day(lastDay)} inclusive (UTC).`
+  return isSplitTaxYear(profile)
+    ? `${period} year=${year} selects the tax year that starts in ${year}.`
+    : period
+}
 
 export async function buildTaxReport(
   userId: string,
@@ -174,6 +241,7 @@ export async function buildTaxReport(
       row.lot.acquiredAt,
       row.disposedAt
     )
+    const longTerm = isLongTerm(profile, holdingPeriodDays)
     return {
       disposedAt: row.disposedAt.toISOString(),
       assetSymbol: row.assetSymbol,
@@ -188,7 +256,15 @@ export async function buildTaxReport(
       realizedGain: str(row.realizedGain),
       priced: row.realizedGain !== null,
       holdingPeriodDays,
-      longTerm: isLongTerm(profile, holdingPeriodDays),
+      longTerm,
+      taxableGain:
+        row.realizedGain === null
+          ? null
+          : taxableGainFor(
+              profile,
+              new Decimal(row.realizedGain),
+              longTerm
+            ).toString(),
     }
   })
 
@@ -197,6 +273,10 @@ export async function buildTaxReport(
   let realizedGain = new Decimal(0)
   let shortTermGain = new Decimal(0)
   let longTermGain = new Decimal(0)
+  let taxableGain = new Decimal(0)
+  let exemptGain = new Decimal(0)
+  let discountApplied = new Decimal(0)
+  const longTermEffect = profile.holdingPeriod.longTermEffect.kind
   let pricedDisposalCount = 0
   const unpricedAssets = new Set<string>()
   const hasLongShortSplit = profile.holdingPeriod.longTermEffect.kind !== 'NONE'
@@ -206,6 +286,15 @@ export async function buildTaxReport(
       proceeds = proceeds.plus(disposal.proceeds as string)
       costBasis = costBasis.plus(disposal.costBasis as string)
       realizedGain = realizedGain.plus(disposal.realizedGain as string)
+      taxableGain = taxableGain.plus(disposal.taxableGain as string)
+      const reduction = new Decimal(disposal.realizedGain as string).minus(
+        disposal.taxableGain as string
+      )
+      if (longTermEffect === 'FULL_EXEMPTION') {
+        exemptGain = exemptGain.plus(reduction)
+      } else if (longTermEffect === 'FLAT_DISCOUNT') {
+        discountApplied = discountApplied.plus(reduction)
+      }
       pricedDisposalCount++
       if (hasLongShortSplit) {
         if (disposal.longTerm) {
@@ -219,11 +308,16 @@ export async function buildTaxReport(
     }
   }
 
+  // The allowance offsets the gain that is actually taxable (#839). For every
+  // profile with an allowance today (UK) there is no long-term treatment, so
+  // taxableGain equals realizedGain and realizedGainAfterAllowance keeps its
+  // pre-#839 value.
   const allowance = new Decimal(profile.allowance.annualExemptAmount)
-  const allowanceApplied = realizedGain.greaterThan(0)
-    ? Decimal.min(allowance, realizedGain)
+  const allowanceApplied = taxableGain.greaterThan(0)
+    ? Decimal.min(allowance, taxableGain)
     : new Decimal(0)
   const realizedGainAfterAllowance = realizedGain.minus(allowanceApplied)
+  const taxableGainAfterAllowance = taxableGain.minus(allowanceApplied)
 
   const methodChangedDuringYear =
     user.methodEffectiveAt !== null &&
@@ -248,12 +342,17 @@ export async function buildTaxReport(
       longTermGain: hasLongShortSplit ? longTermGain.toString() : null,
       allowanceApplied: allowanceApplied.toString(),
       realizedGainAfterAllowance: realizedGainAfterAllowance.toString(),
+      exemptGain: exemptGain.toString(),
+      discountApplied: discountApplied.toString(),
+      taxableGain: taxableGain.toString(),
+      taxableGainAfterAllowance: taxableGainAfterAllowance.toString(),
     },
     caveats: {
       unpricedDisposalCount: disposals.length - pricedDisposalCount,
       unpricedAssets: [...unpricedAssets].sort(),
       stablecoinAssumption:
         'USDC is priced at 1.00 USD by assumption (STABLECOIN_ASSUMPTION); no market price feed is used.',
+      taxYearNote: taxYearNote(profile, year, taxYearLabel, yearStart, yearEnd),
       jurisdictionDisclaimer: `This report applies the ${profile.displayName} (${profile.jurisdiction}) tax profile (tax year ${taxYearLabel}). It is bookkeeping output, not tax advice — verify with a qualified professional for your situation.`,
       rebalancesNotIncluded:
         'Protocol rebalances are same-asset transfers and are not treated as taxable disposals in this report.',
@@ -279,6 +378,7 @@ export const TAX_REPORT_CSV_HEADERS = [
   'priced',
   'holdingPeriodDays',
   'longTerm',
+  'taxableGain',
 ]
 
 export function taxReportToCsvRows(report: TaxReport): CsvValue[][] {
@@ -297,5 +397,6 @@ export function taxReportToCsvRows(report: TaxReport): CsvValue[][] {
     d.priced,
     d.holdingPeriodDays,
     d.longTerm,
+    d.taxableGain,
   ])
 }

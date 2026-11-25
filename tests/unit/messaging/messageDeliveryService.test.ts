@@ -11,6 +11,7 @@ import {
 import * as telegramClient from '../../../src/utils/telegram-client'
 import * as twilioClient from '../../../src/utils/twilio-client'
 import { alertingService } from '../../../src/services/alerting'
+import { config } from '../../../src/config'
 
 jest.mock('../../../src/services/alerting', () => ({
   alertingService: {
@@ -19,9 +20,16 @@ jest.mock('../../../src/services/alerting', () => ({
 }))
 
 describe('MessageDeliveryService (#493)', () => {
+  const originalLeaseMs = config.messaging.sendingLeaseMs
+
   beforeEach(() => {
     messageDeliveryService.clearStoreForTests()
+    config.messaging.sendingLeaseMs = originalLeaseMs
     jest.restoreAllMocks()
+  })
+
+  afterEach(() => {
+    config.messaging.sendingLeaseMs = originalLeaseMs
   })
 
   describe('Delivery Status Tracking', () => {
@@ -266,6 +274,151 @@ describe('MessageDeliveryService (#493)', () => {
       })
       expect(onlyAlerts.total).toBe(1)
       expect(onlyAlerts.messages[0].category).toBe('ALERT')
+    })
+  })
+
+  describe('Stale SENDING lease recovery (#834)', () => {
+    it('reclaims stale SENDING rows to PENDING and processes them on sweep', async () => {
+      config.messaging.sendingLeaseMs = 1000
+      const now = new Date()
+      const stale = new Date(now.getTime() - 5000)
+
+      await (messageDeliveryService as any).persistRecord({
+        id: 'stale-sending-1',
+        channel: 'TELEGRAM',
+        recipient: '123456789',
+        userId: null,
+        category: 'NOTIFICATION',
+        body: 'stuck in sending',
+        status: 'SENDING',
+        priority: 'NORMAL',
+        attempts: 1,
+        maxAttempts: 3,
+        nextAttemptAt: null,
+        lastError: null,
+        providerMessageId: null,
+        metadata: null,
+        fallbackChannel: null,
+        fallbackRecipient: null,
+        fallbackTriggered: false,
+        deliveredAt: null,
+        createdAt: stale,
+        updatedAt: stale,
+      })
+
+      jest.spyOn(telegramClient, 'sendTelegramMessage').mockResolvedValue({
+        ok: true,
+        messageId: 'recovered-after-crash',
+      })
+
+      const result = await messageDeliveryService.processPendingQueue(10)
+
+      expect(result.processed).toBe(1)
+      expect(result.delivered).toBe(1)
+
+      const record = await messageDeliveryService.getMessage('stale-sending-1')
+      expect(record?.status).toBe('DELIVERED')
+      expect(record?.attempts).toBe(3)
+      expect(record?.providerMessageId).toBe('recovered-after-crash')
+    })
+
+    it('does not reclaim fresh SENDING rows', async () => {
+      config.messaging.sendingLeaseMs = 10 * 60 * 1000
+      const now = new Date()
+
+      await (messageDeliveryService as any).persistRecord({
+        id: 'fresh-sending-1',
+        channel: 'TELEGRAM',
+        recipient: '123456789',
+        userId: null,
+        category: 'NOTIFICATION',
+        body: 'actively sending',
+        status: 'SENDING',
+        priority: 'NORMAL',
+        attempts: 1,
+        maxAttempts: 3,
+        nextAttemptAt: null,
+        lastError: null,
+        providerMessageId: null,
+        metadata: null,
+        fallbackChannel: null,
+        fallbackRecipient: null,
+        fallbackTriggered: false,
+        deliveredAt: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+
+      const sendSpy = jest
+        .spyOn(telegramClient, 'sendTelegramMessage')
+        .mockResolvedValue({
+          ok: true,
+          messageId: 'should-not-send',
+        })
+
+      const reclaim = await messageDeliveryService.reclaimStaleSendingMessages()
+      const processed = await messageDeliveryService.processPendingQueue(10)
+
+      expect(reclaim).toEqual({ reclaimed: 0, deadLettered: 0 })
+      expect(processed.processed).toBe(0)
+      expect(sendSpy).not.toHaveBeenCalled()
+
+      const record = await messageDeliveryService.getMessage('fresh-sending-1')
+      expect(record?.status).toBe('SENDING')
+      expect(record?.attempts).toBe(1)
+    })
+
+    it('reclaims stale SENDING rows to DEAD_LETTER when attempts are exhausted', async () => {
+      config.messaging.sendingLeaseMs = 1000
+      const now = new Date()
+      const stale = new Date(now.getTime() - 5000)
+
+      await (messageDeliveryService as any).persistRecord({
+        id: 'stale-sending-dead-letter',
+        channel: 'TELEGRAM',
+        recipient: '123456789',
+        userId: null,
+        category: 'NOTIFICATION',
+        body: 'stuck and exhausted',
+        status: 'SENDING',
+        priority: 'NORMAL',
+        attempts: 2,
+        maxAttempts: 3,
+        nextAttemptAt: null,
+        lastError: null,
+        providerMessageId: null,
+        metadata: null,
+        fallbackChannel: null,
+        fallbackRecipient: null,
+        fallbackTriggered: false,
+        deliveredAt: null,
+        createdAt: stale,
+        updatedAt: stale,
+      })
+
+      const emitSpy = jest.spyOn(alertingService, 'emit')
+      const sendSpy = jest.spyOn(telegramClient, 'sendTelegramMessage')
+
+      const reclaim = await messageDeliveryService.reclaimStaleSendingMessages()
+
+      expect(reclaim).toEqual({ reclaimed: 0, deadLettered: 1 })
+      expect(sendSpy).not.toHaveBeenCalled()
+
+      const record = await messageDeliveryService.getMessage(
+        'stale-sending-dead-letter'
+      )
+      expect(record?.status).toBe('DEAD_LETTER')
+      expect(record?.attempts).toBe(3)
+      expect(record?.nextAttemptAt).toBeNull()
+      expect(record?.lastError).toContain('attempts exhausted')
+
+      expect(emitSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          component: 'messaging',
+          title: expect.stringContaining('Dead-Lettered'),
+        }),
+        'dead_letter:stale-sending-dead-letter'
+      )
     })
   })
 })

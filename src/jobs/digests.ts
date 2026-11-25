@@ -297,6 +297,7 @@ export async function runDigests(now: Date = new Date()): Promise<void> {
         error: errorMessage,
       })
       recordJobFailure(jobName, durationMs)
+      throw error
     }
   })
 }

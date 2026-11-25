@@ -2,7 +2,7 @@
  * Admin Routes - Operational tooling for Stellar event listener and DLQ management
  * Protected by admin authentication middleware and rate limiting.
  *
- * Rate limiting and auth are applied in app.ts:
+ * Rate limiting is applied where the router is mounted, in src/index.ts:
  *   app.use('/api/admin', adminRateLimiter, adminRouter)
  *
  * Do NOT add router.use(adminRateLimiter) here — that would apply it twice,
@@ -151,7 +151,7 @@ async function auditLog(
   }
 }
 
-// ── Auth applied once here — rate limiting is applied in app.ts ───────────
+// ── Auth applied once here — rate limiting is applied in index.ts ─────────
 router.use(requireAdminAuth)
 
 router.get(

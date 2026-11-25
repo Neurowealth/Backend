@@ -151,9 +151,11 @@ GET /api/v1/portfolio/:userId/tax-report?year=<yyyy>&format=json|csv&method=FIFO
 - Auth: `requireAuth` + `enforceUserAccess` (own report only). The userId is a
   path param deliberately — `enforceUserAccess` only checks
   `params.userId`/`body.userId`, so a query-param userId would bypass it.
-- `year` is bounded 2000–2100; boundaries are **UTC** (`disposedAt` in
-  `[Jan 1 00:00 UTC, next Jan 1)`). A disposal belongs to the year it was
-  disposed in, regardless of when the lot was acquired.
+- The period is the user's jurisdiction's tax year (see "Tax years" below),
+  chosen with exactly one of `taxYear` (the canonical label, `2025` or
+  `2025-26`) or `year` (2000–2100, the year the tax year starts in).
+  Boundaries are **UTC**. A disposal belongs to the tax year it was disposed
+  in, regardless of when the lot was acquired.
 - `method` is **optional and a confirmation gate, not a recompute switch**:
   if passed, it must equal the account's current `accountingMethod` or the
   request is rejected with 400 (`MethodMismatchError`). This report shows
@@ -163,13 +165,61 @@ GET /api/v1/portfolio/:userId/tax-report?year=<yyyy>&format=json|csv&method=FIFO
   withdrawals did lot-for-lot. Change the account's method (forward-only, see
   above) to affect future reports.
 - A year with no activity returns a valid empty report (200).
-- `format=csv` returns an RFC 4180 attachment (`tax-report-<year>.csv`).
+- `format=csv` returns an RFC 4180 attachment (`tax-report-<taxYearLabel>.csv`).
   Cells starting with `=` `+` `-` `@` tab or CR are prefixed with `'`
   (spreadsheet formula-injection guard, `src/utils/csv.ts`).
 
 Money values are decimal strings. `totals` sums only fully priced disposals.
 `method` in the response is the account's `accountingMethod`, not a
 per-request-computed value.
+
+## Jurisdictions
+
+`User.taxJurisdiction` (default `US`) selects a profile in
+`src/tax/jurisdictions/`. The profile decides which disposals fall in the tax
+year, whether a disposal is long-term, and what long-term means; the report
+does the money math.
+
+### Tax years (#844)
+
+| Jurisdiction | Tax year | `taxYear` label | `year=2025` selects |
+| ------------ | -------- | --------------- | ------------------- |
+| US, DE, CA | 1 Jan – 31 Dec | `2025` | 2025-01-01 to 2025-12-31 |
+| UK | 6 Apr – 5 Apr | `2025-26` | 2025-04-06 to 2026-04-05 |
+| AU | 1 Jul – 30 Jun | `2025-26` | 2025-07-01 to 2026-06-30 |
+
+`year` always means the calendar year the tax year **starts** in. Since that
+is easy to misread for UK/AU, prefer `taxYear`: it is checked against the
+user's jurisdiction, and a bare `2025` for a UK/AU user is a 400 suggesting
+`2025-26` rather than a silently chosen period. The response's `year`,
+`taxYearLabel`, `taxYearStart` (inclusive), `taxYearEnd` (exclusive) and
+`caveats.taxYearNote` identify the period that was used.
+
+### Long-term treatment (#839)
+
+| Jurisdiction | Long-term after | Treatment (`longTermEffect`) |
+| ------------ | --------------- | ---------------------------- |
+| US | 365 days | `RATE_SPLIT`: separate short/long totals, no reduction. |
+| UK | n/a | `NONE`: no long/short split. |
+| DE | 366 days | `FULL_EXEMPTION`: a long-term disposal is not taxable. |
+| AU | 365 days | `FLAT_DISCOUNT` 50%: the CGT discount on long-term gains. |
+| CA | 0 days | `FLAT_DISCOUNT` 50%: the inclusion rate, so every disposal counts at half. |
+
+Each disposal keeps its raw `realizedGain` and gets a `taxableGain` after
+this treatment (also a CSV column). The totals report both:
+
+- `realizedGain`, `shortTermGain`, `longTermGain` are raw gains;
+- `exemptGain` is long-term gain removed by `FULL_EXEMPTION`;
+- `discountApplied` is the amount `FLAT_DISCOUNT` took off;
+- `taxableGain = realizedGain - exemptGain - discountApplied`;
+- `allowanceApplied` is the flat annual allowance (UK £3,000), applied against
+  `taxableGain`;
+- `taxableGainAfterAllowance` is the figure to treat as taxable.
+  `realizedGainAfterAllowance` is kept for compatibility and is the raw gain
+  less the allowance.
+
+Losses get the same treatment as gains: a loss on a DE exempt disposal is not
+deductible, and CA's inclusion rate halves allowable losses too.
 
 ## Accounting exports (QBO / Xero)
 
@@ -233,8 +283,8 @@ indicate an insufficient-lots condition (see the paired critical alert).
 3. **USDC 1:1 USD assumption** — actual market price may deviate slightly.
 4. **HTTP-controller-only transactions** never re-seen by the event listener
    get no lots/disposals (consistent with Position behavior).
-5. **UTC year boundaries** — users in other timezones may expect local-time
-   year edges.
+5. **UTC tax-year boundaries** — users in other timezones may expect
+   local-time edges (e.g. UK midnight on 6 April in BST).
 6. **Forward-only unless the backfill script is run** at deploy.
 7. Yield claims, referral rewards, and swaps do not create or consume lots;
    only DEPOSIT/WITHDRAWAL Transactions participate.
@@ -249,5 +299,11 @@ indicate an insufficient-lots condition (see the paired critical alert).
 11. **Only the most recent method change is tracked** (`methodEffectiveAt`
     is a single timestamp) — a second change does not retroactively
     re-attribute the window before the first one.
-12. Wash-sale-like adjustment rules and long/short-term holding-period
-    classification are not computed — out of scope, jurisdiction-specific.
+12. Wash-sale-like adjustment rules are not computed — out of scope,
+    jurisdiction-specific. Long/short classification and the long-term
+    treatment above are (see "Jurisdictions").
+13. **AU's discount is applied per disposal**, so it also halves a long-term
+    loss. The ATO nets capital losses against gains first and discounts the
+    remaining long-term gain, so an AU year with long-term losses reports a
+    higher taxable gain than the ATO method would. Germany's €600 annual
+    exemption for private sales is not modeled.

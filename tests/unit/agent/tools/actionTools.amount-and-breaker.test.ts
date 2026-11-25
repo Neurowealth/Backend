@@ -11,76 +11,79 @@
  * of always running MAX_YIELD comparison.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { getTool } from '../../../src/agent/tools/registry'
+import { getTool } from '../../../../src/agent/tools/registry'
 import {
   checkAndRecordSensitiveOp,
   __resetSensitiveOpsVelocityForTests,
-} from '../../../src/agent/tools/actionTools'
+} from '../../../../src/agent/tools/actionTools'
 
 // ---------------------------------------------------------------------------
 // Shared mock setup
 // ---------------------------------------------------------------------------
 
-vi.mock('../../../src/db', () => ({
+jest.mock('../../../../src/db', () => ({
+  __esModule: true,
   default: {
     user: {
-      findUnique: vi.fn(),
-      update: vi.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
     },
-    position: { findMany: vi.fn() },
-    recurringDepositPlan: { create: vi.fn() },
-    alertRule: { create: vi.fn() },
-    publishedStrategy: { findFirst: vi.fn() },
+    position: { findMany: jest.fn() },
+    recurringDepositPlan: { create: jest.fn() },
+    alertRule: { create: jest.fn() },
+    publishedStrategy: { findFirst: jest.fn() },
   },
 }))
 
-vi.mock('../../../src/controllers/transaction-controller', () => ({
-  executeDeposit: vi.fn(),
-  executeWithdraw: vi.fn(),
+jest.mock('../../../../src/controllers/transaction-controller', () => ({
+  executeDeposit: jest.fn(),
+  executeWithdraw: jest.fn(),
 }))
 
-vi.mock('../../../src/agent/router', () => ({
-  executeRebalanceIfNeeded: vi.fn(),
-  getThresholds: vi.fn(() => ({ minimumImprovement: 0.5, maxGasPercent: 0.1 })),
-  compareProtocols: vi.fn(),
-  logAgentAction: vi.fn(),
+jest.mock('../../../../src/agent/router', () => ({
+  executeRebalanceIfNeeded: jest.fn(),
+  getThresholds: jest.fn(() => ({
+    minimumImprovement: 0.5,
+    maxGasPercent: 0.1,
+  })),
+  compareProtocols: jest.fn(),
+  logAgentAction: jest.fn(),
 }))
 
-vi.mock('../../../src/agent/breakerService', () => ({
-  getBreakerStatusForUser: vi.fn(),
+jest.mock('../../../../src/agent/breakerService', () => ({
+  getBreakerStatusForUser: jest.fn(),
 }))
 
-vi.mock('../../../src/agent/volatilityCircuitBreaker', () => ({
-  isPortfolioRebalanceAllowed: vi.fn(),
+jest.mock('../../../../src/agent/volatilityCircuitBreaker', () => ({
+  isPortfolioRebalanceAllowed: jest.fn(),
 }))
 
-vi.mock('../../../src/strategy/service', () => ({
-  loadActiveFollowsForUsers: vi.fn(() => new Map()),
-  followStrategy: vi.fn(),
-  unfollowStrategy: vi.fn(),
+jest.mock('../../../../src/strategy/service', () => ({
+  loadActiveFollowsForUsers: jest.fn(() => new Map()),
+  followStrategy: jest.fn(),
+  unfollowStrategy: jest.fn(),
 }))
 
-vi.mock('../../../src/agent/effectiveStrategy', () => ({
-  resolveEffectiveConfig: vi.fn((own) => own),
-  isKnownStrategyName: vi.fn(() => true),
+jest.mock('../../../../src/agent/effectiveStrategy', () => ({
+  resolveEffectiveConfig: jest.fn((own: unknown) => own),
+  isKnownStrategyName: jest.fn(() => true),
 }))
 
-vi.mock('../../../src/utils/logger', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+jest.mock('../../../../src/utils/logger', () => ({
+  logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }))
 
-import db from '../../../src/db'
+import db from '../../../../src/db'
 import {
   executeDeposit,
   executeWithdraw,
-} from '../../../src/controllers/transaction-controller'
+} from '../../../../src/controllers/transaction-controller'
 import {
   executeRebalanceIfNeeded,
   compareProtocols,
-} from '../../../src/agent/router'
-import { getBreakerStatusForUser } from '../../../src/agent/breakerService'
-import { isPortfolioRebalanceAllowed } from '../../../src/agent/volatilityCircuitBreaker'
+} from '../../../../src/agent/router'
+import { getBreakerStatusForUser } from '../../../../src/agent/breakerService'
+import { isPortfolioRebalanceAllowed } from '../../../../src/agent/volatilityCircuitBreaker'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -89,6 +92,7 @@ import { isPortfolioRebalanceAllowed } from '../../../src/agent/volatilityCircui
 const mockCtx = (overrides = {}) => ({
   userId: 'user-abc',
   actingAsUserId: null,
+  channel: 'api' as const,
   dryRun: false,
   ...overrides,
 })
@@ -114,27 +118,39 @@ describe('#765 â€” onChainAmountSchema applied to money tool arg schemas', 
     const schema = schemaFor('deposit')
 
     it('accepts a valid amount', () => {
-      expect(schema.safeParse({ amount: 10, assetSymbol: 'USDC' }).success).toBe(true)
+      expect(
+        schema.safeParse({ amount: 10, assetSymbol: 'USDC' }).success
+      ).toBe(true)
     })
 
     it('rejects sub-stroop amount (0.00000001 â€” 8 decimals)', () => {
-      expect(schema.safeParse({ amount: 0.00000001, assetSymbol: 'USDC' }).success).toBe(false)
+      expect(
+        schema.safeParse({ amount: 0.00000001, assetSymbol: 'USDC' }).success
+      ).toBe(false)
     })
 
     it('rejects amount with more than 7 decimal places', () => {
-      expect(schema.safeParse({ amount: 1.12345678, assetSymbol: 'USDC' }).success).toBe(false)
+      expect(
+        schema.safeParse({ amount: 1.12345678, assetSymbol: 'USDC' }).success
+      ).toBe(false)
     })
 
     it('rejects Infinity', () => {
-      expect(schema.safeParse({ amount: Infinity, assetSymbol: 'USDC' }).success).toBe(false)
+      expect(
+        schema.safeParse({ amount: Infinity, assetSymbol: 'USDC' }).success
+      ).toBe(false)
     })
 
     it('rejects 1e20 (above MAX_CONTRACT_AMOUNT)', () => {
-      expect(schema.safeParse({ amount: 1e20, assetSymbol: 'USDC' }).success).toBe(false)
+      expect(
+        schema.safeParse({ amount: 1e20, assetSymbol: 'USDC' }).success
+      ).toBe(false)
     })
 
     it('accepts exactly 7 decimal places', () => {
-      expect(schema.safeParse({ amount: 0.1234567, assetSymbol: 'USDC' }).success).toBe(true)
+      expect(
+        schema.safeParse({ amount: 0.1234567, assetSymbol: 'USDC' }).success
+      ).toBe(true)
     })
   })
 
@@ -163,19 +179,31 @@ describe('#765 â€” onChainAmountSchema applied to money tool arg schemas', 
 
     it('rejects sub-stroop amount', () => {
       expect(
-        schema.safeParse({ amount: 0.00000001, cadence: 'WEEKLY', assetSymbol: 'USDC' }).success
+        schema.safeParse({
+          amount: 0.00000001,
+          cadence: 'WEEKLY',
+          assetSymbol: 'USDC',
+        }).success
       ).toBe(false)
     })
 
     it('rejects more than 7 decimal places', () => {
       expect(
-        schema.safeParse({ amount: 1.12345678, cadence: 'MONTHLY', assetSymbol: 'USDC' }).success
+        schema.safeParse({
+          amount: 1.12345678,
+          cadence: 'MONTHLY',
+          assetSymbol: 'USDC',
+        }).success
       ).toBe(false)
     })
 
     it('accepts a valid amount', () => {
       expect(
-        schema.safeParse({ amount: 100, cadence: 'MONTHLY', assetSymbol: 'USDC' }).success
+        schema.safeParse({
+          amount: 100,
+          cadence: 'MONTHLY',
+          assetSymbol: 'USDC',
+        }).success
       ).toBe(true)
     })
   })
@@ -207,7 +235,8 @@ describe('#765 â€” sensitive-op velocity counter', () => {
 
   it('allows a new call after the window expires', () => {
     const max = Number(process.env.SENSITIVE_RATE_LIMIT_MAX) || 10
-    const windowMs = Number(process.env.SENSITIVE_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000
+    const windowMs =
+      Number(process.env.SENSITIVE_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000
     const now = Date.now()
     for (let i = 0; i < max; i++) checkAndRecordSensitiveOp('user-1', now)
     // past the window
@@ -225,14 +254,18 @@ describe('#765 â€” sensitive-op velocity counter', () => {
     __resetSensitiveOpsVelocityForTests()
     const max = Number(process.env.SENSITIVE_RATE_LIMIT_MAX) || 10
     const now = Date.now()
-    for (let i = 0; i < max; i++) checkAndRecordSensitiveOp('user-budget', now + i)
+    for (let i = 0; i < max; i++)
+      checkAndRecordSensitiveOp('user-budget', now + i)
 
-    vi.mocked(db.user.findUnique).mockResolvedValue({
+    jest.mocked(db.user.findUnique).mockResolvedValue({
       walletAddress: 'GFAKE12345',
     } as any)
 
     const execute = executeFor('deposit')
-    const result = await execute({ amount: 10, assetSymbol: 'USDC' }, mockCtx({ userId: 'user-budget' }))
+    const result = await execute(
+      { amount: 10, assetSymbol: 'USDC' },
+      mockCtx({ userId: 'user-budget' })
+    )
     expect(result.ok).toBe(false)
     expect((result as any).error).toMatch(/Too many money-movement/i)
     expect(executeDeposit).not.toHaveBeenCalled()
@@ -245,31 +278,36 @@ describe('#765 â€” sensitive-op velocity counter', () => {
 
 describe('#763 â€” rebalance tool safety gates', () => {
   beforeEach(() => {
-    vi.resetAllMocks()
+    jest.clearAllMocks()
     __resetSensitiveOpsVelocityForTests()
 
-    vi.mocked(db.user.findUnique).mockResolvedValue({
+    jest.mocked(db.user.findUnique).mockResolvedValue({
       rebalanceStrategy: 'MAX_YIELD',
       strategyConfig: {},
       riskTolerance: 'MODERATE',
       liquidityFloor: null,
     } as any)
 
-    vi.mocked(db.position.findMany).mockResolvedValue([
-      { id: 'pos-1', protocolName: 'ProtocolA', currentValue: '1000', userId: 'user-abc' },
+    jest.mocked(db.position.findMany).mockResolvedValue([
+      {
+        id: 'pos-1',
+        protocolName: 'ProtocolA',
+        currentValue: '1000',
+        userId: 'user-abc',
+      },
     ] as any)
 
-    vi.mocked(isPortfolioRebalanceAllowed).mockResolvedValue(true)
-    vi.mocked(getBreakerStatusForUser).mockResolvedValue({
+    jest.mocked(isPortfolioRebalanceAllowed).mockResolvedValue(true)
+    jest.mocked(getBreakerStatusForUser).mockResolvedValue({
       global: null,
       affectingYou: [],
     } as any)
 
-    vi.mocked(executeRebalanceIfNeeded).mockResolvedValue(null)
+    jest.mocked(executeRebalanceIfNeeded).mockResolvedValue(null)
   })
 
   it('blocks execution when volatility gate is CLOSED', async () => {
-    vi.mocked(isPortfolioRebalanceAllowed).mockResolvedValue(false)
+    jest.mocked(isPortfolioRebalanceAllowed).mockResolvedValue(false)
     const execute = executeFor('rebalance')
     const result = await execute({}, mockCtx())
     expect(result.ok).toBe(false)
@@ -278,7 +316,7 @@ describe('#763 â€” rebalance tool safety gates', () => {
   })
 
   it('blocks execution when GLOBAL circuit breaker is OPEN', async () => {
-    vi.mocked(getBreakerStatusForUser).mockResolvedValue({
+    jest.mocked(getBreakerStatusForUser).mockResolvedValue({
       global: 'DRAWDOWN_EXCEEDED',
       affectingYou: [],
     } as any)
@@ -290,7 +328,9 @@ describe('#763 â€” rebalance tool safety gates', () => {
   })
 
   it('blocks execution and fails closed when breaker check throws', async () => {
-    vi.mocked(getBreakerStatusForUser).mockRejectedValue(new Error('DB timeout'))
+    jest
+      .mocked(getBreakerStatusForUser)
+      .mockRejectedValue(new Error('DB timeout'))
     const execute = executeFor('rebalance')
     const result = await execute({}, mockCtx())
     expect(result.ok).toBe(false)
@@ -299,7 +339,7 @@ describe('#763 â€” rebalance tool safety gates', () => {
   })
 
   it('blocks execution when USER circuit breaker is OPEN (affectingYou)', async () => {
-    vi.mocked(getBreakerStatusForUser).mockResolvedValue({
+    jest.mocked(getBreakerStatusForUser).mockResolvedValue({
       global: null,
       affectingYou: ['rebalancing paused for your account: manual'],
     } as any)
@@ -311,7 +351,7 @@ describe('#763 â€” rebalance tool safety gates', () => {
   })
 
   it('succeeds and returns rebalance results when all gates pass', async () => {
-    vi.mocked(executeRebalanceIfNeeded).mockResolvedValue({
+    jest.mocked(executeRebalanceIfNeeded).mockResolvedValue({
       fromProtocol: 'ProtocolA',
       toProtocol: 'ProtocolB',
       amount: '1000',
@@ -330,14 +370,14 @@ describe('#763 â€” rebalance tool safety gates', () => {
   })
 
   it('dry-run uses compareProtocols for MAX_YIELD users (no strategy context)', async () => {
-    vi.mocked(db.user.findUnique).mockResolvedValue({
+    jest.mocked(db.user.findUnique).mockResolvedValue({
       rebalanceStrategy: null,
       strategyConfig: {},
       riskTolerance: null,
       liquidityFloor: null,
     } as any)
 
-    vi.mocked(compareProtocols).mockResolvedValue({
+    jest.mocked(compareProtocols).mockResolvedValue({
       shouldRebalance: true,
       improvement: 1.5,
       best: { name: 'ProtocolB' },
@@ -354,14 +394,14 @@ describe('#763 â€” rebalance tool safety gates', () => {
   })
 
   it('dry-run uses executeRebalanceIfNeeded for TARGET_ALLOCATION users', async () => {
-    vi.mocked(db.user.findUnique).mockResolvedValue({
+    jest.mocked(db.user.findUnique).mockResolvedValue({
       rebalanceStrategy: 'TARGET_ALLOCATION',
       strategyConfig: { targetAllocations: { ProtocolA: 100 } },
       riskTolerance: 'MODERATE',
       liquidityFloor: null,
     } as any)
 
-    vi.mocked(executeRebalanceIfNeeded).mockResolvedValue({
+    jest.mocked(executeRebalanceIfNeeded).mockResolvedValue({
       fromProtocol: 'ProtocolA',
       toProtocol: 'ProtocolB',
       amount: '500',

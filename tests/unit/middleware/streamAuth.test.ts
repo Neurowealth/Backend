@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import {
   createStreamTicket,
   verifyStreamTicket,
@@ -34,5 +35,23 @@ describe('streamAuth (#369)', () => {
 
     expect(verifyStreamTicket(tampered)).toBeNull()
     expect(verifyStreamTicket('invalid.token.string')).toBeNull()
+  })
+
+  it('rejects tickets signed with the former hardcoded fallback secret', () => {
+    const payload = {
+      ticketId: crypto.randomUUID(),
+      viewerUserId: 'user_legacy',
+      streamUserId: 'user_legacy',
+      allowedTopics: ['portfolio'],
+      exp: Math.floor(Date.now() / 1000) + 60,
+    }
+    const payloadStr = JSON.stringify(payload)
+    const signature = crypto
+      .createHmac('sha256', 'neuro-stream-ticket-secret-key-32b')
+      .update(payloadStr)
+      .digest('base64url')
+    const oldTicket = `${Buffer.from(payloadStr).toString('base64url')}.${signature}`
+
+    expect(verifyStreamTicket(oldTicket)).toBeNull()
   })
 })

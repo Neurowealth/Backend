@@ -274,11 +274,12 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
     // handleEvent's completion marker is the ProcessedEvent dedup row.
     const processed = await db.processedEvent.findUnique({
       where: {
-        contractId_txHash_eventType_ledger: {
+        contractId_txHash_eventType_ledger_eventIndex: {
           contractId: config.stellar.vaultContractId,
           txHash,
           eventType: 'deposit',
           ledger: 50,
+          eventIndex: 0,
         },
       },
     })
@@ -371,11 +372,12 @@ describe('E2E integration — deposit and withdraw flows (#219)', () => {
     // ProcessedEvent marker instead.
     const processed = await db.processedEvent.findUnique({
       where: {
-        contractId_txHash_eventType_ledger: {
+        contractId_txHash_eventType_ledger_eventIndex: {
           contractId: config.stellar.vaultContractId,
           txHash,
           eventType: 'withdraw',
           ledger: 70,
+          eventIndex: 0,
         },
       },
     })

@@ -2,7 +2,6 @@ import crypto from 'node:crypto'
 import { config } from '../config'
 
 const ACK_TOKEN_SECRET = config.jwt.seed
-const usedAckTokens = new Set<string>()
 
 export interface AckTokenPayload {
   ruleId: string
@@ -36,19 +35,19 @@ export function verifyAckToken(token: string): AckTokenPayload | null {
     const expectedSig = crypto
       .createHmac('sha256', ACK_TOKEN_SECRET)
       .update(payloadStr)
-      .digest('base64url')
+      .digest()
+    const providedSig = Buffer.from(sig, 'base64url')
 
-    if (sig !== expectedSig) return null
+    if (
+      providedSig.length !== expectedSig.length ||
+      !crypto.timingSafeEqual(providedSig, expectedSig)
+    ) {
+      return null
+    }
 
     const payload: AckTokenPayload = JSON.parse(payloadStr)
     if (payload.exp < Math.floor(Date.now() / 1000)) return null
 
-    if (usedAckTokens.has(token)) {
-      // Idempotent: return payload so repeated call returns 200 without duplicate processing
-      return payload
-    }
-
-    usedAckTokens.add(token)
     return payload
   } catch {
     return null

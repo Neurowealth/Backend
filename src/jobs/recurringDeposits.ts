@@ -460,10 +460,34 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
           txHash: result.transaction!.txHash,
         }
       ).catch(() => {})
-    } else if (result.status === 'PENDING_APPROVAL') {
+    } else if (result.status === 'PENDING') {
+      // A dispatch may still settle after this job returns. Advance the plan so
+      // the next five-minute worker tick cannot submit the same deposit again.
       await db.recurringDepositPlan.update({
         where: { id: plan.id },
-        data: { lastRunStatus: 'pending_approval' },
+        data: {
+          lastRunStatus: 'pending_confirmation',
+          nextRunAt: addCadence(plan.cadence, now),
+          consecutiveFailures: 0,
+        },
+      })
+      logger.info('[RecurringDeposit] Deposit pending confirmation', {
+        planId: plan.id,
+        userId: plan.userId,
+        txHash: result.transaction?.txHash,
+      })
+    } else if (result.status === 'PENDING_APPROVAL') {
+      // Advance the slot so the same occurrence is not reclaimed every sweep.
+      // Approval resolution (execute/reject/cancel/expire) is handled by the
+      // approvals workflow; rescheduling here ensures the plan remains on its
+      // cadence without duplicate approval requests for this occurrence.
+      const nextRunAt = addCadence(plan.cadence, now)
+      await db.recurringDepositPlan.update({
+        where: { id: plan.id },
+        data: {
+          lastRunStatus: 'pending_approval',
+          nextRunAt,
+        },
       })
       await createRunLedger({
         planId: plan.id,
@@ -479,12 +503,30 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
         planId: plan.id,
         userId: plan.userId,
         approvalRequestId: result.approvalRequestId,
+        nextRunAt,
       })
     } else {
       await failPlan(plan, 'transaction_failed', decision)
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : 'unknown_error'
+    const txHash = (err as { txHash?: unknown })?.txHash
+    if (typeof txHash === 'string' && txHash.length > 0) {
+      await db.recurringDepositPlan.update({
+        where: { id: plan.id },
+        data: {
+          lastRunStatus: 'pending_confirmation',
+          nextRunAt: addCadence(plan.cadence, now),
+          consecutiveFailures: 0,
+        },
+      })
+      logger.warn('[RecurringDeposit] Dispatch error carries an in-flight hash', {
+        planId: plan.id,
+        userId: plan.userId,
+        txHash,
+      })
+      return
+    }
     const isInsufficientFunds =
       reason.toLowerCase().includes('insufficient') ||
       reason.toLowerCase().includes('balance')

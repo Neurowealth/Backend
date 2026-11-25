@@ -209,10 +209,11 @@ export async function handleMailWebhook(
     // survives the mailProvider module being mocked under unit test.
     if (
       err &&
-      (err as { code?: string }).code === 'SES_WEBHOOK_SIGNATURE_INVALID'
+      ((err as { code?: string }).code === 'SES_WEBHOOK_SIGNATURE_INVALID' ||
+        (err as { code?: string }).code === 'SMTP_WEBHOOK_SIGNATURE_INVALID')
     ) {
       logger.warn(
-        '[EmailIdentityController] Rejected mail webhook: SNS signature verification failed',
+        '[EmailIdentityController] Rejected mail webhook: signature verification failed',
         { reason: err?.reason, error: err.message }
       )
       res.status(401).json({ error: 'Unauthorized' })

@@ -31,6 +31,7 @@ import {
 import { getTransactionStatus } from '../stellar/client'
 import { getSignerLock } from './signerLock'
 import { resolveSignerPublicKey, executeOutboxPayload } from './executors'
+import { InvalidOutboxPayloadError } from './errors'
 import { sortForDispatch } from './stateMachine'
 import { OutboxOpRecord } from './types'
 import {
@@ -249,11 +250,17 @@ async function submitClaimedOp(op: OutboxOpRecord): Promise<TransactionResult> {
       })
     } else if (!result.status || result.status === 'success') {
       // Success path (a missing status is treated as success).
-      await markConfirmed(op.id, result.hash)
-      await mirrorLinkedTransaction(op.payload, {
-        txHash: result.hash,
-        status: 'CONFIRMED',
-      })
+      // Mirror only if this call made the transition (#824): when another
+      // path already confirmed the op, it already mirrored it too.
+      const applied = await markConfirmed(op.id, result.hash)
+      if (applied && !result.skipped) {
+        await mirrorLinkedTransaction(op.payload, {
+          txHash: result.hash,
+          status: 'CONFIRMED',
+        })
+      }
+      // A skipped result (#823) moved nothing: its executor already settled
+      // the linked Transaction as CANCELLED, so there is nothing to confirm.
       recordOutboxOp(op.kind, op.priority, 'confirmed')
       // End-to-end latency from enqueue to confirmation, in seconds.
       recordOutboxLatency(op.kind, (Date.now() - op.createdAt.getTime()) / 1000)
@@ -305,7 +312,11 @@ async function submitClaimedOp(op: OutboxOpRecord): Promise<TransactionResult> {
 
     // Any other exception: either schedule a retry with backoff or, if
     // attempts are exhausted, fail permanently.
-    const { terminal, applied } = await markFailedOrRetry(op, message)
+    // A payload that can never be submitted (e.g. an invalid payout
+    // destination, #825) fails terminally now rather than burning retries.
+    const { terminal, applied } = await markFailedOrRetry(op, message, {
+      forceTerminal: err instanceof InvalidOutboxPayloadError,
+    })
     if (!applied) {
       // The op already moved on (re-claimed or resolved) while this
       // execution was in flight — don't mirror or alert on stale state.
@@ -456,12 +467,14 @@ async function reconcileStuckSubmitted(): Promise<void> {
 
       // It landed after all: close the op out as confirmed.
       if (chainStatus === 'success') {
-        await markConfirmed(op.id, op.txHash)
-        await mirrorLinkedTransaction(op.payload, {
-          txHash: op.txHash,
-          status: 'CONFIRMED',
-        })
-        recordOutboxOp(op.kind, op.priority, 'confirmed')
+        // Mirror only on the transition this sweep made (#824).
+        if (await markConfirmed(op.id, op.txHash)) {
+          await mirrorLinkedTransaction(op.payload, {
+            txHash: op.txHash,
+            status: 'CONFIRMED',
+          })
+          recordOutboxOp(op.kind, op.priority, 'confirmed')
+        }
         continue
       }
 
@@ -513,7 +526,16 @@ async function reconcileStuckSubmitted(): Promise<void> {
       )
       if (!applied) continue // op moved on while the sweep was deciding
       recordOutboxOp(op.kind, op.priority, terminal ? 'failed' : 'retry')
-      if (terminal) await onTerminalFailure(op, 'Fee-bump cap exceeded')
+      if (terminal) {
+        // Like every other terminal path, the linked Transaction follows the
+        // op to FAILED (#822). Gated on `applied`, so a replay never re-mirrors,
+        // and the mirror never downgrades a row that is already CONFIRMED.
+        await mirrorLinkedTransaction(op.payload, {
+          txHash: op.txHash ?? undefined,
+          status: 'FAILED',
+        })
+        await onTerminalFailure(op, 'Fee-bump cap exceeded')
+      }
       continue
     }
 

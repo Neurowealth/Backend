@@ -152,12 +152,7 @@ describe('Referral Reward Vesting & Early-Withdrawal Clawback (#364)', () => {
         referralCode: { ownerUserId: 'owner-1' },
       })
 
-      await checkAndActivateOnDeposit(
-        'referred-1',
-        'tx-dep-1',
-        '50',
-        mockDb
-      )
+      await checkAndActivateOnDeposit('referred-1', 'tx-dep-1', '50', mockDb)
 
       expect(mockDb.referralRewardTranche.createMany).toHaveBeenCalledTimes(1)
       const createManyArg =
@@ -588,12 +583,12 @@ describe('Referral Reward Vesting & Early-Withdrawal Clawback (#364)', () => {
         new Date(baseDate.getTime() + 30 * 86_400_000).toISOString()
       )
       expect(summary.conversions[0].tranches).toHaveLength(2)
-      expect(
-        JSON.stringify(summary.conversions[0])
-      ).not.toContain('principalAmount')
-      expect(
-        JSON.stringify(summary.conversions[0])
-      ).not.toContain('depositedAmount')
+      expect(JSON.stringify(summary.conversions[0])).not.toContain(
+        'principalAmount'
+      )
+      expect(JSON.stringify(summary.conversions[0])).not.toContain(
+        'depositedAmount'
+      )
 
       // Verify payoutActivatedConversions delegates cleanly when tranche model is present
       mockDb.referralConversion.findMany.mockResolvedValueOnce([])

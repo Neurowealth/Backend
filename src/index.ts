@@ -288,7 +288,14 @@ const UNVERSIONED_SUNSET = resolveUnversionedSunset()
 // ── OpenAPI / Swagger UI ──────────────────────────────────────────────────────
 
 let swaggerSpec: Record<string, unknown> | null = null
-const specPath = path.join(__dirname, 'docs', 'openapi.yaml')
+// `npm run build` copies the spec to dist/docs/ (next to dist/index.js);
+// `npm run dev` runs src/index.ts, so fall back to the repo's docs/ folder.
+const specPath =
+  [
+    path.join(__dirname, 'docs', 'openapi.yaml'),
+    path.join(__dirname, '..', 'docs', 'openapi.yaml'),
+  ].find((candidate) => fs.existsSync(candidate)) ??
+  path.join(__dirname, 'docs', 'openapi.yaml')
 
 try {
   const specFile = fs.readFileSync(specPath, 'utf8')
