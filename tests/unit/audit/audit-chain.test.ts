@@ -131,9 +131,53 @@ describe('audit chain', () => {
         hash: head.hash,
         blockType: head.blockType,
         payloadHash: head.payloadHash,
+        payloadCount: head.payloadCount,
         createdAt: head.createdAt.toISOString(),
       },
     ])
     expect(proof.valid).toBe(true)
+  })
+
+  it('detects a tampered payloadCount on a v2 block', async () => {
+    const genesis = {
+      height: 0,
+      prevHash: GENESIS_AUDIT_HASH,
+      hash: GENESIS_AUDIT_HASH,
+      blockType: 'ANCHOR' as AuditBlockType,
+      payloadHash: 'genesis',
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    }
+
+    const head = appendAuditBlock({
+      prevHash: genesis.hash,
+      payloadHash: 'payload-admin',
+      blockType: 'ADMIN_BATCH',
+      createdAt: new Date('2026-01-01T00:00:01.000Z'),
+      height: 1,
+      payloads: [{ kind: 'admin_purge', id: 1 }, { kind: 'admin_purge', id: 2 }],
+    })
+
+    const blocks = [
+      genesis,
+      {
+        height: head.height,
+        prevHash: head.prevHash,
+        hash: head.hash,
+        blockType: head.blockType,
+        payloadHash: head.payloadHash,
+        payloadCount: head.payloadCount,
+        createdAt: head.createdAt.toISOString(),
+      },
+    ]
+    expect(verifyAuditChain(blocks).valid).toBe(true)
+
+    const tampered = [genesis, { ...blocks[1], payloadCount: 0 }]
+    expect(verifyAuditChain(tampered)).toMatchObject({
+      valid: false,
+      height: 1,
+      firstInvalidBlock: expect.objectContaining({
+        reason: expect.stringContaining('Hash mismatch'),
+      }),
+    })
   })
 })
