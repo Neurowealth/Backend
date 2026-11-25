@@ -1,12 +1,12 @@
 import type { Intent } from '../nlp/parser'
 
 /**
- * Pending voice-originated confirmations (#288).
+ * Pending confirmations for WhatsApp financial commands.
  *
- * A financial intent (deposit/withdraw/strategy change) recognized from a voice
- * note is NOT executed immediately — it is parked here and echoed back to the
- * user ("I heard: withdraw $50 — confirm?"). The user's next message (voice or
- * text) is checked for an affirmative/negative reply before the intent runs.
+ * A financial intent (typed, voice-originated, or LLM-parsed) is NOT executed
+ * immediately — it is parked here and echoed back to the user ("Please
+ * confirm: withdraw 50..."). The user's next message (voice or text) is checked
+ * for an affirmative/negative reply before the intent runs.
  *
  * In-memory and keyed by normalized phone, matching the existing WhatsApp user
  * store. A pending confirmation expires after a short TTL so a stale "yes" long

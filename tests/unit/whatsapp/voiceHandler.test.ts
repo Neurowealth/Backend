@@ -256,11 +256,19 @@ describe('WhatsApp voice notes (#288)', () => {
     expect(res.body).toMatch(/didn't understand/i)
   })
 
-  it('sends a typed (non-voice) withdraw through the real path without a fake success', async () => {
+  it('requires confirmation for a typed (non-voice) withdraw before calling executeBotWithdrawal', async () => {
     await verifiedUser(PHONE, 500)
 
-    const res = await handleWhatsAppMessage(PHONE, 'withdraw 50')
+    const parked = await handleWhatsAppMessage(PHONE, 'withdraw 50')
 
+    expect(mockExecuteBotWithdrawal).not.toHaveBeenCalled()
+    expect(parked.body).toMatch(/confirm/i)
+    expect(parked.body).toMatch(/yes/i)
+    expect(parked.body).toMatch(/no/i)
+
+    const res = await handleWhatsAppMessage(PHONE, 'yes')
+
+    expect(mockExecuteBotWithdrawal).toHaveBeenCalledTimes(1)
     expect(mockExecuteBotWithdrawal).toHaveBeenCalledWith(
       expect.objectContaining({ channel: 'whatsapp', amount: 50 })
     )

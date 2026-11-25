@@ -8,8 +8,7 @@
  *      6-digit code) and stops there;
  *   3. if the message is a voice note, transcribes it (asking the user to
  *      repeat or type if that fails or confidence is low);
- *   4. resolves any pending yes/no confirmation for a voice-originated
- *      financial action;
+ *   4. resolves any pending yes/no confirmation for a financial action;
  *   5. otherwise parses the text into an intent (balance, deposit, withdraw,
  *      earnings, goal, recurring deposits, alerts, help) and returns the
  *      matching reply, optionally handing unrecognised requests to the
@@ -557,8 +556,8 @@ export async function handleWhatsAppMessage(
   }
   const { text, fromVoice } = resolved
 
-  // If a voice-originated financial action is awaiting confirmation, the next
-  // message (voice OR text) is interpreted as the yes/no reply.
+  // If a financial action is awaiting confirmation, the next message
+  // (voice OR text) is interpreted as the yes/no reply.
   const pending = getPendingConfirmation(normalizedPhone)
   if (pending) {
     if (isAffirmative(text)) {
@@ -578,13 +577,15 @@ export async function handleWhatsAppMessage(
 
   const intent = await parseIntent(text)
 
-  // Confirm-before-execute for financial intents that came from voice. This is
-  // a security control against misrecognition and must not be bypassable.
-  if (fromVoice && isFinancialIntent(intent)) {
+  // Confirm-before-execute for all financial intents (typed, voice, or
+  // LLM-parsed), matching Telegram. A mistyped or misclassified command must
+  // never move funds in a single step.
+  if (isFinancialIntent(intent)) {
     const summary = summarizeIntent(intent)
     setPendingConfirmation(normalizedPhone, intent, summary)
+    const prefix = fromVoice ? 'I heard' : 'Please confirm'
     return {
-      body: `I heard: *${summary}*.\nReply "yes" to confirm or "no" to cancel.`,
+      body: `${prefix}: *${summary}*.\nReply "yes" to confirm or "no" to cancel.`,
     }
   }
 
