@@ -8,7 +8,12 @@ import {
 } from '../jobs/riskMetadataStaleness'
 import { logger } from '../utils/logger'
 import { getCorrelationId } from '../utils/correlation'
-import { hasWashSaleRisk, isSameAssetRebuyLikely } from '../tax/washSale'
+import {
+  hasWashSaleRisk,
+  isSameAssetRebuyLikely,
+  washSaleWindowFor,
+} from '../tax/washSale'
+import { priceForAsset } from '../tax/pricing'
 import {
   ProtocolComparison,
   RebalanceDetails,
@@ -956,12 +961,43 @@ export async function executeRebalanceIfNeeded(
           })
 
           if (userJurisdiction) {
-            washSaleRisk = hasWashSaleRisk(
-              'USDC',
-              new Date(),
-              userJurisdiction.taxJurisdiction,
-              likelyRebuy
-            )
+            // #788 - only jurisdictions with a loss-matching rule can flag.
+            // DE/AU short-circuit here, before any lot query.
+            const window = washSaleWindowFor(userJurisdiction.taxJurisdiction)
+            if (window) {
+              const assetSymbol = 'USDC'
+              const disposalDate = new Date()
+              const acquisitions = await db.costBasisLot.findMany({
+                where: {
+                  userId: userStrategyPreferences[0]?.userId,
+                  assetSymbol,
+                  acquiredAt: {
+                    gte: new Date(disposalDate.getTime() - window.windowMs),
+                    lte: new Date(disposalDate.getTime() + window.windowMs),
+                  },
+                },
+                select: { acquiredAt: true, acquisitionPrice: true },
+              })
+              const currentPrice = priceForAsset(assetSymbol).price
+
+              // A wash-sale rule only applies to a loss. Without a price we
+              // cannot establish one, so we stay honest and do not flag.
+              const isLoss =
+                currentPrice != null &&
+                acquisitions.some(
+                  (lot) =>
+                    lot.acquisitionPrice != null &&
+                    Number(lot.acquisitionPrice) > Number(currentPrice)
+                )
+
+              washSaleRisk = hasWashSaleRisk({
+                assetSymbol,
+                disposalDate,
+                jurisdiction: userJurisdiction.taxJurisdiction,
+                isLoss,
+                acquisitionDates: acquisitions.map((lot) => lot.acquiredAt),
+              })
+            }
 
             if (washSaleRisk) {
               logger.info('Wash-sale risk detected for rebalance', {

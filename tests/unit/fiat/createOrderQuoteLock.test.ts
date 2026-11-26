@@ -81,7 +81,7 @@ beforeEach(() => {
   jest.clearAllMocks()
   mockDb.fiatQuoteLock = {
     findUnique: jest.fn(),
-    update: jest.fn().mockResolvedValue({}),
+    updateMany: jest.fn().mockResolvedValue({ count: 1 }),
   }
   mockDb.fiatOrder = {
     create: jest.fn().mockImplementation(async ({ data }: any) => ({
@@ -92,7 +92,7 @@ beforeEach(() => {
 })
 
 describe('createFiatOrder with quoteId', () => {
-  it('consumes the lock and persists the locked quote fields on the order', async () => {
+  it('atomically claims the lock before the provider and persists the locked quote fields', async () => {
     const lock = baseLock()
     mockDb.fiatQuoteLock.findUnique.mockResolvedValue(lock)
     const provider = fakeMoonpay()
@@ -116,11 +116,78 @@ describe('createFiatOrder with quoteId', () => {
         }),
       })
     )
-    expect(mockDb.fiatQuoteLock.update).toHaveBeenCalledWith({
-      where: { id: lock.id },
+    expect(mockDb.fiatQuoteLock.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: lock.id,
+        userId: 'user-1',
+        consumedAt: null,
+        expiresAt: { gt: expect.any(Date) },
+      },
       data: { consumedAt: expect.any(Date) },
     })
+    expect(
+      mockDb.fiatQuoteLock.updateMany.mock.invocationCallOrder[0]
+    ).toBeLessThan(provider.createOrder.mock.invocationCallOrder[0])
     expect(order.id).toBe('order-1')
+  })
+
+  it('lets exactly one of two concurrent callers claim a shared quote (#786)', async () => {
+    const lock = baseLock()
+    mockDb.fiatQuoteLock.findUnique.mockResolvedValue(lock)
+    // Both callers read the lock as free, but only the atomic claim can win.
+    mockDb.fiatQuoteLock.updateMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 })
+    const provider = fakeMoonpay()
+    mockGetProvider.mockReturnValue(provider)
+
+    const results = await Promise.allSettled([
+      createFiatOrder(
+        { ...baseInput, quoteId: lock.id },
+        { walletAddress: 'GWALLET' }
+      ),
+      createFiatOrder(
+        { ...baseInput, quoteId: lock.id },
+        { walletAddress: 'GWALLET' }
+      ),
+    ])
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+    const rejected = results.find((r) => r.status === 'rejected')
+    expect(rejected).toMatchObject({
+      reason: expect.objectContaining({
+        code: 'quote_already_used',
+        status: 409,
+      }),
+    })
+    expect(mockDb.fiatOrder.create).toHaveBeenCalledTimes(1)
+    expect(provider.createOrder).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases the claim when the provider call fails (#786)', async () => {
+    const lock = baseLock()
+    mockDb.fiatQuoteLock.findUnique.mockResolvedValue(lock)
+    const provider = fakeMoonpay()
+    provider.createOrder.mockRejectedValue(new Error('provider down'))
+    mockGetProvider.mockReturnValue(provider)
+
+    await expect(
+      createFiatOrder(
+        { ...baseInput, quoteId: lock.id },
+        { walletAddress: 'GWALLET' }
+      )
+    ).rejects.toThrow('provider down')
+
+    expect(mockDb.fiatOrder.create).not.toHaveBeenCalled()
+    const calls = mockDb.fiatQuoteLock.updateMany.mock.calls
+    const release = calls.find(
+      (call: any[]) => call[0].data.consumedAt === null
+    )
+    expect(release).toBeDefined()
+    expect(release![0].where).toEqual({
+      id: lock.id,
+      consumedAt: expect.any(Date),
+    })
   })
 
   it('rejects an expired lock with quote_expired and does not create an order', async () => {
@@ -208,6 +275,9 @@ describe('createFiatOrder without quoteId', () => {
       unpriced: true,
     })
     mockSelectProvider.mockReturnValue(provider)
+    // createFiatOrder resolves the provider again by name for createOrder;
+    // set it explicitly instead of relying on leakage from an earlier test.
+    mockGetProvider.mockReturnValue(provider)
 
     await createFiatOrder(
       { ...baseInput, provider: 'moonpay' },
@@ -218,7 +288,7 @@ describe('createFiatOrder without quoteId', () => {
       policy: 'PREFER_PROVIDER',
       preferredProvider: 'moonpay',
     })
-    expect(mockDb.fiatQuoteLock.update).not.toHaveBeenCalled()
+    expect(mockDb.fiatQuoteLock.updateMany).not.toHaveBeenCalled()
     expect(mockDb.fiatOrder.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ quotedCryptoAmount: 97, fees: null }),
@@ -239,6 +309,9 @@ describe('createFiatOrder without quoteId', () => {
       unpriced: true,
     })
     mockSelectProvider.mockReturnValue(provider)
+    // createFiatOrder resolves the provider again by name for createOrder;
+    // set it explicitly instead of relying on leakage from an earlier test.
+    mockGetProvider.mockReturnValue(provider)
 
     await createFiatOrder(baseInput, { walletAddress: 'GWALLET' })
 
@@ -252,6 +325,9 @@ describe('createFiatOrder without quoteId', () => {
     const provider = fakeMoonpay()
     provider.getQuote.mockRejectedValue(new Error('provider down'))
     mockSelectProvider.mockReturnValue(provider)
+    // createFiatOrder resolves the provider again by name for createOrder;
+    // set it explicitly instead of relying on leakage from an earlier test.
+    mockGetProvider.mockReturnValue(provider)
 
     await expect(
       createFiatOrder(baseInput, { walletAddress: 'GWALLET' })
