@@ -30,14 +30,29 @@ export class GoalConflictError extends Error {}
 export class GoalNotFoundError extends Error {}
 export class GoalValidationError extends Error {}
 
-/** Prisma raises P2002 when a unique constraint (here, the partial unique
- * index on ACTIVE goals) is violated. Match on the code so the mapping works
- * with both real Prisma errors and lightweight test doubles. */
-function isUniqueConstraintViolation(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { code?: unknown }).code === 'P2002'
+export const ACTIVE_GOAL_UNIQUE_INDEX = 'savings_goals_userId_active_key'
+
+/** Prisma raises P2002 when a unique constraint is violated. Only the partial
+ * index on ACTIVE goals means a goal conflict; when Prisma supplies a target,
+ * use it so an unrelated unique violation is not misreported as a conflict.
+ * Test doubles may omit `meta`, which is treated as the goal index. */
+function isActiveGoalUniqueViolation(error: unknown): boolean {
+  if (
+    typeof error !== 'object' ||
+    error === null ||
+    (error as { code?: unknown }).code !== 'P2002'
+  ) {
+    return false
+  }
+
+  const target = (error as { meta?: { target?: unknown } }).meta?.target
+  if (target === undefined || target === null) return true
+
+  const targets = Array.isArray(target) ? target : [target]
+  return targets.some(
+    (entry) =>
+      typeof entry === 'string' &&
+      (entry === ACTIVE_GOAL_UNIQUE_INDEX || entry.includes('userId'))
   )
 }
 
@@ -239,7 +254,7 @@ export async function createGoal(
     // The findFirst fast path above is racy: two concurrent creates can both
     // pass it. The partial unique index on (userId) WHERE status='ACTIVE' is
     // the durable guard, and Prisma surfaces its violation as P2002.
-    if (isUniqueConstraintViolation(error)) {
+    if (isActiveGoalUniqueViolation(error)) {
       throw new GoalConflictError(
         'An active savings goal already exists for this user'
       )
