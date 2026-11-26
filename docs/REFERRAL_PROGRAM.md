@@ -188,3 +188,25 @@ Thresholds and weights are environment-driven, not hard-coded: `REFERRAL_FRAUD_B
 `REFERRAL_FRAUD_REVIEW_SCORE` (80), `REFERRAL_FRAUD_WEIGHT_{DUPLICATE_WALLET,DUPLICATE_EMAIL,
 DUPLICATE_PHONE,SAME_IP,VELOCITY,RAPID_ACTIVATION}`, `REFERRAL_FRAUD_VELOCITY_COUNT` (5) and
 `REFERRAL_FRAUD_RAPID_ACTIVATION_COUNT` (3). Defaults reproduce the previous behaviour.
+
+## Reward Vesting & Early-Withdrawal Clawback (#364)
+
+### 1. Vesting tranche schedule (`ReferralRewardTranche`)
+
+When a referral conversion transitions to `ACTIVATED`, the referrer (`leg = 'referrer'`) and referred (`leg = 'referred'`) rewards are split into `REFERRAL_VESTING_TRANCHES` (default `3`) scheduled at `REFERRAL_VESTING_SCHEDULE_DAYS` (default `0,30,90` days from activation), each requiring `requiresBalanceAtLeast = REFERRAL_MIN_ACTIVATION_DEPOSIT`.
+
+- **Disclosure copy**: `"Rewards vest over 90 days while your friend keeps their deposit."`
+- **Consecutive-snapshot guard (`M = REFERRAL_VESTING_CONSECUTIVE_SNAPSHOTS`, default `3`)**:
+  At each `vestsAt` checkpoint (with `REFERRAL_VESTING_GRACE_HOURS = 6h`), `evaluateReferredBalanceCheckpoint` inspects the referred user's hourly balance snapshots (`YieldSnapshot` / `Position`). A momentary 1-snapshot dip during an in-flight rebalance does **not** forfeit a tranche; a tranche is marked `FORFEITED` only when `M` consecutive snapshots are below `requiresBalanceAtLeast`. If the referred user withdraws earlier and re-deposits before `vestsAt` so the checkpoint snapshots meet the threshold, the tranche vests normally.
+- **Per-tranche idempotency & tax accounting (#284)**:
+  Each vested tranche is enqueued via the durable outbox with idempotency key `REFERRAL_REWARD:<recipientUserId>:<conversionId>:<leg>:seq:<seq>` and creates its own dated `REFERRAL_REWARD` `Transaction` row upon confirmation (`paidTxHash` non-null). A conversion advances to `REWARDED` **only when every tranche is terminal** (`VESTED_PAID` | `FORFEITED` | `CLAWED_BACK`).
+
+### 2. Non-custodial early-withdrawal clawback (`ReferralClawback`)
+
+If a conversion already has at least one `VESTED_PAID` referrer tranche and the referred user's balance drops below `requiresBalanceAtLeast` across `M` consecutive snapshots **before the vesting period ends** (or the conversion is subsequently denied on fraud/Sybil review):
+
+1. All remaining `PENDING` tranches for that conversion are immediately marked `FORFEITED` (emitting `referral.tranche_forfeited`).
+2. The already-paid referrer tranche(s) are marked `CLAWED_BACK` and a `ReferralClawback` record is created (`status = 'OPEN'`).
+3. **No on-chain pull**: the platform never pulls funds from a user's wallet. Instead, `applyClawbackOffsetToReward` nets `OPEN` clawbacks against the referrer's **future** vested referral rewards.
+4. **Cap & write-off**: a referrer's open clawback balance is capped at `CLAWBACK_MAX_PER_REFERRER` (default `$200`); any excess is immediately recorded in `writtenOffAmount`. Any `OPEN` clawback remaining after `CLAWBACK_WRITEOFF_DAYS` (default `90` days) transitions to `WRITTEN_OFF`.
+5. **Audit & privacy**: every tranche payment, forfeiture, clawback creation, offset deduction, and write-off feeds the `#315` `AuditPayloadHash` ledger. `GET /api/v1/referrals/me` exposes the full tranche schedule and clawback offsets without ever exposing the referred user's actual balance.

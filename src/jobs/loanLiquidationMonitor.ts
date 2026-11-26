@@ -33,6 +33,7 @@
  */
 
 import { config } from '../config/env'
+import { randomUUID } from 'node:crypto'
 import db from '../db'
 import { logger } from '../utils/logger'
 import { enqueueOutboxOp } from '../outbox/service'
@@ -221,7 +222,9 @@ export async function runLiquidationSweep(
           },
         })
 
+        const outboxOpId = randomUUID()
         const op = await enqueueOutboxOp(tx, {
+          id: outboxOpId,
           // The accrual watermark is monotonic per loan, so this key is stable
           // across a retried sweep of the same breach and fresh once the loan
           // has been re-valued and re-breached after a partial sale.
@@ -240,7 +243,7 @@ export async function runLiquidationSweep(
             borrowedAsset: loan.borrowedAsset,
             trigger,
             transactionId: transaction.id,
-            outboxOpId: op.id,
+            outboxOpId,
             sequence,
           },
         })

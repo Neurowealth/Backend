@@ -18,7 +18,7 @@ jobs:
         run: |
           # Files that must not appear at the repo root
           FORBIDDEN_PATTERNS=(
-            'PR_*SUMMARY*.md'
+            'PR_*.md'
             'IMPLEMENTATION_SUMMARY.md'
             '*FIX*.md'
             '*GUIDE*.md'
@@ -61,3 +61,48 @@ jobs:
           fi
 
           echo "✅ Repo hygiene check passed."
+
+      - name: Check for forbidden files anywhere in the tree
+        run: |
+          # Fails if a forbidden file exists anywhere in the tree,
+          # not only in files added by this PR.
+          FORBIDDEN_PATTERNS=(
+            'PR_*.md'
+            'IMPLEMENTATION_SUMMARY.md'
+            '*FIX*.md'
+            '*GUIDE*.md'
+            'verify_*.sh'
+            'fix-*.sh'
+          )
+          FORBIDDEN_DIRS=(
+            'docs/superpowers/plans'
+          )
+
+          VIOLATIONS=""
+
+          while IFS= read -r file; do
+            # Only check repo root (no / in path)
+            if [[ "$file" != */* ]]; then
+              for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+                if [[ "$file" == $pattern ]]; then
+                  VIOLATIONS="$VIOLATIONS\n  FORBIDDEN FILE IN TREE: $file"
+                fi
+              done
+            fi
+            # Check forbidden directories
+            for dir in "${FORBIDDEN_DIRS[@]}"; do
+              if [[ "$file" == "$dir"/* ]]; then
+                VIOLATIONS="$VIOLATIONS\n  FORBIDDEN PATH IN TREE: $file"
+              fi
+            done
+          done < <(git ls-files)
+
+          if [[ -n "$VIOLATIONS" ]]; then
+            echo -e "❌ Repo hygiene check failed. Forbidden files exist in the tree:$VIOLATIONS"
+            echo ""
+            echo "Durable guidance belongs in docs/ (MIGRATIONS.md, RUNBOOK.md, etc.)."
+            echo "See CONTRIBUTING.md for the full policy."
+            exit 1
+          fi
+
+          echo "✅ No forbidden files in the tree."

@@ -1,3 +1,4 @@
+import { addCadence } from '../utils/cadence'
 /**
  * WhatsApp message handler.
  *
@@ -29,7 +30,6 @@ import {
   getUserWalletAddress,
   getPortfolioYieldSummary,
   getGoalStatus,
-  decrementBalance,
 } from './userManager'
 import db from '../db'
 import {
@@ -44,6 +44,7 @@ import {
   formatGoalProgressReply,
 } from './formatters'
 import { logger } from '../utils/logger'
+import { executeBotWithdrawal } from '../botWithdrawals'
 import { config } from '../config'
 import { downloadTwilioMedia } from './mediaDownloader'
 import { getDefaultTranscriptionProvider } from './transcription/registry'
@@ -70,6 +71,40 @@ export type WhatsAppResponse = {
 export type InboundMedia = {
   url: string
   contentType: string
+}
+
+const FINANCIAL_ACTIONS: ReadonlySet<Intent['action']> = new Set([
+  'deposit',
+  'withdraw',
+])
+
+function isFinancialIntent(intent: Intent): boolean {
+  return FINANCIAL_ACTIONS.has(intent.action)
+}
+
+function isAffirmative(message: string): boolean {
+  return /^\s*(yes|yep|yeah|yup|confirm|confirmed|ok|okay|sure|correct|do it|go ahead|proceed|y)\s*[.!]*\s*$/i.test(
+    message
+  )
+}
+
+function isNegative(message: string): boolean {
+  return /^\s*(no|nope|nah|cancel|stop|abort|don'?t|never mind|nevermind|n)\s*[.!]*\s*$/i.test(
+    message
+  )
+}
+
+function summarizeIntent(intent: Intent): string {
+  switch (intent.action) {
+    case 'deposit':
+      return `deposit ${intent.amount ?? ''}`.trim()
+    case 'withdraw':
+      return intent.all
+        ? 'withdraw all'
+        : `withdraw ${intent.amount ?? ''}`.trim()
+    default:
+      return intent.action
+  }
 }
 
 /** Command menu shown on /help, after verification, and on unrecognised input. */
@@ -102,19 +137,6 @@ function formatBalanceMessage(balance: number, address: string): string {
 /** Tells the user where to send funds; the deposit itself happens on-chain. */
 function formatDepositInstruction(amount: number, address: string): string {
   return `To deposit, send ${amount.toFixed(2)} XLM to your wallet address:\n${address}\n\nOnce the transaction is confirmed, reply "balance" to see your updated balance.`
-}
-
-/** Acknowledges a withdrawal and shows the balance that will result from it. */
-function formatWithdrawConfirmation(
-  amount: number,
-  newBalance: number
-): string {
-  return `Withdrawal request received for ${amount.toFixed(2)} XLM.\nYour new balance will be ${newBalance.toFixed(2)} XLM once processed.`
-}
-
-/** Shown when a withdrawal request exceeds the available balance. */
-function formatInsufficientFunds(balance: number, requested: number): string {
-  return `You only have ${balance.toFixed(2)} XLM available, but you requested ${requested.toFixed(2)} XLM.\nTry a smaller amount or deposit more funds.`
 }
 
 /**
@@ -180,23 +202,15 @@ async function executeIntent(
     }
 
     case 'withdraw': {
-      const balance = getBalance(normalizedPhone) ?? 0
-      // "withdraw all" uses the full balance; otherwise the parsed amount.
-      // (With a zero balance, "withdraw all" falls into the "specify an
-      // amount" reply below because the amount is 0.)
-      const amount = intent.all ? balance : intent.amount
-      if (!amount || amount <= 0) {
-        return {
-          body: 'Please specify a withdrawal amount, e.g. "withdraw 5" or "withdraw all".',
-        }
-      }
-      if (amount > balance) {
-        return { body: formatInsufficientFunds(balance, amount) }
-      }
-      // The balance is reduced immediately, and the reply says the request
-      // is "received" with the new balance applying "once processed".
-      const newBalance = decrementBalance(normalizedPhone, amount)
-      return { body: formatWithdrawConfirmation(amount, newBalance) }
+      // #837 — a confirmed bot withdrawal must create a persisted outbox op
+      // and may only report success with a real transaction reference.
+      const result = await executeBotWithdrawal({
+        channel: 'whatsapp',
+        identity: normalizedPhone,
+        amount: intent.all ? 0 : (intent.amount ?? 0),
+        all: intent.all,
+      })
+      return { body: result.body }
     }
 
     case 'goal': {
@@ -250,24 +264,15 @@ async function executeIntent(
         return { body: 'Your account is not fully set up yet.' }
       }
       // First run is one full interval from now (not immediately).
-      const nextRunAt = new Date()
-      switch (cadence) {
-        case 'WEEKLY':
-          nextRunAt.setDate(nextRunAt.getDate() + 7)
-          break
-        case 'BIWEEKLY':
-          nextRunAt.setDate(nextRunAt.getDate() + 14)
-          break
-        case 'MONTHLY':
-          nextRunAt.setMonth(nextRunAt.getMonth() + 1)
-          break
-      }
+      const anchor = new Date()
+      const nextRunAt = addCadence(cadence, anchor)
       const plan = await db.recurringDepositPlan.create({
         data: {
           userId: user.id,
           amount,
           assetSymbol: 'USDC',
           cadence,
+          cadenceAnchorDay: anchor.getUTCDate(),
           nextRunAt,
         },
       })

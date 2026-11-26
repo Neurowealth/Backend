@@ -95,6 +95,8 @@ export type OutboxPayload =
       /** Explicit destination account public key (#944). */
       toPublicKey: string
       asset: string
+      /** Required for classic non-native assets; omitted for XLM. */
+      assetIssuer?: string
       amount: number
       sweepId: string
     }
@@ -146,7 +148,7 @@ export type OutboxPayload =
       trigger: 'scheduled' | 'circuit_breaker'
       transactionId: string
       /** The OutboxOp.id that carries this payload — used to link audit records (#665). */
-      outboxOpId: string
+      outboxOpId?: string
       /** Monotonic per loan, so the sale is idempotent under outbox retry. */
       sequence: number
     }

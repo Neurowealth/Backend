@@ -47,6 +47,12 @@ export async function createGoalHandler(
       sendConflict(res, error.message)
       return
     }
+    if (error instanceof GoalNotFoundError) {
+      // A supplied positionId that does not exist or is not owned by the
+      // caller is reported as 404 rather than leaking its existence (#790).
+      sendNotFound(res, 'Position')
+      return
+    }
     if (error instanceof GoalValidationError) {
       sendError(res, 400, error.message)
       return

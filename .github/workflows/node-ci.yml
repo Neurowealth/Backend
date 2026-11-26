@@ -79,6 +79,11 @@ jobs:
 
       - name: Integration test suite
         run: npm run test:integration -- --runInBand
+      - name: DB-backed regression and integration suites (#799)
+        run: npm run test:db
+
+      - name: Savings goal concurrency integration test (#790)
+        run: npm run test:integration:goals
       - name: Release tooling regression tests
         run: node --test scripts/tests/release.test.cjs
 
@@ -95,6 +100,31 @@ jobs:
 
       - name: Release preflight gate
         run: npm run release:preflight
+
+  # ── Container image verification (#791, #792) ────────────────────────────
+  # The build context must contain tsconfig.build.json (what `npm run build`
+  # compiles with) and docs/openapi.yaml (copied into dist/docs by prebuild);
+  # the runtime image must carry the Prisma CLI as a real dependency so
+  # `npx --no-install prisma migrate deploy` never reaches the network.
+  docker-image-verify:
+    name: Docker image build & runtime deps
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t neurowealth-backend:ci .
+
+      - name: Prisma CLI is available offline in the runtime image
+        run: |
+          docker run --rm --network none --entrypoint sh neurowealth-backend:ci \
+            -c "npx --no-install prisma --version"
+
+      - name: Build outputs are present in the runtime image
+        run: |
+          docker run --rm --entrypoint sh neurowealth-backend:ci \
+            -c "test -f dist/index.js && test -f dist/docs/openapi.yaml"
 
   # ── Security scanning ─────────────────────────────────────────────────────
   # Issue #114: npm audit for known vulnerabilities

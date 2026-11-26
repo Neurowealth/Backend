@@ -38,6 +38,7 @@ export function erasureConfirmationPhrase(userId: string): string {
 export enum ErasureRequestStatus {
   PENDING = 'PENDING',
   APPROVED = 'APPROVED',
+  PROCESSING = 'PROCESSING',
   REJECTED = 'REJECTED',
   COMPLETED = 'COMPLETED',
   FAILED = 'FAILED',
@@ -45,7 +46,7 @@ export enum ErasureRequestStatus {
 
 export interface ErasureRequest {
   id: string
-  userId: string
+  userId: string | null
   requestedAt: Date
   requestedBy: string
   reason: string
@@ -105,11 +106,11 @@ export async function createErasureRequest(
     throw new Error(`User ${userId} not found`)
   }
 
-  // Check for existing pending/approved requests
+  // Check for existing pending/approved/processing requests
   const existing = await db.erasureRequest.findFirst({
     where: {
       userId,
-      status: { in: ['PENDING', 'APPROVED'] },
+      status: { in: ['PENDING', 'APPROVED', 'PROCESSING'] },
     },
   })
 
@@ -119,14 +120,31 @@ export async function createErasureRequest(
     )
   }
 
-  const request = await db.erasureRequest.create({
-    data: {
-      userId,
-      requestedBy,
-      reason,
-      status: ErasureRequestStatus.PENDING,
-    },
-  })
+  let request: any
+  try {
+    request = await db.erasureRequest.create({
+      data: {
+        userId,
+        requestedBy,
+        reason,
+        status: ErasureRequestStatus.PENDING,
+      },
+    })
+  } catch (error: any) {
+    if (error?.code === 'P2002') {
+      const conflict = await db.erasureRequest.findFirst({
+        where: {
+          userId,
+          status: { in: ['PENDING', 'APPROVED', 'PROCESSING'] },
+        },
+      })
+      const statusStr = conflict?.status ?? 'PENDING'
+      throw new Error(
+        `Erasure request already exists for user ${userId} with status ${statusStr}`
+      )
+    }
+    throw error
+  }
 
   logger.info('[PrivacyErasure] Erasure request created', {
     requestId: request.id,
@@ -256,6 +274,9 @@ export async function executeErasure(
   }
 
   const userId = request.userId
+  if (!userId) {
+    throw new Error(`User for erasure request ${requestId} not found`)
+  }
   const user = request.user
 
   if (!user || !userId) {
@@ -276,6 +297,28 @@ export async function executeErasure(
     )
   }
 
+  // Claim execution atomically via Compare-And-Set (CAS) transition from APPROVED -> PROCESSING (#684)
+  const claimResult = await db.erasureRequest.updateMany({
+    where: {
+      id: requestId,
+      status: ErasureRequestStatus.APPROVED,
+    },
+    data: {
+      status: ErasureRequestStatus.PROCESSING,
+    },
+  })
+
+  if (claimResult.count === 0) {
+    const current = await db.erasureRequest.findUnique({
+      where: { id: requestId },
+      select: { status: true },
+    })
+    const currentStatus = current?.status ?? 'UNKNOWN'
+    throw new Error(
+      `Cannot execute request in status ${currentStatus}. Must be APPROVED.`
+    )
+  }
+
   try {
     // Cut off live access first so no session can act on or re-create data
     // while the deletion transaction runs.
@@ -283,7 +326,9 @@ export async function executeErasure(
 
     const summary: ErasureSummary = await db.$transaction(
       async (tx) => {
-        // 1. Count records before deletion (for summary)
+        // 1. Count records before deletion (for summary and preserved impact assessment)
+        // Preserved records (referrals and audit logs) must be counted prior to user deletion
+        // because ReferralCode and ReferralConversion cascade-delete with User in PostgreSQL.
         const [
           sessionsCount,
           positionsCount,
@@ -301,6 +346,9 @@ export async function executeErasure(
           costBasisLotsCount,
           lotDisposalsCount,
           portfolioAttributionsCount,
+          adminAuditLogsCount,
+          referralAsOwnerCount,
+          referralAsReferredCount,
         ] = await Promise.all([
           tx.session.count({ where: { userId } }),
           tx.position.count({ where: { userId } }),
@@ -318,6 +366,31 @@ export async function executeErasure(
           tx.costBasisLot.count({ where: { userId } }),
           tx.lotDisposal.count({ where: { userId } }),
           tx.portfolioAttribution.count({ where: { userId } }),
+          tx.adminAuditLog.count({
+            where: {
+              OR: [
+                { target: userId },
+                {
+                  details: {
+                    path: ['userId'],
+                    equals: userId,
+                  },
+                },
+              ],
+            },
+          }),
+          tx.referralConversion.count({
+            where: {
+              referralCode: {
+                ownerUserId: userId,
+              },
+            },
+          }),
+          tx.referralConversion.count({
+            where: {
+              referredUserId: userId,
+            },
+          }),
         ])
 
         // 2. Anonymize financial records (preserve for regulatory/audit)
@@ -359,25 +432,14 @@ export async function executeErasure(
           where: { id: userId },
         })
 
-        // 5. Count preserved records (not deleted, just anonymized or nullified)
-        const [
-          adminAuditLogsCount,
-          referralAsOwnerCount,
-          referralAsReferredCount,
-        ] = await Promise.all([
-          tx.adminAuditLog.count({
-            where: {
-              details: {
-                path: ['userId'],
-                equals: userId,
-              },
-            },
-          }),
-          // ReferralCode cascade-deleted, so conversions via that code are orphaned
-          // but still exist with referredUserId intact (unless we anonymize)
-          Promise.resolve(0),
-          Promise.resolve(0),
-        ])
+        // Keep the terminal workflow state in the same transaction as deletion.
+        await tx.erasureRequest.update({
+          where: { id: requestId },
+          data: {
+            status: ErasureRequestStatus.COMPLETED,
+            completedAt: new Date(),
+          },
+        })
 
         return {
           userId,
@@ -415,15 +477,6 @@ export async function executeErasure(
       }
     )
 
-    // Mark request as completed
-    await db.erasureRequest.update({
-      where: { id: requestId },
-      data: {
-        status: ErasureRequestStatus.COMPLETED,
-        completedAt: new Date(),
-      },
-    })
-
     logger.info('[PrivacyErasure] Erasure completed successfully', {
       requestId,
       userId,
@@ -443,8 +496,8 @@ export async function executeErasure(
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown error'
 
-    await db.erasureRequest.update({
-      where: { id: requestId },
+    await db.erasureRequest.updateMany({
+      where: { id: requestId, status: ErasureRequestStatus.PROCESSING },
       data: {
         status: ErasureRequestStatus.FAILED,
         errorMessage,
@@ -562,6 +615,9 @@ export async function previewErasure(
     costBasisLotsCount,
     lotDisposalsCount,
     portfolioAttributionsCount,
+    adminAuditLogsCount,
+    referralAsOwnerCount,
+    referralAsReferredCount,
   ] = await Promise.all([
     db.session.count({ where: { userId } }),
     db.position.count({ where: { userId } }),
@@ -579,6 +635,31 @@ export async function previewErasure(
     db.costBasisLot.count({ where: { userId } }),
     db.lotDisposal.count({ where: { userId } }),
     db.portfolioAttribution.count({ where: { userId } }),
+    db.adminAuditLog.count({
+      where: {
+        OR: [
+          { target: userId },
+          {
+            details: {
+              path: ['userId'],
+              equals: userId,
+            },
+          },
+        ],
+      },
+    }),
+    db.referralConversion.count({
+      where: {
+        referralCode: {
+          ownerUserId: userId,
+        },
+      },
+    }),
+    db.referralConversion.count({
+      where: {
+        referredUserId: userId,
+      },
+    }),
   ])
 
   return {
@@ -603,9 +684,9 @@ export async function previewErasure(
       portfolioAttributions: portfolioAttributionsCount,
     },
     preservedRecords: {
-      adminAuditLogs: 0, // Would need complex query
-      referralConversionsAsOwner: 0,
-      referralConversionsAsReferred: 0,
+      adminAuditLogs: adminAuditLogsCount,
+      referralConversionsAsOwner: referralAsOwnerCount,
+      referralConversionsAsReferred: referralAsReferredCount,
     },
   }
 }

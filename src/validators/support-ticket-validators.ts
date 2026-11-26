@@ -23,7 +23,10 @@ const MAX_ATTACHMENT_REFS = 10
 
 const attachmentRefsSchema = z
   .array(z.string().uuid('Each attachmentRef must be a valid UUID'))
-  .max(MAX_ATTACHMENT_REFS, `Cannot attach more than ${MAX_ATTACHMENT_REFS} files per message`)
+  .max(
+    MAX_ATTACHMENT_REFS,
+    `Cannot attach more than ${MAX_ATTACHMENT_REFS} files per message`
+  )
   .optional()
 
 export const createSupportTicketSchema = z.object({

@@ -59,6 +59,30 @@ describe('shared withdrawal controls', () => {
     expect(result.held).toBe(true)
     expect(result.score?.reasonCodes).toContain('NEW_DESTINATION_NO_HISTORY')
   })
+  it('uses the XLM-specific threshold for structuring withdrawals', async () => {
+    const result = await assessWithdrawal('user', address, 'XLM', 9_500)
+    expect(
+      result.score?.features.find(
+        (feature) => feature.feature === 'STRUCTURING'
+      )?.score
+    ).toBe(0)
+  })
+  it('scores repeated 9,500 USDC withdrawals in the structuring band', async () => {
+    ;(db.transaction.findMany as jest.Mock).mockResolvedValue(
+      [1, 2, 3].map((daysAgo) => ({
+        type: 'WITHDRAWAL',
+        amount: '9500',
+        assetSymbol: 'USDC',
+        createdAt: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000),
+      }))
+    )
+    const result = await assessWithdrawal('user', address, 'USDC', 9_500)
+    expect(
+      result.score?.features.find(
+        (feature) => feature.feature === 'STRUCTURING'
+      )?.score
+    ).toBeGreaterThanOrEqual(50)
+  })
   it('uses confirmed outbox destinations as exact history rather than memo text', async () => {
     const external = Keypair.random().publicKey()
     ;(db.outboxOp.findMany as jest.Mock).mockResolvedValue([

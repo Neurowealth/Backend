@@ -57,7 +57,22 @@ import {
   recordFiatQuoteFailure,
   recordFiatOrder,
   recordFiatRateDrift,
+  recordFiatLimitEvaluation,
+  recordFiatLimitHeadroomRelease,
 } from '../utils/metrics'
+import {
+  evaluateFiatOrder,
+  computeFiatLimitsSummary,
+  evaluateScheduledFiatRun,
+  DEFAULT_FIAT_LIMIT_POLICIES,
+  ROLLING_MONTH_MS,
+  DAY_MS,
+  type KycTierValue,
+  type FiatLimitPolicyConfig,
+  type FiatLimitEvaluationResult,
+  type FiatLimitsSummary,
+  type ScheduledFiatPlanState,
+} from './limits'
 import type {
   CreateFiatOrderInput,
   FiatQuoteInput,
@@ -73,31 +88,22 @@ import type {
   RankedQuote,
 } from './types'
 import { NoHealthyProvidersError, FiatOrderError } from './types'
+import { config } from '../config/env'
 
 /** How long a PENDING/PROCESSING order may sit before the age-out job fails it. */
-export const STALE_ORDER_MAX_AGE_MS = Number(
-  process.env.FIAT_STALE_ORDER_MAX_AGE_MS || 24 * 60 * 60 * 1000
-)
+export const STALE_ORDER_MAX_AGE_MS = config.fiat.staleOrderMaxAgeMs
 
 /** How long a quote returned by getBestExecutionQuote stays honorable (#313). */
-export const QUOTE_LOCK_TTL_MS = Number(
-  process.env.FIAT_QUOTE_LOCK_TTL_MS || 60_000
-)
+export const QUOTE_LOCK_TTL_MS = config.fiat.quoteLockTtlMs
 
 /** Per-provider timeout for a single quote request in the parallel fan-out. */
-const QUOTE_PROVIDER_TIMEOUT_MS = Number(
-  process.env.FIAT_QUOTE_PROVIDER_TIMEOUT_MS || 8_000
-)
+const QUOTE_PROVIDER_TIMEOUT_MS = config.fiat.quoteProviderTimeoutMs
 
 /** Beyond this |settled - quoted| / quoted, emit a rate-drift alert + webhook. */
-export const RATE_DRIFT_TOLERANCE_PCT = Number(
-  process.env.FIAT_RATE_DRIFT_TOLERANCE_PCT || 0.02
-)
+export const RATE_DRIFT_TOLERANCE_PCT = config.fiat.rateDriftTolerancePct
 
 /** Beyond this drift, escalate to critical — flags the order for manual re-quote/refund review. */
-export const RATE_DRIFT_CRITICAL_PCT = Number(
-  process.env.FIAT_RATE_DRIFT_CRITICAL_PCT || 0.1
-)
+export const RATE_DRIFT_CRITICAL_PCT = config.fiat.rateDriftCriticalPct
 
 /**
  * How close a candidate on-chain transaction's amount must be to an order's
@@ -282,6 +288,119 @@ export async function getBestExecutionQuote(
 export interface CreateOrderContext {
   /** Authenticated user's custodial/destination Stellar address. */
   walletAddress: string
+  /** Force limit evaluation even when DB models are partially stubbed in unit tests. */
+  enforceLimits?: boolean
+  /** Skip limit evaluation when a caller (e.g. executeScheduledFiatOrder) already ran it. */
+  skipLimitCheck?: boolean
+  /** Optional explicit KYC tier override for evaluation (used in tests/internal callers). */
+  tier?: KycTierValue
+  /** Optional explicit FX rate override (pass `null` to simulate FX outage). */
+  fxRate?: number | null
+  /** Optional explicit FX feed availability flag. */
+  fxFeedAvailable?: boolean
+  /** Optional explicit compliance freeze flag. */
+  isFrozen?: boolean
+  /** Optional evaluation clock anchor. */
+  now?: Date
+}
+
+function mapDbPolicyToConfig(
+  row: any,
+  tier: KycTierValue
+): FiatLimitPolicyConfig {
+  if (!row) {
+    return (
+      DEFAULT_FIAT_LIMIT_POLICIES[tier] ?? DEFAULT_FIAT_LIMIT_POLICIES.TIER_0
+    )
+  }
+  return {
+    tier: (row.tier as KycTierValue) ?? tier,
+    perTxnMax: Number(row.perTxnMax),
+    dailyMax: Number(row.dailyMax),
+    monthlyMax: Number(row.monthlyMax),
+    maxTxnsPerHour: Number(row.maxTxnsPerHour),
+    maxTxnsPerDay: Number(row.maxTxnsPerDay),
+    currency: row.currency || 'USD',
+    offRampOverrides: (row.offRampOverrides as any) ?? null,
+  }
+}
+
+async function resolveUserLimitInputs(
+  userId: string,
+  ctx: Partial<CreateOrderContext>,
+  database: Db
+): Promise<{
+  isFrozen: boolean
+  tier: KycTierValue
+  policy: FiatLimitPolicyConfig
+  recentOrders: any[]
+  now: Date
+}> {
+  const now = ctx.now ?? new Date()
+
+  let isFrozen = ctx.isFrozen ?? false
+  if (ctx.isFrozen === undefined) {
+    if (typeof (database as any).user?.findUnique === 'function') {
+      const user = await (database as any).user.findUnique({
+        where: { id: userId },
+        select: { isActive: true },
+      })
+      if (user && user.isActive === false) {
+        isFrozen = true
+      }
+    }
+    if (
+      !isFrozen &&
+      typeof (database as any).complianceCase?.findFirst === 'function'
+    ) {
+      const activeCase = await (database as any).complianceCase.findFirst({
+        where: {
+          userId,
+          status: {
+            in: ['OPEN', 'TRIAGE', 'INVESTIGATING', 'ESCALATED', 'PENDING_SAR'],
+          },
+        },
+        select: { id: true },
+      })
+      if (activeCase) {
+        isFrozen = true
+      }
+    }
+  }
+
+  let tier: KycTierValue = ctx.tier ?? 'TIER_0'
+  if (
+    !ctx.tier &&
+    typeof (database as any).kycProfile?.findUnique === 'function'
+  ) {
+    const profile = await (database as any).kycProfile.findUnique({
+      where: { userId },
+    })
+    tier = (profile?.tier as KycTierValue) ?? 'TIER_0'
+  }
+
+  let policyRow: any = null
+  if (typeof (database as any).fiatLimitPolicy?.findUnique === 'function') {
+    policyRow = await (database as any).fiatLimitPolicy.findUnique({
+      where: { tier },
+    })
+  }
+  const policy = mapDbPolicyToConfig(policyRow, tier)
+
+  let recentOrders: any[] = []
+  if (typeof (database as any).fiatOrder?.findMany === 'function') {
+    const windowCutoff = new Date(now.getTime() - (ROLLING_MONTH_MS + DAY_MS))
+    recentOrders =
+      (await (database as any).fiatOrder.findMany({
+        where: {
+          userId,
+          createdAt: { gte: windowCutoff },
+        },
+        orderBy: { createdAt: 'asc' },
+      })) ?? []
+  }
+
+  return { isFrozen, tier, policy, recentOrders, now }
 }
 
 async function resolveOrderProvider(
@@ -378,6 +497,83 @@ export async function createFiatOrder(
   ctx: CreateOrderContext,
   database: Db = db
 ) {
+  let limitEval: FiatLimitEvaluationResult | null = null
+  let evaluatedTier: KycTierValue = ctx.tier ?? 'TIER_0'
+
+  const shouldEnforceLimits =
+    !ctx.skipLimitCheck &&
+    (ctx.enforceLimits === true ||
+      ctx.isFrozen !== undefined ||
+      ctx.tier !== undefined ||
+      typeof (database as any).kycProfile?.findUnique === 'function')
+
+  if (shouldEnforceLimits) {
+    const limitInputs = await resolveUserLimitInputs(
+      input.userId,
+      ctx,
+      database
+    )
+    evaluatedTier = limitInputs.tier
+    limitEval = evaluateFiatOrder({
+      userId: input.userId,
+      direction: input.direction,
+      amount: input.fiatAmount,
+      currency: input.fiatCurrency,
+      tier: limitInputs.tier,
+      recentOrders: limitInputs.recentOrders,
+      now: limitInputs.now,
+      policy: limitInputs.policy,
+      fxRate: ctx.fxRate,
+      fxFeedAvailable: ctx.fxFeedAvailable,
+      isFrozen: limitInputs.isFrozen,
+    })
+
+    if (!limitEval.allowed) {
+      recordFiatLimitEvaluation?.(
+        'denied',
+        limitEval.reason ?? 'unknown',
+        evaluatedTier,
+        input.direction
+      )
+      logger.warn('[Fiat] Order denied by limit/velocity/KYC check', {
+        userId: input.userId,
+        direction: input.direction,
+        amount: input.fiatAmount,
+        currency: input.fiatCurrency,
+        tier: evaluatedTier,
+        reason: limitEval.reason,
+        limit: limitEval.limit,
+        used: limitEval.used,
+        remaining: limitEval.remaining,
+      })
+      throw new FiatOrderError(
+        'fiat_limit_exceeded',
+        403,
+        `Fiat order denied: ${limitEval.reason}`,
+        {
+          reason: limitEval.reason,
+          tier: evaluatedTier,
+          limit: limitEval.limit,
+          used: limitEval.used,
+          remaining: limitEval.remaining,
+          ...(limitEval.retryAfter != null
+            ? { retryAfter: limitEval.retryAfter }
+            : {}),
+          ...(limitEval.baseCurrency
+            ? { currency: limitEval.baseCurrency }
+            : {}),
+        }
+      )
+    }
+
+    recordFiatLimitEvaluation?.(
+      limitEval.limitWarning ? 'soft_warn' : 'allowed',
+      limitEval.limitWarning?.window ?? 'ok',
+      evaluatedTier,
+      input.direction
+    )
+  }
+
   const resolved = await resolveOrderProvider(input, database)
   const provider = getProvider(resolved.providerName)
 
@@ -448,7 +644,151 @@ export async function createFiatOrder(
     status: initialStatus,
   })
 
+  if (limitEval?.limitWarning) {
+    const warn = limitEval.limitWarning
+    publishUserEvent(
+      input.userId,
+      EVENT_TYPE_TOPIC['fiat.limit.approaching'],
+      'fiat.limit.approaching',
+      {
+        orderId: order.id,
+        userId: input.userId,
+        direction: input.direction,
+        tier: evaluatedTier,
+        window: warn.window,
+        utilizationPct: warn.utilizationPct,
+        used: warn.used,
+        limit: warn.limit,
+        remaining: warn.remaining,
+        currency: warn.currency,
+      }
+    ).catch(() => {})
+
+    return {
+      ...order,
+      limitWarning: warn,
+    }
+  }
+
   return order
+}
+
+/**
+ * Compute the caller's KYC tier and per-window limit/used/remaining summary
+ * for `GET /api/v1/fiat/limits` (#362).
+ */
+export async function getUserFiatLimits(
+  userId: string,
+  options: {
+    direction?: FiatDirection
+    now?: Date
+    fxRate?: number | null
+    fxFeedAvailable?: boolean
+  } = {},
+  database: Db = db
+): Promise<FiatLimitsSummary> {
+  const limitInputs = await resolveUserLimitInputs(
+    userId,
+    {
+      now: options.now,
+      fxRate: options.fxRate,
+      fxFeedAvailable: options.fxFeedAvailable,
+    },
+    database
+  )
+  return computeFiatLimitsSummary({
+    tier: limitInputs.tier,
+    direction: options.direction ?? 'ON_RAMP',
+    recentOrders: limitInputs.recentOrders,
+    now: limitInputs.now,
+    policy: limitInputs.policy,
+    fxRate: options.fxRate,
+    fxFeedAvailable: options.fxFeedAvailable,
+  })
+}
+
+/**
+ * Execute a scheduled fiat order (`fiatPurchases` / `fiatPayouts` jobs, #362).
+ *
+ * Calls `evaluateFiatOrder` first; on denial returns a `skipped_limit` outcome
+ * and auto-pauses the plan after N consecutive `skipped_limit` runs.
+ */
+export async function executeScheduledFiatOrder(
+  params: {
+    plan: ScheduledFiatPlanState
+    orderInput: CreateFiatOrderInput
+    ctx: CreateOrderContext
+    maxConsecutiveSkips?: number
+  },
+  database: Db = db
+) {
+  const limitInputs = await resolveUserLimitInputs(
+    params.orderInput.userId,
+    params.ctx,
+    database
+  )
+  const runEval = evaluateScheduledFiatRun({
+    plan: params.plan,
+    maxConsecutiveSkips: params.maxConsecutiveSkips,
+    evaluationInput: {
+      userId: params.orderInput.userId,
+      direction: params.orderInput.direction,
+      amount: params.orderInput.fiatAmount,
+      currency: params.orderInput.fiatCurrency,
+      tier: limitInputs.tier,
+      recentOrders: limitInputs.recentOrders,
+      now: limitInputs.now,
+      policy: limitInputs.policy,
+      fxRate: params.ctx.fxRate,
+      fxFeedAvailable: params.ctx.fxFeedAvailable,
+      isFrozen: limitInputs.isFrozen,
+    },
+  })
+
+  if (runEval.outcome === 'skipped_limit') {
+    recordFiatLimitEvaluation?.(
+      'denied',
+      runEval.evaluation.reason ?? 'unknown',
+      limitInputs.tier,
+      params.orderInput.direction
+    )
+    if (runEval.shouldAutoPause) {
+      logger.warn(
+        '[Fiat] Scheduled fiat plan auto-paused after repeated skipped_limit runs',
+        {
+          planId: params.plan.id,
+          userId: params.plan.userId,
+          consecutiveSkippedLimit: runEval.consecutiveSkippedLimit,
+          reason: runEval.evaluation.reason,
+        }
+      )
+    }
+    return {
+      outcome: 'skipped_limit' as const,
+      reason: runEval.evaluation.reason,
+      limit: runEval.evaluation.limit,
+      used: runEval.evaluation.used,
+      remaining: runEval.evaluation.remaining,
+      retryAfter: runEval.evaluation.retryAfter,
+      consecutiveSkippedLimit: runEval.consecutiveSkippedLimit,
+      autoPaused: runEval.shouldAutoPause,
+      nextStatus: runEval.nextStatus,
+    }
+  }
+
+  const order = await createFiatOrder(
+    params.orderInput,
+    { ...params.ctx, skipLimitCheck: true },
+    database
+  )
+
+  return {
+    outcome: 'executed' as const,
+    order,
+    consecutiveSkippedLimit: 0,
+    autoPaused: false,
+    nextStatus: params.plan.status,
+  }
 }
 
 // ── Webhook processing (idempotent) ─────────────────────────────────────────
@@ -510,6 +850,16 @@ export async function processProviderWebhook(
     }
   }
 
+  const nextStatus = mapToOrderStatus(parsed.status)
+  if (isStaleNonTerminalTransition(order.status, nextStatus)) {
+    return {
+      handled: true,
+      reason: 'stale status',
+      orderId: order.id,
+      status: order.status,
+    }
+  }
+
   const data: Record<string, unknown> = { updatedAt: new Date() }
 
   if (parsed.cryptoAmount != null && order.cryptoAmount == null) {
@@ -518,30 +868,17 @@ export async function processProviderWebhook(
   if (parsed.kycUrl) {
     data.kycUrl = parsed.kycUrl
   }
+  if (parsed.txHash) {
+    // Retain the provider's claim for the reconciliation sweep if the
+    // corresponding on-chain transaction is not visible yet.
+    data.providerTxHash = parsed.txHash
+  }
 
-  switch (parsed.status) {
-    case 'KYC_REQUIRED':
-      // Still open; surface the KYC link but keep the order actionable.
-      data.status = 'PENDING'
-      break
-    case 'PENDING':
-      data.status = 'PENDING'
-      break
-    case 'PROCESSING':
-    case 'SETTLED':
-      // Provider claims payment success. Do NOT mark SETTLED here — on-chain
-      // confirmation is authoritative. Advance to PROCESSING and stash the
-      // claimed tx hash so reconciliation can match it.
-      data.status = 'PROCESSING'
-      break
-    case 'FAILED':
-      data.status = 'FAILED'
-      data.failureReason = parsed.reason ?? 'Provider reported failure'
-      break
-    case 'REFUNDED':
-      data.status = 'REFUNDED'
-      data.failureReason = parsed.reason ?? 'Provider refunded the payment'
-      break
+  data.status = nextStatus
+  if (nextStatus === 'FAILED') {
+    data.failureReason = parsed.reason ?? 'Provider reported failure'
+  } else if (nextStatus === 'REFUNDED') {
+    data.failureReason = parsed.reason ?? 'Provider refunded the payment'
   }
 
   const updated = await (database as any).fiatOrder.update({
@@ -552,6 +889,10 @@ export async function processProviderWebhook(
   // Emit outbound webhook for terminal failure/refund so subscribers react.
   if (updated.status === 'FAILED' || updated.status === 'REFUNDED') {
     recordFiatOrder(providerName, updated.status)
+    recordFiatLimitHeadroomRelease?.(
+      updated.status as 'FAILED' | 'REFUNDED',
+      updated.direction ?? 'ON_RAMP'
+    )
     publishUserEvent(
       updated.userId,
       EVENT_TYPE_TOPIC['fiat.order.failed'],
@@ -569,8 +910,8 @@ export async function processProviderWebhook(
 
   // If the provider handed us a tx hash, try an immediate reconciliation pass
   // for this single order so settlement isn't delayed to the next sweep.
-  if (parsed.txHash && updated.status === 'PROCESSING') {
-    await reconcileSingleOrder(updated.id, parsed.txHash, database).catch(
+  if (updated.providerTxHash && updated.status === 'PROCESSING') {
+    await reconcileSingleOrder(updated.id, updated.providerTxHash, database).catch(
       (err) => {
         logger.error('[Fiat] Inline reconciliation failed', {
           orderId: updated.id,
@@ -644,13 +985,64 @@ export async function reconcileSingleOrder(
   })
   if (!tx || tx.status !== 'CONFIRMED') return false
   if (tx.userId !== order.userId) {
-    // Hash belongs to a different user — never cross-link funds.
     logger.error('[Fiat] Claimed txHash user mismatch — refusing to link', {
       orderId,
       txHash,
       orderUser: order.userId,
       txUser: tx.userId,
     })
+    return false
+  }
+
+  if (tx.assetSymbol !== order.assetSymbol) {
+    logger.error('[Fiat] Asset symbol mismatch — refusing to link', {
+      orderId,
+      txHash,
+      orderAsset: order.assetSymbol,
+      txAsset: tx.assetSymbol,
+    })
+    return false
+  }
+
+  const isOnRamp = order.direction === 'ON_RAMP'
+  const isInboundTx =
+    tx.type === 'DEPOSIT' ||
+    tx.type === 'INBOUND_TRANSFER' ||
+    tx.type === 'CLAIMABLE_BALANCE_CLAIM'
+
+  if (isOnRamp && !isInboundTx) {
+    logger.error(
+      '[Fiat] ON_RAMP order cannot be settled with outbound transaction — refusing to link',
+      {
+        orderId,
+        txHash,
+        transactionType: tx.type,
+      }
+    )
+    return false
+  }
+
+  if (!isOnRamp && isInboundTx) {
+    logger.error(
+      '[Fiat] OFF_RAMP order cannot be settled with inbound transaction — refusing to link',
+      {
+        orderId,
+        txHash,
+        transactionType: tx.type,
+      }
+    )
+    return false
+  }
+
+  if (!isOnRamp && tx.type !== 'WITHDRAWAL') {
+    logger.error(
+      '[Fiat] OFF_RAMP order must be settled with WITHDRAWAL transaction — refusing to link',
+      {
+        orderId,
+        txHash,
+        transactionType: tx.type,
+      }
+    )
     return false
   }
 
@@ -662,6 +1054,43 @@ export async function reconcileSingleOrder(
         ? Number(order.cryptoAmount)
         : null
   const fiatAmount = Number(order.fiatAmount)
+
+  if (quotedCryptoAmount && quotedCryptoAmount > 0) {
+    const driftFromQuote =
+      Math.abs(settledCryptoAmount - quotedCryptoAmount) / quotedCryptoAmount
+    if (driftFromQuote > RECONCILE_AMOUNT_TOLERANCE_PCT) {
+      logger.error(
+        '[Fiat] Transaction amount exceeds tolerance — refusing to link',
+        {
+          orderId,
+          txHash,
+          quotedCryptoAmount,
+          settledCryptoAmount,
+          driftPct: driftFromQuote,
+          tolerancePct: RECONCILE_AMOUNT_TOLERANCE_PCT,
+        }
+      )
+      return false
+    }
+  }
+
+  const existingLink = await (database as any).fiatOrder.findFirst({
+    where: {
+      transactionId: tx.id,
+      id: { not: orderId },
+    },
+  })
+  if (existingLink) {
+    logger.error(
+      '[Fiat] Transaction already linked to another order — refusing to link',
+      {
+        orderId,
+        txHash,
+        existingOrderId: existingLink.id,
+      }
+    )
+    return false
+  }
 
   let settledRate: number | null = null
   let driftPct: number | null = null
@@ -770,25 +1199,40 @@ export async function reconcileFiatOrders(database: Db = db): Promise<{
 
   let settled = 0
   for (const order of processing) {
+    // A claimed hash identifies this order's provider-side payment. Keep
+    // using it after a process restart instead of falling back to the generic
+    // matching heuristic, which could link an unrelated transaction.
+    if (order.providerTxHash) {
+      const ok = await reconcileSingleOrder(
+        order.id,
+        order.providerTxHash,
+        database
+      ).catch(() => false)
+      if (ok) {
+        settled++
+        continue
+      }
+    }
+
     // Match against unlinked CONFIRMED transactions for this user + asset.
-    // Provider-claimed hashes are handled inline at webhook time; here we
-    // catch lost-webhook / async-settlement. With multiple providers able to
-    // have concurrent PROCESSING orders for the same user + asset, matching
-    // on "most recent unlinked" alone can cross-link an order to a
-    // transaction that actually belongs to a *different* provider's order —
-    // so once an order has a quoted crypto amount on record, only a
-    // transaction whose amount falls within RECONCILE_AMOUNT_TOLERANCE_PCT of
-    // that quote is eligible (#313).
-    const candidates = await (database as any).transaction.findMany({
-      where: {
-        userId: order.userId,
-        assetSymbol: order.assetSymbol,
-        status: 'CONFIRMED',
-        fiatOrders: { none: {} },
-      },
-      orderBy: { confirmedAt: 'desc' },
-      take: 20,
-    })
+    // With multiple providers able to have concurrent PROCESSING orders for
+    // the same user + asset, matching on "most recent unlinked" alone can
+    // cross-link an order to a transaction that actually belongs to a
+    // different provider's order — so once an order has a quoted crypto
+    // amount on record, only a transaction whose amount falls within
+    // RECONCILE_AMOUNT_TOLERANCE_PCT of that quote is eligible (#313).
+    const candidates = order.providerTxHash
+      ? []
+      : await (database as any).transaction.findMany({
+          where: {
+            userId: order.userId,
+            assetSymbol: order.assetSymbol,
+            status: 'CONFIRMED',
+            fiatOrders: { none: {} },
+          },
+          orderBy: { confirmedAt: 'desc' },
+          take: 20,
+        })
 
     const expectedAmount =
       order.quotedCryptoAmount != null
@@ -923,6 +1367,13 @@ function mapToOrderStatus(status: NormalizedWebhookStatus): string {
 
 function isTerminal(status: string): boolean {
   return status === 'SETTLED' || status === 'FAILED' || status === 'REFUNDED'
+}
+
+function isStaleNonTerminalTransition(
+  currentStatus: string,
+  nextStatus: string
+): boolean {
+  return currentStatus === 'PROCESSING' && nextStatus === 'PENDING'
 }
 
 export { getProvider, getDefaultProvider }

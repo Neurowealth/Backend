@@ -8,7 +8,7 @@ Unlike operator-scoped webhooks (which fan out to system-wide operator endpoints
 
 Key capabilities:
 - **Per-User Signing Secrets**: Each endpoint receives a unique HMAC secret (`whsec_...`) shown **only once** upon creation or secret rotation.
-- **Event & Topic Scoping**: Endpoints can filter by specific domain events (`events: ["deposit.received", "agent.rebalanced"]`) or topic scopes (`topicScope: ["portfolio", "transactions"]`).
+- **Event & Topic Scoping**: Endpoints can filter by specific domain events (`events: ["deposit.received", "agent.rebalanced"]`) or topic scopes (`topicScope: ["portfolio", "transactions"]`). The scheduled portfolio digest is delivered to user endpoints as `digest.generated` (an empty `events` array = all events).
 - **Server-side Filter Predicates**: Supports optional validated filter JSON predicates evaluated before delivery enqueueing (e.g. only `WITHDRAWAL` transactions over $100).
 - **Idempotency & Replay**: Deliveries use `@@unique([endpointId, userEventSeq])` based on the user's durable stream sequence (`seq`). Endpoints can request replay via `POST /api/v1/webhooks/endpoints/:id/replay?afterSeq=`.
 - **SSRF Protection**: Endpoint URLs must use `https://` and are validated against private, loopback, and link-local IP ranges.

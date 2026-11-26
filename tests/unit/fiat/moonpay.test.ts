@@ -13,6 +13,13 @@ jest.mock('../../../src/utils/logger', () => ({
 }))
 
 const WEBHOOK_KEY = 'whsec_test_key'
+const fetchMock = jest.fn()
+
+global.fetch = fetchMock
+
+beforeEach(() => {
+  fetchMock.mockReset()
+})
 
 function sign(rawBody: string, timestamp: string, key = WEBHOOK_KEY): string {
   const sig = createHmac('sha256', key)
@@ -166,5 +173,62 @@ describe('MoonPayProvider.parseWebhookPayload', () => {
     const parsed = provider.parseWebhookPayload(body)
     expect(parsed.status).toBe('KYC_REQUIRED')
     expect(parsed.kycUrl).toBe('https://kyc')
+  })
+})
+
+describe('MoonPayProvider sell requests (#829)', () => {
+  const provider = new MoonPayProvider({
+    apiKey: 'test-api-key',
+    secretKey: 'test-secret-key',
+    baseUrl: 'https://moonpay.test',
+  })
+
+  it('uses sell-side quote parameters and returns the crypto base amount', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        quoteCurrencyAmount: 250,
+        baseCurrencyAmount: 1.5,
+      }),
+    })
+
+    const quote = await provider.getQuote({
+      direction: 'OFF_RAMP',
+      fiatAmount: 1.5,
+      fiatCurrency: 'USD',
+      assetSymbol: 'XLM',
+    })
+
+    expect(fetchMock.mock.calls[0][0]).toContain('/sell_quote?')
+    expect(fetchMock.mock.calls[0][0]).toContain('quoteCurrencyCode=usd')
+    expect(fetchMock.mock.calls[0][0]).toContain('baseCurrencyAmount=1.5')
+    expect(fetchMock.mock.calls[0][0]).not.toContain('baseCurrencyCode=usd')
+    expect(quote.cryptoAmount).toBe(1.5)
+  })
+
+  it('uses sell-side order parameters and returns the crypto base amount', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: 'moonpay-order-1', baseCurrencyAmount: 1.5 }),
+    })
+
+    const order = await provider.createOrder({
+      userId: 'user-1',
+      direction: 'OFF_RAMP',
+      fiatAmount: 1.5,
+      fiatCurrency: 'USD',
+      assetSymbol: 'XLM',
+      walletAddress: 'GTEST',
+    })
+
+    const request = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(request).toMatchObject({
+      flow: 'sell',
+      currencyCode: 'xlm',
+      quoteCurrencyCode: 'usd',
+      baseCurrencyAmount: 1.5,
+    })
+    expect(request.baseCurrencyCode).toBeUndefined()
+    expect(order.cryptoAmount).toBe(1.5)
   })
 })

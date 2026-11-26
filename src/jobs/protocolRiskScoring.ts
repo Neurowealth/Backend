@@ -110,6 +110,8 @@ export async function computeProtocolRiskScores(
         error: errorMessage,
       })
       recordJobFailure(jobName, durationMs, error)
+      // Rethrow so resilientScheduler retries and records the run as failed (#772)
+      throw error
     }
   })
 }

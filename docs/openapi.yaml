@@ -21,6 +21,8 @@ tags:
     description: Portfolio performance and risk analytics
   - name: TwoFactorAuth
     description: TOTP-based two-factor authentication enrollment and login verification (#2FA)
+  - name: AccountRecovery
+    description: Guardian-based account access recovery with quorum, alerts, and a fixed 72-hour delay (#535)
   - name: Assistant
     description: |
       Tool-calling conversational assistant (#318). Replaces the rule-based
@@ -48,6 +50,8 @@ tags:
     description: Alert rules and monitoring triggers (#366)
   - name: Webhooks
     description: User-scoped outbound webhook endpoints (#368)
+  - name: Accounting
+    description: Reconciled accounting exports for QBO and Xero (#669)
   - name: Net Worth
     description: Owner-private net worth and read-only external Stellar wallet links (#540)
 
@@ -132,13 +136,10 @@ components:
 
     TotpVerifyEnrollmentResponse:
       type: object
-      required: [enabled]
+      required: [verified]
       properties:
-        enabled:
+        verified:
           type: boolean
-        verifiedAt:
-          type: string
-          format: date-time
 
     TotpLoginVerifyRequest:
       type: object
@@ -165,25 +166,18 @@ components:
 
     TotpDisableRequest:
       type: object
-      required: [challenge, signature]
+      required: [stellarPubKey, signature, nonce]
       additionalProperties: false
       properties:
-        challenge:
+        stellarPubKey:
           type: string
-          description: Fresh wallet-signature challenge issued for this disable operation.
+          description: Wallet public key bound to the authenticated user.
         signature:
           type: string
           description: Signature over the challenge proving control of the wallet.
-
-    TotpRegenerateRecoveryCodesResponse:
-      type: object
-      required: [recoveryCodes]
-      properties:
-        recoveryCodes:
-          type: array
-          items:
-            type: string
-          description: New one-time backup codes. All previous codes are invalidated.
+        nonce:
+          type: string
+          description: Fresh challenge nonce validated by the session middleware.
 
     ExternalWalletLinkRequest:
       type: object
@@ -274,6 +268,8 @@ components:
           totalKnownUsd,
           platformValueUsd,
           externalKnownValueUsd,
+          staleKnownExternalValueUsd,
+          lastKnownTotalUsd,
           valuationComplete,
           unpricedExternalHoldingCount,
           staleWalletCount,
@@ -286,11 +282,25 @@ components:
           enum: [USD]
         totalKnownUsd:
           type: number
-          description: Known subtotal; not a complete total when valuationComplete is false.
+          description: |
+            Current known value: platformValueUsd + externalKnownValueUsd.
+            Excludes stale wallets (see staleKnownExternalValueUsd) and
+            unpriced assets, so it is not a complete total when
+            valuationComplete is false.
         platformValueUsd:
           type: number
         externalKnownValueUsd:
           type: number
+          description: Priced balances of external wallets that are not stale.
+        staleKnownExternalValueUsd:
+          type: number
+          description: |
+            Priced balances of stale external wallets (failed or overdue
+            sync), as of each wallet's lastSyncedAt. Not included in
+            totalKnownUsd.
+        lastKnownTotalUsd:
+          type: number
+          description: totalKnownUsd + staleKnownExternalValueUsd, i.e. the total using last-known values for stale wallets.
         valuationComplete:
           type: boolean
         unpricedExternalHoldingCount:
@@ -1483,6 +1493,213 @@ components:
           type: string
           format: date-time
 
+    # ── Digest subscriptions (#365) ────────────────────────────────────────────
+
+    DigestFrequency:
+      type: string
+      enum: [DAILY, WEEKLY, MONTHLY]
+
+    DigestChannel:
+      type: string
+      enum: [WHATSAPP, TELEGRAM, EMAIL, WEBHOOK]
+
+    DigestQuietHours:
+      type: object
+      description: Never send inside this UTC window (`startUtc`..`endUtc`, exclusive end).
+      required: [startUtc, endUtc]
+      properties:
+        startUtc:
+          type: integer
+          minimum: 0
+          maximum: 23
+        endUtc:
+          type: integer
+          minimum: 0
+          maximum: 23
+
+    DigestSubscription:
+      type: object
+      required: [id, userId, frequency, channels, sendHourUtc, isActive, nextRunAt, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        frequency:
+          $ref: '#/components/schemas/DigestFrequency'
+        channels:
+          type: array
+          items:
+            $ref: '#/components/schemas/DigestChannel'
+        sendHourUtc:
+          type: integer
+          minimum: 0
+          maximum: 23
+        weeklyDayUtc:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 6
+        quietHours:
+          type: object
+          allOf:
+            - $ref: '#/components/schemas/DigestQuietHours'
+          nullable: true
+        isActive:
+          type: boolean
+        lastSentAt:
+          type: string
+          format: date-time
+          nullable: true
+        nextRunAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateDigestSubscriptionRequest:
+      type: object
+      required: [frequency, channels]
+      properties:
+        frequency:
+          $ref: '#/components/schemas/DigestFrequency'
+        channels:
+          type: array
+          minItems: 1
+          maxItems: 4
+          items:
+            $ref: '#/components/schemas/DigestChannel'
+        sendHourUtc:
+          type: integer
+          minimum: 0
+          maximum: 23
+          default: 9
+        weeklyDayUtc:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 6
+        quietHours:
+          $ref: '#/components/schemas/DigestQuietHours'
+        isActive:
+          type: boolean
+          default: true
+
+    UpdateDigestSubscriptionRequest:
+      type: object
+      description: Any subset of the creatable fields.
+      properties:
+        frequency:
+          $ref: '#/components/schemas/DigestFrequency'
+        channels:
+          type: array
+          minItems: 1
+          maxItems: 4
+          items:
+            $ref: '#/components/schemas/DigestChannel'
+        sendHourUtc:
+          type: integer
+          minimum: 0
+          maximum: 23
+        weeklyDayUtc:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 6
+        quietHours:
+          $ref: '#/components/schemas/DigestQuietHours'
+        isActive:
+          type: boolean
+
+    DigestValueChange:
+      type: object
+      properties:
+        startValue:
+          type: number
+          nullable: true
+        endValue:
+          type: number
+        absoluteChange:
+          type: number
+          nullable: true
+        percentChange:
+          type: number
+          nullable: true
+        insufficientData:
+          type: boolean
+
+    DigestModel:
+      type: object
+      description: Channel-agnostic digest output from the pure assembler.
+      properties:
+        frequency:
+          $ref: '#/components/schemas/DigestFrequency'
+        period:
+          type: object
+          properties:
+            label:
+              type: string
+            startAt:
+              type: string
+              format: date-time
+            endAt:
+              type: string
+              format: date-time
+        valueChange:
+          $ref: '#/components/schemas/DigestValueChange'
+        yield:
+          type: object
+          properties:
+            earned:
+              type: number
+              nullable: true
+            blendedApy:
+              type: number
+              nullable: true
+            best:
+              type: object
+              nullable: true
+            worst:
+              type: object
+              nullable: true
+        rebalances:
+          type: object
+          properties:
+            count:
+              type: integer
+            netImprovementPct:
+              type: number
+              nullable: true
+        goals:
+          type: array
+          items:
+            type: object
+        risk:
+          type: object
+          properties:
+            text:
+              type: string
+        notableTransactions:
+          type: array
+          items:
+            type: object
+        capReached:
+          type: boolean
+        maxEntries:
+          type: integer
+        caveats:
+          type: array
+          items:
+            type: string
+        hasPositions:
+          type: boolean
+
   responses:
     Unauthorized:
       description: Missing or invalid JWT.
@@ -1493,6 +1710,69 @@ components:
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 paths:
+  /accounting/export:
+    get:
+      tags:
+        - Accounting
+      operationId: exportAccountingData
+      summary: Download a reconciled QuickBooks Online or Xero CSV export
+      description: |
+        The generated file is parsed back and reconciled against ledger totals
+        per asset before it is returned. A mismatch blocks the download with a
+        422 and the diff summary; a partial or corrupt export is never served.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: format
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [qbo, xero-csv]
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Reconciled CSV attachment
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: private, no-store, max-age=0
+            X-Export-Row-Count:
+              schema:
+                type: integer
+            X-Export-Checksum:
+              schema:
+                type: string
+            X-Export-Reconciled:
+              schema:
+                type: string
+                example: 'true'
+          content:
+            text/csv:
+              schema:
+                type: string
+        '400':
+          description: Invalid format or date range
+        '401':
+          description: Authentication required
+        '403':
+          description: API key lacks transactions:read
+        '422':
+          description: Reconciliation failed; download blocked with the diff summary
+        '429':
+          description: Rate limit exceeded
   /sub-accounts/bulk:
     post:
       tags:
@@ -1927,6 +2207,67 @@ paths:
           description: Forbidden
         '404':
           description: Resource not found
+  /admin/dlq/discard:
+    post:
+      tags: [Admin]
+      operationId: discardDeadLetterEvent
+      summary: Permanently discard a dead-letter event; requires dlq:write
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, reason]
+              properties:
+                eventId: { type: string }
+                reason: { type: string, minLength: 3 }
+      responses:
+        '200': { description: Event discarded and action audited }
+        '400': { description: Missing or invalid eventId or reason }
+        '401': { description: Admin authentication required }
+        '403': { description: Missing dlq:write permission }
+        '404': { description: Event not found in the dead-letter queue }
+        '500': { description: Failed to discard event }
+  /admin/dlq/requeue:
+    post:
+      tags: [Admin]
+      operationId: requeueDeadLetterEvent
+      summary: Reset a dead-letter event for another processing attempt; requires dlq:write
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, reason]
+              properties:
+                eventId: { type: string }
+                reason: { type: string, minLength: 3 }
+      responses:
+        '200': { description: Event requeued with retryCount reset to zero }
+        '400': { description: Missing or invalid eventId or reason }
+        '401': { description: Admin authentication required }
+        '403': { description: Missing dlq:write permission }
+        '404': { description: Event not found in the dead-letter queue }
+        '500': { description: Failed to requeue event }
+  /referrals/me:
+    get:
+      tags:
+        - Referrals
+      operationId: getMyReferralSummary
+      summary: Authenticated referrer vesting tranche schedule, upcoming vest dates, clawback offsets, and disclosure copy
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Referral vesting & clawback summary
+        '401':
+          description: Unauthorized
   /admin/referrals/fraud/queue:
     get:
       tags:
@@ -2344,7 +2685,7 @@ paths:
         '404': { description: Plan not found }
   # ── TOTP two-factor authentication (#2FA) ─────────────────────────────────────
 
-  /2fa/enroll:
+  /sessions/2fa/enroll:
     post:
       operationId: enrollTotp
       summary: Begin TOTP 2FA enrollment
@@ -2364,8 +2705,12 @@ paths:
                 $ref: '#/components/schemas/TotpEnrollResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: User not found
+        '409':
+          description: 2FA is already enabled
 
-  /2fa/verify-enrollment:
+  /sessions/2fa/verify-enrollment:
     post:
       operationId: verifyTotpEnrollment
       summary: Confirm TOTP 2FA enrollment
@@ -2391,7 +2736,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /2fa/disable:
+  /sessions/2fa/disable:
     post:
       operationId: disableTotp
       summary: Disable TOTP 2FA
@@ -2408,30 +2753,21 @@ paths:
             schema:
               $ref: '#/components/schemas/TotpDisableRequest'
       responses:
-        '204':
+        '200':
           description: 2FA disabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [disabled] }
         '400':
           description: Invalid challenge or signature.
         '401':
           $ref: '#/components/responses/Unauthorized'
-
-  /2fa/recovery-codes/regenerate:
-    post:
-      operationId: regenerateTotpRecoveryCodes
-      summary: Regenerate TOTP recovery codes
-      description: Issues a new set of one-time backup codes and invalidates all previous codes.
-      tags: [TwoFactorAuth]
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: New recovery codes (returned once).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TotpRegenerateRecoveryCodesResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No active 2FA credential
 
   /auth/2fa/verify:
     post:
@@ -2460,6 +2796,156 @@ paths:
           description: Invalid, expired, or already-used code.
         '401':
           description: Invalid or expired challenge token.
+
+  # ── Guardian-based account recovery (#535) ──────────────────────────────────
+
+  /recovery/guardians:
+    get:
+      operationId: listRecoveryGuardians
+      summary: List configured guardians and pending invitations
+      tags: [AccountRecovery]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Guardian policy and invitations }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: configureRecoveryGuardians
+      summary: Nominate platform users as recovery guardians
+      description: Requires 3 to 5 distinct users with verified email. Each guardian must accept explicitly. Quorum must be at least 2; the 72-hour recovery delay is fixed.
+      tags: [AccountRecovery]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [guardianUserIds, requiredApprovals]
+              properties:
+                guardianUserIds:
+                  type: array
+                  minItems: 3
+                  maxItems: 5
+                  uniqueItems: true
+                  items: { type: string, format: uuid }
+                requiredApprovals:
+                  type: integer
+                  minimum: 2
+                  maximum: 5
+      responses:
+        '201': { description: Invitations created; nominations are not active until accepted }
+        '400': { description: Invalid guardian list or quorum }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { description: Verified owner email required or an active request prevents policy changes }
+
+  /recovery/guardians/{id}/accept:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: acceptRecoveryGuardianInvitation
+      summary: Explicitly accept a guardian invitation
+      tags: [AccountRecovery]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Invitation accepted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: Invitation not found for the authenticated guardian }
+
+  /recovery/initiate:
+    post:
+      operationId: initiateAccountRecovery
+      summary: Start a guardian-approved wallet identity recovery
+      description: Public because the claimant may be locked out. Notifies the account's verified email and all accepted guardians immediately. Completion requires quorum and the fixed 72-hour delay.
+      tags: [AccountRecovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentWalletAddress, newWalletAddress]
+              properties:
+                currentWalletAddress: { type: string, description: Stellar public key currently associated with the account }
+                newWalletAddress: { type: string, description: Claimant's new Stellar public key }
+      responses:
+        '202':
+          description: Recovery request opened; guardians must independently approve
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requestId, status, recoveryDelayHours]
+                properties:
+                  requestId: { type: string, format: uuid }
+                  status: { type: string, enum: [PENDING] }
+                  recoveryDelayHours: { type: integer, enum: [72] }
+        '400': { description: Invalid Stellar public key or identical new and current wallet }
+        '404': { description: Recovery is unavailable for this account }
+        '409':
+          description: Recovery requires a verified contact, accepted guardians, and an eligible account state.
+
+  /recovery/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: getAccountRecoveryRequest
+      summary: Get recovery status as the owner or an accepted guardian
+      tags: [AccountRecovery]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Request status, quorum progress, and scheduled completion.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: Recovery request not found or not visible to caller }
+
+  /recovery/{id}/approve:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: approveAccountRecovery
+      summary: Record one explicit approval from an accepted guardian
+      tags: [AccountRecovery]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Approval recorded; reaching quorum starts the 72-hour cooling-off period }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: Request is not pending or caller is not an accepted guardian }
+
+  /recovery/{id}/cancel:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: cancelAccountRecovery
+      summary: Immediately cancel a pending or cooling-off recovery as the account owner
+      tags: [AccountRecovery]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Recovery cancelled without requiring guardian approval }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: Active recovery request not found for the authenticated owner }
+
+  /recovery/{id}/cancel-email:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: cancelAccountRecoveryByEmailToken
+      summary: Cancel recovery using the one-time token sent to the registered email
+      description: Public endpoint. The token is single-use, expires no later than the maximum cooling-off interval, and is stored only as a hash.
+      tags: [AccountRecovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, minLength: 32, maxLength: 128 }
+      responses:
+        '200': { description: Recovery cancelled without guardian approval }
+        '404': { description: Invalid token or no active recovery request }
 
   # ── Assistant endpoints (#318) ────────────────────────────────────────────────
 
@@ -3400,6 +3886,126 @@ paths:
               schema:
                 $ref: '#/components/schemas/UnauthorizedError'
 
+  /admin/audit/export:
+    get:
+      operationId: exportAdminAuditLogs
+      summary: Admin — export admin audit logs
+      description: |
+        Paginated and filterable export of AdminAuditLog records (#682).
+        Requires `read` admin scope. Every call is itself audited in `AdminAuditLog`
+        as `EXPORT_ADMIN_AUDIT_LOGS`.
+      tags: [Admin]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Inclusive start timestamp filter.
+        - name: startDate
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Alias for `from`.
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Inclusive end timestamp filter.
+        - name: endDate
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Alias for `to`.
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Exact match on audited action name.
+        - name: adminKeyId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Exact match on admin key ID.
+        - name: result
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [success, failure]
+          description: Filter on result status.
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+      responses:
+        '200':
+          description: Paginated export of admin audit logs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMeta'
+                  exportMeta:
+                    type: object
+                    properties:
+                      exportedAt:
+                        type: string
+                        format: date-time
+                      exportedBy:
+                        type: string
+                      legalHoldActive:
+                        type: boolean
+                      retentionPeriodDays:
+                        type: integer
+            text/csv:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Missing or insufficient admin scope.
+        '400':
+          description: Invalid query parameter.
+
   # ── Network conditions (#342) ─────────────────────────────────────────────────
 
   /network/conditions:
@@ -3547,6 +4153,128 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  # ── Digest subscriptions (#365) ─────────────────────────────────────────────
+
+  /notifications/digests:
+    post:
+      operationId: createDigestSubscription
+      summary: Create a scheduled portfolio digest subscription
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDigestSubscriptionRequest'
+      responses:
+        '201':
+          description: Subscription created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DigestSubscription'
+        '400':
+          $ref: '#/components/responses/Unauthorized'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: An active digest subscription already exists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+    get:
+      operationId: listDigestSubscriptions
+      summary: List the caller's digest subscriptions
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of the caller's subscriptions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscriptions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DigestSubscription'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /notifications/digests/preview:
+    get:
+      operationId: previewDigest
+      summary: Render the caller's digest right now without scheduling it
+      description: Rate-limited; owner-scoped to the caller's own data.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: frequency
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/DigestFrequency'
+      responses:
+        '200':
+          description: The rendered digest model
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DigestModel'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /notifications/digests/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      operationId: updateDigestSubscription
+      summary: Update a digest subscription
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDigestSubscriptionRequest'
+      responses:
+        '200':
+          description: Updated subscription
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DigestSubscription'
+        '400':
+          $ref: '#/components/responses/Unauthorized'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Subscription not found
+    delete:
+      operationId: deleteDigestSubscription
+      summary: Delete a digest subscription
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Subscription not found
 
   # ── Real-time WebSocket stream (#316) ─────────────────────────────────────────
 
@@ -4239,6 +4967,104 @@ paths:
         '404':
           description: External wallet not found for the caller.
 
+  /portfolio/{userId}/tax-report:
+    get:
+      operationId: getTaxReport
+      summary: Realized gain/loss report for one tax year
+      description: |
+        Realized gains from confirmed withdrawals, under the user's
+        `taxJurisdiction` and `accountingMethod`. See docs/TAX_REPORT.md.
+
+        **Tax years are per jurisdiction and are not always calendar years.**
+        Select the period with exactly one of:
+
+        - `taxYear`, the canonical label, checked against the user's
+          jurisdiction: `2025` for US, DE and CA (1 Jan to 31 Dec), and
+          `2025-26` for UK (6 Apr 2025 to 5 Apr 2026) and AU (1 Jul 2025 to
+          30 Jun 2026). A bare `2025` is rejected for UK/AU because it could
+          mean either tax year touching 2025.
+        - `year`, the calendar year the tax year **starts** in. For UK/AU,
+          `year=2025` means `2025-26`.
+
+        The response always returns the canonical period as `taxYearLabel`,
+        `taxYearStart` (inclusive) and `taxYearEnd` (exclusive), plus a
+        `caveats.taxYearNote` sentence. All boundaries are UTC.
+      tags: [Portfolio]
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: taxYear
+          description: Canonical tax-year label; `YYYY` or `YYYY-YY` depending on jurisdiction.
+          schema:
+            type: string
+            pattern: '^\d{4}(-\d{2})?$'
+            example: 2025-26
+        - in: query
+          name: year
+          description: Calendar year the jurisdiction's tax year starts in (2000-2100).
+          schema:
+            type: integer
+            minimum: 2000
+            maximum: 2100
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+        - in: query
+          name: method
+          description: Optional confirmation that the account uses this accounting method.
+          schema:
+            type: string
+            enum: [FIFO, LIFO, HIFO, SPECIFIC_ID]
+      responses:
+        '200':
+          description: |
+            The report as JSON, or with `format=csv` a
+            `tax-report-<taxYearLabel>.csv` attachment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  year:
+                    type: integer
+                    description: Calendar year the tax year starts in.
+                  jurisdiction:
+                    type: string
+                    enum: [US, UK, DE, AU, CA]
+                  taxYearLabel:
+                    type: string
+                    example: 2025-26
+                  taxYearStart:
+                    type: string
+                    format: date-time
+                    description: Inclusive UTC start.
+                  taxYearEnd:
+                    type: string
+                    format: date-time
+                    description: Exclusive UTC end.
+            text/csv:
+              schema:
+                type: string
+        '400':
+          description: |
+            Validation failed (neither or both of `year`/`taxYear`), the
+            `taxYear` label is not valid for the user's jurisdiction, or
+            `method` does not match the account.
+        '401':
+          description: Missing/invalid bearer token.
+        '404':
+          description: User not found.
+
   /portfolio/goals:
     post:
       operationId: createSavingsGoal
@@ -4531,3 +5357,138 @@ paths:
           description: Forbidden
         '429':
           description: Erasure rate limit exceeded
+  /fiat/limits:
+    get:
+      tags:
+        - Fiat
+      operationId: getFiatLimits
+      summary: Get caller's KYC tier, per-window limit/used/remaining, and next reset time (#362)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: direction
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [ON_RAMP, OFF_RAMP]
+      responses:
+        '200':
+          description: Caller's KYC tier and per-window usage summary
+        '401':
+          description: Unauthorized
+  /kyc/verify:
+    post:
+      tags:
+        - KYC
+      operationId: verifyKyc
+      summary: Initiate provider-hosted KYC verification flow (#362)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider:
+                  type: string
+                redirectUrl:
+                  type: string
+      responses:
+        '200':
+          description: KYC verification session initiated
+        '400':
+          description: Validation error
+        '401':
+          description: Unauthorized
+  /kyc/webhook/{provider}:
+    post:
+      tags:
+        - KYC
+      security: []
+      operationId: kycProviderWebhook
+      summary: Signature-verified provider KYC callback setting KycProfile.tier (#362)
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: KYC tier updated
+        '400':
+          description: Invalid payload
+        '401':
+          description: Invalid webhook signature
+  /admin/fiat/limit-policies:
+    get:
+      tags:
+        - Admin
+      operationId: adminGetFiatLimitPolicies
+      summary: Get per-tier fiat transaction and velocity limit policies (#362)
+      security:
+        - adminAuth: []
+      responses:
+        '200':
+          description: Active fiat limit policies by KYC tier
+        '401':
+          description: Admin authentication required
+    put:
+      tags:
+        - Admin
+      operationId: adminUpdateFiatLimitPolicies
+      summary: Update per-tier fiat transaction and velocity limit policies (#362)
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated fiat limit policies
+        '400':
+          description: Validation error
+        '401':
+          description: Admin authentication required
+  /admin/users/{id}/kyc-tier:
+    post:
+      tags:
+        - Admin
+      operationId: adminOverrideUserKycTier
+      summary: Manually override a user's KYC tier with mandatory reviewNote (#362)
+      security:
+        - adminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tier, reviewNote]
+              properties:
+                tier:
+                  type: string
+                  enum: [TIER_0, TIER_1, TIER_2, TIER_3]
+                reviewNote:
+                  type: string
+                providerRef:
+                  type: string
+      responses:
+        '200':
+          description: User KYC tier overridden and audit-logged
+        '400':
+          description: Missing reviewNote or invalid tier
+        '401':
+          description: Admin authentication required

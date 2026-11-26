@@ -33,6 +33,11 @@ import {
   TAX_REPORT_CSV_HEADERS,
   MethodMismatchError,
 } from '../tax/report'
+import {
+  parseTaxYearLabel,
+  resolveJurisdiction,
+  TaxYearLabelError,
+} from '../tax/jurisdictions'
 import { AccountingMethod } from '@prisma/client'
 import { toCsv } from '../utils/csv'
 import {
@@ -41,6 +46,8 @@ import {
   paginationSchema,
 } from '../utils/pagination'
 import goalsRouter from './goals'
+import { requireNotImpersonation } from '../middleware/impersonation'
+import { exportAccountingData } from '../controllers/accounting-controller'
 
 const router = Router()
 
@@ -70,14 +77,28 @@ const taxReportSchema = z.object({
   params: z.object({
     userId: z.string().uuid(),
   }),
-  query: z.object({
-    year: z.coerce.number().int().min(2000).max(2100),
-    format: z.enum(['json', 'csv']).default('json'),
-    // #317 — whitelisted against the AccountingMethod enum (never a raw
-    // string into a switch/ORDER BY); optional confirmation gate, not a
-    // recompute switch — see src/tax/report.ts's buildTaxReport.
-    method: z.nativeEnum(AccountingMethod).optional(),
-  }),
+  query: z
+    .object({
+      // #844 — `year` is the calendar year the jurisdiction's tax year
+      // starts in (UK/AU: year=2025 is 2025-26). `taxYear` takes the
+      // canonical label instead ("2025", or "2025-26" for UK/AU) and is
+      // checked against the user's jurisdiction. Send exactly one.
+      year: z.coerce.number().int().min(2000).max(2100).optional(),
+      taxYear: z
+        .string()
+        .trim()
+        .regex(/^\d{4}(-\d{2})?$/, 'taxYear must look like 2025 or 2025-26')
+        .optional(),
+      format: z.enum(['json', 'csv']).default('json'),
+      // #317 — whitelisted against the AccountingMethod enum (never a raw
+      // string into a switch/ORDER BY); optional confirmation gate, not a
+      // recompute switch — see src/tax/report.ts's buildTaxReport.
+      method: z.nativeEnum(AccountingMethod).optional(),
+    })
+    .refine((q) => (q.year === undefined) !== (q.taxYear === undefined), {
+      message: 'Provide exactly one of year or taxYear',
+      path: ['year'],
+    }),
 })
 
 const historySchema = z.object({
@@ -119,6 +140,7 @@ const optimizerConcurrency = new ConcurrencyLimiter({
 router.post(
   '/:userId/suggest-allocation',
   requireAuth,
+  requireNotImpersonation,
   enforceUserAccess,
   optimizerRateLimiter,
   validate(suggestAllocationSchema),
@@ -205,6 +227,55 @@ router.get(
       total,
       suggestions: rows.map(mapAllocationSuggestionToResponse),
     })
+  }
+)
+
+/**
+ * GET /portfolio/accounting-export (#549, #762)
+ *
+ * Accounting export download from portfolio route, gated by portfolio:read.
+ */
+router.get(
+  '/accounting-export',
+  requireAuth,
+  requireScope('portfolio:read'),
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+    const result = await exportAccountingData(userId, req.query)
+
+    if (!result.success) {
+      return res.status(result.statusCode ?? 500).json({
+        error: result.error ?? 'Failed to generate accounting export',
+        ...(result.reconciliation
+          ? {
+              reconciliation: {
+                reconciled: result.reconciliation.reconciled,
+                rowCount: result.reconciliation.rowCount,
+                checksum: result.reconciliation.checksum,
+                diffs: result.reconciliation.diffs,
+                totals: result.reconciliation.totals,
+              },
+            }
+          : {}),
+      })
+    }
+
+    res.setHeader(
+      'Content-Type',
+      result.contentType ?? 'text/csv; charset=utf-8'
+    )
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${result.filename ?? 'accounting-export.csv'}"`
+    )
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0')
+    res.setHeader('Pragma', 'no-cache')
+    res.setHeader('Expires', '0')
+    res.setHeader('X-Export-Row-Count', String(result.rowCount ?? 0))
+    res.setHeader('X-Export-Checksum', result.checksum ?? '')
+    res.setHeader('X-Export-Reconciled', 'true')
+
+    return res.status(200).send(result.data)
   }
 )
 
@@ -407,14 +478,28 @@ router.get(
     const userId = req.params.userId as string
     const user = await db.user.findUnique({
       where: { id: userId },
-      select: { id: true },
+      select: { id: true, taxJurisdiction: true },
     })
 
     if (!user) {
       return sendNotFound(res, 'User')
     }
 
-    const year = req.query.year as unknown as number
+    const taxYear = req.query.taxYear as string | undefined
+    let year = req.query.year as unknown as number
+    if (taxYear !== undefined) {
+      try {
+        year = parseTaxYearLabel(
+          resolveJurisdiction(user.taxJurisdiction),
+          taxYear
+        )
+      } catch (err) {
+        if (err instanceof TaxYearLabelError) {
+          return res.status(400).json({ error: err.message })
+        }
+        throw err
+      }
+    }
     const method = req.query.method as AccountingMethod | undefined
 
     let report
@@ -431,7 +516,7 @@ router.get(
       res.setHeader('Content-Type', 'text/csv; charset=utf-8')
       res.setHeader(
         'Content-Disposition',
-        `attachment; filename="tax-report-${year}.csv"`
+        `attachment; filename="tax-report-${report.taxYearLabel}.csv"`
       )
       return res
         .status(200)

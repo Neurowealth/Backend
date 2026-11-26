@@ -1,0 +1,2 @@
+-- PostgreSQL cannot remove an enum value in place. Keep PROCESSING so rollback
+-- remains safe for databases that may already contain rows using this status.

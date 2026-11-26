@@ -19,6 +19,7 @@ import {
   internalRateLimiter,
   webhookRateLimiter,
 } from '../middleware/rateLimiter'
+import accountingRouter from './accounting'
 import agentRouter from './agent'
 import agentDecisionsRouter from './agent-decisions'
 import adminRouter from './admin'
@@ -33,6 +34,7 @@ import assistantRouter from './assistant'
 import authRouter from './auth'
 import depositRouter from './deposit'
 import fiatRouter from './fiat'
+import kycRouter from './kyc'
 import healthRouter from './health'
 import keysRouter from './keys'
 import liquidityFloorRouter from './liquidity-floor'
@@ -48,6 +50,7 @@ import protectionFundRouter from './protection-fund'
 import recurringDepositRouter from './recurring-deposits'
 import recurringWithdrawalRouter from './recurring-withdrawals'
 import referralsRouter from './referrals'
+import recoveryRouter from './recovery'
 import sessionsRouter from './sessions'
 import settingsRouter from './settings'
 import stellarRouter from './stellar'
@@ -94,6 +97,8 @@ export const API_ROUTES: ApiRoute[] = [
   { path: 'telegram', handlers: [webhookRateLimiter, telegramRouter] },
   { path: 'portfolio', handlers: [portfolioRouter] },
   { path: 'transactions', handlers: [transactionsRouter] },
+  // #669 — QBO/Xero export with a mandatory ledger reconciliation gate.
+  { path: 'accounting', handlers: [accountingRouter] },
   { path: 'protocols', handlers: [protocolsRouter] },
   { path: 'deposit', handlers: [depositRouter] },
   { path: 'withdraw', handlers: [withdrawRouter] },
@@ -109,7 +114,9 @@ export const API_ROUTES: ApiRoute[] = [
   { path: 'analytics', handlers: [analyticsRouter] },
   { path: 'stellar', handlers: [stellarRouter] },
   { path: 'fiat', handlers: [fiatRouter] },
+  { path: 'kyc', handlers: [kycRouter] },
   { path: 'referrals', handlers: [referralsRouter] },
+  { path: 'recovery', handlers: [authRateLimiter, recoveryRouter] },
   { path: 'deposit/recurring', handlers: [recurringDepositRouter] },
   { path: 'recurring-withdrawals', handlers: [recurringWithdrawalRouter] },
   { path: 'alerts', handlers: [alertsRouter] },

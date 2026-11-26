@@ -40,4 +40,8 @@ export const ContractEventSchema = z.object({
   ledger: z.number().int().nonnegative(),
   txHash: z.string().min(1),
   contractId: z.string().min(1),
+  // Position of this event within its ledger (#821) — distinguishes two
+  // same-type events emitted by one transaction, which otherwise collide on
+  // the same (contractId, txHash, eventType, ledger) idempotency key.
+  eventIndex: z.number().int().nonnegative().default(0),
 })

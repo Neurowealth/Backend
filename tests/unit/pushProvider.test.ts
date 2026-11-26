@@ -1,7 +1,4 @@
-import {
-  FcmPushProvider,
-  PushRegistry,
-} from '../../src/push/pushProvider'
+import { FcmPushProvider, PushRegistry } from '../../src/push/pushProvider'
 
 describe('push providers', () => {
   const message = {
@@ -17,13 +14,11 @@ describe('push providers', () => {
 
   it('attempts an authenticated FCM send and only reports the provider acknowledgement', async () => {
     process.env.FCM_SERVER_KEY = 'server-key'
-    const fetchMock = jest
-      .spyOn(global, 'fetch')
-      .mockResolvedValue(
-        new Response(JSON.stringify({ message_id: 'fcm-message-id' }), {
-          status: 200,
-        })
-      )
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ message_id: 'fcm-message-id' }), {
+        status: 200,
+      })
+    )
 
     await expect(new FcmPushProvider().send(message)).resolves.toMatchObject({
       messageId: 'fcm-message-id',

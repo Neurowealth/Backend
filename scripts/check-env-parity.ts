@@ -4,7 +4,7 @@
  * Compares the tracked env files against .env.example so configuration drift
  * is caught during deployment review instead of at 3am. Exit codes:
  *   0 — no errors (warnings allowed; review them)
- *   1 — at least one environment is missing a core startup key
+ *   1 — a core startup key is missing, or DATABASE_URL disagrees with DB_*
  *
  * Run directly:      npx ts-node scripts/check-env-parity.ts
  * Or via npm script: npm run env:parity
@@ -12,7 +12,11 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { checkEnvParity, formatParityReport } from '../src/config/envParity'
+import {
+  checkEnvParity,
+  checkDatabaseUrlConsistency,
+  formatParityReport,
+} from '../src/config/envParity'
 
 const ROOT = path.resolve(__dirname, '..')
 
@@ -31,7 +35,7 @@ for (const name of ENV_FILES) {
     : ''
 }
 
-const issues = checkEnvParity(files)
+const issues = [...checkEnvParity(files), ...checkDatabaseUrlConsistency(files)]
 console.log(formatParityReport(issues))
 
 const hasErrors = issues.some((i) => i.severity === 'error')

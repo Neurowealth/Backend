@@ -5,7 +5,6 @@ import {
   linkTelegramChat,
   getBalance,
   getUserWalletAddress,
-  decrementBalance,
   getTelegramUser,
 } from './userManager'
 import {
@@ -13,9 +12,9 @@ import {
   formatDepositInstruction,
   formatHelpMessage,
   formatLinkInstructions,
-  formatWithdrawConfirmation,
 } from './formatters'
 import { logger } from '../utils/logger'
+import { executeBotWithdrawal } from '../botWithdrawals'
 import { config } from '../config'
 import db from '../db'
 import { handleAssistantMessage } from '../agent/assistant/assistant'
@@ -151,18 +150,16 @@ async function executeIntent(
       return { body: formatDepositInstruction(amount, address) }
     }
     case 'withdraw': {
-      const balance = getBalance(chatId) ?? 0
-      const amount = intent.all ? balance : intent.amount
-      if (!amount || amount <= 0) {
-        return {
-          body: 'Please specify a withdrawal amount, e.g. "/withdraw 5" or "/withdraw all".',
-        }
-      }
-      if (amount > balance) {
-        return { body: `You only have ${balance.toFixed(2)} XLM available.` }
-      }
-      const newBalance = decrementBalance(chatId, amount)
-      return { body: formatWithdrawConfirmation(amount, newBalance) }
+      // #837 — never trust the in-memory balance or claim success without a
+      // real transaction. The shared helper persists an outbox op through the
+      // authenticated user's withdrawal service, or fails closed.
+      const result = await executeBotWithdrawal({
+        channel: 'telegram',
+        identity: chatId,
+        amount: intent.all ? 0 : (intent.amount ?? 0),
+        all: intent.all,
+      })
+      return { body: result.body }
     }
     case 'help':
       return { body: formatHelpMessage() }

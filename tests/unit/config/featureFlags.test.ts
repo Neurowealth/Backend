@@ -50,8 +50,16 @@ describe('Feature Flags Configuration and Evaluation (#494)', () => {
       const flag = manager.getFlag('experimental_order_routing')
       expect(flag).toBeDefined()
       expect(flag?.key).toBe('experimental_order_routing')
-      expect(manager.isEnabled('experimental_order_routing', { environment: 'development' })).toBe(true)
-      expect(manager.isEnabled('experimental_order_routing', { environment: 'production' })).toBe(false)
+      expect(
+        manager.isEnabled('experimental_order_routing', {
+          environment: 'development',
+        })
+      ).toBe(true)
+      expect(
+        manager.isEnabled('experimental_order_routing', {
+          environment: 'production',
+        })
+      ).toBe(false)
     })
 
     it('falls back closed to false for unknown flags', () => {
@@ -82,11 +90,15 @@ describe('Feature Flags Configuration and Evaluation (#494)', () => {
     it('evaluates flags according to the specified environment', () => {
       // In DEFAULT_FEATURE_FLAGS, agent_autonomous_rebalance is:
       // dev: 100%, test: 100%, staging: 50%, prod: 0%
-      const devRes = manager.evaluate('agent_autonomous_rebalance', { environment: 'development' })
+      const devRes = manager.evaluate('agent_autonomous_rebalance', {
+        environment: 'development',
+      })
       expect(devRes.enabled).toBe(true)
       expect(devRes.environment).toBe('development')
 
-      const prodRes = manager.evaluate('agent_autonomous_rebalance', { environment: 'production' })
+      const prodRes = manager.evaluate('agent_autonomous_rebalance', {
+        environment: 'production',
+      })
       expect(prodRes.enabled).toBe(false)
       expect(prodRes.environment).toBe('production')
     })
@@ -212,18 +224,30 @@ describe('Feature Flags Configuration and Evaluation (#494)', () => {
   describe('Runtime Overrides & Management API', () => {
     it('sets and removes runtime overrides', () => {
       // In production, circuit_breaker_v2 is enabled
-      expect(manager.isEnabled('circuit_breaker_v2', { environment: 'production' })).toBe(true)
+      expect(
+        manager.isEnabled('circuit_breaker_v2', { environment: 'production' })
+      ).toBe(true)
 
       // Set runtime override to false
-      manager.setOverride('circuit_breaker_v2', { enabled: false }, 'admin-alice')
-      expect(manager.isEnabled('circuit_breaker_v2', { environment: 'production' })).toBe(false)
+      manager.setOverride(
+        'circuit_breaker_v2',
+        { enabled: false },
+        'admin-alice'
+      )
+      expect(
+        manager.isEnabled('circuit_breaker_v2', { environment: 'production' })
+      ).toBe(false)
 
-      const evalRes = manager.evaluate('circuit_breaker_v2', { environment: 'production' })
+      const evalRes = manager.evaluate('circuit_breaker_v2', {
+        environment: 'production',
+      })
       expect(evalRes.decision).toBe('RUNTIME_OVERRIDE')
 
       // Reset
       manager.reset('circuit_breaker_v2', 'admin-alice')
-      expect(manager.isEnabled('circuit_breaker_v2', { environment: 'production' })).toBe(true)
+      expect(
+        manager.isEnabled('circuit_breaker_v2', { environment: 'production' })
+      ).toBe(true)
     })
   })
 
@@ -241,7 +265,9 @@ describe('Feature Flags Configuration and Evaluation (#494)', () => {
       )
 
       expect(rollbackEvent.flagKey).toBe('smart_dca_engine')
-      expect(rollbackEvent.reason).toBe('High latency detected on Horizon liquidity pool')
+      expect(rollbackEvent.reason).toBe(
+        'High latency detected on Horizon liquidity pool'
+      )
       expect(rollbackEvent.operator).toBe('sre-oncall-bob')
       expect(rollbackEvent.timestamp).toBeDefined()
 
@@ -258,18 +284,27 @@ describe('Feature Flags Configuration and Evaluation (#494)', () => {
 
       // Reset restores original state
       manager.reset('smart_dca_engine', 'admin-alice')
-      const afterReset = manager.evaluate('smart_dca_engine', { environment: 'development' })
+      const afterReset = manager.evaluate('smart_dca_engine', {
+        environment: 'development',
+      })
       expect(afterReset.enabled).toBe(true)
     })
 
     it('supports platform-wide emergencyDisableAll by engaging emergency maintenance mode', () => {
-      manager.emergencyDisableAll('Critical security audit event', 'security-team')
+      manager.emergencyDisableAll(
+        'Critical security audit event',
+        'security-team'
+      )
 
-      const res1 = manager.evaluate('agent_autonomous_rebalance', { environment: 'development' })
+      const res1 = manager.evaluate('agent_autonomous_rebalance', {
+        environment: 'development',
+      })
       expect(res1.enabled).toBe(false)
       expect(res1.decision).toBe('GLOBAL_MAINTENANCE')
 
-      const res2 = manager.evaluate('circuit_breaker_v2', { environment: 'development' })
+      const res2 = manager.evaluate('circuit_breaker_v2', {
+        environment: 'development',
+      })
       expect(res2.enabled).toBe(false)
       expect(res2.decision).toBe('GLOBAL_MAINTENANCE')
     })
@@ -278,7 +313,9 @@ describe('Feature Flags Configuration and Evaluation (#494)', () => {
   describe('Environment Variable Overrides', () => {
     it('overrides flag state via FEATURE_FLAG_<FLAG_KEY>', () => {
       process.env.FEATURE_FLAG_AGENT_AUTONOMOUS_REBALANCE = 'true'
-      const res = manager.evaluate('agent_autonomous_rebalance', { environment: 'production' })
+      const res = manager.evaluate('agent_autonomous_rebalance', {
+        environment: 'production',
+      })
       expect(res.enabled).toBe(true)
       expect(res.decision).toBe('ENV_VAR_OVERRIDE')
     })
@@ -296,23 +333,32 @@ describe('Feature Flags Configuration and Evaluation (#494)', () => {
 
     it('enforces flag kill-switch via FEATURE_FLAG_<FLAG_KEY>_KILL_SWITCH', () => {
       process.env.FEATURE_FLAG_CIRCUIT_BREAKER_V2_KILL_SWITCH = 'true'
-      const res = manager.evaluate('circuit_breaker_v2', { environment: 'development' })
+      const res = manager.evaluate('circuit_breaker_v2', {
+        environment: 'development',
+      })
       expect(res.enabled).toBe(false)
       expect(res.decision).toBe('KILL_SWITCH')
     })
 
     it('triggers emergency rollback via FEATURE_FLAGS_ROLLBACK list', () => {
-      process.env.FEATURE_FLAGS_ROLLBACK = 'agent_autonomous_rebalance,fast_fiat_onramp'
-      const res1 = manager.evaluate('agent_autonomous_rebalance', { environment: 'development' })
+      process.env.FEATURE_FLAGS_ROLLBACK =
+        'agent_autonomous_rebalance,fast_fiat_onramp'
+      const res1 = manager.evaluate('agent_autonomous_rebalance', {
+        environment: 'development',
+      })
       expect(res1.enabled).toBe(false)
       expect(res1.decision).toBe('EMERGENCY_ROLLBACK')
 
-      const res2 = manager.evaluate('fast_fiat_onramp', { environment: 'development' })
+      const res2 = manager.evaluate('fast_fiat_onramp', {
+        environment: 'development',
+      })
       expect(res2.enabled).toBe(false)
       expect(res2.decision).toBe('EMERGENCY_ROLLBACK')
 
       // Other flags unaffected
-      const res3 = manager.evaluate('circuit_breaker_v2', { environment: 'development' })
+      const res3 = manager.evaluate('circuit_breaker_v2', {
+        environment: 'development',
+      })
       expect(res3.enabled).toBe(true)
     })
   })
@@ -327,7 +373,9 @@ describe('Feature Flags Configuration and Evaluation (#494)', () => {
       })
 
       expect(loggerSpy).toHaveBeenCalledWith(
-        expect.stringContaining('[FeatureFlag] Evaluated flag "agent_autonomous_rebalance"'),
+        expect.stringContaining(
+          '[FeatureFlag] Evaluated flag "agent_autonomous_rebalance"'
+        ),
         expect.objectContaining({
           event: 'feature_flag_evaluation',
           flag: 'agent_autonomous_rebalance',

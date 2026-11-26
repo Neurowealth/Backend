@@ -68,6 +68,20 @@ export function generateImpersonationToken(
   })
 }
 
+const revokedImpersonationSessions = new Set<string>()
+
+export function revokeImpersonationSession(sessionId: string): void {
+  revokedImpersonationSessions.add(sessionId)
+}
+
+export function isImpersonationSessionRevoked(sessionId: string): boolean {
+  return revokedImpersonationSessions.has(sessionId)
+}
+
+export function clearRevokedImpersonationSessionsForTests(): void {
+  revokedImpersonationSessions.clear()
+}
+
 /**
  * Verify and decode an impersonation token.
  */
@@ -81,6 +95,10 @@ export function verifyImpersonationToken(
     ) as ImpersonationContext
 
     if (new Date() > new Date(decoded.expiresAt)) {
+      return null
+    }
+
+    if (isImpersonationSessionRevoked(decoded.sessionId)) {
       return null
     }
 

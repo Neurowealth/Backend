@@ -14,16 +14,26 @@ export async function eraseScalarUserRefs(
   const where = { userId }
   const counts: Record<string, number> = {}
 
-  counts.IdempotencyRecord = (await tx.idempotencyRecord.deleteMany({ where })).count
-  counts.CustodialWallet = (await tx.custodialWallet.deleteMany({ where })).count
+  counts.IdempotencyRecord = (
+    await tx.idempotencyRecord.deleteMany({ where })
+  ).count
+  counts.CustodialWallet = (
+    await tx.custodialWallet.deleteMany({ where })
+  ).count
   counts.AlertAck = (await tx.alertAck.deleteMany({ where })).count
   counts.NotificationPreferenceAuditLog = (
     await tx.notificationPreferenceAuditLog.deleteMany({ where })
   ).count
-  counts.WebAuthnChallenge = (await tx.webAuthnChallenge.deleteMany({ where })).count
-  counts.MessageDelivery = (await tx.messageDelivery.deleteMany({ where })).count
+  counts.WebAuthnChallenge = (
+    await tx.webAuthnChallenge.deleteMany({ where })
+  ).count
+  counts.MessageDelivery = (
+    await tx.messageDelivery.deleteMany({ where })
+  ).count
   counts.UserEvent = (await tx.userEvent.deleteMany({ where })).count
-  counts.UserEventSequence = (await tx.userEventSequence.deleteMany({ where })).count
+  counts.UserEventSequence = (
+    await tx.userEventSequence.deleteMany({ where })
+  ).count
 
   counts.LoanLiquidationEvent = (
     await tx.loanLiquidationEvent.updateMany({ where, data: { userId: s } })
@@ -34,7 +44,9 @@ export async function eraseScalarUserRefs(
   counts.CoverageClaim = (
     await tx.coverageClaim.updateMany({ where, data: { userId: s } })
   ).count
-  counts.OutboxOp = (await tx.outboxOp.updateMany({ where, data: { userId: s } })).count
+  counts.OutboxOp = (
+    await tx.outboxOp.updateMany({ where, data: { userId: s } })
+  ).count
   counts.UserDataAudit =
     (
       await tx.userDataAudit.updateMany({

@@ -7,6 +7,7 @@
  */
 
 import { Prisma } from '@prisma/client'
+import { StrKey } from '@stellar/stellar-sdk'
 import { db } from '../db'
 import { config } from '../config/env'
 import { logger } from '../utils/logger'
@@ -207,54 +208,81 @@ export async function computeClaimsForEvent(eventId: string) {
     include: { transactions: true },
   })
 
-  const claims: ClaimResult[] = []
-  const fundBalance = await getFundBalance()
-  let remainingFund = fundBalance.amount
+  // Serialize all allocations against this fund. The balance itself is not
+  // debited until an on-chain payout confirms, so PENDING claims are the
+  // reserve that prevents separately approved events from overcommitting it.
+  const claims = await db.$transaction(async (tx) => {
+    const assetSymbol = config.protectionFund.defaultAssetSymbol
+    await tx.$queryRaw`
+      SELECT id
+      FROM protection_fund_balances
+      WHERE "assetSymbol" = ${assetSymbol}
+      FOR UPDATE
+    `
 
-  for (const position of positions) {
-    const holdDuration = lossStart.getTime() - position.openedAt.getTime()
-    if (holdDuration < terms.minHoldDurationMs) continue
+    const [fundBalance, pendingClaims] = await Promise.all([
+      tx.protectionFundBalance.findUnique({
+        where: { assetSymbol },
+        select: { amount: true },
+      }),
+      tx.coverageClaim.aggregate({
+        where: { status: 'PENDING' },
+        _sum: { payoutAmount: true },
+      }),
+    ])
+    let remainingFund = new Prisma.Decimal(fundBalance?.amount ?? 0)
+      .minus(pendingClaims._sum.payoutAmount ?? 0)
+      .toNumber()
+    remainingFund = Math.max(0, remainingFund)
+    const computedClaims: ClaimResult[] = []
 
-    const loss = computePositionLoss(position, lossStart, lossEnd)
-    if (loss <= 0) continue
+    for (const position of positions) {
+      const holdDuration = lossStart.getTime() - position.openedAt.getTime()
+      if (holdDuration < terms.minHoldDurationMs) continue
 
-    const netLoss = loss
-    const cappedLoss = Math.min(netLoss, terms.perUserCoverageCap)
-    const payoutAmount = Math.min(cappedLoss, remainingFund)
-    const coverageType =
-      payoutAmount >= cappedLoss
-        ? 'FULL'
-        : payoutAmount > 0
-          ? 'PRORATED'
-          : 'ZERO'
+      const loss = computePositionLoss(position, lossStart, lossEnd)
+      if (loss <= 0) continue
 
-    const claim = await db.coverageClaim.create({
-      data: {
-        eventId,
+      const netLoss = loss
+      const cappedLoss = Math.min(netLoss, terms.perUserCoverageCap)
+      const payoutAmount = Math.min(cappedLoss, remainingFund)
+      const coverageType =
+        payoutAmount >= cappedLoss
+          ? 'FULL'
+          : payoutAmount > 0
+            ? 'PRORATED'
+            : 'ZERO'
+
+      const claim = await tx.coverageClaim.create({
+        data: {
+          eventId,
+          userId: position.userId,
+          positionId: position.id,
+          actualLoss: new Prisma.Decimal(loss),
+          netLoss: new Prisma.Decimal(netLoss),
+          payoutAmount: new Prisma.Decimal(payoutAmount),
+          coverageType,
+          status: payoutAmount > 0 ? 'PENDING' : 'REJECTED',
+        },
+      })
+
+      computedClaims.push({
+        claimId: claim.id,
         userId: position.userId,
         positionId: position.id,
-        actualLoss: new Prisma.Decimal(loss),
-        netLoss: new Prisma.Decimal(netLoss),
-        payoutAmount: new Prisma.Decimal(payoutAmount),
+        actualLoss: loss,
+        netLoss,
+        payoutAmount,
         coverageType,
-        status: payoutAmount > 0 ? 'PENDING' : 'REJECTED',
-      },
-    })
+        status: claim.status as 'PENDING' | 'PAID' | 'REJECTED',
+      })
 
-    claims.push({
-      claimId: claim.id,
-      userId: position.userId,
-      positionId: position.id,
-      actualLoss: loss,
-      netLoss,
-      payoutAmount,
-      coverageType,
-      status: claim.status as 'PENDING' | 'PAID' | 'REJECTED',
-    })
+      remainingFund -= payoutAmount
+      if (remainingFund <= 0) break
+    }
 
-    remainingFund -= payoutAmount
-    if (remainingFund <= 0) break
-  }
+    return computedClaims
+  })
 
   logger.info(
     `[ProtectionFund] Computed ${claims.length} claims for event ${eventId}`
@@ -294,14 +322,24 @@ function computePositionLoss(
 export async function executePayout(claimId: string) {
   const claim = await db.coverageClaim.findUnique({
     where: { id: claimId },
-    include: { event: true, user: { select: { walletAddress: true } } },
+    include: { event: true },
   })
   if (!claim) throw new Error('Claim not found')
   if (claim.status !== 'PENDING')
     throw new Error(`Claim is not pending (status: ${claim.status})`)
   if (claim.payoutAmount.lte(0)) throw new Error('Claim has zero payout')
-  if (!claim.user.walletAddress)
+  const user = await db.user.findUnique({
+    where: { id: claim.userId },
+    select: { walletAddress: true },
+  })
+  if (!user?.walletAddress)
     throw new Error(`User ${claim.userId} has no wallet address`)
+  // The payout is sent to exactly this address (#825), so refuse to queue
+  // one that could never be delivered.
+  if (!StrKey.isValidEd25519PublicKey(user.walletAddress))
+    throw new Error(
+      `User ${claim.userId} wallet address is not a valid Stellar public key`
+    )
 
   const outboxOp = await enqueueOutboxOp(db, {
     userId: claim.userId,
@@ -311,7 +349,7 @@ export async function executePayout(claimId: string) {
     payload: {
       method: 'protection_fund_payout',
       userId: claim.userId,
-      userAddress: claim.user.walletAddress,
+      userAddress: user.walletAddress,
       amount: Number(claim.payoutAmount),
       assetSymbol: 'USDC',
       claimId,
@@ -358,7 +396,12 @@ export async function getMyCoverage(userId: string) {
   const exposure = []
 
   for (const pos of positions) {
-    const holdDuration = Date.now() - pos.openedAt.getTime()
+    const openedTime = pos.openedAt
+      ? pos.openedAt.getTime()
+      : (pos as any).createdAt
+        ? new Date((pos as any).createdAt).getTime()
+        : Date.now()
+    const holdDuration = Date.now() - openedTime
     const eligible = holdDuration >= terms.minHoldDurationMs
 
     exposure.push({

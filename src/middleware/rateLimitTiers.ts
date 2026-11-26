@@ -437,6 +437,14 @@ export const RATE_LIMIT_MATRIX: readonly RateLimitMatrixEntry[] = [
     tier: 'sensitive',
     note: 'Opening a ticket is a state change on a customer-visible record.',
   },
+  {
+    path: '/api/v1/accounting',
+    prefix: true,
+    tier: 'tiered',
+    note:
+      'Accounting export is a user-scoped read gated by transactions:read; ' +
+      'the reconciliation gate runs before any bytes are sent.',
+  },
 
   // ── Compute-bound endpoints (optimizer / simulate tiers) ────────────────
   {

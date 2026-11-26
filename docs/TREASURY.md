@@ -35,12 +35,17 @@ Writes a distinct `AdminAuditLog` row (`action:
 
 1. `POST /api/admin/treasury/signer-rotations` with `treasuryAccountId`,
    `oldSignerKey`, `newSignerKey` — enters `DUAL_ACTIVE` immediately; both
-   keys are valid signers from this point.
+   keys are valid signers from this point. Both keys are validated with
+   `StrKey.isValidEd25519PublicKey` before the row is written; a typo or
+   non-`G...` value is rejected with `400` (#671).
 2. Any `MultisigEnvelope` opened before this point keeps validating against
    the signer set active when it opened (`signerSetVersion`) — a rotation
    never invalidates an in-flight envelope.
 3. `POST /api/admin/treasury/signer-rotations/:id/finalize` — only valid
-   from `DUAL_ACTIVE`; transitions to `FINALIZED`. New envelopes opened
+   from `DUAL_ACTIVE`; transitions to `FINALIZED`. The persisted
+   `newSignerKey` is validated again before it is copied to
+   `TreasuryAccount.publicKey`, so a legacy/bad row can never become the
+   signer that `resolveSignerPublicKey` uses for sweeps. New envelopes opened
    after this point require the new key.
 
 ## Concurrency

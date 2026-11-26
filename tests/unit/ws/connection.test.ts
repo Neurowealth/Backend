@@ -23,7 +23,7 @@ process.env.WS_COALESCE_WINDOW_MS = '20'
 import type { WebSocket } from 'ws'
 import { StreamConnection } from '../../../src/ws/connection'
 import { deliverToLocalSubscribers, resetHub } from '../../../src/events/hub'
-import { getLatestSeq } from '../../../src/events/store'
+import { getLatestSeq, readAfterSeq } from '../../../src/events/store'
 import type { UserEventEnvelope } from '../../../src/events/types'
 import type { AuthenticatedHandshake } from '../../../src/ws/auth'
 
@@ -122,6 +122,7 @@ afterEach(() => {
   resetHub()
   jest.clearAllMocks()
   ;(getLatestSeq as jest.Mock).mockResolvedValue(0)
+  ;(readAfterSeq as jest.Mock).mockResolvedValue([])
 })
 
 describe('StreamConnection backpressure', () => {
@@ -256,5 +257,107 @@ describe('StreamConnection message handling', () => {
     deliverToLocalSubscribers(envelope(1))
     expect(socket.framesOfType('event')).toHaveLength(0)
     connection.close(1000, 'done')
+  })
+})
+
+describe('StreamConnection replay failure (#838)', () => {
+  it('emits a resumable gap when replay fails with a live event buffered', async () => {
+    const socket = new FakeSocket()
+    let rejectReplay: (error: Error) => void = () => {}
+    ;(getLatestSeq as jest.Mock).mockResolvedValue(20)
+    ;(readAfterSeq as jest.Mock).mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          rejectReplay = reject
+        })
+    )
+
+    const connection = new StreamConnection({
+      ws: socket as unknown as WebSocket,
+      auth,
+      onClosed: () => {},
+    })
+    opened.push(connection)
+    await connection.start()
+
+    socket.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'resume',
+          topics: ['portfolio'],
+          afterSeq: 5,
+        })
+      )
+    )
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(readAfterSeq).toHaveBeenCalled()
+
+    // Arrives while state === 'replaying': it must not be silently lost.
+    deliverToLocalSubscribers(envelope(6))
+    expect(socket.framesOfType('event')).toHaveLength(0)
+
+    rejectReplay(new Error('db blip'))
+    await new Promise((resolve) => setImmediate(resolve))
+
+    const gap = socket.framesOfType('gap')
+    expect(gap).toHaveLength(1)
+    expect(gap[0]).toMatchObject({
+      type: 'gap',
+      reason: 'replay_failed',
+      afterSeq: 5,
+      currentSeq: 20,
+      snapshotRequired: false,
+    })
+    expect(socket.framesOfType('event')).toHaveLength(0)
+
+    // The buffer was cleared on the failure branch: neither the buffered
+    // event nor later live events are delivered without a fresh resume.
+    deliverToLocalSubscribers(envelope(7))
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(socket.framesOfType('event')).toHaveLength(0)
+  })
+
+  it('gaps with the client cursor when the replay lookup itself fails', async () => {
+    const socket = new FakeSocket()
+    const connection = new StreamConnection({
+      ws: socket as unknown as WebSocket,
+      auth,
+      onClosed: () => {},
+    })
+    opened.push(connection)
+    await connection.start()
+
+    let rejectLookup: (error: Error) => void = () => {}
+    ;(getLatestSeq as jest.Mock).mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectLookup = reject
+        })
+    )
+
+    socket.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'resume',
+          topics: ['portfolio'],
+          afterSeq: 3,
+        })
+      )
+    )
+    await new Promise((resolve) => setImmediate(resolve))
+    deliverToLocalSubscribers(envelope(4))
+
+    rejectLookup(new Error('lookup failed'))
+    await new Promise((resolve) => setImmediate(resolve))
+
+    const gap = socket.framesOfType('gap')
+    expect(gap).toHaveLength(1)
+    expect(gap[0]).toMatchObject({
+      reason: 'replay_failed',
+      afterSeq: 3,
+    })
+    expect(socket.framesOfType('event')).toHaveLength(0)
   })
 })

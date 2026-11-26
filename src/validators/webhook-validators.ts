@@ -34,6 +34,7 @@ const WEBHOOK_EVENTS = [
   'fiat.order.settled',
   'fiat.order.failed',
   'fiat.order.rate_mismatch',
+  'fiat.limit.approaching',
   'recurring_deposit.executed',
   'recurring_deposit.failed',
   'alert_rule.triggered',

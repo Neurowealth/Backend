@@ -33,6 +33,7 @@ export interface SweepPlan {
   /** Public key of the specific destination account to sweep into. */
   toPublicKey: string
   asset: string
+  assetIssuer?: string
   amount: string
   reason: string
 }
@@ -101,6 +102,7 @@ async function planSweeps(
 export async function evaluateTreasuryBalances(): Promise<SweepPlan[]> {
   const plans = (await planSweeps(false)).map(
     ({ fromTier, toTier, fromPublicKey, toPublicKey, asset, amount, reason }) => ({
+    ({ fromTier, toTier, asset, assetIssuer, amount, reason }) => ({
       fromTier,
       toTier,
       fromPublicKey,
@@ -186,7 +188,7 @@ async function runSweep(plan: SweepPlan): Promise<void> {
       amount: plan.amount,
       status: 'PLANNED',
       reason: plan.reason,
-    },
+    } as any,
   })
 
   const op = await enqueueOutboxOp(db, {
@@ -224,7 +226,8 @@ export async function executeEmergencySweep(
   asset: string,
   amount: string,
   triggeredBy: string,
-  reason: string
+  reason: string,
+  assetIssuer?: string
 ): Promise<void> {
   // Resolve explicit accounts so the executor uses the caller's intended pair.
   const [fromAccount, toAccount] = await Promise.all([
@@ -251,7 +254,7 @@ export async function executeEmergencySweep(
       amount,
       status: 'PLANNED',
       reason: `emergency:${reason}`,
-    },
+    } as any,
   })
 
   const op = await enqueueOutboxOp(db, {
@@ -267,6 +270,7 @@ export async function executeEmergencySweep(
       fromPublicKey: fromAccount.publicKey,
       toPublicKey: toAccount.publicKey,
       asset,
+      assetIssuer,
       amount: Number(amount),
       sweepId: sweep.id,
     },

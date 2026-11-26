@@ -39,6 +39,8 @@
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+import { addCadence, type Cadence } from '../utils/cadence'
+
 export type VolatilityRegime = 'LOW' | 'NORMAL' | 'HIGH'
 export type ContributionPolicy = 'FIXED' | 'ADAPTIVE'
 export type CatchUpMode = 'SKIP' | 'ACCUMULATE' | 'RETRY'
@@ -161,6 +163,7 @@ export function computeVolatilityRegime(input: RegimeInput): VolatilityRegime {
     sorted[Math.floor(sorted.length * 0.75)] ??
     sorted[sorted.length - 1]!
 
+  if (latest === p25 && latest === p75) return 'NORMAL'
   if (latest <= p25) return 'HIGH' // Low value → buy more
   if (latest >= p75) return 'LOW' // High value → buy less
   return 'NORMAL'
@@ -418,30 +421,29 @@ export function computeContribution(
 export function computeNextRunAfterSkip(
   catchUpMode: CatchUpMode,
   currentNextRunAt: Date,
-  cadenceDays: number,
-  accumulatedRuns: number
+  cadence: Cadence,
+  accumulatedRuns: number,
+  anchorDay = currentNextRunAt.getUTCDate(),
+  now = currentNextRunAt
 ): { nextRunAt: Date; accumulatedRuns: number } {
   switch (catchUpMode) {
     case 'RETRY':
       // Don't advance nextRunAt — the same run will be retried next sweep.
       return { nextRunAt: currentNextRunAt, accumulatedRuns }
 
-    case 'SKIP':
-      // Advance nextRunAt, discard the missed run.
-      return {
-        nextRunAt: new Date(
-          currentNextRunAt.getTime() + cadenceDays * 24 * 60 * 60 * 1000
-        ),
-        accumulatedRuns: 0,
+    case 'SKIP': {
+      let nextRunAt = addCadence(cadence, currentNextRunAt, anchorDay)
+      while (nextRunAt <= now) {
+        nextRunAt = addCadence(cadence, nextRunAt, anchorDay)
       }
+      return { nextRunAt, accumulatedRuns: 0 }
+    }
 
     case 'ACCUMULATE': {
       // Advance nextRunAt, increment accumulated runs (capped).
       const newAccumulated = Math.min(accumulatedRuns + 1, MAX_ACCUMULATED_RUNS)
       return {
-        nextRunAt: new Date(
-          currentNextRunAt.getTime() + cadenceDays * 24 * 60 * 60 * 1000
-        ),
+        nextRunAt: addCadence(cadence, currentNextRunAt, anchorDay),
         accumulatedRuns: newAccumulated,
       }
     }

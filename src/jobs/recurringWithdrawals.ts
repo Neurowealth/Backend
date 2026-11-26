@@ -11,7 +11,7 @@ import { scheduleResilientJob } from './resilientScheduler'
 import { executeWithdraw } from '../controllers/transaction-controller'
 import { publishUserEvent } from '../events/publisher'
 import { EVENT_TYPE_TOPIC } from '../events/types'
-import { addCadence } from '../utils/cadence'
+import { addCadence, cadenceAnchorDay } from '../utils/cadence'
 import { assessWithdrawal } from '../services/withdrawal-controls.service'
 
 export { addCadence } from '../utils/cadence'
@@ -216,7 +216,11 @@ export async function checkGoalGuardrailConflict(
 }
 
 async function executePlan(plan: RecurringWithdrawalPlan): Promise<void> {
-  const nextRunAt = addCadence(plan.cadence, new Date())
+  const nextRunAt = addCadence(
+    plan.cadence,
+    plan.nextRunAt,
+    cadenceAnchorDay(plan)
+  )
 
   const user = await db.user.findUnique({
     where: { id: plan.userId },
@@ -571,6 +575,8 @@ export async function processRecurringWithdrawals(): Promise<void> {
 
       recordBackgroundJob(jobName, 'failed', durationMs / 1000)
       recordJobFailure(jobName, durationMs, error)
+      // Rethrow so resilientScheduler retries and records the run as failed (#772)
+      throw error
     }
   })
 }

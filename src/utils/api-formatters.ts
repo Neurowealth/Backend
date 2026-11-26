@@ -177,6 +177,13 @@ export const mapAllocationSuggestionToResponse = (suggestion: any) => ({
  * for this user? If not, it does not belong on their socket either.
  */
 const USER_EVENT_PAYLOAD_ALLOWLIST: Record<string, readonly string[]> = {
+  'security.account_recovery': [
+    'event',
+    'requestId',
+    'ownerWalletAddress',
+    'newWalletAddress',
+    'completesAt',
+  ],
   'transaction.confirmed': [
     'txHash',
     'type',
@@ -244,6 +251,17 @@ const USER_EVENT_PAYLOAD_ALLOWLIST: Record<string, readonly string[]> = {
     'settledCryptoAmount',
     'driftPct',
   ],
+  'fiat.limit.approaching': [
+    'orderId',
+    'direction',
+    'tier',
+    'window',
+    'utilizationPct',
+    'used',
+    'limit',
+    'remaining',
+    'currency',
+  ],
   'recurring_deposit.executed': [
     'planId',
     'amount',
@@ -273,6 +291,40 @@ const USER_EVENT_PAYLOAD_ALLOWLIST: Record<string, readonly string[]> = {
   // `error` is the user's own op failure text, already sent to their webhooks.
   'outbox.op_failed': ['opId', 'kind', 'attempts', 'error'],
   'portfolio.updated': ['protocolName', 'positionsAffected', 'reason'],
+  // The digest payload IS the channel-agnostic DigestModel already assembled by
+  // src/notifications/digest.ts (no userId, no secrets). Keep the allowlist on
+  // its top-level shape so a future extra field is still redacted by default.
+  'digest.generated': [
+    'frequency',
+    'period',
+    'valueChange',
+    'yield',
+    'rebalances',
+    'goals',
+    'risk',
+    'notableTransactions',
+    'capReached',
+    'maxEntries',
+    'caveats',
+    'hasPositions',
+  ],
+  'referral.tranche_forfeited': [
+    'conversionId',
+    'trancheId',
+    'leg',
+    'seq',
+    'amount',
+    'reason',
+    'forfeitedAt',
+  ],
+  'referral.clawback_recorded': [
+    'conversionId',
+    'clawbackId',
+    'originalAmount',
+    'remainingAmount',
+    'reason',
+    'createdAt',
+  ],
 }
 
 /**

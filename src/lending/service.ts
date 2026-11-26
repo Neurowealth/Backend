@@ -50,7 +50,9 @@ import {
   liquidationDistance,
   maxBorrowable,
   outstandingBalance,
+  outstandingBalanceExact,
   resolveInterestRateApy,
+  toMoney,
   worstCaseShortfall,
   currentLtv,
   isLiquidationTriggered,
@@ -60,6 +62,7 @@ import {
   listActiveLoansForUser,
 } from './collateralLock'
 import { accrueInterest } from './accrual'
+import { alertingService } from '../services/alerting'
 
 type Db = typeof db | Prisma.TransactionClient
 
@@ -438,37 +441,58 @@ export async function repayLoan(params: {
     throw new AppError(409, `This loan is already ${loan.status.toLowerCase()}`)
   }
 
-  const principal = Number(loan.principalAmount)
-  const interestAccrued = Number(loan.interestAccrued)
-  const rate = Number(loan.interestRateApy)
-
   // Pay the live balance, not the persisted one: a borrower who has held the
   // loan for a week must be able to clear it in one payment, and the accrual
-  // job may not have run since.
-  const outstandingBefore = outstandingBalance(
-    principal,
-    interestAccrued,
-    rate,
+  // job may not have run since. Exact Decimal so the settle decision below
+  // cannot be flipped by float residue (#662).
+  const outstandingExact = outstandingBalanceExact(
+    loan.principalAmount as Prisma.Decimal.Value,
+    loan.interestAccrued as Prisma.Decimal.Value,
+    loan.interestRateApy as Prisma.Decimal.Value,
     loan.interestAccruedTo,
     new Date()
   )
+  const outstandingBefore = outstandingExact.toNumber()
 
   const requested =
     params.amount === undefined || params.amount === null || params.amount <= 0
-      ? outstandingBefore
-      : Number(params.amount)
+      ? outstandingExact
+      : toMoney(params.amount)
 
-  if (!Number.isFinite(requested) || requested <= 0) {
+  if (requested.lte(0)) {
     throw new AppError(400, 'Repayment amount must be a positive number')
   }
-  if (requested > outstandingBefore) {
+  if (requested.gt(outstandingExact)) {
     throw new AppError(
       400,
-      `Amount exceeds the ${outstandingBefore.toFixed(2)} ${loan.borrowedAsset} outstanding on this loan`
+      `Amount exceeds the ${outstandingExact.toFixed(2)} ${loan.borrowedAsset} outstanding on this loan`
     )
   }
 
-  const amount = Math.min(requested, outstandingBefore)
+  // Reserve repayments already in flight: a CONFIRMED-but-unapplied or
+  // PENDING repayment will reduce the loan when it settles, so it must not
+  // be spendable twice. Without this, two "repay everything" requests can
+  // both pass the outstanding check and both send funds.
+  const inFlight = await db.transaction.aggregate({
+    where: {
+      loanId: loan.id,
+      type: 'LOAN_REPAYMENT',
+      status: { in: ['PENDING', 'CONFIRMED'] },
+      loanSettlementAppliedAt: null,
+    },
+    _sum: { amount: true },
+  })
+  const inFlightExact = toMoney(inFlight._sum.amount ?? 0)
+  const availableExact = outstandingExact.minus(inFlightExact)
+  if (requested.gt(availableExact)) {
+    throw new AppError(
+      409,
+      `A repayment of ${inFlightExact.toFixed(2)} ${loan.borrowedAsset} is already in flight for this loan`
+    )
+  }
+
+  const amountExact = requested
+  const amount = amountExact.toNumber()
 
   if (!params.skipApprovalGuard) {
     const guard = await guardOperation({
@@ -495,7 +519,7 @@ export async function repayLoan(params: {
     }
   }
 
-  const willSettleLoan = amount >= outstandingBefore - 1e-9
+  const willSettleLoan = amountExact.gte(outstandingExact)
 
   const created = await db.$transaction(async (tx) => {
     const transaction = await tx.transaction.create({
@@ -507,7 +531,7 @@ export async function repayLoan(params: {
         type: 'LOAN_REPAYMENT',
         status: 'PENDING',
         assetSymbol: loan.borrowedAsset,
-        amount,
+        amount: amountExact,
         network: loan.position.user.network as never,
         memo: `Collateral loan repayment (loan:${loan.id})`,
       },
@@ -628,7 +652,7 @@ export async function reconcileLoanSettlements(
     const outcome = await applyConfirmedRepayment({
       transactionId: row.id,
       loanId: row.loanId,
-      amount: Number(row.amount),
+      amount: row.amount,
       now,
     })
 
@@ -650,73 +674,100 @@ export async function reconcileLoanSettlements(
 export async function applyConfirmedRepayment(params: {
   transactionId: string
   loanId: string
-  amount: number
+  amount: Prisma.Decimal.Value
   now?: Date
 }): Promise<{ applied: boolean; settled: boolean }> {
   const now = params.now ?? new Date()
 
-  // Claim the settlement row first. If we lose the race we do nothing at all,
-  // which is the only way "applied twice" is prevented.
-  const claimed = await db.transaction.updateMany({
-    where: { id: params.transactionId, loanSettlementAppliedAt: null },
-    data: { loanSettlementAppliedAt: now },
-  })
-  if (claimed.count !== 1) return { applied: false, settled: false }
-
-  const loan = (await db.collateralLoan.findUnique({
-    where: { id: params.loanId },
-  })) as {
-    id: string
-    userId: string
-    status: string
-    principalAmount: unknown
-    interestAccrued: unknown
-    interestAccruedTo: Date
-    interestRateApy: unknown
-  } | null
-
-  if (!loan || loan.status !== 'ACTIVE') {
-    logger.warn('[Lending] Repayment for a loan that is no longer active', {
-      loanId: params.loanId,
-      transactionId: params.transactionId,
-      status: loan?.status,
+  // Claim, accrual and loan update run in ONE database transaction: a crash
+  // after the claim can no longer strand a confirmed repayment as "applied"
+  // while the loan balance never drops — the whole unit commits or rolls
+  // back together. The claim's conditional update still provides exactly-once.
+  return db.$transaction(async (tx) => {
+    const claimed = await tx.transaction.updateMany({
+      where: { id: params.transactionId, loanSettlementAppliedAt: null },
+      data: { loanSettlementAppliedAt: now },
     })
-    return { applied: true, settled: false }
-  }
+    if (claimed.count !== 1) return { applied: false, settled: false }
 
-  // Bring the loan level with the clock first, so the split below allocates
-  // against the interest actually owed at settlement time rather than the
-  // interest the last accrual tick happened to record.
-  const acc = await accrueInterest(loan.id, now)
-  const principal = Number(acc.principalAmount)
-  const interestAccrued = Number(acc.interestAccrued)
+    const loan = (await tx.collateralLoan.findUnique({
+      where: { id: params.loanId },
+    })) as {
+      id: string
+      userId: string
+      status: string
+      principalAmount: unknown
+      interestAccrued: unknown
+      interestAccruedTo: Date
+      interestRateApy: unknown
+    } | null
 
-  const split = applyRepayment({
-    principal,
-    interestAccrued,
-    amount: params.amount,
+    if (!loan || loan.status !== 'ACTIVE') {
+      // The money arrived but there is no active debt to apply it to. Keep
+      // the claim (retrying forever would be worse) but page a human: the
+      // repayment needs a manual refund or credit.
+      logger.warn('[Lending] Repayment for a loan that is no longer active', {
+        loanId: params.loanId,
+        transactionId: params.transactionId,
+        status: loan?.status,
+      })
+      await alertingService
+        .emit({
+          title: 'Loan repayment received for inactive loan',
+          description: `Confirmed repayment ${params.transactionId} (${params.amount}) for loan ${params.loanId} (status=${loan?.status ?? 'missing'}) cannot be applied automatically — manual refund or credit required.`,
+          severity: 'critical',
+          component: 'lending',
+          metadata: {
+            loanId: params.loanId,
+            transactionId: params.transactionId,
+          },
+        })
+        .catch((err: unknown) =>
+          logger.error('[Lending] Failed to emit inactive-loan alert', { err })
+        )
+      return { applied: true, settled: false }
+    }
+
+    // Bring the loan level with the clock first, so the split below allocates
+    // against the interest actually owed at settlement time rather than the
+    // interest the last accrual tick happened to record.
+    const acc = await accrueInterest(loan.id, now, tx)
+
+    const split = applyRepayment({
+      principal: acc.principalAmountExact,
+      interestAccrued: acc.interestAccruedExact,
+      amount: params.amount,
+    })
+
+    // Compare-and-swap on status: if a concurrent liquidation closed the
+    // loan, this matches zero rows and the transaction rolls back — the
+    // claim is released and the next sweep takes the inactive-loan path.
+    const updated = await tx.collateralLoan.updateMany({
+      where: { id: loan.id, status: 'ACTIVE' },
+      data: {
+        principalAmount: split.remainingPrincipal,
+        interestAccrued: split.remainingInterest,
+        ...(split.settled ? { status: 'REPAID' as const, closedAt: now } : {}),
+      },
+    })
+    if (updated.count !== 1) {
+      throw new Error(
+        `Loan ${loan.id} changed status during repayment settlement — retrying`
+      )
+    }
+
+    logger.info('[Lending] Repayment applied', {
+      loanId: loan.id,
+      transactionId: params.transactionId,
+      amount: toMoney(params.amount).toString(),
+      toInterest: split.toInterest.toString(),
+      toPrincipal: split.toPrincipal.toString(),
+      remainingPrincipal: split.remainingPrincipal.toString(),
+      settled: split.settled,
+    })
+
+    return { applied: true, settled: split.settled }
   })
-
-  await db.collateralLoan.update({
-    where: { id: loan.id },
-    data: {
-      principalAmount: split.remainingPrincipal,
-      interestAccrued: split.remainingInterest,
-      ...(split.settled ? { status: 'REPAID' as const, closedAt: now } : {}),
-    },
-  })
-
-  logger.info('[Lending] Repayment applied', {
-    loanId: loan.id,
-    transactionId: params.transactionId,
-    amount: params.amount,
-    toInterest: split.toInterest,
-    toPrincipal: split.toPrincipal,
-    remainingPrincipal: split.remainingPrincipal,
-    settled: split.settled,
-  })
-
-  return { applied: true, settled: split.settled }
 }
 
 // ─── Reads ────────────────────────────────────────────────────────────────────

@@ -29,12 +29,17 @@ import {
   getFiatQuote,
   getBestExecutionQuote,
   createFiatOrder,
+  getUserFiatLimits,
   hasProviderWebhookReplay,
   processProviderWebhook,
   recordProviderWebhookDelivery,
 } from '../fiat/service'
 import { getProvider } from '../fiat/registry'
-import { NoHealthyProvidersError, FiatOrderError } from '../fiat/types'
+import {
+  NoHealthyProvidersError,
+  FiatOrderError,
+  type FiatDirection,
+} from '../fiat/types'
 import db from '../db'
 
 const router = Router()
@@ -128,6 +133,31 @@ router.post(
     }
   }
 )
+
+// ── Caller's KYC tier & per-window limit/usage summary (#362) ───────────────
+router.get('/limits', requireAuth, async (req: Request, res: Response) => {
+  const userId = req.userId
+  if (!userId) return sendError(res, 401, 'Unauthorized')
+
+  const rawDir =
+    typeof req.query.direction === 'string'
+      ? req.query.direction.toUpperCase()
+      : 'ON_RAMP'
+  if (rawDir !== 'ON_RAMP' && rawDir !== 'OFF_RAMP') {
+    return sendError(res, 400, 'direction must be ON_RAMP or OFF_RAMP')
+  }
+
+  try {
+    const summary = await getUserFiatLimits(
+      userId,
+      { direction: rawDir as FiatDirection },
+      db
+    )
+    return res.json(summary)
+  } catch (err) {
+    return respondToFiatError(res, err, 'Failed to fetch fiat limits')
+  }
+})
 
 // ── Order history (caller-scoped) ─────────────────────────────────────────────
 router.get('/orders', requireAuth, async (req: Request, res: Response) => {

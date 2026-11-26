@@ -24,7 +24,11 @@ import {
 } from '../analytics/scenarios'
 import { applyScenario } from '../analytics/stress'
 import { toCsv, CsvValue } from '../utils/csv'
-import { toSimplePdf } from '../utils/pdf'
+import {
+  generateSimplePdf,
+  PdfConcurrencyError,
+  PdfLimitError,
+} from '../utils/pdf'
 
 const router = Router()
 
@@ -340,23 +344,50 @@ router.get(
     // PDF export (#538) — same data as the CSV export, rendered as a
     // paginated plain-text report rather than a formatted table.
     if (format.data.format === 'pdf') {
-      const pdf = toSimplePdf(
-        `Portfolio Yield Report — ${period.data.period}`,
-        [
-          `User: ${userId}`,
-          `Total yield: ${totalYield}`,
-          `Period yield: ${periodYield}`,
-          `Average APY: ${averageApy}`,
-          '',
-          'Date        Yield Amount    APY',
-          ...points.map((p) => `${p.date}  ${p.yieldAmount}  ${p.apy}`),
-        ]
-      )
+      let pdf: Buffer
+      try {
+        // #670 — caps + concurrency semaphore. Input/PII must never be
+        // buffered without bound on a pod that is also serving traffic.
+        pdf = await generateSimplePdf(
+          `Portfolio Yield Report — ${period.data.period}`,
+          [
+            `User: ${userId}`,
+            `Total yield: ${totalYield}`,
+            `Period yield: ${periodYield}`,
+            `Average APY: ${averageApy}`,
+            '',
+            'Date        Yield Amount    APY',
+            ...points.map((p) => `${p.date}  ${p.yieldAmount}  ${p.apy}`),
+          ]
+        )
+      } catch (error) {
+        if (error instanceof PdfConcurrencyError) {
+          res.setHeader('Retry-After', String(error.retryAfter))
+          return res.status(429).json({
+            error: error.message,
+            code: error.code,
+          })
+        }
+        if (error instanceof PdfLimitError) {
+          return res.status(422).json({
+            error: error.message,
+            code: error.code,
+            details: error.details,
+          })
+        }
+        throw error
+      }
+
       res.setHeader('Content-Type', 'application/pdf')
       res.setHeader(
         'Content-Disposition',
         `attachment; filename="user-yield-${period.data.period}.pdf"`
       )
+      // PII-bearing downloads must never be stored by a shared cache or
+      // browser history replay. Auth (requireAuth) already scopes the data.
+      res.setHeader('Cache-Control', 'private, no-store, max-age=0')
+      res.setHeader('Pragma', 'no-cache')
+      res.setHeader('Expires', '0')
       return res.status(200).send(pdf)
     }
 

@@ -1,4 +1,11 @@
 import { TransactionType } from '@prisma/client'
+import {
+  AccountingExportTransaction,
+  csvDocument,
+  descriptionFor,
+  feeAmount,
+  signedAmount,
+} from './common'
 
 /**
  * Transaction type to accounting category mapping for Xero.
@@ -18,6 +25,15 @@ const TRANSACTION_TYPE_TO_XERO_CATEGORY: Record<TransactionType, string> = {
   LOAN_LIQUIDATION: 'Transfer Out',
 }
 
+export const XERO_HEADERS = [
+  'Date',
+  'Amount',
+  'Payee',
+  'Description',
+  'Reference',
+  'Category',
+]
+
 export interface XeroTransaction {
   date: string
   amount: string
@@ -30,47 +46,26 @@ export interface XeroTransaction {
 /**
  * Convert transactions to Xero-compatible bank statement CSV format.
  * Xero expects specific column headers for bank statement imports.
+ *
+ * Xero's Amount column is the net movement: the signed transaction amount
+ * minus the fee, so the bank statement import reconciles to the ledger.
  */
-export function toXeroCsv(
-  transactions: Array<{
-    type: TransactionType
-    amount: string
-    assetSymbol: string
-    fee?: string | null
-    createdAt: Date
-    protocolName?: string | null
-  }>
-): string {
+export function toXeroCsv(transactions: AccountingExportTransaction[]): string {
   const xeroTransactions: XeroTransaction[] = transactions.map((tx) => {
     const category =
       TRANSACTION_TYPE_TO_XERO_CATEGORY[tx.type] || 'Uncategorized'
-    const amount = Number(tx.amount)
-    const fee = tx.fee ? Number(tx.fee) : 0
-    const netAmount = amount - fee
-
-    let description = `${tx.type}`
-    if (tx.protocolName) {
-      description += ` - ${tx.protocolName}`
-    }
+    const netAmount = signedAmount(tx.type, tx.amount).minus(feeAmount(tx.fee))
 
     return {
-      date: tx.createdAt.toISOString().split('T')[0],
+      date: tx.createdAt.toISOString().split('T')[0]!,
       amount: netAmount.toFixed(2),
       payee: 'NeuroWealth',
-      description,
+      description: descriptionFor(tx),
       reference: tx.assetSymbol,
       category,
     }
   })
 
-  const headers = [
-    'Date',
-    'Amount',
-    'Payee',
-    'Description',
-    'Reference',
-    'Category',
-  ]
   const rows = xeroTransactions.map((tx) => [
     tx.date,
     tx.amount,
@@ -80,5 +75,5 @@ export function toXeroCsv(
     tx.category,
   ])
 
-  return [headers.join(','), ...rows.map((row) => row.join(','))].join('\n')
+  return csvDocument(XERO_HEADERS, rows)
 }

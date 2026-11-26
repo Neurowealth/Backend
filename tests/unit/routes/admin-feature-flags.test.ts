@@ -26,7 +26,9 @@ jest.mock('../../../src/middleware/adminAuth', () => {
     ...actual,
     requireAdminAuth: (req: any, res: any, next: any) => {
       const scopesHeader = req.headers['x-mock-scopes']
-      const scopes = scopesHeader ? (scopesHeader as string).split(',').map((s: string) => s.trim()) : ['super']
+      const scopes = scopesHeader
+        ? (scopesHeader as string).split(',').map((s: string) => s.trim())
+        : ['super']
       res.locals.adminAuth = {
         id: 'admin-key-1',
         name: 'Test SRE Operator',
@@ -66,7 +68,9 @@ describe('Admin Feature Flag Endpoints (#494)', () => {
       expect(Array.isArray(res.body.data.flags)).toBe(true)
       expect(res.body.data.flags.length).toBeGreaterThan(0)
 
-      const dcaFlag = res.body.data.flags.find((f: any) => f.key === 'smart_dca_engine')
+      const dcaFlag = res.body.data.flags.find(
+        (f: any) => f.key === 'smart_dca_engine'
+      )
       expect(dcaFlag).toBeDefined()
       expect(dcaFlag.currentEvaluation).toBeDefined()
     })
@@ -77,14 +81,18 @@ describe('Admin Feature Flag Endpoints (#494)', () => {
         .query({ entityId: 'user_target_abc' })
 
       expect(res.status).toBe(200)
-      const dcaFlag = res.body.data.flags.find((f: any) => f.key === 'smart_dca_engine')
+      const dcaFlag = res.body.data.flags.find(
+        (f: any) => f.key === 'smart_dca_engine'
+      )
       expect(dcaFlag.currentEvaluation.entityId).toBe('user_target_abc')
     })
   })
 
   describe('GET /api/v1/admin/feature-flags/:key', () => {
     it('returns flag details when flag exists', async () => {
-      const res = await request(app).get('/api/v1/admin/feature-flags/smart_dca_engine')
+      const res = await request(app).get(
+        '/api/v1/admin/feature-flags/smart_dca_engine'
+      )
 
       expect(res.status).toBe(200)
       expect(res.body.success).toBe(true)
@@ -93,7 +101,9 @@ describe('Admin Feature Flag Endpoints (#494)', () => {
     })
 
     it('returns 404 when flag does not exist', async () => {
-      const res = await request(app).get('/api/v1/admin/feature-flags/non_existent_key')
+      const res = await request(app).get(
+        '/api/v1/admin/feature-flags/non_existent_key'
+      )
 
       expect(res.status).toBe(404)
       expect(res.body.success).toBe(false)
@@ -123,7 +133,9 @@ describe('Admin Feature Flag Endpoints (#494)', () => {
 
       expect(res.status).toBe(400)
       expect(res.body.success).toBe(false)
-      expect(res.body.error).toContain('rolloutPercentage must be a number between 0 and 100')
+      expect(res.body.error).toContain(
+        'rolloutPercentage must be a number between 0 and 100'
+      )
     })
 
     it('rejects non-array allowlist', async () => {
@@ -181,7 +193,9 @@ describe('Admin Feature Flag Endpoints (#494)', () => {
       expect(res.status).toBe(200)
       expect(res.body.success).toBe(true)
       expect(res.body.data.flagKey).toBe('enhanced_stellar_routing')
-      expect(res.body.data.reason).toBe('Slippage anomalies observed in multi-hop paths')
+      expect(res.body.data.reason).toBe(
+        'Slippage anomalies observed in multi-hop paths'
+      )
       expect(res.body.data.operator).toBe('Test SRE Operator (operator)')
 
       // Verify flag is now disabled
@@ -224,9 +238,13 @@ describe('Admin Feature Flag Endpoints (#494)', () => {
     it('resets flag back to default configuration', async () => {
       // Modify override
       featureFlagManager.setOverride('smart_dca_engine', { enabled: false })
-      expect(featureFlagManager.evaluate('smart_dca_engine').enabled).toBe(false)
+      expect(featureFlagManager.evaluate('smart_dca_engine').enabled).toBe(
+        false
+      )
 
-      const res = await request(app).post('/api/v1/admin/feature-flags/smart_dca_engine/reset')
+      const res = await request(app).post(
+        '/api/v1/admin/feature-flags/smart_dca_engine/reset'
+      )
 
       expect(res.status).toBe(200)
       expect(res.body.success).toBe(true)
@@ -245,8 +263,12 @@ describe('Admin Feature Flag Endpoints (#494)', () => {
       expect(res.body.success).toBe(true)
 
       // All other flags should now evaluate to false with GLOBAL_MAINTENANCE
-      expect(featureFlagManager.evaluate('smart_dca_engine').decision).toBe('GLOBAL_MAINTENANCE')
-      expect(featureFlagManager.evaluate('agent_autonomous_rebalance').decision).toBe('GLOBAL_MAINTENANCE')
+      expect(featureFlagManager.evaluate('smart_dca_engine').decision).toBe(
+        'GLOBAL_MAINTENANCE'
+      )
+      expect(
+        featureFlagManager.evaluate('agent_autonomous_rebalance').decision
+      ).toBe('GLOBAL_MAINTENANCE')
     })
 
     it('requires a reason', async () => {

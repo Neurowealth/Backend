@@ -101,6 +101,7 @@ function toRecord(row: {
 export async function enqueueOutboxOp(
   tx: DbClient,
   params: {
+    id?: string
     idempotencyKey: string
     userId: string
     kind: OutboxOpKind
@@ -121,6 +122,7 @@ export async function enqueueOutboxOp(
 
   const created = await tx.outboxOp.create({
     data: {
+      ...(params.id ? { id: params.id } : {}),
       idempotencyKey: params.idempotencyKey,
       userId: params.userId,
       kind: params.kind,
@@ -158,7 +160,11 @@ export async function claimOp(
       // Each claim counts as an attempt; this also drives retry exhaustion
       // and the fee-bump multiplier on resubmission.
       attempts: { increment: 1 },
-      submittedAt: new Date(),
+      // submittedAt is NOT stamped here: the op may sit in-process waiting
+      // on the per-signer lock long before a transaction is actually sent.
+      // It is stamped by recordSubmittedTxHash once a txHash exists, so the
+      // stuck-SUBMITTED reconciler only measures real submission latency and
+      // never re-queues an op whose first execution is still in flight.
       // Record which signer account this attempt is using.
       signerPublicKey,
     },
@@ -177,14 +183,21 @@ export async function claimOp(
 /**
  * The network confirmed the op: SUBMITTED -> CONFIRMED. Stores the final
  * txHash and timestamp and clears any error left over from earlier retries.
+ *
+ * Returns whether THIS call made the transition. Callers mirror the outcome
+ * onto linked rows only when it returns true, so a confirmation that another
+ * path already applied (the events oracle, the stuck-op sweep, a replay) has
+ * no second side effect (#824).
  */
 export async function markConfirmed(
   opId: string,
   txHash: string
-): Promise<void> {
+): Promise<boolean> {
   assertTransition('SUBMITTED', 'CONFIRMED')
-  await db.outboxOp.update({
-    where: { id: opId },
+  // Guarded on SUBMITTED: if the op already moved on (e.g. a stale in-flight
+  // execution finishing after a reconciler re-queued it), don't overwrite.
+  const result = await db.outboxOp.updateMany({
+    where: { id: opId, status: 'SUBMITTED' as PrismaOutboxOpStatus },
     data: {
       status: 'CONFIRMED' as PrismaOutboxOpStatus,
       txHash,
@@ -192,6 +205,12 @@ export async function markConfirmed(
       error: null,
     },
   })
+  if (result.count === 0) {
+    logger.warn('[Outbox] markConfirmed skipped — op no longer SUBMITTED', {
+      opId,
+    })
+  }
+  return result.count === 1
 }
 
 /**
@@ -206,7 +225,7 @@ export async function recordSubmittedTxHash(
 ): Promise<void> {
   await db.outboxOp.updateMany({
     where: { id: opId, status: 'SUBMITTED' as PrismaOutboxOpStatus },
-    data: { txHash },
+    data: { txHash, submittedAt: new Date() },
   })
 }
 
@@ -235,24 +254,35 @@ export async function clearStaleSubmittedTxHash(
  */
 export async function markFailedOrRetry(
   op: Pick<OutboxOpRecord, 'id' | 'attempts'>,
-  errorMessage: string
-): Promise<{ terminal: boolean }> {
+  errorMessage: string,
+  opts: { forceTerminal?: boolean } = {}
+): Promise<{ terminal: boolean; applied: boolean }> {
   // `attempts` was already incremented by claimOp, so it equals the number
   // of tries made so far, including the one that just failed.
-  const terminal = op.attempts >= config.outbox.maxAttempts
+  const terminal =
+    opts.forceTerminal === true || op.attempts >= config.outbox.maxAttempts
+
+  // Guarded on status AND attempts: if a stale in-flight execution reaches
+  // this point after the op was re-claimed (attempts bumped) or already
+  // resolved, the update is a no-op instead of clobbering the new state.
+  const where = {
+    id: op.id,
+    status: 'SUBMITTED' as PrismaOutboxOpStatus,
+    attempts: op.attempts,
+  }
 
   if (terminal) {
     // Out of retries: give up permanently.
     assertTransition('SUBMITTED', 'FAILED')
-    await db.outboxOp.update({
-      where: { id: op.id },
+    const result = await db.outboxOp.updateMany({
+      where,
       data: {
         status: 'FAILED' as PrismaOutboxOpStatus,
         // Truncate so a huge error string can't bloat the row.
         error: errorMessage.slice(0, 2000),
       },
     })
-    return { terminal: true }
+    return { terminal: result.count === 1, applied: result.count === 1 }
   }
 
   // Retries remain: put the op back in the queue, delayed by the backoff.
@@ -262,8 +292,8 @@ export async function markFailedOrRetry(
     config.outbox.backoffBaseMs,
     config.outbox.backoffMaxMs
   )
-  await db.outboxOp.update({
-    where: { id: op.id },
+  const result = await db.outboxOp.updateMany({
+    where,
     data: {
       status: 'PENDING' as PrismaOutboxOpStatus,
       error: errorMessage.slice(0, 2000),
@@ -271,7 +301,7 @@ export async function markFailedOrRetry(
       nextAttemptAt: new Date(Date.now() + backoffMs),
     },
   })
-  return { terminal: false }
+  return { terminal: false, applied: result.count === 1 }
 }
 
 /**
@@ -289,14 +319,22 @@ export async function markFailedTerminal(
   errorMessage: string
 ): Promise<void> {
   assertTransition('SUBMITTED', 'FAILED')
-  await db.outboxOp.update({
-    where: { id: opId },
+  const result = await db.outboxOp.updateMany({
+    where: { id: opId, status: 'SUBMITTED' as PrismaOutboxOpStatus },
     data: {
       status: 'FAILED' as PrismaOutboxOpStatus,
       txHash, // kept for audit even though the op failed
       error: errorMessage.slice(0, 2000),
     },
   })
+  if (result.count === 0) {
+    logger.warn(
+      '[Outbox] markFailedTerminal skipped — op no longer SUBMITTED',
+      {
+        opId,
+      }
+    )
+  }
 }
 
 /** Admin-only: force a FAILED op back to PENDING, clearing backoff. */
@@ -426,12 +464,39 @@ export async function findClaimableOps(
   limit: number
 ): Promise<OutboxOpRecord[]> {
   const now = new Date()
+  // Exclude ops owned by deactivated users in the query itself (#743), so a
+  // backlog of frozen-user PENDING ops can't consume `take: limit` and starve
+  // live ops behind them. userId values that don't resolve to a User row
+  // (SYSTEM, custodial wallet ids) are unaffected.
+  const halted = await db.user.findMany({
+    where: { isActive: false },
+    select: { id: true },
+  })
+  const haltedIds = halted.map((u) => u.id)
   const rows = await db.outboxOp.findMany({
     where: {
       status: 'PENDING' as PrismaOutboxOpStatus,
-      // Eligible if there's no backoff set, or the backoff has elapsed.
-      OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
+      AND: [
+        // Eligible if there's no backoff set, or the backoff has elapsed.
+        { OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
+        // SYSTEM ops are exempt from the freeze guard (#743), matching
+        // isUserHalted's SYSTEM_USER_IDS bypass.
+        ...(haltedIds.length > 0
+          ? [
+              {
+                OR: [
+                  { actor: 'SYSTEM' as const },
+                  { userId: { notIn: haltedIds } },
+                ],
+              },
+            ]
+          : []),
+      ],
     },
+    // Priority-then-FIFO in SQL (Postgres enums order by declaration:
+    // CRITICAL < NORMAL < LOW), so the `take` window itself is ordered —
+    // not just the batch returned to the JS sorter.
+    orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
     take: limit,
   })
   return rows.map(toRecord)
@@ -487,19 +552,32 @@ export async function findStuckSubmittedOps(
  */
 export async function mirrorLinkedTransaction(
   payload: OutboxPayload,
-  outcome: { txHash?: string; status: 'CONFIRMED' | 'FAILED' }
+  outcome: { txHash?: string; status: 'CONFIRMED' | 'FAILED' | 'CANCELLED' }
 ): Promise<void> {
   // Protection fund payouts have no Transaction row but need balance/claim
   // updates on confirmed delivery (#651).
   if (payload.method === 'protection_fund_payout') {
     if (outcome.status === 'CONFIRMED') {
-      await db.protectionFundBalance.updateMany({
-        where: { assetSymbol: payload.assetSymbol },
-        data: { amount: { decrement: payload.amount } },
-      })
-      await db.coverageClaim.updateMany({
-        where: { id: payload.claimId },
-        data: { status: 'PAID' },
+      // Exactly once per claim (#824): the claim's move to PAID is the
+      // receipt. Only the call that makes that move debits the fund, and both
+      // happen in one transaction, so a replayed or concurrent confirmation
+      // finds the claim already PAID and changes nothing.
+      await db.$transaction(async (tx) => {
+        const claim = await tx.coverageClaim.updateMany({
+          where: { id: payload.claimId, status: { not: 'PAID' } },
+          data: { status: 'PAID' },
+        })
+        if (claim.count !== 1) {
+          logger.warn(
+            '[Outbox] Protection fund payout already settled — not debiting again',
+            { claimId: payload.claimId }
+          )
+          return
+        }
+        await tx.protectionFundBalance.updateMany({
+          where: { assetSymbol: payload.assetSymbol },
+          data: { amount: { decrement: payload.amount } },
+        })
       })
     }
     return
@@ -520,8 +598,13 @@ export async function mirrorLinkedTransaction(
   // Some payload kinds have no linked Transaction row; nothing to mirror.
   if (!('transactionId' in payload)) return
   // updateMany (not update) so a missing row is a silent no-op, not a throw.
+  // A FAILED or CANCELLED outcome never overwrites a row that is already
+  // CONFIRMED: a replayed or late failure must not undo a settled one (#822).
   await db.transaction.updateMany({
-    where: { id: payload.transactionId },
+    where:
+      outcome.status === 'CONFIRMED'
+        ? { id: payload.transactionId }
+        : { id: payload.transactionId, status: { not: 'CONFIRMED' } },
     data: {
       txHash: outcome.txHash, // undefined -> Prisma leaves the column untouched
       status: outcome.status,

@@ -14,8 +14,9 @@ module.exports = {
   roots: ['<rootDir>/tests'],
   testMatch: ['**/*.test.ts'],
   // Integration tests that require a live Postgres instance are excluded from
-  // the default `npm test` run (they fail in CI without a provisioned DB).
-  // Run them manually with: npx jest --testPathPattern='integration/(deposit-withdraw|tax-report|outbox)' --setupFilesAfterSetup=...
+  // the default `npm test` run so a local run does not need a database. CI has
+  // Postgres and migrations already, and runs this set via `npm run test:db`
+  // (jest.db.config.js). There is no `--setupFilesAfterSetup` Jest flag.
   testPathIgnorePatterns: [
     '/node_modules/',
     'deposit-withdraw\\.integration\\.test\\.ts$',
@@ -25,6 +26,10 @@ module.exports = {
     // a real DB. See the header comment in
     // tests/integration/outbox/dispatcher.integration.test.ts for how to run it.
     'outbox/dispatcher\\.integration\\.test\\.ts$',
+    // #790: proves the partial unique index makes "one ACTIVE goal per user"
+    // durable under concurrency. Needs a live DB; CI runs it explicitly via
+    // `npm run test:integration:goals`.
+    'integration/goals/singleActiveGoal\\.integration\\.test\\.ts$',
   ],
   // Must run before any test module so src/config/env.ts sees the test config
   // at import time. See tests/setup-env.ts.

@@ -1,0 +1,113 @@
+name: DR backup and restore validation
+
+# Scheduled disaster recovery rehearsal and backup/restore validation (#681).
+# Runs nightly in CI against a disposable PostgreSQL scratch service, validates
+# snapshot dump and restore, asserts zero migration drift via prisma migrate status,
+# performs row-count and encryption integrity spot-checks, records duration,
+# publishes report artifacts, and alerts on-call upon failure per docs/INCIDENT_RESPONSE.md.
+
+on:
+  schedule:
+    # Run nightly at 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    # Allows manual dry-run and on-demand rehearsal execution
+
+jobs:
+  validate-backup-restore:
+    name: Validate backup restore and track DR rehearsal
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: dr_user
+          POSTGRES_PASSWORD: dr_password
+          POSTGRES_DB: dr_scratch_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dr_user"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CI: '1'
+      NODE_ENV: test
+      DATABASE_URL: postgresql://dr_user:dr_password@localhost:5432/dr_scratch_db
+      PGPASSWORD: dr_password
+      WALLET_ENCRYPTION_KEY: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
+      PAGERDUTY_ROUTING_KEY: ${{ secrets.PAGERDUTY_ROUTING_KEY }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      PROMETHEUS_PUSHGATEWAY_URL: ${{ vars.PROMETHEUS_PUSHGATEWAY_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Deploy baseline database schema
+        run: npx prisma migrate deploy
+
+      - name: Create database snapshot backup
+        run: |
+          mkdir -p /tmp/dr-backups
+          pg_dump -U dr_user -h localhost -d dr_scratch_db -F p -f /tmp/dr-backups/dr_scratch_backup.sql
+          echo "Snapshot backup successfully created: $(wc -c < /tmp/dr-backups/dr_scratch_backup.sql) bytes"
+
+      - name: Recreate scratch database from snapshot
+        run: |
+          psql -U dr_user -h localhost -d postgres -c "DROP DATABASE dr_scratch_db;"
+          psql -U dr_user -h localhost -d postgres -c "CREATE DATABASE dr_scratch_db;"
+          psql -U dr_user -h localhost -d dr_scratch_db -f /tmp/dr-backups/dr_scratch_backup.sql
+          echo "Snapshot backup restored into fresh scratch database."
+
+      - name: Verify migration consistency
+        run: npx prisma migrate status
+
+      - name: Run DR backup and restore validation harness
+        run: npx ts-node scripts/validate-backup-restore.ts
+
+      - name: Upload rehearsal report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dr-rehearsal-report
+          path: reports/dr-rehearsal-report.json
+          retention-days: 30
+
+      - name: Page on-call if rehearsal validation failed
+        if: failure()
+        run: |
+          echo "::error::DR backup restore rehearsal validation failed! Paging on-call per docs/INCIDENT_RESPONSE.md."
+          if [ -n "$PAGERDUTY_ROUTING_KEY" ]; then
+            curl -s -X POST "https://events.pagerduty.com/v2/enqueue" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "routing_key": "'"$PAGERDUTY_ROUTING_KEY"'",
+                "event_action": "trigger",
+                "dedup_key": "dr-backup-restore-ci-failure",
+                "payload": {
+                  "summary": "Scheduled DR backup/restore validation failed in CI",
+                  "source": "github-actions:dr-backup-restore-validation",
+                  "severity": "critical",
+                  "component": "disaster-recovery",
+                  "custom_details": {
+                    "workflow": "${{ github.workflow }}",
+                    "run_id": "${{ github.run_id }}",
+                    "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                  }
+                }
+              }' || true
+          fi

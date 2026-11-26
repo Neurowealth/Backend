@@ -84,7 +84,8 @@ export class FcmPushProvider implements PushProvider {
       }
       if (!response.ok || !result.message_id) {
         throw new Error(
-          result.error || `FCM returned HTTP ${response.status} without a message ID`
+          result.error ||
+            `FCM returned HTTP ${response.status} without a message ID`
         )
       }
 
@@ -131,15 +132,20 @@ export class ApnsPushProvider implements PushProvider {
         process.env.APNS_USE_SANDBOX === 'true'
           ? 'api.sandbox.push.apple.com'
           : 'api.push.apple.com'
-      const result = await sendApnsRequest(host, message.deviceToken, {
-        authorization: `bearer ${token}`,
-        'apns-topic': bundleId,
-        'apns-push-type': 'alert',
-        'content-type': 'application/json',
-      }, {
-        aps: { alert: { title: message.title, body: message.body } },
-        ...(message.data ?? {}),
-      })
+      const result = await sendApnsRequest(
+        host,
+        message.deviceToken,
+        {
+          authorization: `bearer ${token}`,
+          'apns-topic': bundleId,
+          'apns-push-type': 'alert',
+          'content-type': 'application/json',
+        },
+        {
+          aps: { alert: { title: message.title, body: message.body } },
+          ...(message.data ?? {}),
+        }
+      )
       if (result.status < 200 || result.status >= 300 || !result.apnsId) {
         throw new Error(
           result.reason || `APNs returned HTTP ${result.status} without an ID`

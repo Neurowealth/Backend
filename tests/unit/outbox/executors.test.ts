@@ -9,6 +9,10 @@ import {
   executeOutboxPayload,
 } from '../../../src/outbox/executors'
 import { OutboxPayload } from '../../../src/outbox/types'
+import { InvalidOutboxPayloadError } from '../../../src/outbox/errors'
+import { Keypair } from '@stellar/stellar-sdk'
+
+const CLAIM_RECIPIENT = Keypair.random().publicKey()
 
 jest.mock('../../../src/db', () => ({
   __esModule: true,
@@ -43,6 +47,13 @@ jest.mock('../../../src/stellar/sponsorship', () => ({
   getSponsorKeypairs: () => [{ publicKey: () => 'GSPONSOR_ACCOUNT' }],
 }))
 
+jest.mock('../../../src/lending/liquidation', () => ({
+  applyLoanLiquidationSale: jest.fn().mockResolvedValue({
+    hash: 'platform:liquidation:loan-1:1',
+    status: 'success',
+  }),
+}))
+
 jest.mock('../../../src/stellar/contract', () => ({
   depositForUser: jest
     .fn()
@@ -66,6 +77,7 @@ import {
   triggerRebalance,
   payReferralReward,
 } from '../../../src/stellar/contract'
+import { applyLoanLiquidationSale } from '../../../src/lending/liquidation'
 
 const onSubmitted = jest.fn().mockResolvedValue(undefined)
 
@@ -270,15 +282,17 @@ describe('executeOutboxPayload — table-driven dispatch (#693)', () => {
       payload: {
         method: 'protection_fund_payout',
         userId: 'u1',
+        userAddress: CLAIM_RECIPIENT,
         amount: 500,
         assetSymbol: 'USDC',
         claimId: 'claim-1',
         eventId: 'event-1',
       } as any,
       expectedCall: () => {
+        // The claim's own address (#825), not the user's custodial wallet.
         expect(withdrawForUser).toHaveBeenCalledWith(
           'u1',
-          'GCUSTODIAL_WALLET',
+          CLAIM_RECIPIENT,
           500,
           'USDC',
           1,
@@ -296,29 +310,53 @@ describe('executeOutboxPayload — table-driven dispatch (#693)', () => {
     })
   }
 
-  it('executes loan_liquidation as an internal protective netting entry', async () => {
-    const result = await executeOutboxPayload(
-      {
-        method: 'loan_liquidation',
-        userId: 'u1',
-        loanId: 'loan-1',
-        positionId: 'pos-1',
-        collateralAmount: 10,
-        collateralAssetSymbol: 'XLM',
-        debtOutstanding: 50,
-        borrowedAsset: 'USDC',
-        trigger: 'scheduled',
-        transactionId: 'tx-liq',
-        sequence: 1,
-      },
-      1,
-      onSubmitted
-    )
+  it('executes loan_liquidation via applyLoanLiquidationSale', async () => {
+    const payload = {
+      method: 'loan_liquidation',
+      userId: 'u1',
+      loanId: 'loan-1',
+      positionId: 'pos-1',
+      collateralAmount: 10,
+      collateralAssetSymbol: 'XLM',
+      debtOutstanding: 50,
+      borrowedAsset: 'USDC',
+      trigger: 'scheduled',
+      transactionId: 'tx-liq',
+      outboxOpId: 'outbox-op-1',
+      sequence: 1,
+    } as const
+    const result = await executeOutboxPayload(payload as any, 1, onSubmitted)
 
+    expect(applyLoanLiquidationSale).toHaveBeenCalledWith(payload)
     expect(result.status).toBe('success')
-    expect(result.hash).toContain('liquidation-loan-1-1')
+    expect(result.hash).toBe('platform:liquidation:loan-1:1')
     expect(onSubmitted).toHaveBeenCalledWith(result.hash)
   })
+
+  it.each([
+    ['missing', undefined],
+    ['empty', ''],
+    ['malformed', 'GNOTAKEY'],
+  ])(
+    'refuses a protection_fund_payout with a %s recipient address (#825)',
+    async (_label, userAddress) => {
+      ;(withdrawForUser as jest.Mock).mockClear()
+      const payload = {
+        method: 'protection_fund_payout',
+        userId: 'u1',
+        userAddress,
+        amount: 500,
+        assetSymbol: 'USDC',
+        claimId: 'claim-1',
+        eventId: 'event-1',
+      } as any
+
+      await expect(
+        executeOutboxPayload(payload, 1, onSubmitted)
+      ).rejects.toBeInstanceOf(InvalidOutboxPayloadError)
+      expect(withdrawForUser).not.toHaveBeenCalled()
+    }
+  )
 
   it('throws explicitly for unhandled outbox payload method', async () => {
     await expect(

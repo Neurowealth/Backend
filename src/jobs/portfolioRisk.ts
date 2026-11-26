@@ -113,6 +113,8 @@ async function runPortfolioRiskPrecompute(): Promise<void> {
     const durationMs = Date.now() - start
     recordBackgroundJob(JOB_NAME, 'failed', durationMs / 1000)
     recordJobFailure(JOB_NAME, durationMs, err)
+    // Rethrow so resilientScheduler retries and records the run as failed (#772)
+    throw err
   }
 }
 

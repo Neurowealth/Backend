@@ -148,7 +148,7 @@ router.post(
       })
       return res.status(201).json({
         contributionId: contribution.id,
-        amount: Number(contribution.amount),
+        amount: contribution.amount.toString(),
         assetSymbol: contribution.assetSymbol,
       })
     } catch (err) {

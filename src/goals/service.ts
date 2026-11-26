@@ -30,6 +30,32 @@ export class GoalConflictError extends Error {}
 export class GoalNotFoundError extends Error {}
 export class GoalValidationError extends Error {}
 
+export const ACTIVE_GOAL_UNIQUE_INDEX = 'savings_goals_userId_active_key'
+
+/** Prisma raises P2002 when a unique constraint is violated. Only the partial
+ * index on ACTIVE goals means a goal conflict; when Prisma supplies a target,
+ * use it so an unrelated unique violation is not misreported as a conflict.
+ * Test doubles may omit `meta`, which is treated as the goal index. */
+function isActiveGoalUniqueViolation(error: unknown): boolean {
+  if (
+    typeof error !== 'object' ||
+    error === null ||
+    (error as { code?: unknown }).code !== 'P2002'
+  ) {
+    return false
+  }
+
+  const target = (error as { meta?: { target?: unknown } }).meta?.target
+  if (target === undefined || target === null) return true
+
+  const targets = Array.isArray(target) ? target : [target]
+  return targets.some(
+    (entry) =>
+      typeof entry === 'string' &&
+      (entry === ACTIVE_GOAL_UNIQUE_INDEX || entry.includes('userId'))
+  )
+}
+
 export interface CreateGoalInput {
   targetAmount: number
   targetDate: Date
@@ -71,6 +97,15 @@ interface CurrentAmountSnapshot {
   unpricedExternalHoldingCount: number
 }
 
+function emptySnapshot(): CurrentAmountSnapshot {
+  return {
+    platformAmount: 0,
+    externalAmount: 0,
+    externalStaleWalletCount: 0,
+    unpricedExternalHoldingCount: 0,
+  }
+}
+
 async function resolveCurrentAmounts(
   userId: string,
   positionId: string | null | undefined,
@@ -83,12 +118,9 @@ async function resolveCurrentAmounts(
       where: { id: positionId },
     })
     if (!position || position.userId !== userId) {
-      return {
-        platformAmount: 0,
-        externalAmount: 0,
-        externalStaleWalletCount: 0,
-        unpricedExternalHoldingCount: 0,
-      }
+      // Never read another user's position. A goal may only be linked to a
+      // position the caller owns (#790); callers translate this to a 404.
+      throw new GoalNotFoundError('Position not found')
     }
     platformValue = Number(position.currentValue)
   } else {
@@ -185,6 +217,18 @@ export async function createGoal(
     )
   }
 
+  // A goal may only be linked to a position the caller owns (#790). Rejecting
+  // here, regardless of whether startingAmount was supplied, stops a foreign
+  // positionId being persisted and later leaking its status via progress reads.
+  if (input.positionId) {
+    const position = await (database as any).position.findUnique({
+      where: { id: input.positionId },
+    })
+    if (!position || position.userId !== userId) {
+      throw new GoalNotFoundError('Position not found')
+    }
+  }
+
   const startingAmount =
     input.startingAmount ??
     (await resolveCurrentAmounts(userId, input.positionId, database))
@@ -192,18 +236,31 @@ export async function createGoal(
 
   const status = input.targetAmount <= startingAmount ? 'ACHIEVED' : 'ACTIVE'
 
-  const goal = await (database as any).savingsGoal.create({
-    data: {
-      userId,
-      positionId: input.positionId ?? null,
-      targetAmount: input.targetAmount,
-      startingAmount,
-      targetDate: input.targetDate,
-      riskCeiling: input.riskCeiling ?? null,
-      includeExternalHoldings: input.includeExternalHoldings ?? false,
-      status,
-    },
-  })
+  let goal: any
+  try {
+    goal = await (database as any).savingsGoal.create({
+      data: {
+        userId,
+        positionId: input.positionId ?? null,
+        targetAmount: input.targetAmount,
+        startingAmount,
+        targetDate: input.targetDate,
+        riskCeiling: input.riskCeiling ?? null,
+        includeExternalHoldings: input.includeExternalHoldings ?? false,
+        status,
+      },
+    })
+  } catch (error) {
+    // The findFirst fast path above is racy: two concurrent creates can both
+    // pass it. The partial unique index on (userId) WHERE status='ACTIVE' is
+    // the durable guard, and Prisma surfaces its violation as P2002.
+    if (isActiveGoalUniqueViolation(error)) {
+      throw new GoalConflictError(
+        'An active savings goal already exists for this user'
+      )
+    }
+    throw error
+  }
 
   logger.info('Savings goal created', { userId, goalId: goal.id, status })
 
@@ -382,12 +439,21 @@ export async function computeGoalProgress(
   )
 
   if (goal.status !== 'ACTIVE') {
-    const amounts = await resolveCurrentAmounts(
-      goal.userId,
-      goal.positionId,
-      database,
-      goal.includeExternalHoldings
-    )
+    // A terminal goal may still reference a position the user no longer owns
+    // (legacy rows created before #790). Fall back to an empty snapshot rather
+    // than surfacing a 404 or another user's data for a goal the caller owns.
+    let amounts: CurrentAmountSnapshot
+    try {
+      amounts = await resolveCurrentAmounts(
+        goal.userId,
+        goal.positionId,
+        database,
+        goal.includeExternalHoldings
+      )
+    } catch (error) {
+      if (!(error instanceof GoalNotFoundError)) throw error
+      amounts = emptySnapshot()
+    }
     const currentAmount = amounts.platformAmount + amounts.externalAmount
     return {
       goalId: goal.id,
@@ -411,7 +477,11 @@ export async function computeGoalProgress(
     const position = await (database as any).position.findUnique({
       where: { id: goal.positionId },
     })
-    if (!position || position.status !== 'ACTIVE') {
+    if (
+      !position ||
+      position.userId !== goal.userId ||
+      position.status !== 'ACTIVE'
+    ) {
       await (database as any).savingsGoal.update({
         where: { id: goal.id },
         data: { status: 'CANCELLED' },
@@ -419,7 +489,10 @@ export async function computeGoalProgress(
       await logAgentAction(
         'GOAL_PROGRESS',
         'SKIPPED',
-        { reasoning: 'Linked position is no longer active — goal cancelled' },
+        {
+          reasoning:
+            'Linked position is missing, no longer owned, or no longer active: goal cancelled',
+        },
         goal.userId,
         goal.positionId
       )

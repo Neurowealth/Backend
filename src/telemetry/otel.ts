@@ -24,8 +24,9 @@ import {
   ConsoleSpanExporter,
   BatchSpanProcessor,
 } from '@opentelemetry/sdk-trace-node'
-import { diag, DiagConsoleLogger, DiagLogLevel } from '@opentelemetry/api'
+import { diag, DiagConsoleLogger, DiagLogLevel, Span } from '@opentelemetry/api'
 import { PrismaInstrumentation } from '@prisma/instrumentation'
+import type { IncomingMessage } from 'http'
 
 // ---------------------------------------------------------------------------
 // Guard: no-op when OTEL is explicitly disabled or endpoint is not configured
@@ -33,6 +34,46 @@ import { PrismaInstrumentation } from '@prisma/instrumentation'
 
 const OTEL_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT
 const OTEL_ENABLED = process.env.OTEL_ENABLED !== 'false' && !!OTEL_ENDPOINT
+
+const SENSITIVE_QUERY_KEYS = new Set(['token', 'code', 'signature'])
+
+export function redactSensitiveQuery(url: string): string {
+  const queryIndex = url.indexOf('?')
+  if (queryIndex < 0) return url
+  const fragmentIndex = url.indexOf('#', queryIndex)
+  const end = fragmentIndex < 0 ? url.length : fragmentIndex
+  const query = url.slice(queryIndex + 1, end)
+  const redacted = query
+    .split('&')
+    .map((part) => {
+      const equals = part.indexOf('=')
+      const rawKey = equals < 0 ? part : part.slice(0, equals)
+      let key = rawKey
+      try {
+        key = decodeURIComponent(rawKey.replace(/\+/g, ' '))
+      } catch {}
+      return SENSITIVE_QUERY_KEYS.has(key.toLowerCase())
+        ? `${rawKey}=[REDACTED]`
+        : part
+    })
+    .join('&')
+  return `${url.slice(0, queryIndex)}?${redacted}${url.slice(end)}`
+}
+
+export function recordIncomingRequestAttributes(
+  span: Span,
+  request: IncomingMessage
+): void {
+  const target = redactSensitiveQuery(request.url ?? '')
+  const host = request.headers.host
+  const protocol = request.headers['x-forwarded-proto'] ?? 'http'
+  span.setAttribute('http.target', target)
+  span.setAttribute(
+    'url.query',
+    target.includes('?') ? target.slice(target.indexOf('?') + 1) : ''
+  )
+  span.setAttribute('url.full', `${protocol}://${host ?? 'unknown'}${target}`)
+}
 
 if (!OTEL_ENABLED) {
   // Emit a single info line so ops knows tracing is off — not an error
@@ -108,6 +149,9 @@ const sdk = new NodeSDK({
       '@opentelemetry/instrumentation-express': { enabled: true },
       '@opentelemetry/instrumentation-http': {
         enabled: true,
+        requestHook: (span, request) => {
+          recordIncomingRequestAttributes(span, request as IncomingMessage)
+        },
         ignoreIncomingRequestHook: (req) => {
           const url = req.url ?? ''
           return url.startsWith('/health') || url === '/metrics'

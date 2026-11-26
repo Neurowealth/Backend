@@ -1,4 +1,10 @@
-import { cacheGet, cacheSet, cacheDel, getRedisClient, createRedisSubscriber } from '../config/redis'
+import {
+  cacheGet,
+  cacheSet,
+  cacheDel,
+  getRedisClient,
+  createRedisSubscriber,
+} from '../config/redis'
 import { logger } from './logger'
 import { generateCorrelationId } from './correlation'
 import type { Redis } from 'ioredis'
@@ -10,7 +16,8 @@ export const CACHE_PREFIXES = {
   ASSISTANT_MEMORY: 'assistant:memory',
 } as const
 
-const CACHE_INVALIDATION_CHANNEL = process.env.CACHE_INVALIDATION_CHANNEL || 'neurowealth:cache-invalidation'
+const CACHE_INVALIDATION_CHANNEL =
+  process.env.CACHE_INVALIDATION_CHANNEL || 'neurowealth:cache-invalidation'
 
 let subscriber: Redis | null = null
 let subscribed = false
@@ -133,7 +140,10 @@ export async function invalidateAllUserCaches(userId: string): Promise<void> {
         originPodId: podId,
       }
       await redis.publish(CACHE_INVALIDATION_CHANNEL, JSON.stringify(event))
-      logger.debug('[cache] Published cache invalidation event', { userId, podId })
+      logger.debug('[cache] Published cache invalidation event', {
+        userId,
+        podId,
+      })
     } catch (error) {
       logger.warn('[cache] Failed to publish cache invalidation event', {
         userId,
@@ -276,13 +286,19 @@ export function startCacheInvalidationSubscriber(): void {
     }
   })
 
-  subscriber.subscribe(CACHE_INVALIDATION_CHANNEL).then(() => {
-    logger.info(`[cache] Subscribed to ${CACHE_INVALIDATION_CHANNEL}`)
-  }).catch((error) => {
-    logger.error('[cache] Failed to subscribe to cache invalidation channel', {
-      error: error instanceof Error ? error.message : String(error),
+  subscriber
+    .subscribe(CACHE_INVALIDATION_CHANNEL)
+    .then(() => {
+      logger.info(`[cache] Subscribed to ${CACHE_INVALIDATION_CHANNEL}`)
     })
-  })
+    .catch((error) => {
+      logger.error(
+        '[cache] Failed to subscribe to cache invalidation channel',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        }
+      )
+    })
 }
 
 /**

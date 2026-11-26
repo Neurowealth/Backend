@@ -22,6 +22,7 @@ import {
   getPaginationParams,
   paginationSchema,
 } from '../utils/pagination'
+import { handleMailWebhook } from '../controllers/email-identity-controller'
 
 const router = Router()
 const prisma = db as any
@@ -45,6 +46,12 @@ function isAllowedWebhookUrl(url: string): boolean {
     return false
   }
 }
+
+// Provider mail callback (#367, #851). This must be registered before the
+// router-wide requireAuth: SES/SMTP post a signed payload and do not have an
+// application JWT or API key. handleMailWebhook authenticates the caller by
+// verifying that signature. Every route below stays behind requireAuth.
+router.post('/mail', handleMailWebhook)
 
 router.use(requireAuth)
 
@@ -367,10 +374,6 @@ import {
   replayEvents,
   listDeliveries,
 } from '../controllers/user-webhook-controller'
-import { handleMailWebhook } from '../controllers/email-identity-controller'
-
-// Unauthenticated provider mail webhook callback (#367)
-router.post('/mail', handleMailWebhook)
 
 // User-scoped outbound webhook management endpoints (#368)
 router.post(

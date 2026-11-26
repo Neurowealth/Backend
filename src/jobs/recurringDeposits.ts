@@ -11,11 +11,10 @@ import { scheduleResilientJob } from './resilientScheduler'
 import { executeDeposit } from '../controllers/transaction-controller'
 import { publishUserEvent } from '../events/publisher'
 import { EVENT_TYPE_TOPIC } from '../events/types'
-import { addCadence } from '../utils/cadence'
+import { addCadence, cadenceAnchorDay } from '../utils/cadence'
 import {
   computeContribution,
   computeNextRunAfterSkip,
-  cadenceToDays,
   shouldAutoPause,
   AUTO_PAUSE_THRESHOLD,
   type SmartDcaConfig,
@@ -126,7 +125,11 @@ async function resumeInterruptedPlan(
       where: { id: plan.id },
       data: {
         lastRunStatus: 'executed',
-        nextRunAt: addCadence(plan.cadence, new Date()),
+        nextRunAt: addCadence(
+          plan.cadence,
+          plan.nextRunAt,
+          cadenceAnchorDay(plan)
+        ),
       },
     })
     logger.info(
@@ -152,14 +155,33 @@ async function resumeInterruptedPlan(
  * Returns null when insufficient history.
  */
 async function loadRegimeInput(
-  userId: string,
+  plan: RecurringDepositPlan,
   now: Date
 ): Promise<RegimeInput | null> {
   const WINDOW_DAYS = 30
   const fromDate = new Date(now.getTime() - WINDOW_DAYS * 24 * 60 * 60 * 1000)
 
+  const user = await db.user.findUnique({
+    where: { id: plan.userId },
+    select: { network: true },
+  })
+  if (!user) return null
+
+  const scope = {
+    assetSymbol: plan.assetSymbol,
+    network: user.network,
+    fetchedAt: { gte: fromDate, lte: now },
+  }
+  // Choose one stable reference protocol for the entire window.
+  const reference = await db.protocolRate.findFirst({
+    where: scope,
+    orderBy: [{ protocolName: 'asc' }, { fetchedAt: 'desc' }],
+    select: { protocolName: true },
+  })
+  if (!reference) return null
+
   const rates = await db.protocolRate.findMany({
-    where: { fetchedAt: { gte: fromDate } },
+    where: { ...scope, protocolName: reference.protocolName },
     select: { supplyApy: true },
     orderBy: { fetchedAt: 'asc' },
   })
@@ -310,7 +332,7 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
   let drawdownInput: DrawdownInput | null = null
 
   if (policy === 'ADAPTIVE') {
-    regimeInput = await loadRegimeInput(plan.userId, now)
+    regimeInput = await loadRegimeInput(plan, now)
     drawdownInput = await loadDrawdownInput(plan.userId, now)
   }
 
@@ -325,12 +347,13 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
 
   // ── Drawdown pause: skip and reschedule ─────────────────────────────
   if (decision.pausedOnDrawdown) {
-    const cadenceDays = cadenceToDays(plan.cadence)
     const next = computeNextRunAfterSkip(
       config.catchUpMode,
       plan.nextRunAt,
-      cadenceDays,
-      config.accumulatedRuns
+      plan.cadence,
+      config.accumulatedRuns,
+      cadenceAnchorDay(plan),
+      now
     )
 
     await db.recurringDepositPlan.update({
@@ -361,16 +384,18 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
 
   // ── Zero-amount run (edge case) ─────────────────────────────────────
   if (decision.appliedAmount <= 0) {
-    const cadenceDays = cadenceToDays(plan.cadence)
     const next = computeNextRunAfterSkip(
       config.catchUpMode,
       plan.nextRunAt,
-      cadenceDays,
-      config.accumulatedRuns
+      plan.cadence,
+      config.accumulatedRuns,
+      cadenceAnchorDay(plan),
+      now
     )
     await db.recurringDepositPlan.update({
       where: { id: plan.id },
       data: {
+        lastRunStatus: 'skipped_zero_amount',
         nextRunAt: next.nextRunAt,
         accumulatedRuns: next.accumulatedRuns,
       },
@@ -413,7 +438,11 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
     })
 
     if (result.status === 'CONFIRMED') {
-      const nextRunAt = addCadence(plan.cadence, now)
+      const nextRunAt = addCadence(
+        plan.cadence,
+        plan.nextRunAt,
+        cadenceAnchorDay(plan)
+      )
       await db.recurringDepositPlan.update({
         where: { id: plan.id },
         data: {
@@ -460,10 +489,42 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
           txHash: result.transaction!.txHash,
         }
       ).catch(() => {})
-    } else if (result.status === 'PENDING_APPROVAL') {
+    } else if (result.status === 'PENDING') {
+      // A dispatch may still settle after this job returns. Advance the plan so
+      // the next five-minute worker tick cannot submit the same deposit again.
       await db.recurringDepositPlan.update({
         where: { id: plan.id },
-        data: { lastRunStatus: 'pending_approval' },
+        data: {
+          lastRunStatus: 'pending_confirmation',
+          nextRunAt: addCadence(
+            plan.cadence,
+            plan.nextRunAt,
+            cadenceAnchorDay(plan)
+          ),
+          consecutiveFailures: 0,
+        },
+      })
+      logger.info('[RecurringDeposit] Deposit pending confirmation', {
+        planId: plan.id,
+        userId: plan.userId,
+        txHash: result.transaction?.txHash,
+      })
+    } else if (result.status === 'PENDING_APPROVAL') {
+      // Advance the slot so the same occurrence is not reclaimed every sweep.
+      // Approval resolution (execute/reject/cancel/expire) is handled by the
+      // approvals workflow; rescheduling here ensures the plan remains on its
+      // cadence without duplicate approval requests for this occurrence.
+      const nextRunAt = addCadence(
+        plan.cadence,
+        plan.nextRunAt,
+        cadenceAnchorDay(plan)
+      )
+      await db.recurringDepositPlan.update({
+        where: { id: plan.id },
+        data: {
+          lastRunStatus: 'pending_approval',
+          nextRunAt,
+        },
       })
       await createRunLedger({
         planId: plan.id,
@@ -479,12 +540,37 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
         planId: plan.id,
         userId: plan.userId,
         approvalRequestId: result.approvalRequestId,
+        nextRunAt,
       })
     } else {
       await failPlan(plan, 'transaction_failed', decision)
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : 'unknown_error'
+    const txHash = (err as { txHash?: unknown })?.txHash
+    if (typeof txHash === 'string' && txHash.length > 0) {
+      await db.recurringDepositPlan.update({
+        where: { id: plan.id },
+        data: {
+          lastRunStatus: 'pending_confirmation',
+          nextRunAt: addCadence(
+            plan.cadence,
+            plan.nextRunAt,
+            cadenceAnchorDay(plan)
+          ),
+          consecutiveFailures: 0,
+        },
+      })
+      logger.warn(
+        '[RecurringDeposit] Dispatch error carries an in-flight hash',
+        {
+          planId: plan.id,
+          userId: plan.userId,
+          txHash,
+        }
+      )
+      return
+    }
     const isInsufficientFunds =
       reason.toLowerCase().includes('insufficient') ||
       reason.toLowerCase().includes('balance')
@@ -670,6 +756,8 @@ export async function processRecurringDeposits(): Promise<void> {
 
       recordBackgroundJob(jobName, 'failed', durationMs / 1000)
       recordJobFailure(jobName, durationMs, error)
+      // Rethrow so resilientScheduler retries and records the run as failed (#772)
+      throw error
     }
   })
 }

@@ -38,6 +38,7 @@ export function isUserEventTopic(value: unknown): value is UserEventTopic {
 export const SOCKET_ONLY_EVENT_TYPES = [
   'security.passkey_changed',
   'security.passkey_anomaly',
+  'security.account_recovery',
   'recurring_withdrawal.executed',
   'recurring_withdrawal.held',
   'recurring_withdrawal.skipped',
@@ -59,6 +60,12 @@ export const SOCKET_ONLY_EVENT_TYPES = [
   'security.session_anomaly',
   /** #548 — admin impersonation session started. */
   'account.impersonation_started',
+  /** #365 — a scheduled portfolio digest was generated. Stream + user's own
+   *  webhook endpoint only; never an operator webhook (see docs/NOTIFICATIONS.md). */
+  'digest.generated',
+  /** #364 — referral reward vesting tranche forfeited or clawback recorded. */
+  'referral.tranche_forfeited',
+  'referral.clawback_recorded',
 ] as const
 
 export type SocketOnlyEventType = (typeof SOCKET_ONLY_EVENT_TYPES)[number]
@@ -75,6 +82,7 @@ export type UserEventType = WebhookEvent | SocketOnlyEventType
 export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'security.passkey_changed': 'alerts',
   'security.passkey_anomaly': 'alerts',
+  'security.account_recovery': 'alerts',
   'recurring_withdrawal.executed': 'transactions',
   'recurring_withdrawal.held': 'alerts',
   'recurring_withdrawal.skipped': 'alerts',
@@ -84,6 +92,7 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'fiat.order.settled': 'transactions',
   'fiat.order.failed': 'transactions',
   'fiat.order.rate_mismatch': 'transactions',
+  'fiat.limit.approaching': 'alerts',
   'recurring_deposit.executed': 'transactions',
   'recurring_deposit.failed': 'transactions',
   'outbox.op_failed': 'transactions',
@@ -111,6 +120,9 @@ export const EVENT_TYPE_TOPIC: Record<UserEventType, UserEventTopic> = {
   'security.session_revoked': 'alerts',
   'security.session_anomaly': 'alerts',
   'account.impersonation_started': 'account',
+  'digest.generated': 'alerts',
+  'referral.tranche_forfeited': 'alerts',
+  'referral.clawback_recorded': 'alerts',
 }
 
 const SOCKET_ONLY = new Set<string>(SOCKET_ONLY_EVENT_TYPES)
@@ -139,7 +151,7 @@ export interface EventFrame {
  */
 export interface GapFrame {
   type: 'gap'
-  reason: 'retention' | 'backpressure' | 'unknown_stream'
+  reason: 'retention' | 'backpressure' | 'unknown_stream' | 'replay_failed'
   /** The seq the client asked to resume after, when it asked. */
   afterSeq: number | null
   /** Newest seq that exists for this user right now. */

@@ -172,10 +172,13 @@ export function guardScopes(
 
 /**
  * Require one or more scopes. Sessions (`authScopes = ['*']`) pass all checks.
+ *
+ * Fails closed: a request whose auth middleware never resolved scopes has
+ * none, so it is denied rather than treated as a session.
  */
 export function requireScope(...requiredScopes: UserScope[]) {
   const guard = (req: Request, res: Response, next: NextFunction): void => {
-    const scopes = req.authScopes ?? ['*']
+    const scopes = req.authScopes ?? []
     if (scopes.includes('*')) {
       next()
       return

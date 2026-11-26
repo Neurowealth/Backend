@@ -141,6 +141,7 @@ legacy `/api/*` alias with the same handlers, and therefore the same tier.
 | `/api/v1/keys` | POST | `sensitive` | 900000ms | 10 | Minting an API key is a takeover vector — credential change. |
 | `/api/v1/keys/:id/rotate` | POST | `sensitive` | 900000ms | 10 | Rotating a key is a credential change. |
 | `/api/v1/support/tickets` | POST | `sensitive` | 900000ms | 10 | Opening a ticket is a state change on a customer-visible record. |
+| `/api/v1/accounting` | ANY | `tiered` | 900000ms / 600 authenticated | 60 | Accounting export is a user-scoped read gated by transactions:read; the reconciliation gate runs before any bytes are sent. |
 | `/api/v1/portfolio/:userId/suggest-allocation` | POST | `optimizer` | 60000ms | 5 | CPU-bound allocation solver — the classic exhaustion vector. |
 | `/api/v1/strategies/simulate` | POST | `simulate` | 60000ms | 6 | CPU-bound historical replay. |
 | `/api/v1/agent/decisions` | ANY | `tiered` | 900000ms / 600 authenticated | 60 | Agent decision history is a user-facing read (session auth), not a service-to-service call — only the agent status endpoints are. |

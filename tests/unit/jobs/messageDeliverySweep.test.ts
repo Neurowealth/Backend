@@ -128,7 +128,9 @@ describe('Message Delivery Sweep Job (#493)', () => {
       .spyOn(messageDeliveryService, 'processPendingQueue')
       .mockRejectedValue(new Error('Queue processor failure'))
 
-    await runMessageDeliverySweep()
+    await expect(runMessageDeliverySweep()).rejects.toThrow(
+      'Queue processor failure'
+    )
 
     expect(jobMetrics.recordJobFailure).toHaveBeenCalledWith(
       'message_delivery_sweep',

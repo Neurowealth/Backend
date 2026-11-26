@@ -2,7 +2,7 @@
  * Admin Routes - Operational tooling for Stellar event listener and DLQ management
  * Protected by admin authentication middleware and rate limiting.
  *
- * Rate limiting and auth are applied in app.ts:
+ * Rate limiting is applied where the router is mounted, in src/index.ts:
  *   app.use('/api/admin', adminRateLimiter, adminRouter)
  *
  * Do NOT add router.use(adminRateLimiter) here — that would apply it twice,
@@ -21,6 +21,12 @@ import {
   validateScopesInput,
 } from '../middleware/adminAuth'
 import { getAllProviderHealth, adminSetProviderCircuit } from '../fiat/registry'
+import {
+  DEFAULT_FIAT_LIMIT_POLICIES,
+  KYC_TIERS,
+  type KycTierValue,
+  type FiatLimitPolicyConfig,
+} from '../fiat/limits'
 import db from '../db'
 import { revokeSession } from '../services/refresh-token.service'
 import { alertingService } from '../services/alerting'
@@ -36,6 +42,13 @@ import {
   getCurrentEnvironment,
 } from '../config/featureFlags'
 import { messageDeliveryService } from '../messaging'
+import { config } from '../config/env'
+import { buildPaginationMeta } from '../utils/pagination'
+import { adminAuditExportQuerySchema } from '../validators/admin-audit-export'
+import {
+  startImpersonation,
+  endImpersonation,
+} from '../controllers/admin-impersonation-controller'
 
 const router = Router()
 const prisma = db
@@ -55,6 +68,8 @@ const HIGH_RISK_ADMIN_ACTIONS = new Set([
   'TREASURY_SIGNER_ROTATION_FINALIZE',
   'TREASURY_POLICY_ENABLE',
   'FIAT_PROVIDER_FAILOVER',
+  'UPDATE_FIAT_LIMIT_POLICIES',
+  'OVERRIDE_USER_KYC_TIER',
   'DLQ_RESOLVE',
   'DLQ_REPLAY',
   'OUTBOX_CANCEL',
@@ -136,7 +151,7 @@ async function auditLog(
   }
 }
 
-// ── Auth applied once here — rate limiting is applied in app.ts ───────────
+// ── Auth applied once here — rate limiting is applied in index.ts ─────────
 router.use(requireAdminAuth)
 
 router.get(
@@ -294,6 +309,200 @@ router.get(
       const message = error instanceof Error ? error.message : 'Unknown error'
       logger.error('[Admin] Audit proof failed', { error: message })
       res.status(500).json({ success: false, error: 'Audit proof failed' })
+    }
+  }
+)
+
+function escapeCsv(val: unknown): string {
+  if (val === null || val === undefined) return ''
+  const raw = typeof val === 'object' ? JSON.stringify(val) : String(val)
+  const str = raw.replace(/\r\n|\r|\n/g, '\r\n')
+  if (
+    str.includes(',') ||
+    str.includes('"') ||
+    str.includes('\n') ||
+    str.includes('\r')
+  ) {
+    return `"${str.replace(/"/g, '""')}"`
+  }
+  return str
+}
+
+/**
+ * GET /api/admin/audit/export — Paginated, filterable export of AdminAuditLog records (#682)
+ *
+ * Requirements:
+ *  - Scope: `read` admin scope.
+ *  - Itself audited: records `EXPORT_ADMIN_AUDIT_LOGS` into AdminAuditLog.
+ *  - Filtering: startDate/from, endDate/to, action, adminKeyId, result.
+ *  - Pagination: page, limit (max 200).
+ *  - Format: json (default) or csv.
+ */
+router.get(
+  '/audit/export',
+  requireAdminScope('read'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+
+    try {
+      const parsedQuery = adminAuditExportQuerySchema.safeParse(req.query)
+      if (!parsedQuery.success) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid admin audit export query parameters',
+          details: parsedQuery.error.issues,
+        })
+      }
+      const {
+        page,
+        limit,
+        format,
+        from,
+        startDate,
+        to,
+        endDate,
+        action,
+        adminKeyId,
+        result: resultFilter,
+      } = parsedQuery.data
+      const skip = (page - 1) * limit
+
+      const fromRaw = from ?? startDate
+      const toRaw = to ?? endDate
+
+      const fromDate = fromRaw ? new Date(fromRaw) : undefined
+      const toDate = toRaw ? new Date(toRaw) : undefined
+
+      const where: any = {}
+      if (fromDate || toDate) {
+        where.createdAt = {}
+        if (fromDate) where.createdAt.gte = fromDate
+        if (toDate) where.createdAt.lte = toDate
+      }
+      if (action) where.action = action
+      if (adminKeyId) where.adminKeyId = adminKeyId
+      if (resultFilter) where.result = resultFilter
+
+      const [total, logs] = await Promise.all([
+        prisma.adminAuditLog.count({ where }),
+        prisma.adminAuditLog.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take: limit,
+        }),
+      ])
+      const [retentionControl] = await prisma.$queryRaw<
+        Array<{ legalHold: boolean; retentionDays: number }>
+      >`SELECT "legalHold", "retentionDays"
+        FROM public.admin_audit_retention_control
+        WHERE id = TRUE`
+
+      // Self-audit: record this export operation in AdminAuditLog (#682)
+      await prisma.adminAuditLog.create({
+        data: {
+          adminKeyId: adminAuth.id,
+          adminName: adminAuth.name,
+          adminRole: adminAuth.role,
+          action: 'EXPORT_ADMIN_AUDIT_LOGS',
+          target: req.originalUrl || req.path,
+          result: 'success',
+          details: {
+            page,
+            limit,
+            count: logs.length,
+            total,
+            format,
+            filters: {
+              from: fromDate?.toISOString() ?? null,
+              to: toDate?.toISOString() ?? null,
+              action: action ?? null,
+              adminKeyId: adminKeyId ?? null,
+              result: resultFilter ?? null,
+            },
+          },
+          ipAddress: req.ip,
+          userAgent: req.get('user-agent') || null,
+          method: req.method,
+          path: req.originalUrl || req.path,
+        },
+      })
+
+      if (format === 'csv') {
+        const headers = [
+          'id',
+          'adminKeyId',
+          'adminName',
+          'adminRole',
+          'action',
+          'target',
+          'result',
+          'ipAddress',
+          'userAgent',
+          'method',
+          'path',
+          'createdAt',
+          'details',
+        ]
+        const csvLines = [headers.join(',')]
+        for (const log of logs) {
+          const row = [
+            escapeCsv(log.id),
+            escapeCsv(log.adminKeyId),
+            escapeCsv(log.adminName),
+            escapeCsv(log.adminRole),
+            escapeCsv(log.action),
+            escapeCsv(log.target),
+            escapeCsv(log.result),
+            escapeCsv(log.ipAddress),
+            escapeCsv(log.userAgent),
+            escapeCsv(log.method),
+            escapeCsv(log.path),
+            escapeCsv(log.createdAt.toISOString()),
+            escapeCsv(log.details),
+          ]
+          csvLines.push(row.join(','))
+        }
+
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="admin-audit-export-${Date.now()}.csv"`
+        )
+        return res.status(200).send(csvLines.join('\r\n'))
+      }
+
+      return res.status(200).json({
+        success: true,
+        data: logs,
+        pagination: buildPaginationMeta(page, limit, total),
+        exportMeta: {
+          exportedAt: new Date().toISOString(),
+          exportedBy: adminAuth.id,
+          legalHoldActive:
+            config.retention.adminAuditLegalHold ||
+            retentionControl?.legalHold === true,
+          retentionPeriodDays:
+            retentionControl?.retentionDays ??
+            config.retention.adminAuditLogsDays,
+        },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      logger.error('[Admin] Audit log export failed', { error: message })
+      auditLog(req, res, 'EXPORT_ADMIN_AUDIT_LOGS', 'failure', {
+        error: message,
+      })
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to export admin audit logs',
+        message,
+      })
     }
   }
 )
@@ -1490,6 +1699,274 @@ router.post(
   }
 )
 
+/**
+ * GET /api/admin/fiat/limit-policies
+ * Returns the active per-tier fiat limit and velocity policy table (#362).
+ * Merges DB overrides over `DEFAULT_FIAT_LIMIT_POLICIES`.
+ * Required scope: fiat:read
+ */
+router.get(
+  '/fiat/limit-policies',
+  requireAdminScope('fiat:read'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+    try {
+      const rows =
+        typeof (prisma as any).fiatLimitPolicy?.findMany === 'function'
+          ? await (prisma as any).fiatLimitPolicy.findMany()
+          : []
+      const byTier = new Map<string, any>()
+      for (const r of rows ?? []) {
+        byTier.set(r.tier, r)
+      }
+
+      const policies: FiatLimitPolicyConfig[] = KYC_TIERS.map((tier) => {
+        const row = byTier.get(tier)
+        if (!row) return DEFAULT_FIAT_LIMIT_POLICIES[tier]
+        return {
+          tier,
+          perTxnMax: Number(row.perTxnMax),
+          dailyMax: Number(row.dailyMax),
+          monthlyMax: Number(row.monthlyMax),
+          maxTxnsPerHour: Number(row.maxTxnsPerHour),
+          maxTxnsPerDay: Number(row.maxTxnsPerDay),
+          currency: row.currency || 'USD',
+          offRampOverrides: row.offRampOverrides ?? null,
+        }
+      })
+
+      await auditLog(req, res, 'GET_FIAT_LIMIT_POLICIES', 'success')
+      return res.status(200).json({ success: true, data: { policies } })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      logger.error('[Admin] Failed to get fiat limit policies', {
+        error: message,
+      })
+      await auditLog(req, res, 'GET_FIAT_LIMIT_POLICIES', 'failure', {
+        error: message,
+      })
+      return res
+        .status(500)
+        .json({ success: false, error: 'Failed to get fiat limit policies' })
+    }
+  }
+)
+
+/**
+ * PUT /api/admin/fiat/limit-policies
+ * Upsert one or more per-tier fiat limit policies (#362). Audit-logged.
+ * Required scope: fiat:write
+ */
+router.put(
+  '/fiat/limit-policies',
+  requireAdminScope('fiat:write'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+
+    const rawPolicies: any[] = Array.isArray(req.body?.policies)
+      ? req.body.policies
+      : req.body?.tier
+        ? [req.body]
+        : []
+
+    if (rawPolicies.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'Request body must contain a policy object or { policies: [...] }',
+      })
+    }
+
+    for (const p of rawPolicies) {
+      if (!KYC_TIERS.includes(p?.tier)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid tier "${String(p?.tier)}". Must be one of ${KYC_TIERS.join(', ')}`,
+        })
+      }
+      if (
+        typeof p.perTxnMax !== 'number' ||
+        p.perTxnMax < 0 ||
+        typeof p.dailyMax !== 'number' ||
+        p.dailyMax < 0 ||
+        typeof p.monthlyMax !== 'number' ||
+        p.monthlyMax < 0 ||
+        typeof p.maxTxnsPerHour !== 'number' ||
+        p.maxTxnsPerHour < 0 ||
+        typeof p.maxTxnsPerDay !== 'number' ||
+        p.maxTxnsPerDay < 0 ||
+        typeof p.currency !== 'string' ||
+        !p.currency.trim()
+      ) {
+        return res.status(400).json({
+          success: false,
+          error:
+            'Each policy must provide non-negative numeric perTxnMax, dailyMax, monthlyMax, maxTxnsPerHour, maxTxnsPerDay and a non-empty currency',
+        })
+      }
+    }
+
+    try {
+      const updated: FiatLimitPolicyConfig[] = []
+      for (const p of rawPolicies) {
+        const tier = p.tier as KycTierValue
+        const currency = p.currency.trim().toUpperCase()
+        const row = await (prisma as any).fiatLimitPolicy.upsert({
+          where: { tier },
+          create: {
+            tier,
+            perTxnMax: p.perTxnMax,
+            dailyMax: p.dailyMax,
+            monthlyMax: p.monthlyMax,
+            maxTxnsPerHour: Math.floor(p.maxTxnsPerHour),
+            maxTxnsPerDay: Math.floor(p.maxTxnsPerDay),
+            currency,
+            offRampOverrides: p.offRampOverrides ?? null,
+          },
+          update: {
+            perTxnMax: p.perTxnMax,
+            dailyMax: p.dailyMax,
+            monthlyMax: p.monthlyMax,
+            maxTxnsPerHour: Math.floor(p.maxTxnsPerHour),
+            maxTxnsPerDay: Math.floor(p.maxTxnsPerDay),
+            currency,
+            offRampOverrides:
+              p.offRampOverrides !== undefined ? p.offRampOverrides : undefined,
+          },
+        })
+        updated.push({
+          tier: row.tier,
+          perTxnMax: Number(row.perTxnMax),
+          dailyMax: Number(row.dailyMax),
+          monthlyMax: Number(row.monthlyMax),
+          maxTxnsPerHour: Number(row.maxTxnsPerHour),
+          maxTxnsPerDay: Number(row.maxTxnsPerDay),
+          currency: row.currency,
+          offRampOverrides: row.offRampOverrides ?? null,
+        })
+      }
+
+      await auditLog(req, res, 'UPDATE_FIAT_LIMIT_POLICIES', 'success', {
+        policies: updated,
+      })
+
+      return res
+        .status(200)
+        .json({ success: true, data: { policies: updated } })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      logger.error('[Admin] Failed to update fiat limit policies', {
+        error: message,
+      })
+      await auditLog(req, res, 'UPDATE_FIAT_LIMIT_POLICIES', 'failure', {
+        error: message,
+      })
+      return res
+        .status(500)
+        .json({ success: false, error: 'Failed to update fiat limit policies' })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/users/:id/kyc-tier
+ * Manual KYC tier override for a user with a mandatory `reviewNote` (#362).
+ * Audit-logged as a high-risk admin action.
+ * Required scope: fiat:write
+ */
+router.post(
+  '/users/:id/kyc-tier',
+  requireAdminScope('fiat:write'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res
+        .status(401)
+        .json({ success: false, error: 'Admin authentication required' })
+    }
+
+    const userId = req.params.id
+    const { tier, reviewNote, providerRef } = req.body ?? {}
+
+    if (!KYC_TIERS.includes(tier)) {
+      return res.status(400).json({
+        success: false,
+        error: `tier must be one of ${KYC_TIERS.join(', ')}`,
+      })
+    }
+
+    if (typeof reviewNote !== 'string' || reviewNote.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'reviewNote is required for manual KYC tier override',
+      })
+    }
+
+    try {
+      const verifiedAt = tier === 'TIER_0' ? null : new Date()
+      const profile = await (prisma as any).kycProfile.upsert({
+        where: { userId },
+        create: {
+          userId,
+          tier,
+          providerRef: typeof providerRef === 'string' ? providerRef : null,
+          verifiedAt,
+          reviewNote: reviewNote.trim(),
+        },
+        update: {
+          tier,
+          ...(typeof providerRef === 'string' ? { providerRef } : {}),
+          verifiedAt,
+          reviewNote: reviewNote.trim(),
+        },
+      })
+
+      await auditLog(req, res, 'OVERRIDE_USER_KYC_TIER', 'success', {
+        userId,
+        tier: profile.tier,
+        reviewNote: profile.reviewNote,
+      })
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          userId: profile.userId,
+          tier: profile.tier,
+          providerRef: profile.providerRef ?? null,
+          verifiedAt: profile.verifiedAt
+            ? new Date(profile.verifiedAt).toISOString()
+            : null,
+          reviewNote: profile.reviewNote,
+        },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      logger.error('[Admin] Failed to override user KYC tier', {
+        userId,
+        error: message,
+      })
+      await auditLog(req, res, 'OVERRIDE_USER_KYC_TIER', 'failure', {
+        userId,
+        tier,
+        error: message,
+      })
+      return res
+        .status(500)
+        .json({ success: false, error: 'Failed to override user KYC tier' })
+    }
+  }
+)
+
 // ── Durable outbox admin tooling (#325) ─────────────────────────────────────
 
 /**
@@ -2372,7 +2849,7 @@ router.post(
         .json({ success: false, error: 'Admin authentication required' })
     }
     try {
-      const { fromTier, toTier, asset, amount, reason } = req.body
+      const { fromTier, toTier, asset, assetIssuer, amount, reason } = req.body
       const { executeEmergencySweep } = await import('../jobs/treasurySweep')
       await executeEmergencySweep(
         fromTier,
@@ -2380,7 +2857,8 @@ router.post(
         asset,
         amount,
         adminAuth.name,
-        reason ?? 'manual_admin_action'
+        reason ?? 'manual_admin_action',
+        assetIssuer
       )
       auditLog(req, res, 'TREASURY_EMERGENCY_SWEEP', 'success', {
         fromTier,
@@ -3801,6 +4279,81 @@ router.post(
       res.status(500).json({ success: false, error: message })
     }
   }
+)
+
+// -- Admin Impersonation (#548, #762) ------------------------------------------
+
+router.post(
+  '/impersonation',
+  requireAdminScope('admin:impersonate'),
+  async (req: Request, res: Response) => {
+    const adminAuth = getAdminAuth(res)
+    if (!adminAuth) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+    const { targetUserId, reason } = req.body ?? {}
+    if (!targetUserId || typeof targetUserId !== 'string') {
+      return res.status(400).json({ error: 'targetUserId is required' })
+    }
+
+    const result = await startImpersonation(
+      adminAuth.id,
+      adminAuth.name,
+      targetUserId,
+      {
+        ipAddress: req.ip,
+        reason: typeof reason === 'string' ? reason : undefined,
+        userAgent: req.get('user-agent'),
+      }
+    )
+
+    if (!result.success) {
+      const status = result.error === 'Target user not found' ? 404 : 400
+      return res.status(status).json({ error: result.error })
+    }
+
+    return res.status(200).json({
+      success: true,
+      token: result.token,
+      sessionId: result.sessionId,
+    })
+  }
+)
+
+const handleEndImpersonation = async (req: Request, res: Response) => {
+  const adminAuth = getAdminAuth(res)
+  if (!adminAuth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  const sessionId =
+    req.params.sessionId ||
+    req.body?.sessionId ||
+    (req.query?.sessionId as string)
+  if (!sessionId || typeof sessionId !== 'string') {
+    return res.status(400).json({ error: 'sessionId is required' })
+  }
+
+  const result = await endImpersonation(sessionId, {
+    adminId: adminAuth.id,
+    ipAddress: req.ip,
+  })
+
+  if (!result.success) {
+    return res.status(400).json({ error: result.error })
+  }
+
+  return res.status(200).json({ success: true, status: 'revoked' })
+}
+
+router.delete(
+  '/impersonation',
+  requireAdminScope('admin:impersonate'),
+  handleEndImpersonation
+)
+router.delete(
+  '/impersonation/:sessionId',
+  requireAdminScope('admin:impersonate'),
+  handleEndImpersonation
 )
 
 export default router

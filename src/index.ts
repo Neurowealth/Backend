@@ -60,6 +60,7 @@ import { scheduleReferralPayout } from './jobs/referralPayout'
 import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
 import { scheduleRecurringWithdrawals } from './jobs/recurringWithdrawals'
 import { scheduleAlertRules } from './jobs/alertRules'
+import { scheduleDigests } from './jobs/digests'
 import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { scheduleAllocationSuggestions } from './jobs/allocationSuggestions'
 import { scheduleAttribution } from './jobs/attribution'
@@ -77,6 +78,7 @@ import { scheduleLoanAccrual } from './jobs/loanAccrual'
 import { scheduleLoanLiquidationMonitor } from './jobs/loanLiquidationMonitor'
 import { scheduleTreasurySweeps } from './jobs/treasurySweep'
 import { scheduleLinkedExternalWalletSync } from './jobs/linkedExternalWalletSync'
+import { scheduleAccountRecoverySweep } from './jobs/accountRecovery'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { startEventBridge, stopEventBridge } from './events/bridge'
 import { attachWebSocketServer, closeWebSocketServer } from './ws/server'
@@ -120,6 +122,7 @@ let referralPayoutHandle: NodeJS.Timeout | null = null
 let recurringDepositsHandle: NodeJS.Timeout | null = null
 let recurringWithdrawalsHandle: NodeJS.Timeout | null = null
 let alertRulesHandle: NodeJS.Timeout | null = null
+let digestsHandle: NodeJS.Timeout | null = null
 let strategyMetricsHandle: NodeJS.Timeout | null = null
 let allocationSuggestionsHandle: NodeJS.Timeout | null = null
 let protocolRiskScoringHandle: NodeJS.Timeout | null = null
@@ -137,6 +140,7 @@ let linkedExternalWalletSyncHandle: NodeJS.Timeout | null = null
 let loanAccrualHandle: NodeJS.Timeout | null = null
 let loanLiquidationHandle: NodeJS.Timeout | null = null
 let treasurySweepHandle: NodeJS.Timeout | null = null
+let accountRecoveryHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -271,15 +275,31 @@ app.get('/health/ready', (_req, res) => {
 // existing clients keep working; they emit RFC 8594 Deprecation/Sunset headers
 // announcing the removal date. See docs/api-versioning.md for the policy.
 
-// Unversioned routes are supported for at least 6 months from this release.
-const UNVERSIONED_SUNSET = new Date(
-  Date.now() + 182 * 24 * 60 * 60 * 1000
-).toUTCString()
+// Unversioned routes are supported until a fixed, announced date. Pinning the
+// date (instead of recomputing it on every boot) means a redeploy can never
+// silently extend the lifetime of a deprecated alias.
+const DEFAULT_UNVERSIONED_SUNSET = 'Sat, 01 May 2027 00:00:00 GMT'
+function resolveUnversionedSunset(): string {
+  const configured = process.env.API_LEGACY_SUNSET?.trim()
+  if (!configured) return DEFAULT_UNVERSIONED_SUNSET
+  const parsed = new Date(configured)
+  return Number.isNaN(parsed.getTime())
+    ? DEFAULT_UNVERSIONED_SUNSET
+    : parsed.toUTCString()
+}
+const UNVERSIONED_SUNSET = resolveUnversionedSunset()
 
 // ── OpenAPI / Swagger UI ──────────────────────────────────────────────────────
 
 let swaggerSpec: Record<string, unknown> | null = null
-const specPath = path.join(__dirname, 'docs', 'openapi.yaml')
+// `npm run build` copies the spec to dist/docs/ (next to dist/index.js);
+// `npm run dev` runs src/index.ts, so fall back to the repo's docs/ folder.
+const specPath =
+  [
+    path.join(__dirname, 'docs', 'openapi.yaml'),
+    path.join(__dirname, '..', 'docs', 'openapi.yaml'),
+  ].find((candidate) => fs.existsSync(candidate)) ??
+  path.join(__dirname, 'docs', 'openapi.yaml')
 
 try {
   const specFile = fs.readFileSync(specPath, 'utf8')
@@ -419,6 +439,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Alert rules timer cleared')
   }
 
+  if (digestsHandle) {
+    clearInterval(digestsHandle)
+    digestsHandle = null
+    logger.info('[Shutdown] Digests timer cleared')
+  }
+
   if (strategyMetricsHandle) {
     clearInterval(strategyMetricsHandle)
     strategyMetricsHandle = null
@@ -511,6 +537,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(treasurySweepHandle)
     treasurySweepHandle = null
     logger.info('[Shutdown] Treasury sweep scheduler cleared')
+  if (accountRecoveryHandle) {
+    clearInterval(accountRecoveryHandle)
+    accountRecoveryHandle = null
   }
 
   try {
@@ -767,6 +796,7 @@ async function main(): Promise<void> {
   recurringDepositsHandle = scheduleRecurringDeposits()
   recurringWithdrawalsHandle = scheduleRecurringWithdrawals()
   alertRulesHandle = scheduleAlertRules()
+  digestsHandle = scheduleDigests()
   strategyMetricsHandle = scheduleStrategyMetrics()
   // Ordered before the suggestion job so the first suggestion run sees freshly
   // scored protocols rather than whatever was last left in the table.
@@ -788,6 +818,7 @@ async function main(): Promise<void> {
   loanLiquidationHandle = scheduleLoanLiquidationMonitor()
   // #945 — automated treasury sweeps
   treasurySweepHandle = scheduleTreasurySweeps()
+  accountRecoveryHandle = scheduleAccountRecoverySweep()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

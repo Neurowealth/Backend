@@ -88,9 +88,51 @@ This document establishes the official Disaster Recovery (DR) rehearsal checklis
 
 ---
 
-## 5. Automated Backup & Restore Validation Script
+## 5. Automated Backup & Restore Validation and CI Rehearsal (#681)
 
-Run the automated backup validation harness:
+Disaster recovery backup and restore validation is automated via scheduled CI and monitored continuously through Prometheus metrics.
+
+### Continuous CI Validation Workflow
+
+Automated backup restore validation runs via GitHub Actions workflow [`.github/workflows/dr-backup-restore-validation.yml`](../.github/workflows/dr-backup-restore-validation.yml):
+
+- **Cadence**: Nightly at 02:00 UTC (`0 2 * * *`) and on-demand via `workflow_dispatch`.
+- **Sandbox Environment**: Provisions an isolated disposable PostgreSQL service container (`postgres:15`) on port 5432.
+- **Validation Pipeline**:
+  1. Deploys current migrations (`npx prisma migrate deploy`).
+  2. Generates database snapshot archive via `pg_dump`.
+  3. Recreates clean scratch database and executes full restore via `psql`.
+  4. Runs `npx prisma migrate status` ensuring zero migration drift and zero unapplied migrations.
+  5. Executes rehearsal harness (`scripts/validate-backup-restore.ts`) to spot-check row counts, table accessibility, and wallet encryption keys.
+  6. Measures and records rehearsal duration (`durationMs`).
+  7. Publishes `dr-rehearsal-report.json` as a build artifact (retained for 30 days).
+
+### Rehearsal Status Tracking & Metrics
+
+Each successful rehearsal updates the Prometheus gauge:
+
+- **Metric**: `dr_rehearsal_last_success_timestamp`
+- **Type**: Gauge (Unix timestamp in seconds)
+- **Scrape Endpoint**: `GET /metrics`
+
+The CI workflow runs in a short-lived process, so its in-memory gauge cannot be
+scraped after the job exits. Configure the repository variable
+`PROMETHEUS_PUSHGATEWAY_URL` with the reachable Pushgateway base URL. On success,
+the workflow publishes the gauge to
+`/metrics/job/dr_backup_restore_validation`. Add the
+`dr-rehearsal-pushgateway` scrape job from
+`deploy/monitoring/prometheus/prometheus.yml` to the active Prometheus config,
+alongside the backend `/metrics` scrape. The workflow fails and pages on-call if
+the variable is missing or the Pushgateway rejects the update.
+
+#### Staleness & Escalation Alerting
+
+- **Prometheus Alert**: `DisasterRecoveryRehearsalStale` (in `deploy/monitoring/prometheus/alert-rules.yaml`) triggers if `(time() - dr_rehearsal_last_success_timestamp) > 604800` (rehearsal overdue > 7 days).
+- **On-Call Paging**: On rehearsal or validation script failure, `alertingService` automatically emits a critical alert and pages the on-call engineer via PagerDuty / Slack per [INCIDENT_RESPONSE.md](./INCIDENT_RESPONSE.md).
+
+### Manual Script Execution
+
+Operators can also manually run the validation harness against any local or staging database:
 
 ```bash
 npx ts-node scripts/validate-backup-restore.ts
@@ -98,7 +140,10 @@ npx ts-node scripts/validate-backup-restore.ts
 
 The script verifies:
 
-1. Database connectivity and table schema completeness.
-2. Wallet encryption key availability and decryption integrity.
-3. Backup snapshot timestamp and WAL lag (< 15 mins).
-4. System health readiness endpoint status.
+1. Database connectivity and public table completeness (`database_tables_exist`).
+2. Wallet encryption key availability and length verification (`wallet_encryption_key_configured`).
+3. Core user table integrity and accessibility (`data_integrity_user_table`).
+4. Prisma migration status and schema drift (`prisma_migration_status`).
+5. Multi-table row count integrity spot-check (`table_row_count_spot_check`).
+6. Disaster recovery retention policy alignment (`dr_retention_policy_aligned`).
+7. Updates the local `dr_rehearsal_last_success_timestamp` gauge on success; CI publishes it to Pushgateway and writes `reports/dr-rehearsal-report.json`.

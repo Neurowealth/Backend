@@ -30,14 +30,17 @@ async function validateAttachmentRefs(
 ): Promise<{ valid: boolean; error?: string }> {
   if (!refs || refs.length === 0) return { valid: true }
   if (refs.length > MAX_ATTACHMENT_REFS) {
-    return { valid: false, error: `Cannot attach more than ${MAX_ATTACHMENT_REFS} files per message` }
+    return {
+      valid: false,
+      error: `Cannot attach more than ${MAX_ATTACHMENT_REFS} files per message`,
+    }
   }
   // Ownership check: each ref must be a TicketAttachment owned by this user.
   // `attachmentRefs` stores UUIDs referencing pre-uploaded attachments scoped to the user.
-  const owned = await (db as any).ticketAttachment?.findMany?.({
+  const owned = (await (db as any).ticketAttachment?.findMany?.({
     where: { id: { in: refs }, userId },
     select: { id: true },
-  }) as { id: string }[] | undefined
+  })) as { id: string }[] | undefined
 
   if (owned === undefined) {
     // TicketAttachment model not yet deployed — skip ownership check but still
@@ -48,8 +51,14 @@ async function validateAttachmentRefs(
   const ownedIds = new Set(owned.map((a) => a.id))
   const foreign = refs.filter((r) => !ownedIds.has(r))
   if (foreign.length > 0) {
-    logger.warn('[SupportTicket] IDOR attempt: foreign attachment refs', { userId, foreign })
-    return { valid: false, error: 'One or more attachment refs are invalid or do not belong to you' }
+    logger.warn('[SupportTicket] IDOR attempt: foreign attachment refs', {
+      userId,
+      foreign,
+    })
+    return {
+      valid: false,
+      error: 'One or more attachment refs are invalid or do not belong to you',
+    }
   }
 
   return { valid: true }

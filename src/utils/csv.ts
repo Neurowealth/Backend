@@ -17,7 +17,11 @@ export function escapeCsvField(value: CsvValue): string {
 
   let field = String(value)
 
-  if (/^[=+\-@\t\r]/.test(field)) {
+  // A plain negative number is data, not a formula. Prefixing it would turn
+  // accounting amounts into text and break bank/QBO imports, so the injection
+  // guard only applies to '-' when the field is not a valid number.
+  const isPlainNumber = /^-?\d+(?:\.\d+)?$/.test(field)
+  if (!isPlainNumber && /^[=+\-@\t\r]/.test(field)) {
     field = `'${field}`
   }
 

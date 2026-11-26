@@ -10,6 +10,8 @@
 
 import { Request, Response, NextFunction } from 'express'
 import { logger } from '../utils/logger'
+import { config } from '../config/env'
+import { safeEqual } from '../utils/safeCompare'
 
 /**
  * Parse comma-separated IP list from env var
@@ -48,7 +50,7 @@ export function internalAuthGuard(
 
   // Check 1: X-Internal-Token header
   if (internalToken && process.env.INTERNAL_SERVICE_TOKEN) {
-    if (internalToken === process.env.INTERNAL_SERVICE_TOKEN) {
+    if (safeEqual(internalToken, process.env.INTERNAL_SERVICE_TOKEN)) {
       logger.info('[AuthGuard] Internal token accepted', {
         clientIp,
         endpoint: req.path,
@@ -74,8 +76,8 @@ export function internalAuthGuard(
   }
 
   // Check 3: Admin token
-  if (adminToken && process.env.ADMIN_API_TOKEN) {
-    if (adminToken === process.env.ADMIN_API_TOKEN) {
+  if (adminToken && config.security.adminApiToken) {
+    if (safeEqual(adminToken, config.security.adminApiToken)) {
       logger.info('[AuthGuard] Admin token accepted for internal endpoint', {
         clientIp,
         endpoint: req.path,
@@ -122,7 +124,7 @@ export function internalAuthGuardStrict(
 
   // Check 1: X-Internal-Token header
   if (internalToken && process.env.INTERNAL_SERVICE_TOKEN) {
-    if (internalToken === process.env.INTERNAL_SERVICE_TOKEN) {
+    if (safeEqual(internalToken, process.env.INTERNAL_SERVICE_TOKEN)) {
       logger.info('[AuthGuard-Strict] Internal token accepted', {
         clientIp,
         endpoint: req.path,
@@ -144,8 +146,8 @@ export function internalAuthGuardStrict(
   }
 
   // Check 3: Admin token
-  if (adminToken && process.env.ADMIN_API_TOKEN) {
-    if (adminToken === process.env.ADMIN_API_TOKEN) {
+  if (adminToken && config.security.adminApiToken) {
+    if (safeEqual(adminToken, config.security.adminApiToken)) {
       logger.info('[AuthGuard-Strict] Admin token accepted', {
         clientIp,
         endpoint: req.path,

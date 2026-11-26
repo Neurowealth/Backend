@@ -142,6 +142,39 @@ export const stellarSignerRotationOverdueDays = new client.Gauge({
   registers: [register],
 })
 
+export const drRehearsalLastSuccessTimestamp = new client.Gauge({
+  name: 'dr_rehearsal_last_success_timestamp',
+  help: 'Unix timestamp in seconds of the last successful disaster recovery backup/restore rehearsal',
+  registers: [register],
+})
+
+/**
+ * Record a successful disaster recovery backup/restore rehearsal timestamp
+ */
+export function recordDrRehearsalSuccess(timestampSeconds?: number): void {
+  const ts = timestampSeconds ?? Math.floor(Date.now() / 1000)
+  drRehearsalLastSuccessTimestamp.set(ts)
+}
+
+/** Publish the CI rehearsal timestamp so Prometheus can scrape it after CI exits. */
+export async function publishDrRehearsalSuccess(
+  pushgatewayUrl: string,
+  timestampSeconds: number
+): Promise<void> {
+  const endpoint = `${pushgatewayUrl.replace(/\/$/, '')}/metrics/job/dr_backup_restore_validation`
+  const response = await fetch(endpoint, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'text/plain; version=0.0.4' },
+    body: `dr_rehearsal_last_success_timestamp ${timestampSeconds}\n`,
+  })
+
+  if (!response.ok) {
+    throw new Error(
+      `Pushgateway rejected DR rehearsal metric with HTTP ${response.status}`
+    )
+  }
+}
+
 // ── Cursor/Lag Metrics ──────────────────────────────────────────────────────────
 
 export const cursorLag = new client.Gauge({
@@ -198,6 +231,36 @@ export const agentBreakerTripsTotal = new client.Counter({
   labelNames: ['scope', 'rule'] as const,
   registers: [register],
 })
+
+// ── Health Check Metrics ────────────────────────────────────────────────────────
+
+export const healthDependencyStatus = new client.Gauge({
+  name: 'health_dependency_status',
+  help: 'Last deep health check result per dependency (0=healthy, 1=degraded, 2=unhealthy)',
+  labelNames: ['dependency', 'criticality'] as const,
+  registers: [register],
+})
+
+export const healthDependencyLatency = new client.Gauge({
+  name: 'health_dependency_latency_ms',
+  help: 'Latency of the last deep health check per dependency in milliseconds',
+  labelNames: ['dependency'] as const,
+  registers: [register],
+})
+
+/**
+ * Record the outcome of a single deep health dependency check.
+ */
+export function recordHealthDependency(
+  dependency: string,
+  criticality: 'critical' | 'non-critical',
+  status: 'healthy' | 'degraded' | 'unhealthy',
+  latencyMs: number
+): void {
+  const value = status === 'healthy' ? 0 : status === 'degraded' ? 1 : 2
+  healthDependencyStatus.set({ dependency, criticality }, value)
+  healthDependencyLatency.set({ dependency }, latencyMs)
+}
 
 /**
  * Record a breaker's current state for dashboards.
@@ -455,6 +518,20 @@ export const fiatRateDriftPct = new client.Histogram({
   registers: [register],
 })
 
+export const fiatLimitEvaluationsTotal = new client.Counter({
+  name: 'fiat_limit_evaluations_total',
+  help: 'Total fiat transaction limit and velocity evaluations (#362)',
+  labelNames: ['outcome', 'reason', 'tier', 'direction'] as const,
+  registers: [register],
+})
+
+export const fiatLimitHeadroomReleasedTotal = new client.Counter({
+  name: 'fiat_limit_headroom_released_total',
+  help: 'Total pending/settled fiat order headroom releases due to FAILED or REFUNDED status (#362)',
+  labelNames: ['status', 'direction'] as const,
+  registers: [register],
+})
+
 // ── Helper Functions ─────────────────────────────────────────────────────────────
 
 /**
@@ -600,7 +677,7 @@ export function recordAnalyticsRequest(
  */
 export function recordBackgroundJob(
   job: string,
-  status: 'success' | 'failed' | 'dry_run',
+  status: 'success' | 'failed' | 'dry_run' | 'skipped',
   durationSeconds: number
 ): void {
   backgroundJobsTotal.inc({ job, status })
@@ -719,6 +796,28 @@ export function recordFiatRateDrift(
   absDriftPct: number
 ): void {
   fiatRateDriftPct.observe({ provider, direction }, absDriftPct)
+}
+
+/**
+ * Record a fiat transaction limit / velocity evaluation (#362).
+ */
+export function recordFiatLimitEvaluation(
+  outcome: 'allowed' | 'denied' | 'soft_warn',
+  reason: string,
+  tier: string,
+  direction: string
+): void {
+  fiatLimitEvaluationsTotal.inc({ outcome, reason, tier, direction })
+}
+
+/**
+ * Record a pending/settled fiat order headroom release on FAILED or REFUNDED (#362).
+ */
+export function recordFiatLimitHeadroomRelease(
+  status: 'FAILED' | 'REFUNDED',
+  direction: string
+): void {
+  fiatLimitHeadroomReleasedTotal.inc({ status, direction })
 }
 
 // ── Outbox Metrics (#325) ────────────────────────────────────────────────────

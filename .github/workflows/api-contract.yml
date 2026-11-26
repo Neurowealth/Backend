@@ -88,7 +88,7 @@ jobs:
           # app.listen(), so allow generous time — and fail loudly with the
           # server log rather than letting a later step report a bare failure.
           for i in $(seq 1 60); do
-            if curl -sf http://localhost:3000/health > /dev/null 2>&1; then
+            if curl -sf http://localhost:3001/health > /dev/null 2>&1; then
               echo "Server ready after ${i}s"
               exit 0
             fi
@@ -104,6 +104,7 @@ jobs:
           exit 1
         env:
           NODE_ENV: test
+          DATABASE_URL: postgresql://user:pass@localhost:5432/db
           # This job boots the real server, and startEventListener() calls
           # getLatestLedger() with no client timeout before app.listen(). Point
           # it at a reachable RPC (as production-smoke.yml does) so an
@@ -113,12 +114,12 @@ jobs:
 
       - name: Health liveness check
         run: |
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:3000/health)
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:3001/health)
           [ "$STATUS" = "200" ] || (echo "Health check returned $STATUS" && exit 1)
 
       - name: Validate health response shape
         run: |
-          BODY=$(curl -sf http://localhost:3000/health)
+          BODY=$(curl -sf http://localhost:3001/health)
           echo "$BODY" | node -e "
             const body = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
             const required = ['status','timestamp','version','environment'];
@@ -128,10 +129,16 @@ jobs:
             console.log('Health response shape OK:', JSON.stringify(body));
           "
 
+      # Probe routes that actually exist and are gated by requireAuth. The old
+      # bare paths had no handler, so they returned 404 regardless of auth and
+      # the step could never catch a missing requireAuth (#798).
       - name: 401 on protected routes without token
         run: |
-          for ROUTE in /api/portfolio /api/transactions /api/vault; do
-            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:3000$ROUTE || true)
-            [ "$STATUS" = "401" ] || [ "$STATUS" = "404" ] || (echo "$ROUTE returned $STATUS, expected 401" && exit 1)
-            echo "$ROUTE -> $STATUS OK"
+          for ROUTE in /api/v1/vault/balance /api/v1/transactions/detail/x; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:3001$ROUTE")
+            if [ "$STATUS" != "401" ]; then
+              echo "::error::$ROUTE returned $STATUS, expected 401"
+              exit 1
+            fi
+            echo "$ROUTE -> 401 OK"
           done

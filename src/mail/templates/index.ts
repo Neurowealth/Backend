@@ -66,3 +66,39 @@ Manage Preferences: https://neurowealth.app/preferences
 
   return { to, subject, html, text }
 }
+
+export function renderAccountRecoveryAlert(
+  to: string,
+  data: {
+    event: string
+    requestId?: string
+    ownerWalletAddress?: string
+    newWalletAddress?: string
+    completesAt?: string | null
+    cancelToken?: string
+  }
+): MailMessage {
+  const subject = 'Account recovery security alert - NeuroWealth'
+  const details = [
+    `Event: ${data.event}`,
+    data.requestId ? `Request: ${data.requestId}` : null,
+    data.ownerWalletAddress
+      ? `Current wallet: ${data.ownerWalletAddress}`
+      : null,
+    data.newWalletAddress
+      ? `Requested new wallet: ${data.newWalletAddress}`
+      : null,
+    data.completesAt ? `Scheduled completion: ${data.completesAt}` : null,
+    data.cancelToken
+      ? `Cancellation token (submit to POST /api/v1/recovery/${data.requestId}/cancel-email): ${data.cancelToken}`
+      : null,
+  ]
+    .filter((line): line is string => line !== null)
+    .join('\n')
+  const instructions = data.cancelToken
+    ? 'If you did not initiate this request, cancel it using the one-time token above or an active session.'
+    : 'Account owners can cancel through an active session. Guardians should not approve an unrecognized request and should contact the account owner.'
+  const text = `A security-sensitive account recovery event occurred.\n\n${details}\n\n${instructions}`
+  const html = `<div style="font-family:sans-serif;padding:20px"><h2>Account recovery security alert</h2><p>A security-sensitive account recovery event occurred.</p><pre>${details}</pre><p>${instructions}</p></div>`
+  return { to, subject, html, text }
+}
