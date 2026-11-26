@@ -366,6 +366,7 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
         error: errorMessage,
       })
       recordJobFailure(jobName, durationMs, error)
+      // Rethrow so resilientScheduler retries and records the run as failed (#772)
       throw error
     }
   })
