@@ -354,8 +354,6 @@ async function submitTreasurySweepPayment(payload: {
 
   const signer = getSponsorKeypair(fromPublicKey)
   const source = await getAccount(fromPublicKey)
-  const signer = getSponsorKeypair(fromAccount.publicKey)
-  const source = await getAccount(fromAccount.publicKey)
   if (payload.asset !== 'XLM' && !payload.assetIssuer) {
     throw new Error(
       `Missing issuer for non-native treasury sweep asset ${payload.asset}`
