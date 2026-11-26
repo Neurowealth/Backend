@@ -90,6 +90,10 @@ export type OutboxPayload =
       method: 'treasury_sweep'
       fromTier: string
       toTier: string
+      /** Explicit source account public key — resolves the per-account sweep ambiguity (#944). */
+      fromPublicKey: string
+      /** Explicit destination account public key (#944). */
+      toPublicKey: string
       asset: string
       amount: number
       sweepId: string

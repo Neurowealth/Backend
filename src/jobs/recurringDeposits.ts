@@ -499,6 +499,7 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
 /**
  * Mark a plan as failed and dispatch notifications.
  * Increments consecutiveFailures for backoff/auto-pause.
+ * Applies exponential backoff to nextRunAt: min(cadence, 2^n hours).
  */
 async function failPlan(
   plan: RecurringDepositPlan,
@@ -506,12 +507,63 @@ async function failPlan(
   decision?: ContributionDecision
 ): Promise<void> {
   const newFailureCount = ((plan as any).consecutiveFailures ?? 0) + 1
+  const config: SmartDcaConfig = {
+    policy: (plan as any).policy ?? 'FIXED',
+    catchUpMode: (plan as any).catchUpMode ?? 'RETRY',
+    pauseOnDrawdownPct: (plan as any).pauseOnDrawdownPct ?? null,
+    doubleOnDrawdown: (plan as any).doubleOnDrawdown ?? false,
+    accumulatedRuns: (plan as any).accumulatedRuns ?? 0,
+    consecutiveFailures: newFailureCount,
+    allocationMap:
+      ((plan as any).allocationMap as Record<string, number> | null) ?? null,
+  }
+
+  // Compute backoff: exponential with floor at 1hr, capped by cadence days
+  const backoffHours = Math.min(
+    Math.pow(2, newFailureCount - 1),
+    cadenceToDays(plan.cadence) * 24
+  )
+  const backoffMs = backoffHours * 60 * 60 * 1000
+  const nextRunAt = new Date(Date.now() + backoffMs)
+
+  // Apply catch-up mode: SKIP advances to next normal occurrence
+  const cadenceDays = cadenceToDays(plan.cadence)
+  let finalNextRunAt: Date
+  let finalAccumulatedRuns: number
+
+  if (config.catchUpMode === 'SKIP') {
+    const skipResult = computeNextRunAfterSkip(
+      config.catchUpMode,
+      plan.nextRunAt,
+      cadenceDays,
+      config.accumulatedRuns
+    )
+    finalNextRunAt = skipResult.nextRunAt
+    finalAccumulatedRuns = skipResult.accumulatedRuns
+  } else if (config.catchUpMode === 'ACCUMULATE') {
+    // For ACCUMULATE, advance and increment accumulated runs
+    const accumResult = computeNextRunAfterSkip(
+      config.catchUpMode,
+      plan.nextRunAt,
+      cadenceDays,
+      config.accumulatedRuns
+    )
+    finalNextRunAt = accumResult.nextRunAt
+    finalAccumulatedRuns = accumResult.accumulatedRuns
+  } else {
+    // RETRY: apply backoff from now, keep nextRunAt unchanged from current scheduled time
+    // but actually we want to retry AFTER the backoff, not at the original time
+    finalNextRunAt = nextRunAt
+    finalAccumulatedRuns = config.accumulatedRuns
+  }
 
   await db.recurringDepositPlan.update({
     where: { id: plan.id },
     data: {
       lastRunStatus: reason,
       consecutiveFailures: newFailureCount,
+      nextRunAt: finalNextRunAt,
+      accumulatedRuns: finalAccumulatedRuns,
     },
   })
 

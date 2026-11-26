@@ -75,6 +75,7 @@ import { scheduleMessageDeliverySweep } from './jobs/messageDeliverySweep'
 import { scheduleSignerRotation } from './jobs/signerRotation'
 import { scheduleLoanAccrual } from './jobs/loanAccrual'
 import { scheduleLoanLiquidationMonitor } from './jobs/loanLiquidationMonitor'
+import { scheduleTreasurySweeps } from './jobs/treasurySweep'
 import { scheduleLinkedExternalWalletSync } from './jobs/linkedExternalWalletSync'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { startEventBridge, stopEventBridge } from './events/bridge'
@@ -135,6 +136,7 @@ let outboundNotificationsHandle: NodeJS.Timeout | null = null
 let linkedExternalWalletSyncHandle: NodeJS.Timeout | null = null
 let loanAccrualHandle: NodeJS.Timeout | null = null
 let loanLiquidationHandle: NodeJS.Timeout | null = null
+let treasurySweepHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -505,6 +507,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Loan liquidation monitor cleared')
   }
 
+  if (treasurySweepHandle) {
+    clearInterval(treasurySweepHandle)
+    treasurySweepHandle = null
+    logger.info('[Shutdown] Treasury sweep scheduler cleared')
+  }
+
   try {
     stopFeeOracle()
     logger.info('[Shutdown] Fee oracle stopped')
@@ -778,6 +786,8 @@ async function main(): Promise<void> {
   // must not value them on interest the accrual job has not yet recorded.
   loanAccrualHandle = scheduleLoanAccrual()
   loanLiquidationHandle = scheduleLoanLiquidationMonitor()
+  // #945 — automated treasury sweeps
+  treasurySweepHandle = scheduleTreasurySweeps()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

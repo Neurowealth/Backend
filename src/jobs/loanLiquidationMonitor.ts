@@ -40,6 +40,10 @@ import { scheduleResilientJob } from './resilientScheduler'
 import { dispatchInBackground } from '../outbox/dispatcher'
 import { accrueInterest } from '../lending/accrual'
 import { currentLtv, isLiquidationTriggered } from '../lending/risk'
+import { alertingService } from '../services/alerting'
+
+/** Collateral marks older than this are treated as stale (#942). Never liquidate on stale data. */
+const MAX_COLLATERAL_AGE_MS = 24 * 60 * 60 * 1000 // 24 hours
 
 export const LOAN_LIQUIDATION_JOB_NAME = 'loan-liquidation-monitor'
 
@@ -105,6 +109,7 @@ export async function runLiquidationSweep(
         select: {
           assetSymbol: true,
           currentValue: true,
+          updatedAt: true,
           user: { select: { network: true } },
         },
       },
@@ -124,6 +129,7 @@ export async function runLiquidationSweep(
     position: {
       assetSymbol: string
       currentValue: unknown
+      updatedAt: Date
       user: { network: string }
     }
   }>
@@ -142,6 +148,38 @@ export async function runLiquidationSweep(
       const debt = accrued.principalAmount + accrued.interestAccrued
       const collateralValue = Number(loan.position.currentValue)
       const threshold = Number(loan.liquidationLtvThreshold)
+
+      // ── Stale price guard (#942) ──────────────────────────────────────────
+      // Liquidating on a stale mark can force-sell a position that is actually
+      // healthy. If the collateral value hasn't been updated within the max
+      // age, skip this loan and emit an alert so the operations team knows a
+      // re-valuation is needed.
+      const collateralAgeMs =
+        now.getTime() - new Date(loan.position.updatedAt).getTime()
+      if (collateralAgeMs > MAX_COLLATERAL_AGE_MS) {
+        logger.warn(
+          '[Lending] Skipping liquidation check — collateral value is stale',
+          {
+            loanId: loan.id,
+            collateralAgeHours: Math.round(collateralAgeMs / 3_600_000),
+            positionId: loan.positionId,
+          }
+        )
+        alertingService
+          .emit(
+            {
+              title: 'Stale collateral — liquidation check skipped',
+              description: `Loan ${loan.id} (user ${loan.userId}): position ${loan.positionId} has not been re-valued in ${Math.round(collateralAgeMs / 3_600_000)}h. Liquidation check skipped until a fresh price is available.`,
+              severity: 'warning',
+              component: 'lending',
+              metadata: { loanId: loan.id, positionId: loan.positionId },
+            },
+            `lending:stale_collateral:${loan.positionId}`
+          )
+          .catch(() => {})
+        continue
+      }
+
       const ltv = currentLtv({ debt, collateralValue })
 
       await db.collateralLoan.update({

@@ -504,6 +504,19 @@ export async function mirrorLinkedTransaction(
     }
     return
   }
+
+  // Treasury sweeps have no Transaction row; update the TreasurySweep row
+  // so operators can distinguish moved sweeps from failed ones (#945).
+  if (payload.method === 'treasury_sweep') {
+    await db.treasurySweep.updateMany({
+      where: { id: payload.sweepId },
+      data: {
+        status: outcome.status === 'CONFIRMED' ? 'CONFIRMED' : 'FAILED',
+      },
+    })
+    return
+  }
+
   // Some payload kinds have no linked Transaction row; nothing to mirror.
   if (!('transactionId' in payload)) return
   // updateMany (not update) so a missing row is a silent no-op, not a throw.
