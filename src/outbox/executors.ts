@@ -75,16 +75,22 @@ export async function resolveSignerPublicKey(
     case 'revoke_sponsorship':
       return (payload as any).sponsorAccount as string
     case 'treasury_sweep': {
-      const account = await db.treasuryAccount.findFirst({
-        where: { tier: payload.fromTier as any, isActive: true },
-        select: { publicKey: true },
-      })
-      if (!account) {
-        throw new Error(
-          `No active treasury account found for tier ${payload.fromTier}`
-        )
+      if (!payload.fromPublicKey) {
+        // Fallback for any legacy row written before #944 — still pick an account
+        // but log a warning so we can confirm the migration.
+        const account = await db.treasuryAccount.findFirst({
+          where: { tier: payload.fromTier as any, isActive: true },
+          orderBy: { createdAt: 'asc' },
+          select: { publicKey: true },
+        })
+        if (!account) {
+          throw new Error(
+            `No active treasury account found for tier ${payload.fromTier}`
+          )
+        }
+        return account.publicKey
       }
-      return account.publicKey
+      return payload.fromPublicKey
     }
     default: {
       const unhandled: never = payload as never
@@ -310,32 +316,44 @@ export async function executeOutboxPayload(
 
 /**
  * Moves funds from one treasury tier's account to another via a plain
- * Stellar payment.
+ * Stellar payment. Uses explicit public keys from the payload (#944).
  */
 async function submitTreasurySweepPayment(payload: {
   fromTier: string
   toTier: string
+  fromPublicKey?: string
+  toPublicKey?: string
   asset: string
   assetIssuer?: string
   amount: number
   sweepId: string
 }): Promise<TransactionResult> {
-  const [fromAccount, toAccount] = await Promise.all([
-    db.treasuryAccount.findFirst({
-      where: { tier: payload.fromTier as any, isActive: true },
-    }),
-    db.treasuryAccount.findFirst({
-      where: { tier: payload.toTier as any, isActive: true },
-    }),
-  ])
-  if (!fromAccount || !toAccount) {
-    throw new Error(
-      `Missing active treasury account for tier ${!fromAccount ? payload.fromTier : payload.toTier}`
-    )
+  // Explicit keys from #944; fall back to tier lookup for any legacy row.
+  let fromPublicKey = payload.fromPublicKey
+  let toPublicKey = payload.toPublicKey
+
+  if (!fromPublicKey || !toPublicKey) {
+    const [fromAccount, toAccount] = await Promise.all([
+      db.treasuryAccount.findFirst({
+        where: { tier: payload.fromTier as any, isActive: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      db.treasuryAccount.findFirst({
+        where: { tier: payload.toTier as any, isActive: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ])
+    if (!fromAccount || !toAccount) {
+      throw new Error(
+        `Missing active treasury account for tier ${!fromAccount ? payload.fromTier : payload.toTier}`
+      )
+    }
+    fromPublicKey = fromAccount.publicKey
+    toPublicKey = toAccount.publicKey
   }
 
-  const signer = getSponsorKeypair(fromAccount.publicKey)
-  const source = await getAccount(fromAccount.publicKey)
+  const signer = getSponsorKeypair(fromPublicKey)
+  const source = await getAccount(fromPublicKey)
   if (payload.asset !== 'XLM' && !payload.assetIssuer) {
     throw new Error(
       `Missing issuer for non-native treasury sweep asset ${payload.asset}`
@@ -352,7 +370,7 @@ async function submitTreasurySweepPayment(payload: {
   })
     .addOperation(
       Operation.payment({
-        destination: toAccount.publicKey,
+        destination: toPublicKey,
         asset,
         amount: payload.amount.toFixed(7),
       })

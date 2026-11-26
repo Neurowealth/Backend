@@ -159,6 +159,7 @@ export async function originateLoan(
     currentValue: unknown
     assetSymbol: string
     protocolName: string
+    updatedAt: Date
     user: { network: string; walletAddress: string }
   } | null
 
@@ -167,6 +168,33 @@ export async function originateLoan(
   }
   if (position.status !== 'ACTIVE') {
     throw new AppError(409, 'Only an active position can back a loan')
+  }
+
+  // ── Cross-asset guard (#942) ──────────────────────────────────────────────
+  // collateralValue is denominated in position.assetSymbol. Lending against it
+  // in a different asset silently divides debt by collateral in unrelated units
+  // (e.g. 1 XLM = 1 USDC, inflating borrowing power by ~10x at current prices).
+  // We only support same-asset loans in v1; reject anything else.
+  if (position.assetSymbol.toUpperCase() !== borrowedAsset.toUpperCase()) {
+    throw new AppError(
+      400,
+      `Cross-asset loans are not supported: collateral is denominated in ${position.assetSymbol} but the requested loan is in ${borrowedAsset}. Use a ${position.assetSymbol} position or borrow ${position.assetSymbol}.`
+    )
+  }
+
+  // ── Stale collateral value guard (#942) ──────────────────────────────────
+  // position.updatedAt advances whenever the agent's snapshot marks the
+  // position (src/agent/snapshotter.ts). If that timestamp is older than
+  // MAX_COLLATERAL_AGE_MS we refuse to originate rather than lend against a
+  // mark that may be wildly wrong. The same failure-closed principle applies
+  // to liquidation: a stale price must never trigger a forced sale.
+  const MAX_COLLATERAL_AGE_MS = 24 * 60 * 60 * 1000 // 24 hours
+  const collateralAgeMs = Date.now() - new Date(position.updatedAt).getTime()
+  if (collateralAgeMs > MAX_COLLATERAL_AGE_MS) {
+    throw new AppError(
+      409,
+      `Collateral value is stale (last updated ${Math.round(collateralAgeMs / 3_600_000)}h ago). The position must be re-valued before a loan can be sized against it.`
+    )
   }
 
   const collateralValue = Number(position.currentValue)

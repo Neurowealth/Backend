@@ -584,7 +584,9 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
 
 /**
  * Mark a plan as failed and dispatch notifications.
- * Increments consecutiveFailures for backoff/auto-pause.
+ * Increments consecutiveFailures and applies exponential backoff to nextRunAt:
+ * min(2^n hours, cadence). SKIP/ACCUMULATE plans advance nextRunAt to the
+ * next normal occurrence on failure, matching their documented catch-up semantics.
  */
 async function failPlan(
   plan: RecurringDepositPlan,
@@ -592,12 +594,51 @@ async function failPlan(
   decision?: ContributionDecision
 ): Promise<void> {
   const newFailureCount = ((plan as any).consecutiveFailures ?? 0) + 1
+  const catchUpMode: string = (plan as any).catchUpMode ?? 'RETRY'
+  const accumulatedRuns: number = (plan as any).accumulatedRuns ?? 0
+  const now = new Date()
+
+  // Compute backoff for RETRY: 2^(n-1) hours, capped at the full cadence length.
+  // SKIP and ACCUMULATE advance to the next scheduled occurrence instead.
+  let finalNextRunAt: Date
+  let finalAccumulatedRuns: number
+
+  if (catchUpMode === 'SKIP' || catchUpMode === 'ACCUMULATE') {
+    // Reuse the standard skip state machine — treats this failure as a skipped run.
+    const result = computeNextRunAfterSkip(
+      catchUpMode as any,
+      plan.nextRunAt,
+      plan.cadence,
+      accumulatedRuns,
+      cadenceAnchorDay(plan),
+      now
+    )
+    finalNextRunAt = result.nextRunAt
+    finalAccumulatedRuns = result.accumulatedRuns
+  } else {
+    // RETRY: exponential backoff from now, never re-queue at the original time.
+    // Cap at the full cadence period: WEEKLY=7d, BIWEEKLY=14d, MONTHLY=30d.
+    const cadenceCapMs =
+      plan.cadence === 'WEEKLY'
+        ? 7 * 24 * 60 * 60 * 1000
+        : plan.cadence === 'BIWEEKLY'
+          ? 14 * 24 * 60 * 60 * 1000
+          : 30 * 24 * 60 * 60 * 1000
+    const backoffMs = Math.min(
+      Math.pow(2, newFailureCount - 1) * 60 * 60 * 1000,
+      cadenceCapMs
+    )
+    finalNextRunAt = new Date(now.getTime() + backoffMs)
+    finalAccumulatedRuns = accumulatedRuns
+  }
 
   await db.recurringDepositPlan.update({
     where: { id: plan.id },
     data: {
       lastRunStatus: reason,
       consecutiveFailures: newFailureCount,
+      nextRunAt: finalNextRunAt,
+      accumulatedRuns: finalAccumulatedRuns,
     },
   })
 
