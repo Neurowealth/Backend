@@ -102,7 +102,6 @@ async function planSweeps(
 export async function evaluateTreasuryBalances(): Promise<SweepPlan[]> {
   const plans = (await planSweeps(false)).map(
     ({ fromTier, toTier, fromPublicKey, toPublicKey, asset, amount, reason }) => ({
-    ({ fromTier, toTier, asset, assetIssuer, amount, reason }) => ({
       fromTier,
       toTier,
       fromPublicKey,

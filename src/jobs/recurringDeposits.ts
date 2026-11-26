@@ -584,8 +584,9 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
 
 /**
  * Mark a plan as failed and dispatch notifications.
- * Increments consecutiveFailures for backoff/auto-pause.
- * Applies exponential backoff to nextRunAt: min(cadence, 2^n hours).
+ * Increments consecutiveFailures and applies exponential backoff to nextRunAt:
+ * min(2^n hours, cadence). SKIP/ACCUMULATE plans advance nextRunAt to the
+ * next normal occurrence on failure, matching their documented catch-up semantics.
  */
 async function failPlan(
   plan: RecurringDepositPlan,
@@ -593,54 +594,42 @@ async function failPlan(
   decision?: ContributionDecision
 ): Promise<void> {
   const newFailureCount = ((plan as any).consecutiveFailures ?? 0) + 1
-  const config: SmartDcaConfig = {
-    policy: (plan as any).policy ?? 'FIXED',
-    catchUpMode: (plan as any).catchUpMode ?? 'RETRY',
-    pauseOnDrawdownPct: (plan as any).pauseOnDrawdownPct ?? null,
-    doubleOnDrawdown: (plan as any).doubleOnDrawdown ?? false,
-    accumulatedRuns: (plan as any).accumulatedRuns ?? 0,
-    consecutiveFailures: newFailureCount,
-    allocationMap:
-      ((plan as any).allocationMap as Record<string, number> | null) ?? null,
-  }
+  const catchUpMode: string = (plan as any).catchUpMode ?? 'RETRY'
+  const accumulatedRuns: number = (plan as any).accumulatedRuns ?? 0
+  const now = new Date()
 
-  // Compute backoff: exponential with floor at 1hr, capped by cadence days
-  const backoffHours = Math.min(
-    Math.pow(2, newFailureCount - 1),
-    cadenceToDays(plan.cadence) * 24
-  )
-  const backoffMs = backoffHours * 60 * 60 * 1000
-  const nextRunAt = new Date(Date.now() + backoffMs)
-
-  // Apply catch-up mode: SKIP advances to next normal occurrence
-  const cadenceDays = cadenceToDays(plan.cadence)
+  // Compute backoff for RETRY: 2^(n-1) hours, capped at the full cadence length.
+  // SKIP and ACCUMULATE advance to the next scheduled occurrence instead.
   let finalNextRunAt: Date
   let finalAccumulatedRuns: number
 
-  if (config.catchUpMode === 'SKIP') {
-    const skipResult = computeNextRunAfterSkip(
-      config.catchUpMode,
+  if (catchUpMode === 'SKIP' || catchUpMode === 'ACCUMULATE') {
+    // Reuse the standard skip state machine — treats this failure as a skipped run.
+    const result = computeNextRunAfterSkip(
+      catchUpMode as any,
       plan.nextRunAt,
-      cadenceDays,
-      config.accumulatedRuns
+      plan.cadence,
+      accumulatedRuns,
+      cadenceAnchorDay(plan),
+      now
     )
-    finalNextRunAt = skipResult.nextRunAt
-    finalAccumulatedRuns = skipResult.accumulatedRuns
-  } else if (config.catchUpMode === 'ACCUMULATE') {
-    // For ACCUMULATE, advance and increment accumulated runs
-    const accumResult = computeNextRunAfterSkip(
-      config.catchUpMode,
-      plan.nextRunAt,
-      cadenceDays,
-      config.accumulatedRuns
-    )
-    finalNextRunAt = accumResult.nextRunAt
-    finalAccumulatedRuns = accumResult.accumulatedRuns
+    finalNextRunAt = result.nextRunAt
+    finalAccumulatedRuns = result.accumulatedRuns
   } else {
-    // RETRY: apply backoff from now, keep nextRunAt unchanged from current scheduled time
-    // but actually we want to retry AFTER the backoff, not at the original time
-    finalNextRunAt = nextRunAt
-    finalAccumulatedRuns = config.accumulatedRuns
+    // RETRY: exponential backoff from now, never re-queue at the original time.
+    // Cap at the full cadence period: WEEKLY=7d, BIWEEKLY=14d, MONTHLY=30d.
+    const cadenceCapMs =
+      plan.cadence === 'WEEKLY'
+        ? 7 * 24 * 60 * 60 * 1000
+        : plan.cadence === 'BIWEEKLY'
+          ? 14 * 24 * 60 * 60 * 1000
+          : 30 * 24 * 60 * 60 * 1000
+    const backoffMs = Math.min(
+      Math.pow(2, newFailureCount - 1) * 60 * 60 * 1000,
+      cadenceCapMs
+    )
+    finalNextRunAt = new Date(now.getTime() + backoffMs)
+    finalAccumulatedRuns = accumulatedRuns
   }
 
   await db.recurringDepositPlan.update({
