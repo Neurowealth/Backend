@@ -537,6 +537,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(treasurySweepHandle)
     treasurySweepHandle = null
     logger.info('[Shutdown] Treasury sweep scheduler cleared')
+  }
+
   if (accountRecoveryHandle) {
     clearInterval(accountRecoveryHandle)
     accountRecoveryHandle = null

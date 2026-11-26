@@ -48,6 +48,54 @@
       "owner": "@BernardOnuh",
       "reason": "smol-toml quadratic parse issue; non-user-facing config parser",
       "expiresOn": "2026-11-30"
+    },
+    {
+      "advisory": "follow-redirects",
+      "owner": "@BernardOnuh",
+      "reason": "GHSA-mrwp-f3q8-3g9p: follow-redirects credentials leak via proxy; no direct user-facing HTTP proxy usage. Fix tracked in Dependabot PR",
+      "expiresOn": "2027-02-28"
+    },
+    {
+      "advisory": "systeminformation",
+      "owner": "@BernardOnuh",
+      "reason": "GHSA-4vjg-vx72-qq4g / GHSA-7648-jmwf-vw7j / GHSA-3f7j-7jwc-fxfj: systeminformation command injection; used only in internal monitoring, not exposed to untrusted input. Fix tracked in Dependabot PR",
+      "expiresOn": "2027-02-28"
+    },
+    {
+      "advisory": "@opentelemetry/instrumentation-http",
+      "owner": "@BernardOnuh",
+      "reason": "GHSA-3v2p-hm54-8qcq: OTel HTTP instrumentation span attribute exposure; same advisory class as GHSA-qqmp-wf37-98f9 already excepted. Fix tracked in P3 upgrade plan",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "advisory": "gaxios",
+      "owner": "@BernardOnuh",
+      "reason": "Transitive dependency via Google Cloud client libs; no direct exposure. Fix tracked in Dependabot PR",
+      "expiresOn": "2027-02-28"
+    },
+    {
+      "advisory": "gcp-metadata",
+      "owner": "@BernardOnuh",
+      "reason": "Transitive dependency via Google Cloud client libs; no direct exposure. Fix tracked in Dependabot PR",
+      "expiresOn": "2027-02-28"
+    },
+    {
+      "advisory": "glob",
+      "owner": "@BernardOnuh",
+      "reason": "GHSA-3g3m-2fjr-6pw4: glob ReDoS; used only in build tooling, not in request paths. Fix tracked in Dependabot PR",
+      "expiresOn": "2027-02-28"
+    },
+    {
+      "advisory": "qs",
+      "owner": "@BernardOnuh",
+      "reason": "GHSA-6pq8-jhm2-2vcw: qs prototype pollution; Express already applies its own query parser, not exposed to untrusted input directly. Fix tracked in Dependabot PR",
+      "expiresOn": "2027-02-28"
+    },
+    {
+      "advisory": "rimraf",
+      "owner": "@BernardOnuh",
+      "reason": "Transitive dependency via build tooling; not present in production runtime. Fix tracked in Dependabot PR",
+      "expiresOn": "2027-02-28"
     }
   ]
 }
