@@ -790,7 +790,7 @@ model Transaction {
   // replaying a settlement can never double-apply it.
   loanSettlementAppliedAt DateTime?
 
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Restrict)
   position     Position?     @relation(fields: [positionId], references: [id])
   fiatOrders   FiatOrder[]
   costBasisLot CostBasisLot?
@@ -1494,7 +1494,7 @@ model FiatOrder {
   createdAt           DateTime        @default(now())
   updatedAt           DateTime        @updatedAt
 
-  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User         @relation(fields: [userId], references: [id], onDelete: Restrict)
   transaction Transaction? @relation(fields: [transactionId], references: [id])
 
   @@unique([provider, providerOrderId])
@@ -1558,7 +1558,7 @@ model KycProfile {
   reviewNote  String?
   updatedAt   DateTime  @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
 
   @@map("kyc_profiles")
 }
@@ -2222,8 +2222,8 @@ model CollateralLoan {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user        User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  position    Position               @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  user        User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  position    Position               @relation(fields: [positionId], references: [id], onDelete: Restrict)
   events      LoanLiquidationEvent[]
   badDebt     PlatformBadDebt[]
   // #532 — the disbursal and every repayment recorded against this loan.
@@ -2437,7 +2437,7 @@ model ComplianceCase {
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 
-  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User        @relation(fields: [userId], references: [id], onDelete: Restrict)
   events CaseEvent[]
 
   @@index([userId])
