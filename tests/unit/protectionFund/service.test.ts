@@ -182,6 +182,19 @@ describe('src/protectionFund/service', () => {
         reviewCoverageEvent('event-1', true, 'admin-2')
       ).rejects.toThrow('not pending review')
     })
+
+    it('rejects a review by the same admin who declared the event (#758)', async () => {
+      mockFindUnique.mockResolvedValue({
+        id: 'event-1',
+        status: 'PENDING_REVIEW',
+        declaredBy: 'admin-1',
+      })
+
+      await expect(
+        reviewCoverageEvent('event-1', true, 'admin-1')
+      ).rejects.toThrow('different admin than the declarer')
+      expect(mockUpdate).not.toHaveBeenCalled()
+    })
   })
 
   describe('getMyCoverage', () => {

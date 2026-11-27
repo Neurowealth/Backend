@@ -174,6 +174,12 @@ export async function reviewCoverageEvent(
   if (!event) throw new Error('Coverage event not found')
   if (event.status !== 'PENDING_REVIEW')
     throw new Error(`Event is not pending review (status: ${event.status})`)
+  // #758 — dual-review: the admin who declared the event cannot review it.
+  // The route maps this to 403.
+  if (event.declaredBy === reviewedBy)
+    throw new Error(
+      'Reviewer must be a different admin than the declarer'
+    )
 
   const updated = await db.coverageEvent.update({
     where: { id: eventId },

@@ -107,7 +107,7 @@ export const API_ROUTES: ApiRoute[] = [
   // limits, and it must not inherit portfolio's read-only scope set.
   { path: 'loans', handlers: [loansRouter] },
   // #533 — protocol-risk protection fund
-  { path: 'protection-fund', handlers: [protectionFundRouter] },
+  { path: 'protection-fund', handlers: [adminRateLimiter, protectionFundRouter] },
   // #534 — user settings (display currency)
   { path: 'settings', handlers: [settingsRouter] },
   { path: 'vault', handlers: [vaultRouter] },
