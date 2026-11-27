@@ -11,9 +11,14 @@
  * - Deletion happens in a DB transaction — all or nothing
  * - Audit log preserved even after user deletion (via onDelete: SetNull)
  * - Financial records (tax lots, disposals) anonymized, not deleted
+ * - Regulated AML/KYC records (transactions, fiat orders, KYC profile,
+ *   compliance cases, collateral loans) are retained: they are re-pointed at a
+ *   pseudonymous retention stub before the user is deleted (#934)
+ * - Erasure is refused while a compliance case is open or a loan is active
  * - Referral conversions preserved (owner/referred IDs nullified)
  */
 
+import { randomUUID } from 'crypto'
 import { Prisma } from '@prisma/client'
 import db from '../db'
 import { logger } from '../utils/logger'
@@ -28,6 +33,54 @@ export class ErasureGuardError extends Error {
   ) {
     super(message)
     this.name = 'ErasureGuardError'
+  }
+}
+
+/**
+ * Compliance case statuses that mean the case is still being worked. A user
+ * under one of these cannot be erased (#934): the case file is evidence in a
+ * live investigation or an unfiled SAR. SAR_FILED, CLEARED and
+ * CLOSED_NO_ACTION are concluded, so those cases are retained and anonymized
+ * rather than blocking erasure.
+ */
+export const OPEN_COMPLIANCE_CASE_STATUSES = [
+  'OPEN',
+  'TRIAGE',
+  'INVESTIGATING',
+  'ESCALATED',
+  'PENDING_SAR',
+] as const
+
+/**
+ * Refuse erasure for a user with an open compliance case or an outstanding
+ * (ACTIVE) collateral loan. Accepts a transaction client so the same check can
+ * be repeated atomically inside the erasure transaction.
+ */
+export async function assertErasureAllowed(
+  client: {
+    complianceCase: { count: (args: any) => Promise<number> }
+    collateralLoan: { count: (args: any) => Promise<number> }
+  },
+  userId: string
+): Promise<void> {
+  const [openCases, activeLoans] = await Promise.all([
+    client.complianceCase.count({
+      where: { userId, status: { in: [...OPEN_COMPLIANCE_CASE_STATUSES] } },
+    }),
+    client.collateralLoan.count({ where: { userId, status: 'ACTIVE' } }),
+  ])
+
+  if (openCases > 0) {
+    throw new ErasureGuardError(
+      `Erasure blocked: user has ${openCases} open compliance case(s). Resolve or close them before erasing.`,
+      409
+    )
+  }
+  if (activeLoans > 0) {
+    throw new ErasureGuardError(
+      `Erasure blocked: user has ${activeLoans} outstanding collateral loan(s). Repay or liquidate them before erasing.`,
+      409
+    )
   }
 }
 
@@ -63,10 +116,8 @@ export interface ErasureSummary {
   deletedRecords: {
     sessions: number
     positions: number
-    transactions: number
     agentLogs: number
     webhookSubscriptions: number
-    fiatOrders: number
     recurringDepositPlans: number
     alertRules: number
     savingsGoals: number
@@ -79,6 +130,13 @@ export interface ErasureSummary {
     costBasisLots: number
     lotDisposals: number
     portfolioAttributions: number
+    // Regulated records kept for AML/KYC retention (#934): ownership moves to
+    // a pseudonymous retention stub; the rows themselves are not deleted.
+    transactions: number
+    fiatOrders: number
+    complianceCases: number
+    collateralLoans: number
+    kycProfiles: number
   }
   preservedRecords: {
     adminAuditLogs: number
@@ -297,6 +355,11 @@ export async function executeErasure(
     )
   }
 
+  // #934: an open compliance case or an outstanding loan blocks erasure. Checked
+  // before the request is claimed, so a blocked request stays APPROVED and can
+  // be retried once the case is closed or the loan settled.
+  await assertErasureAllowed(db, userId)
+
   // Claim execution atomically via Compare-And-Set (CAS) transition from APPROVED -> PROCESSING (#684)
   const claimResult = await db.erasureRequest.updateMany({
     where: {
@@ -393,6 +456,10 @@ export async function executeErasure(
           }),
         ])
 
+        // 1b. Re-check the guard inside the transaction: a case could have been
+        // opened between the pre-check and now (#934).
+        await assertErasureAllowed(tx as any, userId)
+
         // 2. Anonymize financial records (preserve for regulatory/audit)
         // Tax lots and disposals: set userId to a sentinel "deleted-user" marker
         const DELETED_USER_SENTINEL = '00000000-0000-0000-0000-000000000000'
@@ -421,10 +488,70 @@ export async function executeErasure(
 
         // 4. Delete user and let cascade relationships handle the rest
         // Schema has onDelete: Cascade for most relations:
-        // - Session, Position, Transaction, AgentLog, WebhookSubscription
-        // - FiatOrder, RecurringDepositPlan, AlertRule, SavingsGoal
+        // - Session, Position, AgentLog, WebhookSubscription
+        // - RecurringDepositPlan, AlertRule, SavingsGoal
         // - SubAccount, PublishedStrategy, StrategyFollow, ReferralCode
         // - CustodialWallet (if exists)
+
+        // 3b. Retain regulated AML/KYC records (#934). They must outlive the
+        // user, so re-point them at a pseudonymous retention stub (a fresh id
+        // per erased user, so one subject's records stay linkable for
+        // investigators but carry no wallet, email or other identifier) before
+        // the user row is deleted. The foreign keys are ON DELETE RESTRICT, so
+        // anything left pointing at the user would make the delete fail
+        // instead of silently cascading.
+        const retentionStubId = randomUUID()
+        await (tx as any).user.create({
+          data: {
+            id: retentionStubId,
+            walletAddress: `erased:${retentionStubId}`,
+            isActive: false,
+          },
+        })
+
+        // A loan's collateral position must outlive the user with the loan.
+        const retainedLoans: Array<{ positionId: string }> =
+          (await (tx as any).collateralLoan.findMany({
+            where: { userId },
+            select: { positionId: true },
+          })) ?? []
+        const retainedPositionIds = retainedLoans.map((l) => l.positionId)
+        if (retainedPositionIds.length > 0) {
+          await (tx as any).position.updateMany({
+            where: { id: { in: retainedPositionIds } },
+            data: { userId: retentionStubId },
+          })
+        }
+
+        const retainedTransactions = await (tx as any).transaction.updateMany({
+          where: { userId },
+          data: { userId: retentionStubId, actingAsUserId: null },
+        })
+        const retainedFiatOrders = await (tx as any).fiatOrder.updateMany({
+          where: { userId },
+          data: { userId: retentionStubId },
+        })
+        const retainedComplianceCases = await (
+          tx as any
+        ).complianceCase.updateMany({
+          where: { userId },
+          data: { userId: retentionStubId },
+        })
+        const retainedCollateralLoans = await (
+          tx as any
+        ).collateralLoan.updateMany({
+          where: { userId },
+          data: { userId: retentionStubId },
+        })
+        // KycProfile.userId is the primary key, so it is moved with an update.
+        const retainedKycProfiles = await (tx as any).kycProfile.updateMany({
+          where: { userId },
+          data: {
+            userId: retentionStubId,
+            providerRef: null,
+            reviewNote: null,
+          },
+        })
 
         await eraseScalarUserRefs(tx, userId)
 
@@ -447,10 +574,8 @@ export async function executeErasure(
           deletedRecords: {
             sessions: sessionsCount,
             positions: positionsCount,
-            transactions: transactionsCount,
             agentLogs: agentLogsCount,
             webhookSubscriptions: webhookSubscriptionsCount,
-            fiatOrders: fiatOrdersCount,
             recurringDepositPlans: recurringDepositPlansCount,
             alertRules: alertRulesCount,
             savingsGoals: savingsGoalsCount,
@@ -463,6 +588,11 @@ export async function executeErasure(
             costBasisLots: costBasisLotsCount,
             lotDisposals: lotDisposalsCount,
             portfolioAttributions: portfolioAttributionsCount,
+            transactions: retainedTransactions?.count ?? transactionsCount,
+            fiatOrders: retainedFiatOrders?.count ?? fiatOrdersCount,
+            complianceCases: retainedComplianceCases?.count ?? 0,
+            collateralLoans: retainedCollateralLoans?.count ?? 0,
+            kycProfiles: retainedKycProfiles?.count ?? 0,
           },
           preservedRecords: {
             adminAuditLogs: adminAuditLogsCount,
@@ -485,7 +615,7 @@ export async function executeErasure(
 
     await alertingService.emit({
       title: 'Privacy erasure completed',
-      description: `User ${user.walletAddress} data has been deleted. ${summary.deletedRecords.transactions} transactions deleted, ${summary.anonymizedRecords.costBasisLots} tax lots anonymized.`,
+      description: `User ${user.walletAddress} data has been deleted. ${summary.anonymizedRecords.transactions} transactions retained and anonymized, ${summary.anonymizedRecords.costBasisLots} tax lots anonymized.`,
       severity: 'info',
       component: 'privacy-erasure',
       dedupKey: `erasure-complete-${requestId}`,
@@ -495,6 +625,17 @@ export async function executeErasure(
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown error'
+
+    // A guard that trips inside the transaction (a case opened mid-flight) is
+    // not a failure of the erasure itself: hand the request back so it can be
+    // retried once the blocker is cleared (#934).
+    if (error instanceof ErasureGuardError) {
+      await db.erasureRequest.updateMany({
+        where: { id: requestId, status: ErasureRequestStatus.PROCESSING },
+        data: { status: ErasureRequestStatus.APPROVED },
+      })
+      throw error
+    }
 
     await db.erasureRequest.updateMany({
       where: { id: requestId, status: ErasureRequestStatus.PROCESSING },
@@ -618,6 +759,9 @@ export async function previewErasure(
     adminAuditLogsCount,
     referralAsOwnerCount,
     referralAsReferredCount,
+    complianceCasesCount,
+    collateralLoansCount,
+    kycProfilesCount,
   ] = await Promise.all([
     db.session.count({ where: { userId } }),
     db.position.count({ where: { userId } }),
@@ -660,16 +804,17 @@ export async function previewErasure(
         referredUserId: userId,
       },
     }),
+    db.complianceCase.count({ where: { userId } }),
+    db.collateralLoan.count({ where: { userId } }),
+    db.kycProfile.count({ where: { userId } }),
   ])
 
   return {
     deletedRecords: {
       sessions: sessionsCount,
       positions: positionsCount,
-      transactions: transactionsCount,
       agentLogs: agentLogsCount,
       webhookSubscriptions: webhookSubscriptionsCount,
-      fiatOrders: fiatOrdersCount,
       recurringDepositPlans: recurringDepositPlansCount,
       alertRules: alertRulesCount,
       savingsGoals: savingsGoalsCount,
@@ -682,6 +827,11 @@ export async function previewErasure(
       costBasisLots: costBasisLotsCount,
       lotDisposals: lotDisposalsCount,
       portfolioAttributions: portfolioAttributionsCount,
+      transactions: transactionsCount,
+      fiatOrders: fiatOrdersCount,
+      complianceCases: complianceCasesCount,
+      collateralLoans: collateralLoansCount,
+      kycProfiles: kycProfilesCount,
     },
     preservedRecords: {
       adminAuditLogs: adminAuditLogsCount,
