@@ -293,7 +293,7 @@ function parseByteLimit(value: string | undefined, fallback: string): string {
  *   loopback             → trust loopback addresses
  *   loopback,linklocal   → comma-separated Express trust-proxy keywords or IPs
  */
-function parseTrustProxy(
+export function parseTrustProxy(
   value: string | undefined
 ): boolean | number | string | string[] {
   if (!value?.trim()) return 1
