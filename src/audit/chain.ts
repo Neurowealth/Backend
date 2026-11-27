@@ -20,6 +20,7 @@ export interface AuditHashInput {
   payloadHash: string
   blockType: AuditBlockType
   timestamp: string
+  payloadCount?: number
 }
 
 export const GENESIS_AUDIT_HASH =
@@ -77,14 +78,24 @@ export function aggregatePayloadHash(payloads: unknown[]): string {
   )
 }
 
+/**
+ * v1 (legacy) material: height|prevHash|payloadHash|blockType|timestamp
+ * v2 material: v2|height|prevHash|payloadHash|blockType|timestamp|payloadCount
+ *
+ * Blocks created before v2 have no payloadCount and are verified with v1.
+ */
 export function computeAuditHash({
   height,
   prevHash,
   payloadHash,
   blockType,
   timestamp,
+  payloadCount,
 }: AuditHashInput): string {
-  const material = `${height}|${prevHash}|${payloadHash}|${blockType}|${timestamp}`
+  const material =
+    payloadCount === undefined
+      ? `${height}|${prevHash}|${payloadHash}|${blockType}|${timestamp}`
+      : `v2|${height}|${prevHash}|${payloadHash}|${blockType}|${timestamp}|${payloadCount}`
   return 'sha256:' + crypto.createHash('sha256').update(material).digest('hex')
 }
 
@@ -186,6 +197,7 @@ export function verifyAuditChain(blocks: AuditBlockLike[]): {
         payloadHash: block.payloadHash,
         blockType: block.blockType,
         timestamp: expectedTimestamp,
+        payloadCount: block.payloadCount ?? undefined,
       })
 
       if (block.hash !== expectedHash) {
@@ -229,12 +241,14 @@ export function appendAuditBlock(params: {
   createdAt: Date
 } {
   const timestamp = params.createdAt.toISOString()
+  const payloadCount = params.payloads?.length ?? 0
   const hash = computeAuditHash({
     height: params.height,
     prevHash: params.prevHash,
     payloadHash: params.payloadHash,
     blockType: params.blockType,
     timestamp,
+    payloadCount,
   })
 
   return {
@@ -242,7 +256,7 @@ export function appendAuditBlock(params: {
     prevHash: params.prevHash,
     hash,
     blockType: params.blockType,
-    payloadCount: params.payloads?.length ?? 0,
+    payloadCount,
     payloadHash: params.payloadHash,
     createdAt: params.createdAt,
   }
