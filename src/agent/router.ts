@@ -8,7 +8,12 @@ import {
 } from '../jobs/riskMetadataStaleness'
 import { logger } from '../utils/logger'
 import { getCorrelationId } from '../utils/correlation'
-import { hasWashSaleRisk, isSameAssetRebuyLikely } from '../tax/washSale'
+import {
+  hasWashSaleRisk,
+  isSameAssetRebuyLikely,
+  washSaleWindowFor,
+} from '../tax/washSale'
+import { priceForAsset } from '../tax/pricing'
 import {
   ProtocolComparison,
   RebalanceDetails,
@@ -45,6 +50,23 @@ import { STROOPS_PER_TOKEN } from '../config/financial-limits'
 const DEFAULT_THRESHOLDS: RebalanceThresholds = {
   minimumImprovement: 0.5, // Must improve by at least 0.5%
   maxGasPercent: 0.1,
+}
+
+/** Converts a decimal token value to the integer stroops used by contract calls. */
+function decimalTokenValueToStroops(value: string): bigint {
+  const normalized = value.trim()
+  if (!/^\d+(?:\.\d+)?$/.test(normalized)) {
+    throw new Error(`Invalid decimal position value: ${value}`)
+  }
+  const [whole, fraction = ''] = normalized.split('.')
+  const decimalPlaces = String(STROOPS_PER_TOKEN).length - 1
+  if (fraction.length > decimalPlaces) {
+    throw new Error(`Position value has more than ${decimalPlaces} decimal places: ${value}`)
+  }
+  return (
+    BigInt(whole) * BigInt(STROOPS_PER_TOKEN) +
+    BigInt(fraction.padEnd(decimalPlaces, '0'))
+  )
 }
 
 /**
@@ -342,6 +364,8 @@ export async function triggerRebalance(
     deviationTrigger?: string
     /** PublishedStrategy this config was copied from (#285). Attribution only. */
     followedStrategyId?: string | null
+    /** Skip every write. Used by the assistant dry-run preview. */
+    dryRun?: boolean
   }
 ): Promise<RebalanceDetails | null> {
   const startTime = Date.now()
@@ -360,6 +384,16 @@ export async function triggerRebalance(
       amount,
       expectedApyBasisPoints,
     })
+
+    if (strategyInfo?.dryRun) {
+      return {
+        fromProtocol,
+        toProtocol,
+        amount,
+        timestamp: new Date(),
+        improvedBy: comparison.improvement,
+      }
+    }
 
     // #325: a rebalance is a LOW-priority, durable, NON-BLOCKING outbox op —
     // the loop enqueues the intent (transactionally with the Transaction row)
@@ -501,11 +535,13 @@ export async function triggerRebalance(
       duration,
     })
 
-    await logAgentAction('REBALANCE', 'FAILED', {
-      fromProtocol,
-      toProtocol,
-      error: errorMessage,
-    })
+    if (!strategyInfo?.dryRun) {
+      await logAgentAction('REBALANCE', 'FAILED', {
+        fromProtocol,
+        toProtocol,
+        error: errorMessage,
+      })
+    }
 
     return null
   }
@@ -521,6 +557,11 @@ export interface RebalanceBatchContext {
    * targets so a broken protocol is never moved INTO.
    */
   blockedProtocols?: string[]
+  /**
+   * Preview only. The decision is computed and returned, but no outbox op,
+   * transaction, agent log, or decision row is written.
+   */
+  dryRun?: boolean
 }
 
 /**
@@ -535,10 +576,16 @@ export async function executeRebalanceIfNeeded(
   batchContext?: RebalanceBatchContext
 ): Promise<RebalanceDetails | null> {
   try {
-    let totalAmount = userPositions
+    // Position values arrive as Decimal strings. Normalize once at the boundary
+    // so every subsequent liquidity comparison uses contract-unit stroops.
+    const positionsInStroops = userPositions.map((position) => ({
+      ...position,
+      amount: decimalTokenValueToStroops(position.amount).toString(),
+    }))
+    let totalAmount = positionsInStroops
       .reduce((sum, pos) => sum + BigInt(pos.amount), BigInt(0))
       .toString()
-    let positionsToMove = userPositions
+    let positionsToMove = positionsInStroops
     let liquidityRestoreTargets: Set<string> | null = null
 
     const effectiveThresholds = thresholds ?? getThresholds()
@@ -579,6 +626,7 @@ export async function executeRebalanceIfNeeded(
       trace: DecisionTrace
       outboxOpId?: string | null
     }): Promise<string | null> => {
+      if (batchContext?.dryRun) return null
       return persistRebalanceDecision({
         batchKey: ctxBatchKey,
         fromProtocol: currentProtocol,
@@ -734,7 +782,7 @@ export async function executeRebalanceIfNeeded(
             plannedByPosition.set(item.positionId, amount)
             remainingRestore -= amount
           }
-          positionsToMove = userPositions.filter((position) =>
+          positionsToMove = positionsInStroops.filter((position) =>
             plannedByPosition.has(position.id)
           )
           const restoreUsd = Array.from(plannedByPosition.values()).reduce(
@@ -787,7 +835,7 @@ export async function executeRebalanceIfNeeded(
         } else {
           const instantLiquidIds = new Set(floorStatus.instantLiquidPositionIds)
           const lockedIds = new Set(floorStatus.lockedPositionIds)
-          positionsToMove = userPositions.filter(
+          positionsToMove = positionsInStroops.filter(
             (position) =>
               !instantLiquidIds.has(position.id) && !lockedIds.has(position.id)
           )
@@ -913,12 +961,43 @@ export async function executeRebalanceIfNeeded(
           })
 
           if (userJurisdiction) {
-            washSaleRisk = hasWashSaleRisk(
-              'USDC',
-              new Date(),
-              userJurisdiction.taxJurisdiction,
-              likelyRebuy
-            )
+            // #788 - only jurisdictions with a loss-matching rule can flag.
+            // DE/AU short-circuit here, before any lot query.
+            const window = washSaleWindowFor(userJurisdiction.taxJurisdiction)
+            if (window) {
+              const assetSymbol = 'USDC'
+              const disposalDate = new Date()
+              const acquisitions = await db.costBasisLot.findMany({
+                where: {
+                  userId: userStrategyPreferences[0]?.userId,
+                  assetSymbol,
+                  acquiredAt: {
+                    gte: new Date(disposalDate.getTime() - window.windowMs),
+                    lte: new Date(disposalDate.getTime() + window.windowMs),
+                  },
+                },
+                select: { acquiredAt: true, acquisitionPrice: true },
+              })
+              const currentPrice = priceForAsset(assetSymbol).price
+
+              // A wash-sale rule only applies to a loss. Without a price we
+              // cannot establish one, so we stay honest and do not flag.
+              const isLoss =
+                currentPrice != null &&
+                acquisitions.some(
+                  (lot) =>
+                    lot.acquisitionPrice != null &&
+                    Number(lot.acquisitionPrice) > Number(currentPrice)
+                )
+
+              washSaleRisk = hasWashSaleRisk({
+                assetSymbol,
+                disposalDate,
+                jurisdiction: userJurisdiction.taxJurisdiction,
+                isLoss,
+                acquisitionDates: acquisitions.map((lot) => lot.acquiredAt),
+              })
+            }
 
             if (washSaleRisk) {
               logger.info('Wash-sale risk detected for rebalance', {
@@ -995,7 +1074,7 @@ export async function executeRebalanceIfNeeded(
 
         if (moves.length === 0) {
           // Either already on target or the caps made every allocation zero.
-          if (plan.unplacedFraction > 0) {
+          if (plan.unplacedFraction > 0 && !batchContext?.dryRun) {
             await logAgentAction('REBALANCE', 'SKIPPED', {
               input: {
                 currentProtocol,
@@ -1048,6 +1127,7 @@ export async function executeRebalanceIfNeeded(
             reasoning: decision.reasoning,
             deviationTrigger: decision.deviationTrigger,
             followedStrategyId: userStrategyPreferences[0]?.followedStrategyId,
+            dryRun: batchContext?.dryRun === true,
           }
         )
         if (rebalanceResult) {
@@ -1178,6 +1258,7 @@ export async function executeRebalanceIfNeeded(
         name: 'MAX_YIELD',
         reasoning: `Moving from ${currentProtocol} to ${comparison.best.name} — net gain ${comparison.improvement.toFixed(2)}% after costs`,
         deviationTrigger: `APY delta: ${(comparison.best.apy - comparison.current.apy).toFixed(2)}%`,
+        dryRun: batchContext?.dryRun === true,
       }
     )
     if (defaultRebalanceResult && comparison.trace) {

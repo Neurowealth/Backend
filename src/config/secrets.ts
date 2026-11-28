@@ -106,14 +106,14 @@ export function validateSecretCredentials(now = new Date()): string[] {
 async function refreshRuntimeConfiguration(): Promise<void> {
   const { config } = await import('./env')
   const nextJwtSeed = process.env.JWT_SEED ?? config.jwt.seed
-  if (
-    config.jwt.seed !== nextJwtSeed &&
-    !config.jwt.seed.startsWith('__SSM_PENDING_') &&
-    !config.jwt.previousSeeds.includes(config.jwt.seed)
-  ) {
-    config.jwt.previousSeeds.push(config.jwt.seed)
-  }
   config.jwt.seed = nextJwtSeed
+  // Rebuild rather than append on every SSM refresh. The configured grace key
+  // is bounded to one value and cannot accidentally preserve every leaked key.
+  config.jwt.previousSeeds = (process.env.JWT_PREVIOUS_SEEDS ?? '')
+    .split(',')
+    .map((seed) => seed.trim())
+    .filter((seed) => seed.length > 0 && seed !== nextJwtSeed)
+    .slice(0, 1)
   config.security.walletEncryptionKey =
     process.env.WALLET_ENCRYPTION_KEY ?? config.security.walletEncryptionKey
   config.stellar.agentSecretKey =
@@ -284,9 +284,33 @@ export async function bootstrapSecrets(): Promise<void> {
     })
   )
 
+  // Load rotation keys and optional integrations before runtime configuration
+  // is refreshed. A missing optional parameter is expected; transport and
+  // permission errors must fail startup rather than silently disabling it.
+  const optionalErrors: string[] = []
+  await Promise.all(
+    OPTIONAL_SECRET_KEYS.map(async (key) => {
+      try {
+        await _provider!.get(key)
+      } catch (err) {
+        const error = err as Error & { name?: string }
+        const notFound =
+          error.name === 'ParameterNotFound' ||
+          error.message.includes('SSM parameter not found:')
+        if (!notFound) optionalErrors.push(error.message)
+      }
+    })
+  )
+
   if (errors.length > 0) {
     throw new Error(
       `[SecretsProvider] Failed to load secrets at startup:\n${errors.join('\n')}`
+    )
+  }
+
+  if (optionalErrors.length > 0) {
+    throw new Error(
+      `[SecretsProvider] Failed to load optional secrets at startup:\n${optionalErrors.join('\n')}`
     )
   }
 

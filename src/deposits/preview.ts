@@ -18,7 +18,6 @@ import {
   computeContribution,
   computeDrawdownPercent,
   computeNextRunAfterSkip,
-  cadenceToDays,
   type SmartDcaConfig,
   type ContributionDecision,
   type RegimeInput,
@@ -95,7 +94,7 @@ export function generatePreview(
   numRuns: number = 12,
   startDate: Date = new Date()
 ): PreviewResult {
-  const cadenceDays = cadenceToDays(plan.cadence)
+  const anchorDay = startDate.getUTCDate()
   const config: SmartDcaConfig = {
     policy: plan.policy,
     catchUpMode: plan.catchUpMode,
@@ -151,13 +150,14 @@ export function generatePreview(
       const next = computeNextRunAfterSkip(
         plan.catchUpMode,
         currentNextRunAt,
-        cadenceDays,
-        currentAccumulated
+        plan.cadence,
+        currentAccumulated,
+        anchorDay
       )
       currentNextRunAt = next.nextRunAt
       currentAccumulated = next.accumulatedRuns
     } else {
-      currentNextRunAt = addCadence(plan.cadence, currentNextRunAt)
+      currentNextRunAt = addCadence(plan.cadence, currentNextRunAt, anchorDay)
       // Reset accumulated after a successful run
       if (plan.catchUpMode === 'ACCUMULATE') {
         currentAccumulated = 0

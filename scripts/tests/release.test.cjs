@@ -176,6 +176,11 @@ for (const [name, overrides] of [
     assert.ok(!(result.stdout + result.stderr).includes('test-token'))
   })
 }
+test('package.json exposes release:verify for the release workflow (#848)', () => {
+  const pkg = require(path.join(root, 'package.json'))
+  assert.equal(pkg.scripts['release:verify'], 'bash scripts/release-verify.sh')
+})
+
 test('verification accepts healthy API responses and uses existing endpoints', (t) => {
   const f = fixture(t)
   const result = f.run('release-verify.sh', { BODIES: JSON.stringify(healthy) })

@@ -57,7 +57,7 @@ authenticated allowance for that key.
 | Caller | How it is identified | Budget charged against |
 | --- | --- | --- |
 | **Session** | `req.userId`, set by `requireAuth` after the JWT is verified | The user id — one bucket per user, shared across that user's devices |
-| **API key** | `nwk_<keyId>_<secret>` — self-describing in the `Authorization` header | The key id — two keys behind one NAT get two buckets, and the key's own `rateLimitPerMin` wins |
+| **API key** | `nwk_<keyId>_<secret>` — self-describing in the `Authorization` header | The key id — two keys behind one NAT get two budgets, and the key's own `rateLimitPerMin` wins |
 | **Admin key** | `X-Admin-Token` / `Authorization: Bearer` | The admin credential |
 | **Webhook provider** | HMAC signature over the raw body (Twilio, Telegram, fiat) | The client IP — the signature is the credential, not a bearer token |
 | **Internal service** | `X-Internal-Token` | The client IP — the internal token is a single shared credential |
@@ -129,6 +129,7 @@ legacy `/api/*` alias with the same handlers, and therefore the same tier.
 | `/api/v1/admin` | ANY | `admin` | 900000ms | 10 | Management API — reserves, key minting, referral settlement. |
 | `/api/v1/admin/support/tickets` | ANY | `admin` | 900000ms | 10 | Admin view of support tickets. |
 | `/api/v1/admin/notifications/dlq` | ANY | `admin` | 900000ms | 10 | Dead-letter queue inspection and replay. |
+| `/api/v1/protection-fund` | ANY | `admin` | 900000ms | 10 | Protection fund admin writes — declaring/reviewing coverage events, recording contributions, executing payouts. |
 | `/api/v1/admin/erasure/requests` | POST | `erasure` | 900000ms | 5 | Creating an erasure request is a destructive operation. |
 | `/api/v1/admin/erasure/requests/:id/approve` | POST | `erasure` | 900000ms | 5 | Approving an erasure request authorises data deletion. |
 | `/api/v1/admin/erasure/requests/:id/reject` | POST | `erasure` | 900000ms | 5 | Rejecting an erasure request is part of the erasure workflow. |

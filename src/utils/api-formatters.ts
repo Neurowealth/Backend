@@ -177,6 +177,13 @@ export const mapAllocationSuggestionToResponse = (suggestion: any) => ({
  * for this user? If not, it does not belong on their socket either.
  */
 const USER_EVENT_PAYLOAD_ALLOWLIST: Record<string, readonly string[]> = {
+  'security.account_recovery': [
+    'event',
+    'requestId',
+    'ownerWalletAddress',
+    'newWalletAddress',
+    'completesAt',
+  ],
   'transaction.confirmed': [
     'txHash',
     'type',

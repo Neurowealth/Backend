@@ -64,6 +64,8 @@ export const ADMIN_SCOPES = [
   'risk-metadata:write',
   // #548 — admin impersonation: read-only, audited "view as user" support.
   'admin:impersonate',
+  // #758 — protocol-risk protection fund admin operations.
+  'protection-fund:write',
   'super',
 ] as const
 export type AdminScope = (typeof ADMIN_SCOPES)[number]
@@ -361,6 +363,13 @@ export const ADMIN_SCOPE_CATALOG: Record<AdminScope, ScopeDefinition> = {
     requires:
       '`PUT /api/v1/admin/risk-metadata/:protocolName` upserts an entry; each change writes a history row and an admin audit log row.',
   },
+  'protection-fund:write': {
+    scope: 'protection-fund:write',
+    enforcement: 'enforced',
+    description: 'Declare, review and pay out protocol-risk protection fund events.',
+    risk: 'money',
+    grants: 'Protection fund event declaration, review and payout operations.',
+  },
   'admin:impersonate': {
     scope: 'admin:impersonate',
     enforcement: 'enforced',
@@ -490,7 +499,7 @@ async function logScopeMismatch(
   }
 }
 
-// ── Middleware ─────────────────────────────────────────────────────────────
+// ── Middleware ────────────────────────────────────────────────────────────
 
 export async function requireAdminAuth(
   req: Request,

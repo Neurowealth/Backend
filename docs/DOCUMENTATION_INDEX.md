@@ -9,6 +9,7 @@
 - **[IMPLEMENTATION_DETAILS.md](IMPLEMENTATION_DETAILS.md)** - Technical implementation details
 - **[API_REFERENCE.md](API_REFERENCE.md)** - Complete backend endpoint reference
 - **[2FA.md](2FA.md)** - Two-factor authentication implementation
+- **[ACCOUNT_RECOVERY.md](ACCOUNT_RECOVERY.md)** - Guardian-based account recovery, threat model, and limitations
 - **[ACCOUNTING_EXPORTS.md](ACCOUNTING_EXPORTS.md)** - QBO/Xero exports, reconciliation gate, and sign conventions
 - **[AGENT_DECISIONS.md](AGENT_DECISIONS.md)** - AI agent decision-making framework
 - **[AI_PROMPT_AND_TOOL_POLICY.md](AI_PROMPT_AND_TOOL_POLICY.md)** - AI prompt engineering and tool usage policies

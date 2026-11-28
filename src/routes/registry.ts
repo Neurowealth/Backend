@@ -50,6 +50,7 @@ import protectionFundRouter from './protection-fund'
 import recurringDepositRouter from './recurring-deposits'
 import recurringWithdrawalRouter from './recurring-withdrawals'
 import referralsRouter from './referrals'
+import recoveryRouter from './recovery'
 import sessionsRouter from './sessions'
 import settingsRouter from './settings'
 import stellarRouter from './stellar'
@@ -106,7 +107,7 @@ export const API_ROUTES: ApiRoute[] = [
   // limits, and it must not inherit portfolio's read-only scope set.
   { path: 'loans', handlers: [loansRouter] },
   // #533 — protocol-risk protection fund
-  { path: 'protection-fund', handlers: [protectionFundRouter] },
+  { path: 'protection-fund', handlers: [adminRateLimiter, protectionFundRouter] },
   // #534 — user settings (display currency)
   { path: 'settings', handlers: [settingsRouter] },
   { path: 'vault', handlers: [vaultRouter] },
@@ -115,6 +116,7 @@ export const API_ROUTES: ApiRoute[] = [
   { path: 'fiat', handlers: [fiatRouter] },
   { path: 'kyc', handlers: [kycRouter] },
   { path: 'referrals', handlers: [referralsRouter] },
+  { path: 'recovery', handlers: [authRateLimiter, recoveryRouter] },
   { path: 'deposit/recurring', handlers: [recurringDepositRouter] },
   { path: 'recurring-withdrawals', handlers: [recurringWithdrawalRouter] },
   { path: 'alerts', handlers: [alertsRouter] },

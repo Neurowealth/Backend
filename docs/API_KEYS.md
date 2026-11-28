@@ -13,7 +13,7 @@ The raw token is shown **once** at creation or rotation. It is stored as a bcryp
 ## Authentication
 
 ```http
-Authorization: Bearer nwk_<keyId>_<secret>
+Authorization: Bearer <redacted><keyId>_<secret>
 ```
 
 API keys authenticate via the same `requireAuth` entry point as session JWTs. The middleware detects the `nwk_` prefix and routes to the dedicated API-key path.
@@ -50,7 +50,7 @@ implies every admin scope, and the legacy `agent` implies `agent:read` and
 | `goals:write` | write | enforced | — | Manage savings goals. | — | `DELETE /api/v1/portfolio/goals/:id`, `PATCH /api/v1/portfolio/goals/:id`, `POST /api/v1/portfolio/goals` |
 | `portfolio:write` | write | enforced | — | Change portfolio state. | — | `DELETE /api/v1/net-worth/external-wallets/:id`, `POST /api/v1/net-worth/external-wallets` |
 | `strategies:write` | write | enforced | — | Publish, follow and unfollow strategies. | — | `POST /api/v1/strategies/publish` |
-| `webhooks:manage` | write | enforced | — | Manage webhook endpoints and deliveries. | — | `DELETE /api/webhooks/:id`, `PATCH /api/webhooks/:id`, `POST /api/webhooks` |
+| `webhooks:manage` | write | enforced | — | Manage webhook endpoints and deliveries. | — | `DELETE /api/v1/webhooks/:id`, `PATCH /api/v1/webhooks/:id`, `POST /api/v1/webhooks` |
 | `deposit:write` | money | enforced | — | Create deposits. | Deposits still pass the compliance freeze and sub-account permission checks. | `POST /api/v1/deposit` |
 | `fiat:write` | money | enforced | — | Create fiat on/off-ramp orders. | — | `POST /api/v1/fiat/orders` |
 | `loans:write` | money | enforced | — | Originate and repay collateral loans. | Origination and repayment still pass the compliance freeze and sub-account permission checks. | `POST /api/v1/loans`, `POST /api/v1/loans/:loanId/repay` |
@@ -87,12 +87,13 @@ New keys are **read-only by default**. Write scopes must be explicitly requested
 | `support:write` | write | enforced | — | Reply to and update support tickets. | — | `PATCH /api/v1/admin/support/tickets/:id`, `POST /api/v1/admin/support/tickets/:id/reply` |
 | `write` | write | enforced | — | General write access to admin resources. | — | `POST /api/v1/admin/erasure/requests`, `POST /api/v1/admin/referrals/review/:id/approve`, `POST /api/v1/admin/referrals/review/:id/reject` |
 | `outbox:write` | money | enforced | — | Force-retry and cancel queued outbox operations. | — | `POST /api/v1/admin/outbox/:id/cancel`, `POST /api/v1/admin/outbox/:id/retry` |
+| `protection-fund:write` | money | enforced | — | Declare, review and pay out protocol-risk protection fund events. | — | `POST /api/v1/protection-fund/claims/:claimId/payout`, `POST /api/v1/protection-fund/contributions`, `POST /api/v1/protection-fund/events`, `POST /api/v1/protection-fund/events/:eventId/review` |
 | `referrals:write` | money | enforced | — | Approve or reject flagged referral conversions. | — | `POST /api/v1/admin/referrals/:id/review`, `POST /api/v1/admin/referrals/fraud/bulk-review` |
 | `treasury:write` | money | enforced | — | Change treasury sweep policies and run a sweep. | Sweep policies and signer rotations are written to the admin audit log. | `POST /api/v1/admin/treasury/emergency-sweep`, `POST /api/v1/admin/treasury/policies`, `POST /api/v1/admin/treasury/policies/:id/enable`, `POST /api/v1/admin/treasury/signer-rotations`, `POST /api/v1/admin/treasury/signer-rotations/:id/finalize` |
 | `wallet` | money | declared-only | — | Custodial wallet operations. | No route requires this scope today — the wallet rotation-status route is gated by keys:read. Declared so a key can be provisioned ahead of a route that needs it. | — |
 | `erasure:write` | destructive | enforced | — | Create, approve, reject and execute erasure requests. | Execution requires super — approval and execution are deliberately separated so one operator cannot both authorise and carry out a deletion. | `POST /api/v1/admin/erasure` |
 | `keys:write` | destructive | enforced | — | Create, rotate and revoke admin API keys. | Minting an admin key is a takeover vector — every use is written to the admin audit log. | `DELETE /api/v1/admin/keys/:id`, `POST /api/v1/admin/keys`, `POST /api/v1/admin/keys/:id/rotate` |
-| `super` | destructive | enforced | `support:read`, `support:write`, `read`, `write`, `wallet`, `agent`, `agent:read`, `agent:write`, `sessions:read`, `sessions:write`, `reserves:read`, `metrics:read`, `dlq:read`, `dlq:write`, `backfill:write`, `keys:read`, `keys:write`, `fiat:read`, `fiat:write`, `outbox:read`, `outbox:write`, `approvals:write`, `referrals:read`, `referrals:write`, `erasure:write`, `erasure:read`, `flags:read`, `flags:write`, `messages:read`, `messages:write`, `treasury:read`, `treasury:write`, `risk-metadata:read`, `risk-metadata:write`, `admin:impersonate`, `super` | Every admin scope, including erasure execution. | Held by as few keys as possible: it is a superset of every destructive scope in this catalogue. | `GET /api/v1/admin/audit/prove`, `GET /api/v1/admin/audit/verify`, `POST /api/v1/admin/erasure/requests/:id/approve`, `POST /api/v1/admin/erasure/requests/:id/execute`, `POST /api/v1/admin/erasure/requests/:id/reject` |
+| `super` | destructive | enforced | `support:read`, `support:write`, `read`, `write`, `wallet`, `agent`, `agent:read`, `agent:write`, `sessions:read`, `sessions:write`, `reserves:read`, `metrics:read`, `dlq:read`, `dlq:write`, `backfill:write`, `keys:read`, `keys:write`, `fiat:read`, `fiat:write`, `outbox:read`, `outbox:write`, `approvals:write`, `referrals:read`, `referrals:write`, `erasure:write`, `erasure:read`, `flags:read`, `flags:write`, `messages:read`, `messages:write`, `treasury:read`, `treasury:write`, `risk-metadata:read`, `risk-metadata:write`, `protection-fund:write`, `admin:impersonate`, `super` | Every admin scope, including erasure execution. | Held by as few keys as possible: it is a superset of every destructive scope in this catalogue. | `GET /api/v1/admin/audit/prove`, `GET /api/v1/admin/audit/verify`, `POST /api/v1/admin/erasure/requests/:id/approve`, `POST /api/v1/admin/erasure/requests/:id/execute`, `POST /api/v1/admin/erasure/requests/:id/reject` |
 | `admin:impersonate` | operational | enforced | — | View the API as a user, read-only. | Requires admin authentication. Endpoints: POST /api/v1/admin/impersonation starts an audited impersonation session, DELETE /api/v1/admin/impersonation revokes it. | `DELETE /api/v1/admin/impersonation`, `DELETE /api/v1/admin/impersonation/:sessionId`, `POST /api/v1/admin/impersonation` |
 | `agent` | operational | declared-only | `agent:read`, `agent:write` | Agent loop operations. | — | — |
 | `agent:write` | operational | enforced | — | Change agent circuit breakers. | — | `POST /api/v1/admin/agent/breakers`, `POST /api/v1/admin/agent/breakers/:id/reset` |
@@ -113,7 +114,7 @@ New keys are **read-only by default**. Write scopes must be explicitly requested
 ## Management endpoints (session auth only)
 
 | Method   | Path                      | Description                      |
-| -------- | ------------------------- | -------------------------------- |
+| -------- | --------------------------- | -------------------------------- |
 | `POST`   | `/api/v1/keys`            | Create key (returns secret once) |
 | `GET`    | `/api/v1/keys`            | List keys (metadata only)        |
 | `DELETE` | `/api/v1/keys/:id`        | Revoke key                       |

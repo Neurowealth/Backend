@@ -25,11 +25,18 @@ jest.mock('../../src/db', () => {
   const adminAuditLog = { count: count() }
   const tx = {
     session: { count: count() },
-    position: { count: count() },
-    transaction: { count: count() },
+    position: { count: count(), updateMany: mutate() },
+    transaction: { count: count(), updateMany: mutate() },
     agentLog: { count: count() },
     webhookSubscription: { count: count() },
-    fiatOrder: { count: count() },
+    fiatOrder: { count: count(), updateMany: mutate() },
+    complianceCase: { count: count(), updateMany: mutate() },
+    collateralLoan: {
+      count: count(),
+      findMany: jest.fn(async () => []),
+      updateMany: mutate(),
+    },
+    kycProfile: { count: count(), updateMany: mutate() },
     recurringDepositPlan: { count: count() },
     alertRule: { count: count() },
     savingsGoal: { count: count() },
@@ -64,6 +71,7 @@ jest.mock('../../src/db', () => {
       }),
     },
     user: {
+      create: jest.fn(async () => ({})),
       delete: jest.fn(async () => {
         state.events.push('user.delete')
         for (const row of state.requests) {

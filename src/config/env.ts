@@ -632,6 +632,9 @@ export const config = {
       process.env.MESSAGING_SWEEP_INTERVAL_MS || '60000',
       { integer: true }
     ),
+    sendingLeaseMs: parseNumericEnv('MESSAGING_SENDING_LEASE_MS', '600000', {
+      integer: true,
+    }),
     fallbackEnabled: process.env.MESSAGING_FALLBACK_ENABLED !== 'false',
     dlqAlertThreshold: parseNumericEnv('MESSAGING_DLQ_ALERT_THRESHOLD', '5', {
       integer: true,

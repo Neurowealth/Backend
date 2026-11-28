@@ -1,58 +1,80 @@
 import { TaxJurisdiction } from '@prisma/client'
 import { resolveJurisdiction } from './jurisdictions'
+import { LossMatchingRule } from './jurisdictions/types'
 
 /**
- * Wash-sale window configuration by jurisdiction.
- * Matches the LossMatchingRule windowDays in src/tax/jurisdictions/types.ts
- */
-const WASH_SALE_WINDOW_DAYS: Record<TaxJurisdiction, number> = {
-  US: 30,
-  UK: 30,
-  DE: 30,
-  AU: 30,
-  CA: 30,
-}
-
-/**
- * Get the wash-sale window in days for a given jurisdiction.
- * Returns 30 days as a safe default for unknown jurisdictions.
- */
-export function getWashSaleWindowDays(jurisdiction: TaxJurisdiction): number {
-  return WASH_SALE_WINDOW_DAYS[jurisdiction] ?? 30
-}
-
-/**
- * Check if a disposal would create a wash-sale risk by looking for
- * same-asset acquisitions within the wash-sale window.
+ * A jurisdiction's mechanical wash-sale rule (#788).
  *
- * @param assetSymbol - The asset being disposed
- * @param disposalDate - The date of the disposal
- * @param jurisdiction - The user's tax jurisdiction
- * @param hasRecentAcquisition - Whether the agent is likely to rebuy the same asset
- * @returns true if there's wash-sale risk, false otherwise
+ * Derived from the same `lossMatching` profile the tax report uses, so the
+ * agent can never disagree with the report about whether a rule exists.
+ * `null` means the jurisdiction has no such rule (DE and AU), which callers
+ * must treat as "no risk" without doing any further work.
  */
-export function hasWashSaleRisk(
-  assetSymbol: string,
-  disposalDate: Date,
-  jurisdiction: TaxJurisdiction,
-  hasRecentAcquisition: boolean
-): boolean {
-  if (!hasRecentAcquisition) {
+export interface WashSaleWindow {
+  kind: Exclude<LossMatchingRule['kind'], 'NONE'>
+  windowDays: number
+  windowMs: number
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+export function washSaleWindowFor(
+  jurisdiction: TaxJurisdiction
+): WashSaleWindow | null {
+  const rule: LossMatchingRule = resolveJurisdiction(jurisdiction).lossMatching
+  if (rule.kind === 'NONE' || rule.windowDays <= 0) {
+    return null
+  }
+  return {
+    kind: rule.kind,
+    windowDays: rule.windowDays,
+    windowMs: rule.windowDays * DAY_MS,
+  }
+}
+
+/** @deprecated Use washSaleWindowFor, which returns null for NONE profiles. */
+export function getWashSaleWindowDays(jurisdiction: TaxJurisdiction): number {
+  return washSaleWindowFor(jurisdiction)?.windowDays ?? 0
+}
+
+export interface WashSaleRiskInput {
+  assetSymbol: string
+  disposalDate: Date
+  jurisdiction: TaxJurisdiction
+  /** True when the lots being disposed are at an unrealized loss. */
+  isLoss: boolean
+  /** Actual same-asset acquisition dates, before or after the disposal. */
+  acquisitionDates: Date[]
+}
+
+/**
+ * A wash-sale risk exists only when a jurisdiction actually has a loss-
+ * matching rule, the disposal is at a loss, and there is a same-asset
+ * acquisition inside [disposal - window, disposal + window] (#788).
+ *
+ * The previous implementation computed the window bounds and ignored them,
+ * returning true for every "likely rebuy" heuristic hit, including gains and
+ * jurisdictions with no rule.
+ */
+export function hasWashSaleRisk(input: WashSaleRiskInput): boolean {
+  const window = washSaleWindowFor(input.jurisdiction)
+  if (!window || !input.isLoss) {
     return false
   }
 
-  const windowDays = getWashSaleWindowDays(jurisdiction)
-  const windowMs = windowDays * 24 * 60 * 60 * 1000
+  const disposalMs = input.disposalDate.getTime()
+  const windowStart = disposalMs - window.windowMs
+  const windowEnd = disposalMs + window.windowMs
 
-  const windowStart = new Date(disposalDate.getTime() - windowMs)
-  const windowEnd = new Date(disposalDate.getTime() + windowMs)
-
-  return true
+  return input.acquisitionDates.some((acquisition) => {
+    const acquiredMs = acquisition.getTime()
+    return acquiredMs >= windowStart && acquiredMs <= windowEnd
+  })
 }
 
 /**
- * Estimate if the agent is likely to rebuy the same asset within the wash-sale window.
- * This is a heuristic based on the agent's strategy logic.
+ * Estimate if the agent is likely to rebuy the same asset within the wash-sale
+ * window. This is a heuristic based on the agent's strategy logic.
  *
  * @param strategyName - The current strategy name
  * @param targetProtocol - The target protocol for rebalancing

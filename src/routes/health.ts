@@ -8,6 +8,7 @@ import { getAgentStatus } from '../agent/loop'
 import pkg from '../../package.json'
 import { redactSensitiveData } from '../utils/logger'
 import { recordHealthDependency } from '../utils/metrics'
+import { safeEqual } from '../utils/safeCompare'
 
 const router = Router()
 
@@ -176,12 +177,14 @@ const checkAgentLoop = async () => {
 }
 
 router.get('/deep', async (req: Request, res: Response) => {
-  const token =
-    req.headers['x-internal-token'] ||
-    req.headers['authorization']?.replace('Bearer ', '')
+  const headerToken = req.headers['x-internal-token']
+  const bearerToken = req.headers['authorization']?.replace('Bearer ', '')
+  const token = Array.isArray(headerToken)
+    ? headerToken[0]
+    : headerToken || bearerToken
   const expectedToken = process.env.INTERNAL_SERVICE_TOKEN
 
-  if (!expectedToken || token !== expectedToken) {
+  if (!expectedToken || !safeEqual(token, expectedToken)) {
     return res.status(401).json({ error: 'Unauthorized' })
   }
 

@@ -65,40 +65,10 @@ describe('Smart DCA Policy Engine', () => {
       expect(computeVolatilityRegime(input)).toBe('LOW')
     })
 
-    it('returns NORMAL for values in the middle range', () => {
-      // Note: the function uses latest = max(values) from sorted array.
-      // To get NORMAL, we need latest between p25 and p75.
-      // With values [3, 5, 7, 8, 10]: sorted = [3,5,7,8,10]
-      // p25 = sorted[1] = 5, p75 = sorted[3] = 8, latest = 10 >= 8 → LOW
-      // With [2, 3, 4, 5, 6]: sorted = [2,3,4,5,6], p25=3, p75=5, latest=6 >= 5 → LOW
-      // With [4, 5, 5, 5, 6]: sorted = [4,5,5,5,6], p25=5, p75=5, latest=6 >= 5 → LOW
-      // The only way to get NORMAL is if latest is strictly between p25 and p75.
-      // With an even-length array: [1, 2, 3, 10]: sorted = [1,2,3,10]
-      // p25 = sorted[0] = 1, p75 = sorted[2] = 3, latest = 10 >= 3 → LOW
-      // Actually: p25 = sorted[floor(4*0.25)] = sorted[0] = 1
-      // p75 = sorted[floor(4*0.75)] = sorted[3] = 10... wait that's wrong
-      // floor(4*0.75) = floor(3) = 3 → sorted[3] = 10
-      // latest = 10 >= p75 = 10 → LOW
-      // Hmm. Let me try: [1, 2, 3, 4]: sorted = [1,2,3,4]
-      // p25 = sorted[floor(4*0.25)] = sorted[0] = 1
-      // p75 = sorted[floor(4*0.75)] = sorted[3] = 4
-      // latest = 4 >= 4 → LOW
-      // With [1, 2, 3, 4, 5, 6, 7, 8]: sorted same
-      // p25 = sorted[1] = 2, p75 = sorted[5] = 6, latest = 8 >= 6 → LOW
-      // The issue is that latest is ALWAYS the max, so it's always >= p75.
-      // NORMAL is only possible if latest < p75, which requires latest < max.
-      // But latest = max by definition in this implementation.
-      // So NORMAL regime is structurally impossible with the current implementation.
-      // This is a design note, not a bug — the function classifies based on
-      // where the MAX of the series falls relative to percentiles.
-      // With all same values, p25 == p75 == latest → latest >= p75 → LOW.
-      // Let me just verify the function handles degenerate constant series.
-      const input: RegimeInput = {
-        recentValues: [5, 5, 5, 5, 5],
-      }
-      // sorted = [5,5,5,5,5], p25 = 5, p75 = 5, latest = 5
-      // 5 <= 5 → HIGH (border case: equal to p25 counts as HIGH)
-      expect(computeVolatilityRegime(input)).toBe('HIGH')
+    it('returns NORMAL for flat rates', () => {
+      expect(computeVolatilityRegime({ recentValues: [5, 5, 5, 5, 5] })).toBe(
+        'NORMAL'
+      )
     })
 
     it('uses provided percentiles when available', () => {
@@ -336,19 +306,36 @@ describe('Smart DCA Policy Engine', () => {
     const baseDate = new Date('2026-01-08T00:00:00Z')
 
     it('RETRY: does not advance nextRunAt', () => {
-      const result = computeNextRunAfterSkip('RETRY', baseDate, 7, 0)
+      const result = computeNextRunAfterSkip('RETRY', baseDate, 'WEEKLY', 0)
       expect(result.nextRunAt).toEqual(baseDate)
       expect(result.accumulatedRuns).toBe(0)
     })
 
     it('SKIP: advances nextRunAt by cadence', () => {
-      const result = computeNextRunAfterSkip('SKIP', baseDate, 7, 0)
+      const result = computeNextRunAfterSkip('SKIP', baseDate, 'WEEKLY', 0)
       expect(result.nextRunAt.toISOString()).toBe('2026-01-15T00:00:00.000Z')
       expect(result.accumulatedRuns).toBe(0)
     })
 
+    it('SKIP: advances past all overdue monthly slots', () => {
+      const result = computeNextRunAfterSkip(
+        'SKIP',
+        new Date('2026-01-31T12:00:00Z'),
+        'MONTHLY',
+        0,
+        31,
+        new Date('2026-04-30T12:00:00Z')
+      )
+      expect(result.nextRunAt.toISOString()).toBe('2026-05-31T12:00:00.000Z')
+    })
+
     it('ACCUMULATE: advances and increments accumulated runs', () => {
-      const result = computeNextRunAfterSkip('ACCUMULATE', baseDate, 7, 2)
+      const result = computeNextRunAfterSkip(
+        'ACCUMULATE',
+        baseDate,
+        'WEEKLY',
+        2
+      )
       expect(result.nextRunAt.toISOString()).toBe('2026-01-15T00:00:00.000Z')
       expect(result.accumulatedRuns).toBe(3)
     })
@@ -357,7 +344,7 @@ describe('Smart DCA Policy Engine', () => {
       const result = computeNextRunAfterSkip(
         'ACCUMULATE',
         baseDate,
-        7,
+        'WEEKLY',
         MAX_ACCUMULATED_RUNS
       )
       expect(result.accumulatedRuns).toBe(MAX_ACCUMULATED_RUNS)

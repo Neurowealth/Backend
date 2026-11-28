@@ -102,8 +102,8 @@ describe('cleanupExpiredSessions', () => {
     expect(second).toEqual(first)
   })
 
-  it('swallows database failures so the scheduler is not torn down', async () => {
+  it('rethrows database failures so the scheduler retries (#772)', async () => {
     mockSessionDeleteMany.mockRejectedValue(new Error('connection lost'))
-    await expect(cleanupExpiredSessions()).resolves.toBeUndefined()
+    await expect(cleanupExpiredSessions()).rejects.toThrow('connection lost')
   })
 })

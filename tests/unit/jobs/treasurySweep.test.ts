@@ -114,6 +114,8 @@ describe('executeSweep', () => {
     await executeSweep({
       fromTier: 'HOT',
       toTier: 'WARM',
+      fromPublicKey: 'GHOT0000000000000000000000000000000000000000000000000000',
+      toPublicKey: 'GWARM000000000000000000000000000000000000000000000000000',
       asset: 'XLM',
       amount: '1000',
       reason: 'hot_over_high_band',
@@ -146,6 +148,8 @@ describe('executeSweep', () => {
       executeSweep({
         fromTier: 'HOT',
         toTier: 'WARM',
+        fromPublicKey: 'GHOT0000000000000000000000000000000000000000000000000000',
+        toPublicKey: 'GWARM000000000000000000000000000000000000000000000000000',
         asset: 'XLM',
         amount: '1000',
         reason: 'hot_over_high_band',
@@ -252,6 +256,8 @@ describe('previewTreasurySweep (#620)', () => {
       executeSweep({
         fromTier: 'HOT',
         toTier: 'WARM',
+        fromPublicKey: 'GHOT0000000000000000000000000000000000000000000000000000',
+        toPublicKey: 'GWARM000000000000000000000000000000000000000000000000000',
         asset: 'XLM',
         amount: '1000',
         reason: 'hot_over_high_band',
@@ -278,6 +284,8 @@ describe('previewTreasurySweep (#620)', () => {
       executeSweep({
         fromTier: 'HOT',
         toTier: 'WARM',
+        fromPublicKey: 'GHOT0000000000000000000000000000000000000000000000000000',
+        toPublicKey: 'GWARM000000000000000000000000000000000000000000000000000',
         asset: 'XLM',
         amount: '1000',
         reason: 'hot_over_high_band',

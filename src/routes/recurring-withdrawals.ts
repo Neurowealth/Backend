@@ -59,7 +59,8 @@ router.post(
       return
     }
 
-    const nextRunAt = addCadence(cadence, new Date())
+    const anchor = new Date()
+    const nextRunAt = addCadence(cadence, anchor)
 
     const plan = await db.recurringWithdrawalPlan.create({
       data: {
@@ -70,6 +71,7 @@ router.post(
         amount: amount !== undefined ? amount : null,
         percentage: percentage !== undefined ? percentage : null,
         cadence,
+        cadenceAnchorDay: anchor.getUTCDate(),
         nextRunAt,
         minAmount: minAmount !== undefined ? minAmount : null,
         status: 'ACTIVE',
@@ -329,6 +331,7 @@ router.patch(
       )
     }
 
+    const anchor = new Date()
     const updated = await db.recurringWithdrawalPlan.update({
       where: {
         id,
@@ -338,7 +341,10 @@ router.patch(
       data: {
         ...updates,
         ...(updates.cadence
-          ? { nextRunAt: addCadence(updates.cadence, new Date()) }
+          ? {
+              nextRunAt: addCadence(updates.cadence, anchor),
+              cadenceAnchorDay: anchor.getUTCDate(),
+            }
           : {}),
         ...(updates.destinationAddress &&
         updates.destinationAddress !== existing.destinationAddress

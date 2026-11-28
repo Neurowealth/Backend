@@ -47,6 +47,22 @@ enum TransactionStatus {
   CANCELLED
 }
 
+enum RecoveryGuardianStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  REMOVED
+}
+
+enum AccountRecoveryStatus {
+  PENDING
+  COOLING_OFF
+  COMPLETED
+  CANCELLED
+  EXPIRED
+  FAILED
+}
+
 enum PositionStatus {
   ACTIVE
   CLOSED
@@ -403,6 +419,9 @@ model User {
   webAuthnCredentials     WebAuthnCredential[]
   digestSubscriptions     DigestSubscription[]
   kycProfile              KycProfile?
+  recoveryPolicy           RecoveryPolicy?
+  recoveryGuardiansMade    RecoveryGuardian[]       @relation("RecoveryGuardianUser")
+  recoveryRequests         AccountRecoveryRequest[]
 
   @@map("users")
 }
@@ -540,6 +559,84 @@ model Session {
   @@index([revokedAt])
   @@index([refreshTokenPrefix])
   @@map("sessions")
+}
+
+model RecoveryPolicy {
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  requiredApprovals  Int
+  recoveryDelayHours Int      @default(72)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user      User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  guardians RecoveryGuardian[]
+  requests  AccountRecoveryRequest[]
+
+  @@map("recovery_policies")
+}
+
+model RecoveryGuardian {
+  id             String                 @id @default(uuid())
+  policyId       String
+  guardianUserId String
+  status         RecoveryGuardianStatus @default(PENDING)
+  invitedAt      DateTime               @default(now())
+  acceptedAt     DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  policy    RecoveryPolicy     @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  guardian  User               @relation("RecoveryGuardianUser", fields: [guardianUserId], references: [id], onDelete: Cascade)
+  approvals RecoveryApproval[]
+
+  @@unique([policyId, guardianUserId])
+  @@index([guardianUserId, status])
+  @@map("recovery_guardians")
+}
+
+model AccountRecoveryRequest {
+  id                   String                @id @default(uuid())
+  policyId             String
+  userId               String
+  currentWalletAddress String
+  newWalletAddress     String
+  status               AccountRecoveryStatus @default(PENDING)
+  requiredApprovals    Int
+  recoveryDelayHours   Int                   @default(72)
+  quorumReachedAt      DateTime?
+  completesAt          DateTime?
+  expiresAt            DateTime
+  completedAt          DateTime?
+  cancelledAt          DateTime?
+  cancelTokenHash      String?
+  cancelTokenExpiresAt DateTime?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+
+  policy    RecoveryPolicy     @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  approvals RecoveryApproval[]
+
+  @@index([userId, status])
+  @@index([status, completesAt])
+  @@index([expiresAt])
+  @@index([cancelTokenHash])
+  @@map("account_recovery_requests")
+}
+
+model RecoveryApproval {
+  id         String   @id @default(uuid())
+  requestId  String
+  guardianId String
+  approvedAt DateTime @default(now())
+
+  request  AccountRecoveryRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  guardian RecoveryGuardian       @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, guardianId])
+  @@index([guardianId])
+  @@map("recovery_approvals")
 }
 
 model AdminApiKey {
@@ -693,7 +790,7 @@ model Transaction {
   // replaying a settlement can never double-apply it.
   loanSettlementAppliedAt DateTime?
 
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Restrict)
   position     Position?     @relation(fields: [positionId], references: [id])
   fiatOrders   FiatOrder[]
   costBasisLot CostBasisLot?
@@ -1379,6 +1476,7 @@ model FiatOrder {
   transactionId       String? // linked once the resulting on-chain Transaction is matched
   checkoutUrl         String? // provider hosted checkout URL (on-ramp)
   kycUrl              String? // provider KYC next-step link, surfaced to the user when required
+  providerTxHash      String? // tx hash claimed by provider; reconciled against on-chain confirmation
   failureReason       String? // populated on FAILED/REFUNDED for operator/user visibility
   settledAt           DateTime?
   // Best-execution / rate-drift protection (#313). quoteRate/quotedCryptoAmount
@@ -1396,7 +1494,7 @@ model FiatOrder {
   createdAt           DateTime        @default(now())
   updatedAt           DateTime        @updatedAt
 
-  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User         @relation(fields: [userId], references: [id], onDelete: Restrict)
   transaction Transaction? @relation(fields: [transactionId], references: [id])
 
   @@unique([provider, providerOrderId])
@@ -1460,7 +1558,7 @@ model KycProfile {
   reviewNote  String?
   updatedAt   DateTime  @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
 
   @@map("kyc_profiles")
 }
@@ -1603,6 +1701,7 @@ model RecurringDepositPlan {
   amount        Decimal                    @db.Decimal(36, 18)
   assetSymbol   String
   cadence       DepositCadence
+  cadenceAnchorDay Int?
   nextRunAt     DateTime
   status        RecurringDepositPlanStatus @default(ACTIVE)
   lastRunAt     DateTime?
@@ -1736,12 +1835,13 @@ model LotDisposal {
 /// strategy selection is driven by. Required-rate projection reuses the same
 /// simple (non-compounding) APY convention as YieldSnapshot/calculateApy for
 /// consistency with live APY reporting — compounding-aware modeling is tracked
-/// separately (#225). One ACTIVE goal per user is enforced at the API layer,
-/// not via a DB constraint, since past goals (ACHIEVED/MISSED/CANCELLED) are
-/// kept for history.
-// NOTE: a partial unique index enforcing at most one ACTIVE goal per user
-// lives in migration 20261123000000_savings_goal_single_active (Prisma does not
-// model partial indexes in the schema). Do not regenerate it away (#790).
+/// separately (#225). Past goals (ACHIEVED/MISSED/CANCELLED) are kept for
+/// history, so a plain unique index on (userId, status) would be wrong.
+// NOTE: at most one ACTIVE goal per user is enforced by the partial unique
+// index savings_goals_userId_active_key in migration
+// 20261123000000_savings_goal_single_active (Prisma cannot model partial
+// indexes in the schema). createGoal also fast-fails on duplicate requests and
+// maps the index's P2002 to GoalConflictError. Do not regenerate it away (#841).
 model SavingsGoal {
   id                      String     @id @default(uuid())
   userId                  String
@@ -2122,8 +2222,8 @@ model CollateralLoan {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user        User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  position    Position               @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  user        User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  position    Position               @relation(fields: [positionId], references: [id], onDelete: Restrict)
   events      LoanLiquidationEvent[]
   badDebt     PlatformBadDebt[]
   // #532 — the disbursal and every repayment recorded against this loan.
@@ -2337,7 +2437,7 @@ model ComplianceCase {
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 
-  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User        @relation(fields: [userId], references: [id], onDelete: Restrict)
   events CaseEvent[]
 
   @@index([userId])
@@ -2767,6 +2867,7 @@ model RecurringWithdrawalPlan {
   amount             Decimal?                      @db.Decimal(36, 18)
   percentage         Decimal?                      @db.Decimal(12, 6)
   cadence            DepositCadence
+  cadenceAnchorDay   Int?
   nextRunAt          DateTime
   status             RecurringWithdrawalPlanStatus @default(ACTIVE)
   minAmount          Decimal?                      @db.Decimal(36, 18)

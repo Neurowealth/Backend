@@ -93,7 +93,6 @@ Response:
     "deletedRecords": {
       "sessions": 5,
       "positions": 3,
-      "transactions": 50,
       "agentLogs": 100,
       "webhookSubscriptions": 2,
       ...
@@ -101,7 +100,12 @@ Response:
     "anonymizedRecords": {
       "costBasisLots": 10,
       "lotDisposals": 5,
-      "portfolioAttributions": 2
+      "portfolioAttributions": 2,
+      "transactions": 50,
+      "fiatOrders": 1,
+      "complianceCases": 2,
+      "collateralLoans": 1,
+      "kycProfiles": 1
     },
     "preservedRecords": {
       "adminAuditLogs": 0
@@ -109,6 +113,30 @@ Response:
   }
 }
 ```
+
+#### Regulated records and erasure guards (#934)
+
+AML/KYC rules require some records to be kept for years, so erasure never
+deletes them:
+
+- **Refused while a blocker is live.** `executeErasure` throws an
+  `ErasureGuardError` (HTTP 409) and leaves the request `APPROVED` when the
+  user has a compliance case in `OPEN`, `TRIAGE`, `INVESTIGATING`, `ESCALATED`
+  or `PENDING_SAR`, or a collateral loan that is `ACTIVE`. Concluded cases
+  (`SAR_FILED`, `CLEARED`, `CLOSED_NO_ACTION`) and closed loans do not block.
+  The check runs before the request is claimed and again inside the deletion
+  transaction.
+- **Retained, with ownership anonymized.** Transactions, fiat orders, the KYC
+  profile, compliance cases (and their events), collateral loans, and the
+  positions that collateralise those loans are re-pointed at a pseudonymous
+  retention stub user (`erased:<uuid>`, inactive, no wallet or email) before
+  the real user row is deleted. A fresh stub is used per erased user, so one
+  subject's records stay linkable for investigators without identifying them.
+- **Fail closed.** The foreign keys from these models to `users` are
+  `ON DELETE RESTRICT`, so any other path that tries to delete a user who still
+  owns one of these rows fails instead of cascading.
+- `TravelRuleRecord.transactionId` has no foreign key and keeps pointing at the
+  retained transaction rows.
 
 #### Approve Erasure Request
 ```http

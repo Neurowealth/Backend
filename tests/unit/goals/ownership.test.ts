@@ -14,6 +14,7 @@ import {
   computeGoalProgress,
   GoalConflictError,
   GoalNotFoundError,
+  ACTIVE_GOAL_UNIQUE_INDEX,
 } from '../../../src/goals/service'
 
 jest.mock('../../../src/db', () => ({ __esModule: true, default: {} }))
@@ -126,6 +127,31 @@ describe('createGoal concurrent-create guard', () => {
     await expect(
       createGoal('user-1', { targetAmount: 1000, targetDate })
     ).rejects.toBeInstanceOf(GoalConflictError)
+  })
+
+  it('maps the named partial-index violation to GoalConflictError', async () => {
+    mockDb.savingsGoal.create.mockRejectedValue(
+      Object.assign(new Error('Unique constraint failed'), {
+        code: 'P2002',
+        meta: { target: ACTIVE_GOAL_UNIQUE_INDEX },
+      })
+    )
+
+    await expect(
+      createGoal('user-1', { targetAmount: 1000, targetDate })
+    ).rejects.toBeInstanceOf(GoalConflictError)
+  })
+
+  it('rethrows P2002 from an unrelated unique constraint', async () => {
+    const failure = Object.assign(new Error('Unique constraint failed'), {
+      code: 'P2002',
+      meta: { target: ['email'] },
+    })
+    mockDb.savingsGoal.create.mockRejectedValue(failure)
+
+    await expect(
+      createGoal('user-1', { targetAmount: 1000, targetDate })
+    ).rejects.toBe(failure)
   })
 
   it('rethrows unrelated database errors unchanged', async () => {

@@ -187,6 +187,8 @@ export async function runReserveReconciliation(): Promise<void> {
     })
     recordBackgroundJob(jobName, 'failed', durationMs / 1000)
     recordJobFailure(jobName, durationMs, err)
+    // Rethrow so resilientScheduler retries and records the run as failed (#772)
+    throw err
   }
 }
 

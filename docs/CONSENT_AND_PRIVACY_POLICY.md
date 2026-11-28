@@ -23,18 +23,11 @@ Every high-risk operation requires explicit, un-revoked user consent prior to ex
 
 ## 2. Policy Enforcement & Backend Checks
 
-Backend endpoints and background workers enforce consent boundaries using `validateWorkflowConsent()` or the `requireConsentPolicy()` middleware:
-
-```typescript
-import { requireConsentPolicy } from '../middleware/consentPolicy'
-
-// Protecting high-risk automated trading routes
-router.post(
-  '/strategies/execute',
-  requireConsentPolicy('AUTOMATED_TRADING'),
-  async (req, res) => { ... }
-)
-```
+The consent policy engine is available to trusted server-side callers through
+`validateWorkflowConsent()`. There is currently no Express consent middleware:
+the application has no persisted consent-profile source to load for requests.
+Do not introduce a route-level consent gate until that source is implemented;
+never accept consent or bypass decisions from request headers.
 
 If a required consent flag is missing or revoked:
 1. The request is rejected with HTTP 403 Forbidden.
@@ -64,10 +57,10 @@ Use `grantConsent(scope, previous?)` and `withdrawConsent(scope, previous?)` to 
 ### Enforcement
 
 - `validateWorkflowConsent()` returns `allowed: false` with `reconsentRequired: true` when the stored `purposesHash` no longer matches the current one.
-- `requireConsentPolicy()` answers HTTP 403 with `code: "CONSENT_RECONSENT_REQUIRED"`, plus the current `policyVersion` and `purposesHash`, so a client can prompt the user to re-consent. A missing or withdrawn consent keeps the `CONSENT_POLICY_DENIED` code.
+- Callers should return HTTP 403 with `code: "CONSENT_RECONSENT_REQUIRED"`, plus the current `policyVersion` and `purposesHash`, so a client can prompt the user to re-consent. A missing or withdrawn consent keeps the `CONSENT_POLICY_DENIED` code.
 - Once the user re-consents with `grantConsent()`, the new record carries the current hash and the workflow is allowed again.
 - The block is logged with the consented and current policy versions and hashes. Auditable bypasses (section 3) still apply to stale consents.
-- Only high-risk workflows are gated. Endpoints that do not use `requireConsentPolicy()` are unaffected while a re-consent is pending.
+- Only callers that explicitly validate a high-risk workflow are gated.
 - A plain `true` in the consent map is the legacy unversioned form. It is still honoured, but it carries no version, so it can't be invalidated by a purpose change. Store `ConsentRecord`s for new consents.
 
 ---
@@ -85,9 +78,13 @@ In specific operational, legal, or emergency scenarios, system processes or admi
 
 ### Bypass Audit Requirements
 
-All bypass calls MUST specify:
+Bypass options are for trusted server-side callers only. They are not exposed
+through HTTP headers or request parameters. All bypass calls MUST specify:
+
 - An authorized `bypassReason`.
 - A detailed `bypassJustification` string (minimum 10 characters).
 - The identity of the invoking system or admin key.
 
-Every bypass invocation emits a high-priority audit log entry (`[Consent Policy Audit]`) to immutable audit trails. Bypasses without valid justifications are strictly rejected.
+Every bypass invocation emits a warning audit log entry
+(`[Consent Policy Audit]`). Bypasses without valid justifications are strictly
+rejected.

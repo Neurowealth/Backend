@@ -143,7 +143,10 @@ export function idempotent(options: IdempotencyOptions = {}) {
       return
     }
 
-    const userId = req.auth?.userId ?? req.userId
+    const userId =
+      req.auth?.userId ??
+      req.userId ??
+      (res.locals?.adminAuth as { id?: string } | undefined)?.id
     if (!userId) {
       res.status(401).json({ error: 'Unauthorized' })
       return

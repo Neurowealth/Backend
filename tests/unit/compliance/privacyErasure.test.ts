@@ -17,6 +17,7 @@ import {
   listErasureRequests,
   previewErasure,
   ErasureRequestStatus,
+  ErasureGuardError,
 } from '../../../src/compliance/privacyErasure'
 import { alertingService } from '../../../src/services/alerting'
 import { revokeAllUserSessions } from '../../../src/services/refresh-token.service'
@@ -40,6 +41,7 @@ jest.mock('../../../src/services/alerting', () => ({
 
 const mockDb = db as any
 let transactionErasureUpdate: jest.Mock
+let txMock: any
 
 beforeEach(() => {
   jest.clearAllMocks()
@@ -74,39 +76,89 @@ beforeEach(() => {
   mockDb.portfolioAttribution = { count: jest.fn(), updateMany: jest.fn() }
   mockDb.adminAuditLog = { count: jest.fn() }
   mockDb.referralConversion = { count: jest.fn() }
+  // #934 guard inputs: nothing open or outstanding unless a test says so.
+  mockDb.complianceCase = { count: jest.fn().mockResolvedValue(0) }
+  mockDb.collateralLoan = { count: jest.fn().mockResolvedValue(0) }
+  mockDb.kycProfile = { count: jest.fn() }
   transactionErasureUpdate = jest.fn().mockResolvedValue({})
-  mockDb.$transaction = jest.fn((callback: any) =>
-    callback({
-      session: { count: jest.fn().mockResolvedValue(5) },
-      position: { count: jest.fn().mockResolvedValue(3) },
-      transaction: { count: jest.fn().mockResolvedValue(50) },
-      agentLog: { count: jest.fn().mockResolvedValue(100) },
-      webhookSubscription: { count: jest.fn().mockResolvedValue(2) },
-      fiatOrder: { count: jest.fn().mockResolvedValue(1) },
-      recurringDepositPlan: { count: jest.fn().mockResolvedValue(0) },
-      alertRule: { count: jest.fn().mockResolvedValue(1) },
-      savingsGoal: { count: jest.fn().mockResolvedValue(0) },
-      subAccount: { count: jest.fn().mockResolvedValue(0) },
-      publishedStrategy: { count: jest.fn().mockResolvedValue(1) },
-      strategyFollow: { count: jest.fn().mockResolvedValue(0) },
-      costBasisLot: {
-        count: jest.fn().mockResolvedValue(10),
-        updateMany: jest.fn().mockResolvedValue({ count: 10 }),
-      },
-      lotDisposal: {
-        count: jest.fn().mockResolvedValue(5),
-        updateMany: jest.fn().mockResolvedValue({ count: 5 }),
-      },
-      portfolioAttribution: {
-        count: jest.fn().mockResolvedValue(2),
-        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
-      },
-      adminAuditLog: { count: jest.fn().mockResolvedValue(4) },
-      referralConversion: { count: jest.fn().mockResolvedValue(2) },
-      erasureRequest: { update: transactionErasureUpdate },
-      user: { delete: jest.fn().mockResolvedValue({}) },
-    })
-  )
+  txMock = {
+    session: { count: jest.fn().mockResolvedValue(5) },
+    position: {
+      count: jest.fn().mockResolvedValue(3),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    transaction: {
+      count: jest.fn().mockResolvedValue(50),
+      updateMany: jest.fn().mockResolvedValue({ count: 50 }),
+    },
+    agentLog: { count: jest.fn().mockResolvedValue(100) },
+    webhookSubscription: { count: jest.fn().mockResolvedValue(2) },
+    fiatOrder: {
+      count: jest.fn().mockResolvedValue(1),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    complianceCase: {
+      count: jest.fn().mockResolvedValue(0),
+      updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+    },
+    collateralLoan: {
+      count: jest.fn().mockResolvedValue(0),
+      findMany: jest.fn().mockResolvedValue([]),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    kycProfile: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    recurringDepositPlan: { count: jest.fn().mockResolvedValue(0) },
+    alertRule: { count: jest.fn().mockResolvedValue(1) },
+    savingsGoal: { count: jest.fn().mockResolvedValue(0) },
+    subAccount: { count: jest.fn().mockResolvedValue(0) },
+    publishedStrategy: { count: jest.fn().mockResolvedValue(1) },
+    strategyFollow: { count: jest.fn().mockResolvedValue(0) },
+    costBasisLot: {
+      count: jest.fn().mockResolvedValue(10),
+      updateMany: jest.fn().mockResolvedValue({ count: 10 }),
+    },
+    lotDisposal: {
+      count: jest.fn().mockResolvedValue(5),
+      updateMany: jest.fn().mockResolvedValue({ count: 5 }),
+    },
+    portfolioAttribution: {
+      count: jest.fn().mockResolvedValue(2),
+      updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+    },
+    adminAuditLog: { count: jest.fn().mockResolvedValue(4) },
+    referralConversion: { count: jest.fn().mockResolvedValue(2) },
+    erasureRequest: { update: transactionErasureUpdate },
+    user: {
+      create: jest.fn().mockResolvedValue({}),
+      delete: jest.fn().mockResolvedValue({}),
+    },
+    // eraseScalarUserRefs touches these scalar-reference models.
+    ...Object.fromEntries(
+      [
+        'idempotencyRecord',
+        'custodialWallet',
+        'alertAck',
+        'notificationPreferenceAuditLog',
+        'webAuthnChallenge',
+        'messageDelivery',
+        'userEvent',
+        'userEventSequence',
+        'loanLiquidationEvent',
+        'platformBadDebt',
+        'coverageClaim',
+        'outboxOp',
+        'ticketMessage',
+        'userDataAudit',
+      ].map((model) => [
+        model,
+        {
+          deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+          updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        },
+      ])
+    ),
+  }
+  mockDb.$transaction = jest.fn((callback: any) => callback(txMock))
 })
 
 describe('Privacy Erasure Workflow', () => {
@@ -277,6 +329,136 @@ describe('Privacy Erasure Workflow', () => {
   })
 
   describe('executeErasure', () => {
+    function approvedRequest(userId = 'user-123') {
+      mockDb.erasureRequest.findUnique.mockResolvedValue({
+        id: 'request-1',
+        userId,
+        status: ErasureRequestStatus.APPROVED,
+        approvedBy: 'admin-b',
+        user: { id: userId, walletAddress: 'GABC...' },
+      })
+    }
+
+    // #934: regulated records must survive, and live blockers refuse erasure.
+    describe('regulated records and guards (#934)', () => {
+      it('refuses erasure while the user has an OPEN compliance case', async () => {
+        approvedRequest()
+        mockDb.complianceCase.count.mockResolvedValue(1)
+
+        const attempt = executeErasure(
+          'request-1',
+          'admin-c',
+          'DELETE user-123'
+        )
+
+        await expect(attempt).rejects.toBeInstanceOf(ErasureGuardError)
+        await expect(attempt).rejects.toMatchObject({ httpStatus: 409 })
+        await expect(attempt).rejects.toThrow(/open compliance case/)
+        expect(mockDb.complianceCase.count).toHaveBeenCalledWith({
+          where: {
+            userId: 'user-123',
+            status: {
+              in: [
+                'OPEN',
+                'TRIAGE',
+                'INVESTIGATING',
+                'ESCALATED',
+                'PENDING_SAR',
+              ],
+            },
+          },
+        })
+        // Blocked before the request is claimed or any access is revoked.
+        expect(mockDb.erasureRequest.updateMany).not.toHaveBeenCalled()
+        expect(revokeAllUserSessions).not.toHaveBeenCalled()
+        expect(mockDb.$transaction).not.toHaveBeenCalled()
+      })
+
+      it('refuses erasure while the user has an ACTIVE collateral loan', async () => {
+        approvedRequest()
+        mockDb.collateralLoan.count.mockResolvedValue(1)
+
+        const attempt = executeErasure(
+          'request-1',
+          'admin-c',
+          'DELETE user-123'
+        )
+
+        await expect(attempt).rejects.toBeInstanceOf(ErasureGuardError)
+        await expect(attempt).rejects.toMatchObject({ httpStatus: 409 })
+        await expect(attempt).rejects.toThrow(/outstanding collateral loan/)
+        expect(mockDb.collateralLoan.count).toHaveBeenCalledWith({
+          where: { userId: 'user-123', status: 'ACTIVE' },
+        })
+        expect(mockDb.$transaction).not.toHaveBeenCalled()
+        expect(txMock.user.delete).not.toHaveBeenCalled()
+      })
+
+      it('re-points regulated records at a retention stub before deleting the user', async () => {
+        approvedRequest()
+        txMock.collateralLoan.findMany.mockResolvedValue([
+          { positionId: 'pos-1' },
+        ])
+
+        const summary = await executeErasure(
+          'request-1',
+          'admin-c',
+          'DELETE user-123'
+        )
+
+        const stub = txMock.user.create.mock.calls[0][0].data
+        expect(stub.walletAddress).toBe(`erased:${stub.id}`)
+        expect(stub.id).not.toBe('user-123')
+        expect(stub.isActive).toBe(false)
+
+        const moved = (model: any) => model.updateMany.mock.calls[0][0]
+        expect(moved(txMock.transaction).where).toEqual({ userId: 'user-123' })
+        expect(moved(txMock.transaction).data.userId).toBe(stub.id)
+        expect(moved(txMock.complianceCase).data.userId).toBe(stub.id)
+        expect(moved(txMock.fiatOrder).data.userId).toBe(stub.id)
+        expect(moved(txMock.collateralLoan).data.userId).toBe(stub.id)
+        expect(moved(txMock.kycProfile).data.userId).toBe(stub.id)
+        // The loan's collateral position is retained with the loan.
+        expect(txMock.position.updateMany).toHaveBeenCalledWith({
+          where: { id: { in: ['pos-1'] } },
+          data: { userId: stub.id },
+        })
+
+        // Records are moved before the user row goes, never deleted.
+        const stubCreated = txMock.user.create.mock.invocationCallOrder[0]
+        const txnsMoved =
+          txMock.transaction.updateMany.mock.invocationCallOrder[0]
+        const userDeleted = txMock.user.delete.mock.invocationCallOrder[0]
+        expect(stubCreated).toBeLessThan(txnsMoved)
+        expect(txnsMoved).toBeLessThan(userDeleted)
+        expect(txMock.transaction.deleteMany).toBeUndefined()
+        expect(txMock.complianceCase.deleteMany).toBeUndefined()
+
+        expect(summary.anonymizedRecords).toMatchObject({
+          transactions: 50,
+          fiatOrders: 1,
+          complianceCases: 2,
+          kycProfiles: 1,
+        })
+        expect(summary.deletedRecords).not.toHaveProperty('transactions')
+      })
+
+      it('hands the request back (not FAILED) when a case opens mid-erasure', async () => {
+        approvedRequest()
+        txMock.complianceCase.count.mockResolvedValue(1)
+
+        await expect(
+          executeErasure('request-1', 'admin-c', 'DELETE user-123')
+        ).rejects.toBeInstanceOf(ErasureGuardError)
+
+        expect(txMock.user.delete).not.toHaveBeenCalled()
+        expect(mockDb.erasureRequest.updateMany).toHaveBeenLastCalledWith({
+          where: { id: 'request-1', status: ErasureRequestStatus.PROCESSING },
+          data: { status: ErasureRequestStatus.APPROVED },
+        })
+      })
+    })
+
     it('executes an approved erasure request successfully', async () => {
       const requestId = 'request-1'
       const userId = 'user-123'
@@ -302,7 +484,8 @@ describe('Privacy Erasure Workflow', () => {
 
       expect(summary.userId).toBe(userId)
       expect(summary.deletedRecords.sessions).toBe(5)
-      expect(summary.deletedRecords.transactions).toBe(50)
+      expect(summary.anonymizedRecords.transactions).toBe(50)
+      expect(summary.anonymizedRecords.complianceCases).toBe(2)
       expect(summary.anonymizedRecords.costBasisLots).toBe(10)
       expect(summary.preservedRecords.adminAuditLogs).toBe(4)
       expect(summary.preservedRecords.referralConversionsAsOwner).toBe(2)
@@ -453,7 +636,7 @@ describe('Privacy Erasure Workflow', () => {
       const preview = await previewErasure(userId)
 
       expect(preview.deletedRecords.sessions).toBe(5)
-      expect(preview.deletedRecords.transactions).toBe(50)
+      expect(preview.anonymizedRecords.transactions).toBe(50)
       expect(preview.anonymizedRecords.costBasisLots).toBe(10)
       expect(preview.preservedRecords.adminAuditLogs).toBe(4)
       expect(preview.preservedRecords.referralConversionsAsOwner).toBe(3)

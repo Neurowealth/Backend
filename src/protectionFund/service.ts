@@ -174,6 +174,12 @@ export async function reviewCoverageEvent(
   if (!event) throw new Error('Coverage event not found')
   if (event.status !== 'PENDING_REVIEW')
     throw new Error(`Event is not pending review (status: ${event.status})`)
+  // #758 — dual-review: the admin who declared the event cannot review it.
+  // The route maps this to 403.
+  if (event.declaredBy === reviewedBy)
+    throw new Error(
+      'Reviewer must be a different admin than the declarer'
+    )
 
   const updated = await db.coverageEvent.update({
     where: { id: eventId },
@@ -208,54 +214,81 @@ export async function computeClaimsForEvent(eventId: string) {
     include: { transactions: true },
   })
 
-  const claims: ClaimResult[] = []
-  const fundBalance = await getFundBalance()
-  let remainingFund = fundBalance.amount
+  // Serialize all allocations against this fund. The balance itself is not
+  // debited until an on-chain payout confirms, so PENDING claims are the
+  // reserve that prevents separately approved events from overcommitting it.
+  const claims = await db.$transaction(async (tx) => {
+    const assetSymbol = config.protectionFund.defaultAssetSymbol
+    await tx.$queryRaw`
+      SELECT id
+      FROM protection_fund_balances
+      WHERE "assetSymbol" = ${assetSymbol}
+      FOR UPDATE
+    `
 
-  for (const position of positions) {
-    const holdDuration = lossStart.getTime() - position.openedAt.getTime()
-    if (holdDuration < terms.minHoldDurationMs) continue
+    const [fundBalance, pendingClaims] = await Promise.all([
+      tx.protectionFundBalance.findUnique({
+        where: { assetSymbol },
+        select: { amount: true },
+      }),
+      tx.coverageClaim.aggregate({
+        where: { status: 'PENDING' },
+        _sum: { payoutAmount: true },
+      }),
+    ])
+    let remainingFund = new Prisma.Decimal(fundBalance?.amount ?? 0)
+      .minus(pendingClaims._sum.payoutAmount ?? 0)
+      .toNumber()
+    remainingFund = Math.max(0, remainingFund)
+    const computedClaims: ClaimResult[] = []
 
-    const loss = computePositionLoss(position, lossStart, lossEnd)
-    if (loss <= 0) continue
+    for (const position of positions) {
+      const holdDuration = lossStart.getTime() - position.openedAt.getTime()
+      if (holdDuration < terms.minHoldDurationMs) continue
 
-    const netLoss = loss
-    const cappedLoss = Math.min(netLoss, terms.perUserCoverageCap)
-    const payoutAmount = Math.min(cappedLoss, remainingFund)
-    const coverageType =
-      payoutAmount >= cappedLoss
-        ? 'FULL'
-        : payoutAmount > 0
-          ? 'PRORATED'
-          : 'ZERO'
+      const loss = computePositionLoss(position, lossStart, lossEnd)
+      if (loss <= 0) continue
 
-    const claim = await db.coverageClaim.create({
-      data: {
-        eventId,
+      const netLoss = loss
+      const cappedLoss = Math.min(netLoss, terms.perUserCoverageCap)
+      const payoutAmount = Math.min(cappedLoss, remainingFund)
+      const coverageType =
+        payoutAmount >= cappedLoss
+          ? 'FULL'
+          : payoutAmount > 0
+            ? 'PRORATED'
+            : 'ZERO'
+
+      const claim = await tx.coverageClaim.create({
+        data: {
+          eventId,
+          userId: position.userId,
+          positionId: position.id,
+          actualLoss: new Prisma.Decimal(loss),
+          netLoss: new Prisma.Decimal(netLoss),
+          payoutAmount: new Prisma.Decimal(payoutAmount),
+          coverageType,
+          status: payoutAmount > 0 ? 'PENDING' : 'REJECTED',
+        },
+      })
+
+      computedClaims.push({
+        claimId: claim.id,
         userId: position.userId,
         positionId: position.id,
-        actualLoss: new Prisma.Decimal(loss),
-        netLoss: new Prisma.Decimal(netLoss),
-        payoutAmount: new Prisma.Decimal(payoutAmount),
+        actualLoss: loss,
+        netLoss,
+        payoutAmount,
         coverageType,
-        status: payoutAmount > 0 ? 'PENDING' : 'REJECTED',
-      },
-    })
+        status: claim.status as 'PENDING' | 'PAID' | 'REJECTED',
+      })
 
-    claims.push({
-      claimId: claim.id,
-      userId: position.userId,
-      positionId: position.id,
-      actualLoss: loss,
-      netLoss,
-      payoutAmount,
-      coverageType,
-      status: claim.status as 'PENDING' | 'PAID' | 'REJECTED',
-    })
+      remainingFund -= payoutAmount
+      if (remainingFund <= 0) break
+    }
 
-    remainingFund -= payoutAmount
-    if (remainingFund <= 0) break
-  }
+    return computedClaims
+  })
 
   logger.info(
     `[ProtectionFund] Computed ${claims.length} claims for event ${eventId}`

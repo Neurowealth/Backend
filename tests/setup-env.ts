@@ -7,6 +7,10 @@
  * DATABASE_URL) can never leak in and fail validation or point the suite at
  * the wrong database. CI and local runs therefore see identical configuration,
  * and .env.test is the single source of truth for both.
+ *
+ * DATABASE_URL in .env.test must be the database `prisma migrate deploy`
+ * applies in the Node CI job. Overriding onto any other URL makes DB suites
+ * query a database CI never creates (#852).
  */
 
 import path from 'path'

@@ -8,6 +8,7 @@
 
 import {
   countLocalSubscribers,
+  closeLocalUserStreams,
   deliverToLocalSubscribers,
   resetHub,
   subscribeToUserStream,
@@ -105,5 +106,28 @@ describe('event hub', () => {
     unsubscribe()
     expect(countLocalSubscribers()).toBe(0)
     expect(deliverToLocalSubscribers(envelope())).toBe(0)
+  })
+
+  it('closes the recovered owner stream without closing delegated viewers', () => {
+    const closeOwner = jest.fn()
+    const closeParent = jest.fn()
+    subscribeToUserStream({
+      streamUserId: 'owner-1',
+      viewerUserId: 'owner-1',
+      deliver: jest.fn(),
+      close: closeOwner,
+    })
+    subscribeToUserStream({
+      streamUserId: 'owner-1',
+      viewerUserId: 'parent-1',
+      deliver: jest.fn(),
+      close: closeParent,
+    })
+
+    expect(closeLocalUserStreams('owner-1', 'Account recovery completed')).toBe(
+      1
+    )
+    expect(closeOwner).toHaveBeenCalledWith('Account recovery completed')
+    expect(closeParent).not.toHaveBeenCalled()
   })
 })

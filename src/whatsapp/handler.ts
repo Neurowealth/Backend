@@ -1,3 +1,4 @@
+import { addCadence } from '../utils/cadence'
 /**
  * WhatsApp message handler.
  *
@@ -263,24 +264,15 @@ async function executeIntent(
         return { body: 'Your account is not fully set up yet.' }
       }
       // First run is one full interval from now (not immediately).
-      const nextRunAt = new Date()
-      switch (cadence) {
-        case 'WEEKLY':
-          nextRunAt.setDate(nextRunAt.getDate() + 7)
-          break
-        case 'BIWEEKLY':
-          nextRunAt.setDate(nextRunAt.getDate() + 14)
-          break
-        case 'MONTHLY':
-          nextRunAt.setMonth(nextRunAt.getMonth() + 1)
-          break
-      }
+      const anchor = new Date()
+      const nextRunAt = addCadence(cadence, anchor)
       const plan = await db.recurringDepositPlan.create({
         data: {
           userId: user.id,
           amount,
           assetSymbol: 'USDC',
           cadence,
+          cadenceAnchorDay: anchor.getUTCDate(),
           nextRunAt,
         },
       })
